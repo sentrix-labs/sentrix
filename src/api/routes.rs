@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::core::blockchain::Blockchain;
 use crate::core::transaction::Transaction;
+use crate::api::jsonrpc::rpc_dispatcher;
 
 pub type SharedState = Arc<RwLock<Blockchain>>;
 
@@ -77,6 +78,7 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/tokens/{contract}/transfer", post(token_transfer))
         .route("/address/{address}/history",  get(get_address_history))
         .route("/address/{address}/info",     get(get_address_info))
+        .route("/rpc",                        post(rpc_dispatcher))
         .with_state(state)
 }
 
