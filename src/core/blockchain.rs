@@ -117,7 +117,7 @@ impl Blockchain {
         // Basic validation
         let expected_nonce = self.accounts.get_nonce(&tx.from_address)
             + self.mempool_pending_count(&tx.from_address);
-        tx.validate(expected_nonce)?;
+        tx.validate(expected_nonce, self.chain_id)?;
 
         // Check balance including pending mempool spends
         let pending_spend = self.mempool_pending_spend(&tx.from_address);
@@ -248,7 +248,7 @@ impl Blockchain {
                 .unwrap_or_else(|| self.accounts.get_nonce(&tx.from_address));
 
             // Validate
-            tx.validate(nonce)?;
+            tx.validate(nonce, self.chain_id)?;
 
             let needed = tx.amount + tx.fee;
             if balance < needed {
@@ -573,6 +573,7 @@ mod tests {
             MIN_TX_FEE,
             0,
             String::new(),
+            CHAIN_ID,
             &sk,
             &pk,
         ).unwrap();
@@ -716,15 +717,15 @@ mod tests {
         // Add 3 txs with different fees: low, high, medium
         let tx_low = Transaction::new(
             "sender".to_string(), "recv".to_string(),
-            100_000, MIN_TX_FEE, 0, String::new(), &sk, &pk,
+            100_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
         ).unwrap();
         let tx_high = Transaction::new(
             "sender".to_string(), "recv".to_string(),
-            100_000, MIN_TX_FEE * 100, 1, String::new(), &sk, &pk,
+            100_000, MIN_TX_FEE * 100, 1, String::new(), CHAIN_ID, &sk, &pk,
         ).unwrap();
         let tx_mid = Transaction::new(
             "sender".to_string(), "recv".to_string(),
-            100_000, MIN_TX_FEE * 10, 2, String::new(), &sk, &pk,
+            100_000, MIN_TX_FEE * 10, 2, String::new(), CHAIN_ID, &sk, &pk,
         ).unwrap();
 
         bc.add_to_mempool(tx_low).unwrap();

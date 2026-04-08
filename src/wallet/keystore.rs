@@ -9,7 +9,7 @@ use rand::rngs::OsRng;
 use crate::wallet::wallet::Wallet;
 use crate::types::error::{SentrixError, SentrixResult};
 
-const PBKDF2_ITERATIONS: u32 = 200_000;
+const PBKDF2_ITERATIONS: u32 = 600_000; // NIST SP 800-132 recommended minimum
 const SALT_SIZE: usize = 16;
 const NONCE_SIZE: usize = 12;
 const KEY_SIZE: usize = 32; // 256 bits

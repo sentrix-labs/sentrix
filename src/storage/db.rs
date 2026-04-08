@@ -48,11 +48,14 @@ impl Storage {
         // Save state (accounts, authority, contracts, mempool, metadata)
         self.put("state", blockchain)?;
 
-        // Save each block individually: key = "block:{index}"
+        // Save each block individually: key = "block:{index}" + hash index
         for block in &blockchain.chain {
             let key = format!("block:{}", block.index);
             if !self.db.contains_key(&key).unwrap_or(false) {
                 self.put(&key, block)?;
+                // Hash → index lookup
+                let hash_key = format!("hash:{}", block.hash);
+                self.put(&hash_key, &block.index)?;
             }
         }
 
@@ -99,6 +102,8 @@ impl Storage {
     pub fn save_block(&self, block: &Block) -> SentrixResult<()> {
         let key = format!("block:{}", block.index);
         self.put(&key, block)?;
+        let hash_key = format!("hash:{}", block.hash);
+        self.put(&hash_key, &block.index)?;
         self.flush()?;
         Ok(())
     }
@@ -109,6 +114,12 @@ impl Storage {
     }
 
     pub fn load_block_by_hash(&self, hash: &str) -> SentrixResult<Option<Block>> {
+        // O(1) lookup via hash index
+        let hash_key = format!("hash:{}", hash);
+        if let Some(index) = self.get::<u64>(&hash_key)? {
+            return self.load_block(index);
+        }
+        // Fallback: O(n) scan (backward compat for old data)
         let height = self.load_height()?;
         for i in (0..=height).rev() {
             if let Some(block) = self.load_block(i)? {

@@ -104,10 +104,18 @@ impl AuthorityManager {
                 format!("{} is not admin", caller)
             ));
         }
-        // Admin cannot remove itself
         if address == self.admin_address {
             return Err(SentrixError::InvalidBlock(
                 "admin cannot remove itself".to_string()
+            ));
+        }
+        // Ensure at least 1 active validator remains
+        let active_after = self.active_validators().iter()
+            .filter(|v| v.address != address)
+            .count();
+        if active_after < 1 {
+            return Err(SentrixError::InvalidBlock(
+                "cannot remove: at least 1 active validator required".to_string()
             ));
         }
         self.validators.remove(address)

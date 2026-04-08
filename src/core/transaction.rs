@@ -19,12 +19,12 @@ pub struct Transaction {
     pub nonce: u64,
     pub data: String,
     pub timestamp: u64,     // unix timestamp seconds
+    pub chain_id: u64,      // replay protection across chains
     pub signature: String,  // hex encoded
     pub public_key: String, // hex encoded
 }
 
 impl Transaction {
-    // Create and sign a new transaction
     pub fn new(
         from_address: String,
         to_address: String,
@@ -32,6 +32,7 @@ impl Transaction {
         fee: u64,
         nonce: u64,
         data: String,
+        chain_id: u64,
         secret_key: &SecretKey,
         public_key: &PublicKey,
     ) -> SentrixResult<Self> {
@@ -51,11 +52,11 @@ impl Transaction {
             nonce,
             data,
             timestamp,
+            chain_id,
             signature: String::new(),
             public_key: public_key_hex,
         };
 
-        // Compute signing payload and sign
         let payload = tx.signing_payload();
         let secp = Secp256k1::signing_only();
         let msg = Self::payload_to_message(&payload)?;
@@ -66,7 +67,6 @@ impl Transaction {
         Ok(tx)
     }
 
-    // Create coinbase transaction (block reward)
     pub fn new_coinbase(to_address: String, amount: u64, block_index: u64) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -82,6 +82,7 @@ impl Transaction {
             nonce: 0,
             data: format!("block_{}", block_index),
             timestamp,
+            chain_id: 0,
             signature: String::new(),
             public_key: String::new(),
         };
@@ -93,11 +94,12 @@ impl Transaction {
         self.from_address == COINBASE_ADDRESS
     }
 
-    // Canonical signing payload — deterministic JSON, sorted keys
+    // Canonical signing payload — includes chain_id for replay protection
     pub fn signing_payload(&self) -> String {
         format!(
-            r#"{{"amount":{},"data":"{}","fee":{},"from":"{}","nonce":{},"timestamp":{},"to":"{}"}}"#,
+            r#"{{"amount":{},"chain_id":{},"data":"{}","fee":{},"from":"{}","nonce":{},"timestamp":{},"to":"{}"}}"#,
             self.amount,
+            self.chain_id,
             self.data,
             self.fee,
             self.from_address,
@@ -122,26 +124,22 @@ impl Transaction {
             .map_err(|e| SentrixError::InvalidTransaction(e.to_string()))
     }
 
-    // Verify signature against the signing payload
     pub fn verify(&self) -> SentrixResult<()> {
         if self.is_coinbase() {
             return Ok(());
         }
 
-        // Decode public key
         let pub_key_bytes = hex::decode(&self.public_key)
             .map_err(|_| SentrixError::InvalidSignature)?;
         let secp = Secp256k1::verification_only();
         let public_key = PublicKey::from_slice(&pub_key_bytes)
             .map_err(|_| SentrixError::InvalidSignature)?;
 
-        // Decode signature
         let sig_bytes = hex::decode(&self.signature)
             .map_err(|_| SentrixError::InvalidSignature)?;
         let sig = Signature::from_compact(&sig_bytes)
             .map_err(|_| SentrixError::InvalidSignature)?;
 
-        // Verify
         let payload = self.signing_payload();
         let msg = Self::payload_to_message(&payload)?;
         secp.verify_ecdsa(&msg, &sig, &public_key)
@@ -150,26 +148,23 @@ impl Transaction {
         Ok(())
     }
 
-    pub fn validate(&self, expected_nonce: u64) -> SentrixResult<()> {
+    pub fn validate(&self, expected_nonce: u64, expected_chain_id: u64) -> SentrixResult<()> {
         if self.is_coinbase() {
             return Ok(());
         }
 
-        // Check fee
         if self.fee < MIN_TX_FEE {
             return Err(SentrixError::InvalidTransaction(
                 format!("fee {} below minimum {}", self.fee, MIN_TX_FEE)
             ));
         }
 
-        // Check amount
         if self.amount == 0 {
             return Err(SentrixError::InvalidTransaction(
                 "amount must be > 0".to_string()
             ));
         }
 
-        // Check nonce
         if self.nonce != expected_nonce {
             return Err(SentrixError::InvalidNonce {
                 expected: expected_nonce,
@@ -177,7 +172,13 @@ impl Transaction {
             });
         }
 
-        // Verify signature
+        // Chain ID replay protection
+        if self.chain_id != expected_chain_id {
+            return Err(SentrixError::InvalidTransaction(
+                format!("wrong chain_id: expected {}, got {}", expected_chain_id, self.chain_id)
+            ));
+        }
+
         self.verify()?;
 
         Ok(())
@@ -188,6 +189,8 @@ impl Transaction {
 mod tests {
     use super::*;
     use secp256k1::rand::rngs::OsRng;
+
+    const TEST_CHAIN_ID: u64 = 7119;
 
     fn make_keypair() -> (SecretKey, PublicKey) {
         let secp = Secp256k1::new();
@@ -206,16 +209,9 @@ mod tests {
     fn test_sign_and_verify() {
         let (sk, pk) = make_keypair();
         let tx = Transaction::new(
-            "SRX_alice".to_string(),
-            "SRX_bob".to_string(),
-            1_000_000,
-            MIN_TX_FEE,
-            0,
-            String::new(),
-            &sk,
-            &pk,
+            "SRX_alice".to_string(), "SRX_bob".to_string(),
+            1_000_000, MIN_TX_FEE, 0, String::new(), TEST_CHAIN_ID, &sk, &pk,
         ).unwrap();
-
         assert!(tx.verify().is_ok());
         assert!(!tx.txid.is_empty());
         assert!(!tx.signature.is_empty());
@@ -225,65 +221,49 @@ mod tests {
     fn test_validate_correct_nonce() {
         let (sk, pk) = make_keypair();
         let tx = Transaction::new(
-            "SRX_alice".to_string(),
-            "SRX_bob".to_string(),
-            1_000_000,
-            MIN_TX_FEE,
-            0,
-            String::new(),
-            &sk,
-            &pk,
+            "SRX_alice".to_string(), "SRX_bob".to_string(),
+            1_000_000, MIN_TX_FEE, 0, String::new(), TEST_CHAIN_ID, &sk, &pk,
         ).unwrap();
-        assert!(tx.validate(0).is_ok());
+        assert!(tx.validate(0, TEST_CHAIN_ID).is_ok());
     }
 
     #[test]
     fn test_validate_wrong_nonce() {
         let (sk, pk) = make_keypair();
         let tx = Transaction::new(
-            "SRX_alice".to_string(),
-            "SRX_bob".to_string(),
-            1_000_000,
-            MIN_TX_FEE,
-            0,
-            String::new(),
-            &sk,
-            &pk,
+            "SRX_alice".to_string(), "SRX_bob".to_string(),
+            1_000_000, MIN_TX_FEE, 0, String::new(), TEST_CHAIN_ID, &sk, &pk,
         ).unwrap();
-        assert!(tx.validate(1).is_err());
+        assert!(tx.validate(1, TEST_CHAIN_ID).is_err());
+    }
+
+    #[test]
+    fn test_validate_wrong_chain_id() {
+        let (sk, pk) = make_keypair();
+        let tx = Transaction::new(
+            "SRX_alice".to_string(), "SRX_bob".to_string(),
+            1_000_000, MIN_TX_FEE, 0, String::new(), TEST_CHAIN_ID, &sk, &pk,
+        ).unwrap();
+        assert!(tx.validate(0, 9999).is_err()); // wrong chain
     }
 
     #[test]
     fn test_validate_fee_too_low() {
         let (sk, pk) = make_keypair();
         let tx = Transaction::new(
-            "SRX_alice".to_string(),
-            "SRX_bob".to_string(),
-            1_000_000,
-            1, // below MIN_TX_FEE
-            0,
-            String::new(),
-            &sk,
-            &pk,
+            "SRX_alice".to_string(), "SRX_bob".to_string(),
+            1_000_000, 1, 0, String::new(), TEST_CHAIN_ID, &sk, &pk,
         ).unwrap();
-        assert!(tx.validate(0).is_err());
+        assert!(tx.validate(0, TEST_CHAIN_ID).is_err());
     }
 
     #[test]
     fn test_tampered_signature_fails() {
         let (sk, pk) = make_keypair();
         let mut tx = Transaction::new(
-            "SRX_alice".to_string(),
-            "SRX_bob".to_string(),
-            1_000_000,
-            MIN_TX_FEE,
-            0,
-            String::new(),
-            &sk,
-            &pk,
+            "SRX_alice".to_string(), "SRX_bob".to_string(),
+            1_000_000, MIN_TX_FEE, 0, String::new(), TEST_CHAIN_ID, &sk, &pk,
         ).unwrap();
-
-        // Tamper with amount after signing
         tx.amount = 999_999_999;
         assert!(tx.verify().is_err());
     }
