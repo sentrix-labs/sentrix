@@ -1,0 +1,8 @@
+/target/
+/data/
+*.json
+blog.txt
+tlog.txt
+b.bat
+t.bat
+build.bat
