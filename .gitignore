@@ -1,8 +1,46 @@
+# Build artifacts
 /target/
+
+# Chain data & wallets — NEVER commit
 /data/
-*.json
+*.db
+*.db-*
+
+# Wallet files — contains private keys
+**/wallets/
+**/genesis_wallets*.json
+**/node_keys/
+
+# Keystore files
+*.keystore
+*.keystore.json
+
+# Private keys / secrets
+*.pem
+*.key
+*.secret
+*.env
+*.env.*
+.env.local
+
+# Build helper scripts (local dev only)
+*.bat
 blog.txt
 tlog.txt
-b.bat
-t.bat
-build.bat
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Backup files
+*.bak
+*.backup
+*.old

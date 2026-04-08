@@ -1,0 +1,416 @@
+// vm.rs - Sentrix Chain — SRX-20 Token Standard
+
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use sha2::{Sha256, Digest};
+use crate::types::error::{SentrixError, SentrixResult};
+
+// ── Contract address generation ──────────────────────────
+fn compute_contract_address(deployer: &str, name: &str, symbol: &str, timestamp: u64) -> String {
+    let payload = format!("{}|{}|{}|{}", deployer, name, symbol, timestamp);
+    let hash = Sha256::digest(payload.as_bytes());
+    format!("SRX20_{}", hex::encode(&hash[..20]))
+}
+
+// ── SRX-20 Contract ──────────────────────────────────────
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SRX20Contract {
+    pub contract_address: String,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u8,
+    pub owner: String,
+    pub total_supply: u64,
+    pub balances: HashMap<String, u64>,
+    pub allowances: HashMap<String, HashMap<String, u64>>,
+}
+
+impl SRX20Contract {
+    pub fn new(
+        contract_address: String,
+        name: String,
+        symbol: String,
+        decimals: u8,
+        owner: String,
+    ) -> Self {
+        Self {
+            contract_address,
+            name,
+            symbol,
+            decimals,
+            owner,
+            total_supply: 0,
+            balances: HashMap::new(),
+            allowances: HashMap::new(),
+        }
+    }
+
+    // ── Core methods ─────────────────────────────────────
+
+    pub fn mint(&mut self, to: &str, amount: u64) -> SentrixResult<()> {
+        if to.is_empty() || amount == 0 {
+            return Err(SentrixError::InvalidTransaction("invalid mint params".to_string()));
+        }
+        *self.balances.entry(to.to_string()).or_insert(0) += amount;
+        self.total_supply += amount;
+        Ok(())
+    }
+
+    pub fn transfer(&mut self, from: &str, to: &str, amount: u64) -> SentrixResult<()> {
+        if from.is_empty() || to.is_empty() || amount == 0 {
+            return Err(SentrixError::InvalidTransaction("invalid transfer params".to_string()));
+        }
+        if from == to {
+            return Err(SentrixError::InvalidTransaction("cannot transfer to self".to_string()));
+        }
+        let balance = self.balance_of(from);
+        if balance < amount {
+            return Err(SentrixError::InsufficientBalance { have: balance, need: amount });
+        }
+        *self.balances.get_mut(from).unwrap() -= amount;
+        *self.balances.entry(to.to_string()).or_insert(0) += amount;
+        Ok(())
+    }
+
+    pub fn approve(&mut self, owner: &str, spender: &str, amount: u64) -> SentrixResult<()> {
+        if owner.is_empty() || spender.is_empty() {
+            return Err(SentrixError::InvalidTransaction("invalid approve params".to_string()));
+        }
+        self.allowances
+            .entry(owner.to_string())
+            .or_default()
+            .insert(spender.to_string(), amount);
+        Ok(())
+    }
+
+    pub fn transfer_from(
+        &mut self,
+        spender: &str,
+        from: &str,
+        to: &str,
+        amount: u64,
+    ) -> SentrixResult<()> {
+        if spender.is_empty() || from.is_empty() || to.is_empty() || amount == 0 {
+            return Err(SentrixError::InvalidTransaction("invalid transfer_from params".to_string()));
+        }
+        let allowed = self.allowance(from, spender);
+        if allowed < amount {
+            return Err(SentrixError::InvalidTransaction(
+                format!("allowance {} < amount {}", allowed, amount)
+            ));
+        }
+        let balance = self.balance_of(from);
+        if balance < amount {
+            return Err(SentrixError::InsufficientBalance { have: balance, need: amount });
+        }
+        // Deduct allowance, balance, credit recipient
+        *self.allowances.get_mut(from).unwrap().get_mut(spender).unwrap() -= amount;
+        *self.balances.get_mut(from).unwrap() -= amount;
+        *self.balances.entry(to.to_string()).or_insert(0) += amount;
+        Ok(())
+    }
+
+    pub fn balance_of(&self, address: &str) -> u64 {
+        self.balances.get(address).copied().unwrap_or(0)
+    }
+
+    pub fn allowance(&self, owner: &str, spender: &str) -> u64 {
+        self.allowances
+            .get(owner)
+            .and_then(|m| m.get(spender))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn holders(&self) -> usize {
+        self.balances.values().filter(|&&b| b > 0).count()
+    }
+
+    pub fn get_info(&self) -> serde_json::Value {
+        serde_json::json!({
+            "contract_address": self.contract_address,
+            "name": self.name,
+            "symbol": self.symbol,
+            "decimals": self.decimals,
+            "total_supply": self.total_supply,
+            "owner": self.owner,
+            "holders": self.holders(),
+        })
+    }
+}
+
+// ── Contract Registry ────────────────────────────────────
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ContractRegistry {
+    pub contracts: HashMap<String, SRX20Contract>,
+}
+
+impl ContractRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn deploy(
+        &mut self,
+        deployer: &str,
+        name: &str,
+        symbol: &str,
+        decimals: u8,
+        total_supply: u64,
+    ) -> SentrixResult<String> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut addr = compute_contract_address(deployer, name, symbol, timestamp);
+        // Handle collision (extremely unlikely)
+        let mut ts = timestamp;
+        while self.contracts.contains_key(&addr) {
+            ts += 1;
+            addr = compute_contract_address(deployer, name, symbol, ts);
+        }
+
+        let mut contract = SRX20Contract::new(
+            addr.clone(),
+            name.to_string(),
+            symbol.to_string(),
+            decimals,
+            deployer.to_string(),
+        );
+        // Mint total supply to deployer
+        contract.mint(deployer, total_supply)?;
+        self.contracts.insert(addr.clone(), contract);
+        Ok(addr)
+    }
+
+    pub fn get_contract(&self, address: &str) -> Option<&SRX20Contract> {
+        self.contracts.get(address)
+    }
+
+    pub fn get_contract_mut(&mut self, address: &str) -> Option<&mut SRX20Contract> {
+        self.contracts.get_mut(address)
+    }
+
+    pub fn list_contracts(&self) -> Vec<serde_json::Value> {
+        self.contracts.values().map(|c| c.get_info()).collect()
+    }
+
+    pub fn contract_count(&self) -> usize {
+        self.contracts.len()
+    }
+
+    // ── Dispatch ─────────────────────────────────────────
+    pub fn call(
+        &mut self,
+        contract_address: &str,
+        method: &str,
+        caller: &str,
+        params: &serde_json::Value,
+    ) -> SentrixResult<serde_json::Value> {
+        let contract = self.contracts.get_mut(contract_address)
+            .ok_or_else(|| SentrixError::NotFound(
+                format!("contract {}", contract_address)
+            ))?;
+
+        match method {
+            "mint" => {
+                if caller != contract.owner {
+                    return Err(SentrixError::UnauthorizedValidator("only owner can mint".to_string()));
+                }
+                let to = params["to"].as_str().unwrap_or("");
+                let amount = params["amount"].as_u64().unwrap_or(0);
+                contract.mint(to, amount)?;
+                Ok(serde_json::json!({"status": "ok"}))
+            }
+            "transfer" => {
+                let to = params["to"].as_str().unwrap_or("");
+                let amount = params["amount"].as_u64().unwrap_or(0);
+                contract.transfer(caller, to, amount)?;
+                Ok(serde_json::json!({"status": "ok"}))
+            }
+            "approve" => {
+                let spender = params["spender"].as_str().unwrap_or("");
+                let amount = params["amount"].as_u64().unwrap_or(0);
+                contract.approve(caller, spender, amount)?;
+                Ok(serde_json::json!({"status": "ok"}))
+            }
+            "transfer_from" => {
+                let from = params["from"].as_str().unwrap_or("");
+                let to = params["to"].as_str().unwrap_or("");
+                let amount = params["amount"].as_u64().unwrap_or(0);
+                contract.transfer_from(caller, from, to, amount)?;
+                Ok(serde_json::json!({"status": "ok"}))
+            }
+            "balance_of" => {
+                let address = params["address"].as_str().unwrap_or("");
+                Ok(serde_json::json!({"balance": contract.balance_of(address)}))
+            }
+            "allowance" => {
+                let owner = params["owner"].as_str().unwrap_or("");
+                let spender = params["spender"].as_str().unwrap_or("");
+                Ok(serde_json::json!({"allowance": contract.allowance(owner, spender)}))
+            }
+            "get_info" => {
+                Ok(contract.get_info())
+            }
+            _ => Err(SentrixError::NotFound(format!("method {}", method))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup_registry() -> (ContractRegistry, String) {
+        let mut reg = ContractRegistry::new();
+        let addr = reg.deploy("owner", "FastPoint Token", "FPT", 18, 1_000_000_000).unwrap();
+        (reg, addr)
+    }
+
+    #[test]
+    fn test_deploy_contract() {
+        let (reg, addr) = setup_registry();
+        assert!(addr.starts_with("SRX20_"));
+        assert_eq!(reg.contract_count(), 1);
+        let c = reg.get_contract(&addr).unwrap();
+        assert_eq!(c.name, "FastPoint Token");
+        assert_eq!(c.symbol, "FPT");
+        assert_eq!(c.total_supply, 1_000_000_000);
+        assert_eq!(c.balance_of("owner"), 1_000_000_000);
+    }
+
+    #[test]
+    fn test_transfer() {
+        let (mut reg, addr) = setup_registry();
+        let c = reg.get_contract_mut(&addr).unwrap();
+        c.transfer("owner", "alice", 1_000).unwrap();
+        assert_eq!(c.balance_of("owner"), 999_999_000);
+        assert_eq!(c.balance_of("alice"), 1_000);
+    }
+
+    #[test]
+    fn test_transfer_insufficient() {
+        let (mut reg, addr) = setup_registry();
+        let c = reg.get_contract_mut(&addr).unwrap();
+        let result = c.transfer("alice", "bob", 1_000); // alice has 0
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_transfer_to_self() {
+        let (mut reg, addr) = setup_registry();
+        let c = reg.get_contract_mut(&addr).unwrap();
+        let result = c.transfer("owner", "owner", 100);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_approve_and_transfer_from() {
+        let (mut reg, addr) = setup_registry();
+        let c = reg.get_contract_mut(&addr).unwrap();
+
+        // Owner approves spender for 500
+        c.approve("owner", "spender", 500).unwrap();
+        assert_eq!(c.allowance("owner", "spender"), 500);
+
+        // Spender transfers 200 from owner to alice
+        c.transfer_from("spender", "owner", "alice", 200).unwrap();
+        assert_eq!(c.balance_of("alice"), 200);
+        assert_eq!(c.allowance("owner", "spender"), 300);
+    }
+
+    #[test]
+    fn test_transfer_from_exceeds_allowance() {
+        let (mut reg, addr) = setup_registry();
+        let c = reg.get_contract_mut(&addr).unwrap();
+        c.approve("owner", "spender", 100).unwrap();
+        let result = c.transfer_from("spender", "owner", "alice", 200);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_mint_only_owner() {
+        let (mut reg, addr) = setup_registry();
+        let result = reg.call(
+            &addr, "mint", "not_owner",
+            &serde_json::json!({"to": "someone", "amount": 1000}),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_mint_by_owner() {
+        let (mut reg, addr) = setup_registry();
+        reg.call(
+            &addr, "mint", "owner",
+            &serde_json::json!({"to": "alice", "amount": 5000}),
+        ).unwrap();
+        let c = reg.get_contract(&addr).unwrap();
+        assert_eq!(c.balance_of("alice"), 5000);
+        assert_eq!(c.total_supply, 1_000_005_000);
+    }
+
+    #[test]
+    fn test_dispatch_transfer() {
+        let (mut reg, addr) = setup_registry();
+        reg.call(
+            &addr, "transfer", "owner",
+            &serde_json::json!({"to": "bob", "amount": 100}),
+        ).unwrap();
+        let c = reg.get_contract(&addr).unwrap();
+        assert_eq!(c.balance_of("bob"), 100);
+    }
+
+    #[test]
+    fn test_dispatch_balance_of() {
+        let (mut reg, addr) = setup_registry();
+        let result = reg.call(
+            &addr, "balance_of", "anyone",
+            &serde_json::json!({"address": "owner"}),
+        ).unwrap();
+        assert_eq!(result["balance"], 1_000_000_000);
+    }
+
+    #[test]
+    fn test_dispatch_get_info() {
+        let (mut reg, addr) = setup_registry();
+        let result = reg.call(&addr, "get_info", "anyone", &serde_json::json!({})).unwrap();
+        assert_eq!(result["symbol"], "FPT");
+        assert_eq!(result["holders"], 1);
+    }
+
+    #[test]
+    fn test_holders_count() {
+        let (mut reg, addr) = setup_registry();
+        let c = reg.get_contract_mut(&addr).unwrap();
+        assert_eq!(c.holders(), 1); // only owner
+        c.transfer("owner", "alice", 100).unwrap();
+        assert_eq!(c.holders(), 2);
+        c.transfer("owner", "bob", 100).unwrap();
+        assert_eq!(c.holders(), 3);
+    }
+
+    #[test]
+    fn test_unknown_contract() {
+        let mut reg = ContractRegistry::new();
+        let result = reg.call("SRX20_fake", "transfer", "caller", &serde_json::json!({}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unknown_method() {
+        let (mut reg, addr) = setup_registry();
+        let result = reg.call(&addr, "destroy", "owner", &serde_json::json!({}));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_list_contracts() {
+        let (reg, _addr) = setup_registry();
+        let list = reg.list_contracts();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["symbol"], "FPT");
+    }
+}

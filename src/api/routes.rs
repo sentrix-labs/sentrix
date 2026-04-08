@@ -38,6 +38,24 @@ pub struct SendTxRequest {
     pub transaction: Transaction,
 }
 
+#[derive(Deserialize)]
+pub struct DeployTokenRequest {
+    pub deployer: String,
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u8,
+    pub total_supply: u64,
+    pub deploy_fee: u64,
+}
+
+#[derive(Deserialize)]
+pub struct TokenTransferRequest {
+    pub caller: String,
+    pub to: String,
+    pub amount: u64,
+    pub gas_fee: u64,
+}
+
 // ── Router ───────────────────────────────────────────────
 pub fn create_router(state: SharedState) -> Router {
     Router::new()
@@ -52,6 +70,11 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/transactions/{txid}",       get(get_transaction))
         .route("/mempool",                   get(get_mempool))
         .route("/validators",                get(get_validators))
+        .route("/tokens",                    get(list_tokens))
+        .route("/tokens/deploy",             post(deploy_token))
+        .route("/tokens/{contract}",         get(get_token_info))
+        .route("/tokens/{contract}/balance/{addr}", get(get_token_balance))
+        .route("/tokens/{contract}/transfer", post(token_transfer))
         .with_state(state)
 }
 
@@ -182,4 +205,83 @@ async fn get_validators(State(state): State<SharedState>) -> Json<serde_json::Va
         "active": bc.authority.active_count(),
         "total": bc.authority.validator_count(),
     }))
+}
+
+// ── Token handlers ───────────────────────────────────────
+
+async fn list_tokens(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    let tokens = bc.list_tokens();
+    Json(serde_json::json!({
+        "tokens": tokens,
+        "total": tokens.len(),
+    }))
+}
+
+async fn get_token_info(
+    State(state): State<SharedState>,
+    Path(contract): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let bc = state.read().await;
+    match bc.token_info(&contract) {
+        Ok(info) => Ok(Json(info)),
+        Err(_) => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn get_token_balance(
+    State(state): State<SharedState>,
+    Path((contract, addr)): Path<(String, String)>,
+) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    let balance = bc.token_balance(&contract, &addr);
+    Json(serde_json::json!({
+        "contract": contract,
+        "address": addr,
+        "balance": balance,
+    }))
+}
+
+async fn deploy_token(
+    State(state): State<SharedState>,
+    Json(req): Json<DeployTokenRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let mut bc = state.write().await;
+    match bc.deploy_token(
+        &req.deployer, req.name.clone(), req.symbol.clone(),
+        req.decimals, req.total_supply, req.deploy_fee,
+    ) {
+        Ok(addr) => Ok(Json(serde_json::json!({
+            "success": true,
+            "contract_address": addr,
+            "name": req.name,
+            "symbol": req.symbol,
+            "total_supply": req.total_supply,
+        }))),
+        Err(e) => Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "success": false,
+            "error": e.to_string(),
+        })))),
+    }
+}
+
+async fn token_transfer(
+    State(state): State<SharedState>,
+    Path(contract): Path<String>,
+    Json(req): Json<TokenTransferRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let mut bc = state.write().await;
+    match bc.token_transfer(&contract, &req.caller, &req.to, req.amount, req.gas_fee) {
+        Ok(()) => Ok(Json(serde_json::json!({
+            "success": true,
+            "contract": contract,
+            "from": req.caller,
+            "to": req.to,
+            "amount": req.amount,
+        }))),
+        Err(e) => Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "success": false,
+            "error": e.to_string(),
+        })))),
+    }
 }

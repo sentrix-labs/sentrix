@@ -7,6 +7,7 @@ use crate::core::transaction::Transaction;
 use crate::core::account::AccountDB;
 use crate::core::authority::AuthorityManager;
 use crate::core::merkle::merkle_root;
+use crate::core::vm::ContractRegistry;
 use crate::types::error::{SentrixError, SentrixResult};
 
 // ── Chain constants ──────────────────────────────────────
@@ -38,6 +39,7 @@ pub struct Blockchain {
     pub chain: Vec<Block>,
     pub accounts: AccountDB,
     pub authority: AuthorityManager,
+    pub contracts: ContractRegistry,
     pub mempool: VecDeque<Transaction>,
     pub total_minted: u64,
     pub chain_id: u64,
@@ -49,6 +51,7 @@ impl Blockchain {
             chain: Vec::new(),
             accounts: AccountDB::new(),
             authority: AuthorityManager::new(admin_address),
+            contracts: ContractRegistry::new(),
             mempool: VecDeque::new(),
             total_minted: 0,
             chain_id: CHAIN_ID,
@@ -295,6 +298,98 @@ impl Blockchain {
         Ok(())
     }
 
+    // ── SRX-20 Token Operations ────────────────────────────
+
+    pub fn deploy_token(
+        &mut self,
+        deployer: &str,
+        name: String,
+        symbol: String,
+        decimals: u8,
+        total_supply: u64,
+        deploy_fee: u64,
+    ) -> SentrixResult<String> {
+        // Check deployer has enough for fee
+        let balance = self.accounts.get_balance(deployer);
+        if balance < deploy_fee {
+            return Err(SentrixError::InsufficientBalance {
+                have: balance,
+                need: deploy_fee,
+            });
+        }
+
+        // Deduct fee: 50% burned, 50% to ecosystem fund
+        if deploy_fee > 0 {
+            let deployer_acc = self.accounts.get_or_create(deployer);
+            deployer_acc.balance -= deploy_fee;
+
+            let burn_share = deploy_fee / 2;
+            let eco_share = deploy_fee - burn_share;
+            self.accounts.total_burned += burn_share;
+            self.accounts.credit(ECOSYSTEM_FUND_ADDRESS, eco_share);
+        }
+
+        // Deploy contract
+        let contract_address = self.contracts.deploy(deployer, &name, &symbol, decimals, total_supply)?;
+        Ok(contract_address)
+    }
+
+    pub fn token_transfer(
+        &mut self,
+        contract_address: &str,
+        caller: &str,
+        to: &str,
+        amount: u64,
+        gas_fee: u64,
+    ) -> SentrixResult<()> {
+        // Check caller has enough SRX for gas
+        let balance = self.accounts.get_balance(caller);
+        if balance < gas_fee {
+            return Err(SentrixError::InsufficientBalance {
+                have: balance,
+                need: gas_fee,
+            });
+        }
+
+        // Deduct gas: 50% burned, 50% to current validator (or ecosystem fund)
+        if gas_fee > 0 {
+            let caller_acc = self.accounts.get_or_create(caller);
+            caller_acc.balance -= gas_fee;
+
+            let burn_share = gas_fee / 2;
+            let val_share = gas_fee - burn_share;
+            self.accounts.total_burned += burn_share;
+
+            let validator_addr = self.authority
+                .expected_validator(self.height() + 1)
+                .map(|v| v.address.clone())
+                .unwrap_or_else(|_| ECOSYSTEM_FUND_ADDRESS.to_string());
+            self.accounts.credit(&validator_addr, val_share);
+        }
+
+        // Execute token transfer
+        let contract = self.contracts.get_contract_mut(contract_address)
+            .ok_or_else(|| SentrixError::NotFound(format!("contract {}", contract_address)))?;
+        contract.transfer(caller, to, amount)?;
+        Ok(())
+    }
+
+    pub fn token_balance(&self, contract_address: &str, address: &str) -> u64 {
+        self.contracts.get_contract(contract_address)
+            .map(|c| c.balance_of(address))
+            .unwrap_or(0)
+    }
+
+    pub fn token_info(&self, contract_address: &str) -> SentrixResult<serde_json::Value> {
+        let contract = self.contracts.get_contract(contract_address)
+            .ok_or_else(|| SentrixError::NotFound(format!("contract {}", contract_address)))?;
+        Ok(contract.get_info())
+    }
+
+    pub fn list_tokens(&self) -> Vec<serde_json::Value> {
+        self.contracts.list_contracts()
+    }
+
     // ── Stats ────────────────────────────────────────────
     pub fn chain_stats(&self) -> serde_json::Value {
         serde_json::json!({
@@ -302,8 +397,10 @@ impl Blockchain {
             "total_blocks": self.chain.len(),
             "total_minted_srx": self.total_minted as f64 / 100_000_000.0,
             "max_supply_srx": MAX_SUPPLY as f64 / 100_000_000.0,
+            "total_burned_srx": self.accounts.total_burned as f64 / 100_000_000.0,
             "mempool_size": self.mempool.len(),
             "active_validators": self.authority.active_count(),
+            "deployed_tokens": self.contracts.contract_count(),
             "chain_id": self.chain_id,
             "next_block_reward_srx": self.get_block_reward() as f64 / 100_000_000.0,
         })
@@ -421,5 +518,94 @@ mod tests {
         let block = bc.create_block("validator1").unwrap();
         bc.add_block(block).unwrap();
         assert_eq!(bc.total_minted, TOTAL_PREMINE + BLOCK_REWARD);
+    }
+
+    // ── SRX-20 Token Tests ──────────────────────────────
+
+    #[test]
+    fn test_deploy_token() {
+        let mut bc = setup_chain();
+        // Fund deployer
+        bc.accounts.credit("deployer", 1_000_000);
+
+        let addr = bc.deploy_token(
+            "deployer", "TestToken".to_string(), "TT".to_string(),
+            18, 1_000_000, 100_000,
+        ).unwrap();
+
+        assert!(addr.starts_with("SRX20_"));
+        assert_eq!(bc.token_balance(&addr, "deployer"), 1_000_000);
+        assert_eq!(bc.list_tokens().len(), 1);
+        // Fee deducted: 100k fee, deployer had 1M
+        assert_eq!(bc.accounts.get_balance("deployer"), 900_000);
+    }
+
+    #[test]
+    fn test_deploy_token_insufficient_fee() {
+        let mut bc = setup_chain();
+        bc.accounts.credit("deployer", 100); // not enough for fee
+        let result = bc.deploy_token(
+            "deployer", "Token".to_string(), "TK".to_string(),
+            18, 1_000, 1_000,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_token_transfer() {
+        let mut bc = setup_chain();
+        bc.accounts.credit("alice", 1_000_000);
+
+        let addr = bc.deploy_token(
+            "alice", "Coin".to_string(), "CN".to_string(),
+            18, 500_000, 10_000,
+        ).unwrap();
+
+        bc.token_transfer(&addr, "alice", "bob", 100_000, 1_000).unwrap();
+        assert_eq!(bc.token_balance(&addr, "alice"), 400_000);
+        assert_eq!(bc.token_balance(&addr, "bob"), 100_000);
+    }
+
+    #[test]
+    fn test_token_transfer_gas_burned() {
+        let mut bc = setup_chain();
+        bc.accounts.credit("alice", 1_000_000);
+
+        let addr = bc.deploy_token(
+            "alice", "Coin".to_string(), "CN".to_string(),
+            18, 500_000, 0,
+        ).unwrap();
+
+        let burned_before = bc.accounts.total_burned;
+        bc.token_transfer(&addr, "alice", "bob", 100, 10_000).unwrap();
+        // 50% of 10_000 gas = 5_000 burned
+        assert_eq!(bc.accounts.total_burned - burned_before, 5_000);
+    }
+
+    #[test]
+    fn test_token_info() {
+        let mut bc = setup_chain();
+        bc.accounts.credit("deployer", 1_000_000);
+
+        let addr = bc.deploy_token(
+            "deployer", "MyToken".to_string(), "MT".to_string(),
+            8, 21_000_000, 0,
+        ).unwrap();
+
+        let info = bc.token_info(&addr).unwrap();
+        assert_eq!(info["symbol"], "MT");
+        assert_eq!(info["name"], "MyToken");
+        assert_eq!(info["total_supply"], 21_000_000);
+        assert_eq!(info["decimals"], 8);
+    }
+
+    #[test]
+    fn test_chain_stats_includes_tokens() {
+        let mut bc = setup_chain();
+        bc.accounts.credit("d", 1_000_000);
+        bc.deploy_token("d", "A".to_string(), "A".to_string(), 18, 100, 0).unwrap();
+        bc.deploy_token("d", "B".to_string(), "B".to_string(), 18, 200, 0).unwrap();
+        let stats = bc.chain_stats();
+        assert_eq!(stats["deployed_tokens"], 2);
     }
 }

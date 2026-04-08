@@ -74,6 +74,11 @@ enum Commands {
     Balance {
         address: String,
     },
+    /// Token operations (SRX-20)
+    Token {
+        #[command(subcommand)]
+        action: TokenCommands,
+    },
     /// Generate all genesis wallets
     GenesisWallets,
 }
@@ -108,6 +113,38 @@ enum ValidatorCommands {
         admin_key: String,
     },
     /// List all validators
+    List,
+}
+
+#[derive(Subcommand)]
+enum TokenCommands {
+    /// Deploy a new SRX-20 token
+    Deploy {
+        #[arg(long)] name: String,
+        #[arg(long)] symbol: String,
+        #[arg(long, default_value_t = 18)] decimals: u8,
+        #[arg(long)] supply: u64,
+        #[arg(long)] deployer_key: String,
+        #[arg(long, default_value_t = 100_000)] fee: u64,
+    },
+    /// Transfer tokens
+    Transfer {
+        #[arg(long)] contract: String,
+        #[arg(long)] to: String,
+        #[arg(long)] amount: u64,
+        #[arg(long)] from_key: String,
+        #[arg(long, default_value_t = 10_000)] gas: u64,
+    },
+    /// Check token balance
+    Balance {
+        #[arg(long)] contract: String,
+        #[arg(long)] address: String,
+    },
+    /// Show token info
+    Info {
+        #[arg(long)] contract: String,
+    },
+    /// List all deployed tokens
     List,
 }
 
@@ -153,6 +190,22 @@ async fn main() -> anyhow::Result<()> {
             ChainCommands::Info => cmd_chain_info()?,
             ChainCommands::Validate => cmd_chain_validate()?,
             ChainCommands::Block { index } => cmd_chain_block(index)?,
+        },
+
+        Commands::Token { action } => match action {
+            TokenCommands::Deploy { name, symbol, decimals, supply, deployer_key, fee } => {
+                cmd_token_deploy(&name, &symbol, decimals, supply, &deployer_key, fee)?;
+            }
+            TokenCommands::Transfer { contract, to, amount, from_key, gas } => {
+                cmd_token_transfer(&contract, &to, amount, &from_key, gas)?;
+            }
+            TokenCommands::Balance { contract, address } => {
+                cmd_token_balance(&contract, &address)?;
+            }
+            TokenCommands::Info { contract } => {
+                cmd_token_info(&contract)?;
+            }
+            TokenCommands::List => cmd_token_list()?,
         },
 
         Commands::Balance { address } => cmd_balance(&address)?,
@@ -393,5 +446,81 @@ fn cmd_genesis_wallets() -> anyhow::Result<()> {
     println!("Saved to: {}", output_path);
     println!("\nCRITICAL: Back up genesis_wallets.json offline immediately.");
     println!("          Delete from this machine after backup.");
+    Ok(())
+}
+
+// ── Token commands ───────────────────────────────────────
+
+fn cmd_token_deploy(name: &str, symbol: &str, decimals: u8, supply: u64, deployer_key: &str, fee: u64) -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    let mut bc = storage.load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+    let wallet = Wallet::from_private_key(deployer_key)?;
+    let contract_address = bc.deploy_token(&wallet.address, name.to_string(), symbol.to_string(), decimals, supply, fee)?;
+    storage.save_blockchain(&bc)?;
+    println!("Token deployed successfully!");
+    println!("  Name:             {}", name);
+    println!("  Symbol:           {}", symbol);
+    println!("  Decimals:         {}", decimals);
+    println!("  Supply:           {}", supply);
+    println!("  Contract address: {}", contract_address);
+    println!("  Deploy fee paid:  {} sentri", fee);
+    Ok(())
+}
+
+fn cmd_token_transfer(contract: &str, to: &str, amount: u64, from_key: &str, gas: u64) -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    let mut bc = storage.load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+    let wallet = Wallet::from_private_key(from_key)?;
+    bc.token_transfer(contract, &wallet.address, to, amount, gas)?;
+    storage.save_blockchain(&bc)?;
+    println!("Token transfer successful!");
+    println!("  From:     {}", wallet.address);
+    println!("  To:       {}", to);
+    println!("  Amount:   {}", amount);
+    println!("  Contract: {}", contract);
+    Ok(())
+}
+
+fn cmd_token_balance(contract: &str, address: &str) -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    let bc = storage.load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+    let balance = bc.token_balance(contract, address);
+    println!("Token balance:");
+    println!("  Address:  {}", address);
+    println!("  Contract: {}", contract);
+    println!("  Balance:  {}", balance);
+    Ok(())
+}
+
+fn cmd_token_info(contract: &str) -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    let bc = storage.load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+    let info = bc.token_info(contract)?;
+    println!("{}", serde_json::to_string_pretty(&info)?);
+    Ok(())
+}
+
+fn cmd_token_list() -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    let bc = storage.load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+    let tokens = bc.list_tokens();
+    if tokens.is_empty() {
+        println!("No tokens deployed yet.");
+        return Ok(());
+    }
+    println!("Deployed tokens ({}):", tokens.len());
+    for token in &tokens {
+        println!("  [{}] {} ({}) — supply: {}",
+            token["contract_address"].as_str().unwrap_or(""),
+            token["name"].as_str().unwrap_or(""),
+            token["symbol"].as_str().unwrap_or(""),
+            token["total_supply"],
+        );
+    }
     Ok(())
 }
