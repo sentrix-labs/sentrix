@@ -1,7 +1,8 @@
-// db.rs - Sentrix Chain
+// db.rs - Sentrix Chain — Per-block persistent storage
 
 use sled::Db;
 use serde::{Serialize, de::DeserializeOwned};
+use crate::core::block::Block;
 use crate::core::blockchain::Blockchain;
 use crate::types::error::{SentrixError, SentrixResult};
 
@@ -16,12 +17,11 @@ impl Storage {
         Ok(Self { db })
     }
 
-    // Generic serialized put/get
+    // ── Generic put/get ──────────────────────────────────
+
     fn put<T: Serialize>(&self, key: &str, value: &T) -> SentrixResult<()> {
         let bytes = serde_json::to_vec(value)?;
         self.db.insert(key, bytes)
-            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
-        self.db.flush()
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         Ok(())
     }
@@ -36,16 +36,102 @@ impl Storage {
         }
     }
 
-    // Blockchain persistence
+    fn flush(&self) -> SentrixResult<()> {
+        self.db.flush()
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        Ok(())
+    }
+
+    // ── Blockchain state (everything except blocks) ──────
+
     pub fn save_blockchain(&self, blockchain: &Blockchain) -> SentrixResult<()> {
-        self.put("blockchain", blockchain)
+        // Save state (accounts, authority, contracts, mempool, metadata)
+        self.put("state", blockchain)?;
+
+        // Save each block individually: key = "block:{index}"
+        for block in &blockchain.chain {
+            let key = format!("block:{}", block.index);
+            if !self.db.contains_key(&key).unwrap_or(false) {
+                self.put(&key, block)?;
+            }
+        }
+
+        self.save_height(blockchain.height())?;
+        self.flush()?;
+        Ok(())
     }
 
     pub fn load_blockchain(&self) -> SentrixResult<Option<Blockchain>> {
-        self.get("blockchain")
+        // Try new format first (state + per-block)
+        if let Some(mut bc) = self.get::<Blockchain>("state")? {
+            // Reconstruct chain from per-block storage
+            let height = self.load_height()?;
+            let mut blocks = Vec::new();
+            for i in 0..=height {
+                let key = format!("block:{}", i);
+                if let Some(block) = self.get::<Block>(&key)? {
+                    blocks.push(block);
+                } else {
+                    // Fallback: blocks might still be in the state blob
+                    break;
+                }
+            }
+            if blocks.len() == (height + 1) as usize {
+                bc.chain = blocks;
+            }
+            return Ok(Some(bc));
+        }
+
+        // Fallback: old single-blob format
+        if let Some(bc) = self.get::<Blockchain>("blockchain")? {
+            // Migrate: save in new format
+            self.save_blockchain(&bc)?;
+            // Remove old key
+            let _ = self.db.remove("blockchain");
+            return Ok(Some(bc));
+        }
+
+        Ok(None)
     }
 
-    // Chain height (quick lookup without loading full chain)
+    // ── Per-block operations ─────────────────────────────
+
+    pub fn save_block(&self, block: &Block) -> SentrixResult<()> {
+        let key = format!("block:{}", block.index);
+        self.put(&key, block)?;
+        self.flush()?;
+        Ok(())
+    }
+
+    pub fn load_block(&self, index: u64) -> SentrixResult<Option<Block>> {
+        let key = format!("block:{}", index);
+        self.get(&key)
+    }
+
+    pub fn load_block_by_hash(&self, hash: &str) -> SentrixResult<Option<Block>> {
+        let height = self.load_height()?;
+        for i in (0..=height).rev() {
+            if let Some(block) = self.load_block(i)? {
+                if block.hash == hash {
+                    return Ok(Some(block));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn load_blocks_range(&self, from: u64, to: u64) -> SentrixResult<Vec<Block>> {
+        let mut blocks = Vec::new();
+        for i in from..=to {
+            if let Some(block) = self.load_block(i)? {
+                blocks.push(block);
+            }
+        }
+        Ok(blocks)
+    }
+
+    // ── Height ───────────────────────────────────────────
+
     pub fn save_height(&self, height: u64) -> SentrixResult<()> {
         self.put("height", &height)
     }
@@ -54,15 +140,21 @@ impl Storage {
         Ok(self.get::<u64>("height")?.unwrap_or(0))
     }
 
-    // Check if storage has existing chain data
+    // ── Utility ──────────────────────────────────────────
+
     pub fn has_blockchain(&self) -> bool {
-        self.db.contains_key("blockchain").unwrap_or(false)
+        self.db.contains_key("state").unwrap_or(false)
+            || self.db.contains_key("blockchain").unwrap_or(false)
     }
 
     pub fn clear(&self) -> SentrixResult<()> {
         self.db.clear()
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         Ok(())
+    }
+
+    pub fn db_size_bytes(&self) -> u64 {
+        self.db.size_on_disk().unwrap_or(0)
     }
 }
 
@@ -92,10 +184,7 @@ mod tests {
 
         let mut bc = Blockchain::new("admin".to_string());
         bc.authority.add_validator(
-            "admin",
-            "val1".to_string(),
-            "Validator 1".to_string(),
-            "pk1".to_string(),
+            "admin", "val1".to_string(), "Validator 1".to_string(), "pk1".to_string(),
         ).unwrap();
 
         storage.save_blockchain(&bc).unwrap();
@@ -105,6 +194,78 @@ mod tests {
         assert_eq!(loaded.height(), bc.height());
         assert_eq!(loaded.total_minted, bc.total_minted);
         assert_eq!(loaded.chain_id, bc.chain_id);
+        assert_eq!(loaded.chain.len(), bc.chain.len());
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_per_block_storage() {
+        let path = temp_db_path();
+        let storage = Storage::open(&path).unwrap();
+
+        let mut bc = Blockchain::new("admin".to_string());
+        bc.authority.add_validator(
+            "admin", "val1".to_string(), "V1".to_string(), "pk1".to_string(),
+        ).unwrap();
+
+        // Produce a block
+        let block = bc.create_block("val1").unwrap();
+        bc.add_block(block).unwrap();
+
+        storage.save_blockchain(&bc).unwrap();
+
+        // Load individual blocks
+        let b0 = storage.load_block(0).unwrap().unwrap();
+        assert_eq!(b0.index, 0);
+
+        let b1 = storage.load_block(1).unwrap().unwrap();
+        assert_eq!(b1.index, 1);
+        assert_eq!(b1.validator, "val1");
+
+        // Block that doesn't exist
+        assert!(storage.load_block(99).unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_load_block_by_hash() {
+        let path = temp_db_path();
+        let storage = Storage::open(&path).unwrap();
+
+        let bc = Blockchain::new("admin".to_string());
+        storage.save_blockchain(&bc).unwrap();
+
+        let genesis_hash = bc.chain[0].hash.clone();
+        let found = storage.load_block_by_hash(&genesis_hash).unwrap().unwrap();
+        assert_eq!(found.index, 0);
+
+        assert!(storage.load_block_by_hash("nonexistent").unwrap().is_none());
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_load_blocks_range() {
+        let path = temp_db_path();
+        let storage = Storage::open(&path).unwrap();
+
+        let mut bc = Blockchain::new("admin".to_string());
+        bc.authority.add_validator(
+            "admin", "val1".to_string(), "V1".to_string(), "pk1".to_string(),
+        ).unwrap();
+
+        for _ in 0..3 {
+            let block = bc.create_block("val1").unwrap();
+            bc.add_block(block).unwrap();
+        }
+        storage.save_blockchain(&bc).unwrap();
+
+        let range = storage.load_blocks_range(1, 3).unwrap();
+        assert_eq!(range.len(), 3);
+        assert_eq!(range[0].index, 1);
+        assert_eq!(range[2].index, 3);
 
         let _ = std::fs::remove_dir_all(&path);
     }
@@ -131,14 +292,26 @@ mod tests {
             storage.save_blockchain(&bc).unwrap();
         }
 
-        // Reopen — data should persist
         {
             let storage = Storage::open(&path).unwrap();
             assert!(storage.has_blockchain());
-            let loaded = storage.load_blockchain().unwrap();
-            assert!(loaded.is_some());
+            let loaded = storage.load_blockchain().unwrap().unwrap();
+            assert_eq!(loaded.height(), 0);
+            // Verify per-block retrieval works after reopen
+            let b0 = storage.load_block(0).unwrap().unwrap();
+            assert_eq!(b0.index, 0);
         }
 
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_db_size() {
+        let path = temp_db_path();
+        let storage = Storage::open(&path).unwrap();
+        let bc = Blockchain::new("admin".to_string());
+        storage.save_blockchain(&bc).unwrap();
+        assert!(storage.db_size_bytes() > 0);
         let _ = std::fs::remove_dir_all(&path);
     }
 }
