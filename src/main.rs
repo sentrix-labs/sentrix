@@ -116,6 +116,18 @@ enum ValidatorCommands {
         #[arg(long)]
         admin_key: String,
     },
+    /// Remove a validator (admin only)
+    Remove {
+        address: String,
+        #[arg(long)]
+        admin_key: String,
+    },
+    /// Toggle validator active/inactive (admin only)
+    Toggle {
+        address: String,
+        #[arg(long)]
+        admin_key: String,
+    },
     /// List all validators
     List,
 }
@@ -182,6 +194,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Validator { action } => match action {
             ValidatorCommands::Add { address, name, public_key, admin_key } => {
                 cmd_validator_add(&address, &name, &public_key, &admin_key)?;
+            }
+            ValidatorCommands::Remove { address, admin_key } => {
+                cmd_validator_remove(&address, &admin_key)?;
+            }
+            ValidatorCommands::Toggle { address, admin_key } => {
+                cmd_validator_toggle(&address, &admin_key)?;
             }
             ValidatorCommands::List => cmd_validator_list()?,
         },
@@ -313,6 +331,29 @@ fn cmd_validator_list() -> anyhow::Result<()> {
             v.name, v.blocks_produced);
         println!("      Address: {}", v.address);
     }
+    Ok(())
+}
+
+fn cmd_validator_remove(address: &str, admin_key: &str) -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    let mut bc = storage.load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+    let admin_wallet = Wallet::from_private_key(admin_key)?;
+    bc.authority.remove_validator(&admin_wallet.address, address)?;
+    storage.save_blockchain(&bc)?;
+    println!("Validator removed: {}", address);
+    Ok(())
+}
+
+fn cmd_validator_toggle(address: &str, admin_key: &str) -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    let mut bc = storage.load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+    let admin_wallet = Wallet::from_private_key(admin_key)?;
+    let is_active = bc.authority.toggle_validator(&admin_wallet.address, address)?;
+    storage.save_blockchain(&bc)?;
+    let status = if is_active { "ACTIVE" } else { "INACTIVE" };
+    println!("Validator {} toggled to: {}", address, status);
     Ok(())
 }
 
