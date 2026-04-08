@@ -390,6 +390,57 @@ impl Blockchain {
         self.contracts.list_contracts()
     }
 
+    // ── Transaction queries ──────────────────────────────
+
+    pub fn get_transaction(&self, txid: &str) -> Option<serde_json::Value> {
+        for block in self.chain.iter().rev() {
+            for tx in &block.transactions {
+                if tx.txid == txid {
+                    return Some(serde_json::json!({
+                        "transaction": tx,
+                        "block_index": block.index,
+                        "block_hash": block.hash,
+                        "block_timestamp": block.timestamp,
+                    }));
+                }
+            }
+        }
+        None
+    }
+
+    pub fn get_address_history(&self, address: &str) -> Vec<serde_json::Value> {
+        let mut history = Vec::new();
+        for block in &self.chain {
+            for tx in &block.transactions {
+                if tx.from_address == address || tx.to_address == address {
+                    let direction = if tx.from_address == address {
+                        if tx.is_coinbase() { "reward" } else { "out" }
+                    } else {
+                        "in"
+                    };
+                    history.push(serde_json::json!({
+                        "txid": tx.txid,
+                        "direction": direction,
+                        "from": tx.from_address,
+                        "to": tx.to_address,
+                        "amount": tx.amount,
+                        "fee": tx.fee,
+                        "block_index": block.index,
+                        "block_timestamp": block.timestamp,
+                    }));
+                }
+            }
+        }
+        history
+    }
+
+    pub fn get_address_tx_count(&self, address: &str) -> usize {
+        self.chain.iter()
+            .flat_map(|b| &b.transactions)
+            .filter(|tx| tx.from_address == address || tx.to_address == address)
+            .count()
+    }
+
     // ── Stats ────────────────────────────────────────────
     pub fn chain_stats(&self) -> serde_json::Value {
         serde_json::json!({

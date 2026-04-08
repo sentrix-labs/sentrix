@@ -74,6 +74,10 @@ enum Commands {
     Balance {
         address: String,
     },
+    /// Transaction history for an address
+    History {
+        address: String,
+    },
     /// Token operations (SRX-20)
     Token {
         #[command(subcommand)]
@@ -209,6 +213,8 @@ async fn main() -> anyhow::Result<()> {
         },
 
         Commands::Balance { address } => cmd_balance(&address)?,
+
+        Commands::History { address } => cmd_history(&address)?,
 
         Commands::GenesisWallets => cmd_genesis_wallets()?,
     }
@@ -446,6 +452,37 @@ fn cmd_genesis_wallets() -> anyhow::Result<()> {
     println!("Saved to: {}", output_path);
     println!("\nCRITICAL: Back up genesis_wallets.json offline immediately.");
     println!("          Delete from this machine after backup.");
+    Ok(())
+}
+
+fn cmd_history(address: &str) -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    let bc = storage.load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+    let balance = bc.accounts.get_balance(address);
+    let nonce = bc.accounts.get_nonce(address);
+    let history = bc.get_address_history(address);
+
+    println!("Address: {}", address);
+    println!("Balance: {} sentri ({} SRX)", balance, balance as f64 / 100_000_000.0);
+    println!("Nonce:   {}", nonce);
+    println!("Transactions: {}\n", history.len());
+
+    for tx in history.iter().rev().take(20) {
+        let dir = tx["direction"].as_str().unwrap_or("?");
+        let label = match dir {
+            "reward" => "REWARD",
+            "in"     => "IN    ",
+            "out"    => "OUT   ",
+            _        => "?     ",
+        };
+        println!("  [{}] {} | {} sentri | Block #{}",
+            label,
+            &tx["txid"].as_str().unwrap_or("?")[..24],
+            tx["amount"],
+            tx["block_index"],
+        );
+    }
     Ok(())
 }
 

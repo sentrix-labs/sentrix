@@ -75,6 +75,8 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/tokens/{contract}",         get(get_token_info))
         .route("/tokens/{contract}/balance/{addr}", get(get_token_balance))
         .route("/tokens/{contract}/transfer", post(token_transfer))
+        .route("/address/{address}/history",  get(get_address_history))
+        .route("/address/{address}/info",     get(get_address_info))
         .with_state(state)
 }
 
@@ -284,4 +286,37 @@ async fn token_transfer(
             "error": e.to_string(),
         })))),
     }
+}
+
+// ── Address history handlers ─────────────────────────────
+
+async fn get_address_history(
+    State(state): State<SharedState>,
+    Path(address): Path<String>,
+) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    let history = bc.get_address_history(&address);
+    let total = history.len();
+    Json(serde_json::json!({
+        "address": address,
+        "transactions": history,
+        "total": total,
+    }))
+}
+
+async fn get_address_info(
+    State(state): State<SharedState>,
+    Path(address): Path<String>,
+) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    let balance = bc.accounts.get_balance(&address);
+    let nonce = bc.accounts.get_nonce(&address);
+    let tx_count = bc.get_address_tx_count(&address);
+    Json(serde_json::json!({
+        "address": address,
+        "balance_sentri": balance,
+        "balance_srx": balance as f64 / 100_000_000.0,
+        "nonce": nonce,
+        "tx_count": tx_count,
+    }))
 }
