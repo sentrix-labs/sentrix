@@ -18,11 +18,11 @@ pub const BLOCK_TIME_SECS: u64    = 3;
 pub const MAX_TX_PER_BLOCK: usize = 100;
 pub const CHAIN_ID: u64           = 7119;
 
-// ── Genesis addresses (placeholder — replace before mainnet) ──
-pub const FOUNDER_ADDRESS:         &str = "0x89639929a133562d871dd47304ad3ff597908b79";
-pub const ECOSYSTEM_FUND_ADDRESS:  &str = "0x840a2e3ef9433811fc345bcd90e3586a7fc56287";
-pub const EARLY_VALIDATOR_ADDRESS: &str = "0xc556cb23a35ecdb6c22e94ec57789bdbf19da05e";
-pub const RESERVE_ADDRESS:         &str = "0x5d1206cef9461da934eecc4f04743a46a62d3d40";
+// ── Genesis addresses (from genesis_wallets.json — private keys secured) ──
+pub const FOUNDER_ADDRESS:         &str = "0x4f3319a747fd564136209cd5d9e7d1a1e4d142be";
+pub const ECOSYSTEM_FUND_ADDRESS:  &str = "0xeb70fdefd00fdb768dec06c478f450c351499f14";
+pub const EARLY_VALIDATOR_ADDRESS: &str = "0xa7fc67af1ba0c664d859f4c1bcd2eb1f7211f112";
+pub const RESERVE_ADDRESS:         &str = "0x2578cad17e3e56c2970a5b5eab45952439f5ba97";
 
 pub const GENESIS_ALLOCATIONS: &[(&str, u64)] = &[
     (FOUNDER_ADDRESS,         21_000_000 * 100_000_000),
