@@ -122,10 +122,10 @@ impl Storage {
         // Fallback: O(n) scan (backward compat for old data)
         let height = self.load_height()?;
         for i in (0..=height).rev() {
-            if let Some(block) = self.load_block(i)? {
-                if block.hash == hash {
-                    return Ok(Some(block));
-                }
+            if let Some(block) = self.load_block(i)?
+                && block.hash == hash
+            {
+                return Ok(Some(block));
             }
         }
         Ok(None)

@@ -62,7 +62,7 @@ pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
     let height = bc.height();
 
     let mut blocks_html = String::new();
-    let start = if height > 20 { height - 20 } else { 0 };
+    let start = height.saturating_sub(20);
     for i in (start..=height).rev() {
         if let Some(block) = bc.get_block(i) {
             blocks_html.push_str(&format!(

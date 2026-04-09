@@ -1,5 +1,8 @@
 target/
 data/
-*.bat
-*.txt
 .git/
+.github/
+.env
+*.bat
+*.md
+!README.md

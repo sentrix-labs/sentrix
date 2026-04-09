@@ -15,7 +15,7 @@ pub fn merkle_root(txids: &[String]) -> String {
 
     while level.len() > 1 {
         // Duplicate last element if odd count
-        if level.len() % 2 != 0 {
+        if !level.len().is_multiple_of(2) {
             let last = level.last().unwrap().clone();
             level.push(last);
         }
@@ -41,7 +41,7 @@ pub fn sha256_hex(data: &[u8]) -> String {
 // Also add double SHA-256 (used for address checksum)
 pub fn sha256d_hex(data: &[u8]) -> String {
     let first = Sha256::digest(data);
-    let second = Sha256::digest(&first);
+    let second = Sha256::digest(first);
     hex::encode(second)
 }
 

@@ -444,7 +444,7 @@ async fn cmd_start(
             let node_clone = node.clone();
             tokio::spawn(async move {
                 match node_clone.connect_peer(
-                    &peer.split(':').next().unwrap_or(""),
+                    peer.split(':').next().unwrap_or(""),
                     peer.split(':').nth(1).and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT),
                 ).await {
                     Ok(()) => println!("Connected to peer: {}", peer),
@@ -466,23 +466,20 @@ async fn cmd_start(
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                 let mut bc = shared_clone.write().await;
-                match bc.create_block(&wallet.address) {
-                    Ok(block) => {
-                        let height = block.index;
-                        let block_clone = block.clone();
-                        match bc.add_block(block) {
-                            Ok(()) => {
-                                println!("Block {} produced by {}", height, wallet.address);
-                                let _ = storage_clone.save_blockchain(&bc);
-                                let _ = storage_clone.save_height(height);
-                                // Broadcast to peers
-                                drop(bc);
-                                node_clone.broadcast_block(&block_clone).await;
-                            }
-                            Err(e) => tracing::warn!("add_block failed: {}", e),
+                if let Ok(block) = bc.create_block(&wallet.address) {
+                    let height = block.index;
+                    let block_clone = block.clone();
+                    match bc.add_block(block) {
+                        Ok(()) => {
+                            println!("Block {} produced by {}", height, wallet.address);
+                            let _ = storage_clone.save_blockchain(&bc);
+                            let _ = storage_clone.save_height(height);
+                            // Broadcast to peers
+                            drop(bc);
+                            node_clone.broadcast_block(&block_clone).await;
                         }
+                        Err(e) => tracing::warn!("add_block failed: {}", e),
                     }
-                    Err(_) => {} // Not our turn — silent
                 }
             }
         });
