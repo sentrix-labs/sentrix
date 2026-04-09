@@ -46,3 +46,24 @@ desktop.ini
 *.bak
 *.backup
 *.old
+
+# Docker data / runtime
+docker-compose.override.yml
+*.tar
+*.tar.gz
+
+# Logs
+*.log
+logs/
+
+# Crash dumps / core dumps
+core
+core.*
+*.dmp
+
+# Rust-specific
+*.rlib
+*.rmeta
+
+# Duplicate env template (keep .env.example only)
+env.example
