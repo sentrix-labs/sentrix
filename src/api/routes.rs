@@ -420,17 +420,22 @@ async fn token_burn(
 
 // ── Address history handlers ─────────────────────────────
 
+// L-03 FIX: paginated address history
 async fn get_address_history(
     State(state): State<SharedState>,
     Path(address): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
     let bc = state.read().await;
-    let history = bc.get_address_history(&address);
-    let total = history.len();
+    let limit: usize = params.get("limit").and_then(|l| l.parse().ok()).unwrap_or(20).min(100);
+    let offset: usize = params.get("offset").and_then(|o| o.parse().ok()).unwrap_or(0);
+    let history = bc.get_address_history(&address, limit, offset);
+    let count = history.len();
     Json(serde_json::json!({
         "address": address,
         "transactions": history,
-        "total": total,
+        "count": count,
+        "pagination": { "limit": limit, "offset": offset, "has_more": count == limit }
     }))
 }
 

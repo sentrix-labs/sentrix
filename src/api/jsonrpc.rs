@@ -197,6 +197,9 @@ pub async fn jsonrpc_handler(
     })
 }
 
+// M-03 FIX: hard cap on batch size
+const MAX_BATCH_SIZE: usize = 100;
+
 // ── Smart dispatcher (single + batch) ────────────────────
 pub async fn rpc_dispatcher(
     State(state): State<SharedState>,
@@ -214,6 +217,15 @@ pub async fn rpc_dispatcher(
             Ok(r) => r,
             Err(_) => return Json(JsonRpcResponse::err(None, -32600, "Invalid Request")).into_response(),
         };
+
+        // M-03 FIX: reject oversized batches
+        if requests.len() > MAX_BATCH_SIZE {
+            return Json(JsonRpcResponse::err(
+                None, -32600,
+                &format!("batch too large: max {} requests, got {}", MAX_BATCH_SIZE, requests.len()),
+            )).into_response();
+        }
+
         let mut responses = Vec::new();
         for req in requests {
             let resp = jsonrpc_handler(State(state.clone()), Json(req)).await;
@@ -226,5 +238,48 @@ pub async fn rpc_dispatcher(
             Err(_) => return Json(JsonRpcResponse::err(None, -32600, "Invalid Request")).into_response(),
         };
         jsonrpc_handler(State(state), Json(req)).await.into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_m03_max_batch_size_constant() {
+        // Verify the constant is set and reasonable
+        assert_eq!(MAX_BATCH_SIZE, 100);
+    }
+
+    #[tokio::test]
+    async fn test_m03_batch_too_large_rejected() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+        use crate::core::blockchain::Blockchain;
+
+        let bc = Blockchain::new("admin".to_string());
+        let state: crate::api::routes::SharedState = Arc::new(RwLock::new(bc));
+
+        // Build a batch of 101 requests (exceeds MAX_BATCH_SIZE)
+        let mut requests = Vec::new();
+        for i in 0..101 {
+            requests.push(serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "eth_chainId",
+                "params": [],
+                "id": i
+            }));
+        }
+        let body = axum::body::Bytes::from(serde_json::to_vec(&requests).unwrap());
+
+        let response = rpc_dispatcher(
+            axum::extract::State(state),
+            body,
+        ).await;
+
+        // Response should be an error about batch too large
+        let body_bytes = axum::body::to_bytes(response.into_body(), 10_000).await.unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        assert!(body_str.contains("batch too large"), "Expected batch too large error, got: {}", body_str);
     }
 }

@@ -64,32 +64,32 @@ impl Storage {
         Ok(())
     }
 
+    // M-04 FIX: chain field is #[serde(skip)], always reconstruct from per-block keys
     pub fn load_blockchain(&self) -> SentrixResult<Option<Blockchain>> {
-        // Try new format first (state + per-block)
+        // Try new format (state + per-block)
         if let Some(mut bc) = self.get::<Blockchain>("state")? {
-            // Reconstruct chain from per-block storage
+            // Reconstruct chain from per-block storage (chain is empty after deserialize)
             let height = self.load_height()?;
-            let mut blocks = Vec::new();
+            let mut blocks = Vec::with_capacity((height + 1) as usize);
             for i in 0..=height {
                 let key = format!("block:{}", i);
-                if let Some(block) = self.get::<Block>(&key)? {
-                    blocks.push(block);
-                } else {
-                    // Fallback: blocks might still be in the state blob
-                    break;
+                match self.get::<Block>(&key)? {
+                    Some(block) => blocks.push(block),
+                    None => {
+                        return Err(SentrixError::StorageError(
+                            format!("missing block {} during chain reconstruction", i)
+                        ));
+                    }
                 }
             }
-            if blocks.len() == (height + 1) as usize {
-                bc.chain = blocks;
-            }
+            bc.chain = blocks;
             return Ok(Some(bc));
         }
 
-        // Fallback: old single-blob format
+        // Fallback: old single-blob format (pre-M-04 migration)
         if let Some(bc) = self.get::<Blockchain>("blockchain")? {
             // Migrate: save in new format
             self.save_blockchain(&bc)?;
-            // Remove old key
             let _ = self.db.remove("blockchain");
             return Ok(Some(bc));
         }

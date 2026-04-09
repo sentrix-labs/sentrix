@@ -96,14 +96,49 @@ impl SRX20Contract {
         Ok(())
     }
 
+    // M-01 FIX: require allowance reset to 0 before setting new non-zero value
     pub fn approve(&mut self, owner: &str, spender: &str, amount: u64) -> SentrixResult<()> {
         if owner.is_empty() || spender.is_empty() {
             return Err(SentrixError::InvalidTransaction("invalid approve params".to_string()));
+        }
+        let current = self.allowance(owner, spender);
+        if current != 0 && amount != 0 {
+            return Err(SentrixError::InvalidTransaction(
+                "must set allowance to 0 before changing to non-zero value".to_string()
+            ));
         }
         self.allowances
             .entry(owner.to_string())
             .or_default()
             .insert(spender.to_string(), amount);
+        Ok(())
+    }
+
+    pub fn increase_allowance(&mut self, owner: &str, spender: &str, delta: u64) -> SentrixResult<()> {
+        if owner.is_empty() || spender.is_empty() || delta == 0 {
+            return Err(SentrixError::InvalidTransaction("invalid increase_allowance params".to_string()));
+        }
+        let entry = self.allowances
+            .entry(owner.to_string())
+            .or_default()
+            .entry(spender.to_string())
+            .or_insert(0);
+        *entry = entry.checked_add(delta)
+            .ok_or_else(|| SentrixError::Internal("allowance overflow".to_string()))?;
+        Ok(())
+    }
+
+    pub fn decrease_allowance(&mut self, owner: &str, spender: &str, delta: u64) -> SentrixResult<()> {
+        if owner.is_empty() || spender.is_empty() || delta == 0 {
+            return Err(SentrixError::InvalidTransaction("invalid decrease_allowance params".to_string()));
+        }
+        let entry = self.allowances
+            .entry(owner.to_string())
+            .or_default()
+            .entry(spender.to_string())
+            .or_insert(0);
+        *entry = entry.checked_sub(delta)
+            .ok_or_else(|| SentrixError::InvalidTransaction("allowance underflow".to_string()))?;
         Ok(())
     }
 
@@ -192,7 +227,7 @@ impl ContractRegistry {
     ) -> SentrixResult<String> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let mut addr = compute_contract_address(deployer, name, symbol, timestamp);
@@ -270,6 +305,18 @@ impl ContractRegistry {
                 let spender = params["spender"].as_str().unwrap_or("");
                 let amount = params["amount"].as_u64().unwrap_or(0);
                 contract.approve(caller, spender, amount)?;
+                Ok(serde_json::json!({"status": "ok"}))
+            }
+            "increase_allowance" => {
+                let spender = params["spender"].as_str().unwrap_or("");
+                let delta = params["amount"].as_u64().unwrap_or(0);
+                contract.increase_allowance(caller, spender, delta)?;
+                Ok(serde_json::json!({"status": "ok"}))
+            }
+            "decrease_allowance" => {
+                let spender = params["spender"].as_str().unwrap_or("");
+                let delta = params["amount"].as_u64().unwrap_or(0);
+                contract.decrease_allowance(caller, spender, delta)?;
                 Ok(serde_json::json!({"status": "ok"}))
             }
             "transfer_from" => {
@@ -488,5 +535,50 @@ mod tests {
         c.burn("alice", 500).unwrap();
         assert_eq!(c.balance_of("alice"), 500);
         assert_eq!(c.total_supply, 999_999_500); // 1B - 500 burned
+    }
+
+    #[test]
+    fn test_m01_approve_race_condition_prevented() {
+        let (mut reg, addr) = setup_registry();
+        let c = reg.get_contract_mut(&addr).unwrap();
+
+        // First approve from 0 → 500: should succeed
+        c.approve("owner", "spender", 500).unwrap();
+        assert_eq!(c.allowance("owner", "spender"), 500);
+
+        // Change from 500 → 200 directly: should FAIL (race condition prevention)
+        let result = c.approve("owner", "spender", 200);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("must set allowance to 0"));
+
+        // Reset to 0 first, then set new value: should succeed
+        c.approve("owner", "spender", 0).unwrap();
+        assert_eq!(c.allowance("owner", "spender"), 0);
+        c.approve("owner", "spender", 200).unwrap();
+        assert_eq!(c.allowance("owner", "spender"), 200);
+    }
+
+    #[test]
+    fn test_m01_increase_decrease_allowance() {
+        let (mut reg, addr) = setup_registry();
+        let c = reg.get_contract_mut(&addr).unwrap();
+
+        // Start at 0, increase by 100
+        c.increase_allowance("owner", "spender", 100).unwrap();
+        assert_eq!(c.allowance("owner", "spender"), 100);
+
+        // Increase by another 50
+        c.increase_allowance("owner", "spender", 50).unwrap();
+        assert_eq!(c.allowance("owner", "spender"), 150);
+
+        // Decrease by 30
+        c.decrease_allowance("owner", "spender", 30).unwrap();
+        assert_eq!(c.allowance("owner", "spender"), 120);
+
+        // Decrease below 0 should fail
+        let result = c.decrease_allowance("owner", "spender", 999);
+        assert!(result.is_err());
+        // Allowance unchanged
+        assert_eq!(c.allowance("owner", "spender"), 120);
     }
 }

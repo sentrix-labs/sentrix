@@ -38,7 +38,7 @@ impl Transaction {
     ) -> SentrixResult<Self> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let public_key_hex = hex::encode(public_key.serialize_uncompressed());
@@ -70,7 +70,7 @@ impl Transaction {
     pub fn new_coinbase(to_address: String, amount: u64, block_index: u64) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let mut tx = Self {

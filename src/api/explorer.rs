@@ -183,7 +183,7 @@ pub async fn explorer_address(
     let bc = state.read().await;
     let balance = bc.accounts.get_balance(&address);
     let nonce = bc.accounts.get_nonce(&address);
-    let history = bc.get_address_history(&address);
+    let history = bc.get_address_history(&address, 50, 0);
 
     let mut txs_html = String::new();
     for tx in history.iter().rev().take(50) {

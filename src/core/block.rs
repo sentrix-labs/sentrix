@@ -25,7 +25,7 @@ impl Block {
     ) -> Self {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let txids: Vec<String> = transactions.iter().map(|tx| tx.txid.clone()).collect();

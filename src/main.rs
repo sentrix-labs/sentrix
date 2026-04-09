@@ -594,7 +594,7 @@ fn cmd_history(address: &str) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
     let balance = bc.accounts.get_balance(address);
     let nonce = bc.accounts.get_nonce(address);
-    let history = bc.get_address_history(address);
+    let history = bc.get_address_history(address, 20, 0);
 
     println!("Address: {}", address);
     println!("Balance: {} sentri ({} SRX)", balance, balance as f64 / 100_000_000.0);

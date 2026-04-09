@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 use crate::types::error::{SentrixError, SentrixResult};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// M-05 FIX: no Clone — prevents accidental secret_key_hex duplication in memory
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Wallet {
     pub address: String,         // 0x + 40 hex chars (Ethereum style)
     pub public_key: String,      // hex encoded uncompressed pubkey (65 bytes)

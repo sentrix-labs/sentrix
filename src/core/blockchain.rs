@@ -34,8 +34,10 @@ pub const GENESIS_ALLOCATIONS: &[(&str, u64)] = &[
 pub const TOTAL_PREMINE: u64 = 63_000_000 * 100_000_000;
 
 // ── Blockchain struct ────────────────────────────────────
+// M-04 FIX: skip chain in serialization — blocks saved individually in storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Blockchain {
+    #[serde(skip, default)]
     pub chain: Vec<Block>,
     pub accounts: AccountDB,
     pub authority: AuthorityManager,
@@ -77,8 +79,10 @@ impl Blockchain {
         self.chain.len() as u64 - 1
     }
 
-    pub fn latest_block(&self) -> &Block {
-        self.chain.last().unwrap()
+    // L-02 FIX: return Result instead of panicking on empty chain
+    pub fn latest_block(&self) -> SentrixResult<&Block> {
+        self.chain.last()
+            .ok_or_else(|| SentrixError::NotFound("chain is empty".to_string()))
     }
 
     pub fn get_block(&self, index: u64) -> Option<&Block> {
@@ -208,7 +212,7 @@ impl Blockchain {
 
         let block = Block::new(
             next_height,
-            self.latest_block().hash.clone(),
+            self.latest_block()?.hash.clone(),
             transactions,
             validator_address.to_string(),
         );
@@ -216,10 +220,25 @@ impl Blockchain {
         Ok(block)
     }
 
+    // L-04: Memory estimate for chain in RAM
+    pub fn get_memory_estimate(&self) -> String {
+        let block_count = self.chain.len();
+        let estimate_mb = (block_count * 2) / 1024; // ~2KB per block estimate
+        format!("~{}MB for {} blocks", estimate_mb, block_count)
+    }
+
     // ── Block application (two-pass atomic) ─────────────
     pub fn add_block(&mut self, block: Block) -> SentrixResult<()> {
+        // L-04 FIX: warn on large chain
+        if self.chain.len() > 0 && self.chain.len() % 10_000 == 0 {
+            tracing::warn!(
+                "chain length is {} blocks ({}) — consider archival strategy",
+                self.chain.len(), self.get_memory_estimate()
+            );
+        }
+
         let expected_index = self.height() + 1;
-        let expected_prev = self.latest_block().hash.clone();
+        let expected_prev = self.latest_block()?.hash.clone();
 
         // ── Pass 1: dry-run validation ───────────────────
         block.validate_structure(expected_index, &expected_prev)?;
@@ -232,10 +251,10 @@ impl Blockchain {
         }
 
         // H-06 FIX: Validate block timestamp
-        let prev_timestamp = self.latest_block().timestamp;
+        let prev_timestamp = self.latest_block()?.timestamp;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
         if block.timestamp < prev_timestamp {
             return Err(SentrixError::InvalidBlock(
@@ -486,11 +505,20 @@ impl Blockchain {
         None
     }
 
-    pub fn get_address_history(&self, address: &str) -> Vec<serde_json::Value> {
+    // L-03 FIX: paginated address history (limit + offset)
+    pub fn get_address_history(&self, address: &str, limit: usize, offset: usize) -> Vec<serde_json::Value> {
         let mut history = Vec::new();
+        let mut skipped = 0usize;
         for block in &self.chain {
             for tx in &block.transactions {
                 if tx.from_address == address || tx.to_address == address {
+                    if skipped < offset {
+                        skipped += 1;
+                        continue;
+                    }
+                    if history.len() >= limit {
+                        return history;
+                    }
                     let direction = if tx.from_address == address {
                         if tx.is_coinbase() { "reward" } else { "out" }
                     } else {
@@ -849,7 +877,7 @@ mod tests {
         // Set timestamp far in the future (1 hour from now)
         let future = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() + 3600;
         block.timestamp = future;
         block.hash = block.calculate_hash();
@@ -858,5 +886,46 @@ mod tests {
         assert!(result.is_err());
         let err_str = result.unwrap_err().to_string();
         assert!(err_str.contains("future"), "Expected future timestamp error, got: {}", err_str);
+    }
+
+    #[test]
+    fn test_l02_latest_block_on_empty_chain_returns_err() {
+        let mut bc = Blockchain::new("admin".to_string());
+        bc.chain.clear();
+        let result = bc.latest_block();
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("empty"), "Expected 'empty' error, got: {}", err_str);
+    }
+
+    #[test]
+    fn test_l03_address_history_pagination() {
+        let mut bc = setup_chain();
+
+        // Produce 5 blocks so validator1 has 5 coinbase rewards
+        for _ in 0..5 {
+            let block = bc.create_block("validator1").unwrap();
+            bc.add_block(block).unwrap();
+        }
+
+        // Full history: validator1 has 5 reward txs
+        let all = bc.get_address_history("validator1", 100, 0);
+        assert_eq!(all.len(), 5);
+
+        // Limit=2, offset=0: first 2
+        let page1 = bc.get_address_history("validator1", 2, 0);
+        assert_eq!(page1.len(), 2);
+
+        // Limit=2, offset=2: next 2
+        let page2 = bc.get_address_history("validator1", 2, 2);
+        assert_eq!(page2.len(), 2);
+
+        // Limit=2, offset=4: last 1
+        let page3 = bc.get_address_history("validator1", 2, 4);
+        assert_eq!(page3.len(), 1);
+
+        // Offset past end: empty
+        let empty = bc.get_address_history("validator1", 2, 100);
+        assert_eq!(empty.len(), 0);
     }
 }

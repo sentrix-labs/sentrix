@@ -19,7 +19,7 @@ impl Validator {
     pub fn new(address: String, name: String, public_key: String) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
         Self {
             address,
