@@ -16,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /app/target/release/sentrix /usr/local/bin/sentrix
 
+ENV SENTRIX_DATA_DIR=/data
+VOLUME /data
+
 EXPOSE 8545 30303
 
 ENTRYPOINT ["sentrix"]

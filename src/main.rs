@@ -13,6 +13,11 @@ use sentrix::network::node::{DEFAULT_PORT, Node, NodeEvent};
 const API_PORT: u16 = 8545;
 
 fn get_data_dir() -> std::path::PathBuf {
+    // Check SENTRIX_DATA_DIR env var first (Docker / custom deploy)
+    if let Ok(dir) = std::env::var("SENTRIX_DATA_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    // Default: relative to binary location
     let exe_path = std::env::current_exe().unwrap_or_default();
     let exe_dir = exe_path.parent().unwrap_or(std::path::Path::new("."));
     exe_dir.join("data")
