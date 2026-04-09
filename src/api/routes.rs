@@ -138,6 +138,7 @@ pub fn create_router(state: SharedState) -> Router {
 
     // Public routes (GET — no auth needed)
     let public = Router::new()
+        .route("/",                          get(root))
         .route("/health",                    get(health))
         .route("/chain/info",                get(chain_info))
         .route("/chain/blocks",              get(get_blocks))
@@ -181,6 +182,23 @@ fn explorer_router(_state: SharedState) -> Router<SharedState> {
 }
 
 // ── Handlers ─────────────────────────────────────────────
+async fn root() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "name": "Sentrix",
+        "chain_id": 7119,
+        "version": "0.1.0",
+        "docs": {
+            "chain_info": "/chain/info",
+            "blocks": "/chain/blocks",
+            "tokens": "/tokens",
+            "validators": "/validators",
+            "explorer": "/explorer",
+            "health": "/health",
+            "rpc": "POST /rpc"
+        }
+    }))
+}
+
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok", "node": "sentrix-chain" }))
 }
