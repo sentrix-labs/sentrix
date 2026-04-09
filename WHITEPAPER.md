@@ -103,6 +103,7 @@ This ensures compatibility with Ethereum wallets, block explorers, and developer
 | `nonce` | u64 | Sender's current nonce |
 | `data` | string | Arbitrary data field |
 | `timestamp` | u64 | Unix timestamp |
+| `chain_id` | u64 | Chain identifier (replay protection) |
 | `signature` | hex | ECDSA signature |
 | `public_key` | hex | Sender's public key |
 
@@ -120,9 +121,11 @@ Transactions are signed using ECDSA over the secp256k1 curve:
 Each transaction must satisfy:
 - Valid ECDSA signature
 - Correct nonce (sequential, no gaps)
+- Correct chain_id (must match network — prevents cross-chain replay attacks)
 - Fee ≥ minimum (0.0001 SRX)
 - Amount > 0
 - Sender balance ≥ amount + fee
+- All arithmetic uses checked operations (no integer overflow/underflow)
 
 ### 4.4 Mempool
 
@@ -229,6 +232,25 @@ Token deployment requires a fee paid in SRX, split 50/50 between burn and the ec
 
 Token operations (transfers, approvals) require a gas fee paid in **SRX** (not in the token itself). Gas fees follow the same 50/50 split: validator reward and permanent burn.
 
+### 7.4 Token Burn
+
+Any token holder can burn their tokens, permanently removing them from circulation:
+- Reduces holder's balance by the burned amount
+- Reduces total supply by the burned amount
+- Requires SRX gas fee (50/50 split)
+
+### 7.5 Three-Token Economy
+
+Sentrix Chain operates a three-token model:
+
+| Token | Type | Supply | Role |
+|---|---|---|---|
+| **SRX** | Native coin | 210,000,000 (fixed) | Gas fees, validator rewards, base currency, store of value |
+| **SNTX** | SRX-20 | 10,000,000,000 | Utility — ecosystem rewards, governance voting, staking incentives |
+| **SRTX** | SRX-20 | TBD | Payment — stablecoin for daily transactions |
+
+**Flywheel effect:** Every SNTX and SRTX transaction requires SRX for gas. As token usage grows, more SRX is burned, increasing scarcity and value of SRX. This creates a positive feedback loop where ecosystem growth directly benefits the native coin holders.
+
 ---
 
 ## 8. Cryptographic Primitives
@@ -240,7 +262,8 @@ Token operations (transfers, approvals) require a gas fee paid in **SRX** (not i
 | Address derivation | Keccak-256 | FIPS 202 |
 | Merkle tree | SHA-256 | - |
 | Wallet encryption | AES-256-GCM | NIST SP 800-38D |
-| Key derivation | PBKDF2-HMAC-SHA-256 | RFC 8018 |
+| Key derivation | PBKDF2-HMAC-SHA-256 (600k iterations) | RFC 8018 |
+| Memory safety | Private key zeroization on drop | - |
 | Random generation | OS CSPRNG | - |
 
 ---
@@ -316,9 +339,10 @@ Chain ID `7119` (`0x1bcf`) is registered for Sentrix Chain.
 | Phase | Target | Key Features |
 |---|---|---|
 | **1** ✅ | 2026 Q2 | PoA engine, wallets, SRX-20, explorer, JSON-RPC |
-| **2** | 2026 Q3-Q4 | Full P2P, multi-node, public mainnet launch |
-| **3** | 2027 | DPoS transition, staking, governance |
-| **4** | 2027-2028 | Smart contract VM, SDKs, cross-chain bridge |
+| **2** ✅ | 2026 Q2 | Full P2P, security audit, three-token model, block explorer |
+| **3** | 2026 Q3-Q4 | Public mainnet, multi-node deployment, wallet web UI |
+| **4** | 2027 | DPoS transition, staking, governance |
+| **5** | 2027-2028 | Smart contract VM, SDKs, cross-chain bridge, mobile wallet |
 
 ---
 
