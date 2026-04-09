@@ -346,7 +346,47 @@ Chain ID `7119` (`0x1bcf`) is registered for Sentrix Chain.
 
 ---
 
-## 13. Conclusion
+## 14. Funding & Development
+
+### 14.1 Funding Status
+
+Sentrix Chain is currently self-funded by SentrisCloud. The project is bootstrapped — no external venture capital or token sale has occurred.
+
+External investment and partnership opportunities will be announced through official channels at sentrix.io when the time is right.
+
+### 14.2 Developer Grants
+
+SentrisCloud allocates **21,000,000 SRX** from the Ecosystem Fund for developer grants. Grants are available for:
+
+- Applications built on Sentrix Chain
+- Developer tooling (SDKs, libraries, integrations)
+- Community infrastructure (wallets, explorers, bridges)
+- Security research and auditing
+
+To apply for a grant, reach out through official channels.
+
+### 14.3 Bug Bounty
+
+Security researchers who responsibly disclose vulnerabilities will be rewarded in SRX:
+
+| Severity | Reward |
+|---|---|
+| Critical | Up to 100,000 SRX |
+| High | Up to 50,000 SRX |
+| Medium | Up to 10,000 SRX |
+| Low | Up to 1,000 SRX |
+
+See [SECURITY.md](SECURITY.md) for responsible disclosure policy.
+
+### 14.4 Official Channels
+
+- Website: sentrix.io *(coming soon)*
+- GitHub: github.com/satyakwok/sentrix-chain
+- Email: hello@sentrix.io *(coming soon)*
+
+---
+
+## 15. Conclusion
 
 Sentrix Chain demonstrates that a production-quality blockchain can be built with a lean codebase, clear design principles, and a progressive decentralization strategy. By starting with Proof of Authority and evolving toward Delegated Proof of Stake, Sentrix balances the practical needs of early-stage networks with the long-term goal of trustless, permissionless operation.
 
@@ -354,7 +394,7 @@ The combination of Rust's performance guarantees, Ethereum-compatible tooling, a
 
 ---
 
-## References
+## 16. References
 
 1. Nakamoto, S. (2008). *Bitcoin: A Peer-to-Peer Electronic Cash System*
 2. Buterin, V. (2014). *Ethereum: A Next-Generation Smart Contract and Decentralized Application Platform*

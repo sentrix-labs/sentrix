@@ -146,7 +146,7 @@ sentrix genesis-wallets                     # Generate genesis wallet set
 
 Sentrix exposes three API layers on a single port (default: `8545`):
 
-### REST API (20 endpoints)
+### REST API (19 endpoints)
 
 All POST endpoints require `X-API-Key` header when `SENTRIX_API_KEY` env var is set.
 
@@ -297,7 +297,7 @@ sentrix token list
 
 ```
 src/
-├── main.rs              # CLI entry point (15 commands)
+├── main.rs              # CLI entry point (16 commands)
 ├── lib.rs               # Library root
 ├── types/error.rs       # SentrixError enum (14 variants)
 ├── core/
@@ -436,6 +436,27 @@ See [SECURITY.md](SECURITY.md) for responsible disclosure policy.
 - [x] **Phase 2c** — Security audit + all fixes (checked arithmetic, chain_id, zeroize, API auth)
 - [ ] **Phase 3** — DPoS/PoS transition, staking, governance, wallet web UI
 - [ ] **Phase 4** — Smart contract VM, SDKs, cross-chain bridge, mobile wallet
+
+---
+
+## Contributing
+
+Sentrix Chain is open for contributions under the BUSL-1.1 license.
+
+- **Bug reports**: Open a GitHub issue
+- **Bug bounty**: Critical bugs rewarded in SRX — see [SECURITY.md](SECURITY.md)
+- **Developer grants**: Build on Sentrix and apply for ecosystem fund grants
+- **Validator nodes**: Contact us to become a genesis validator
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+---
+
+## Community
+
+- Website: [sentrix.io](https://sentrix.io) *(coming soon)*
+- GitHub: [github.com/satyakwok/sentrix-chain](https://github.com/satyakwok/sentrix-chain)
+- Email: hello@sentrix.io *(coming soon)*
 
 ---
 
