@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use sentrix::core::blockchain::Blockchain;
+use sentrix::core::transaction::{Transaction, TokenOp, TOKEN_OP_ADDRESS};
 use sentrix::wallet::wallet::Wallet;
 use sentrix::wallet::keystore::Keystore;
 use sentrix::storage::db::Storage;
@@ -618,20 +619,34 @@ fn cmd_history(address: &str) -> anyhow::Result<()> {
 
 // ── Token commands ───────────────────────────────────────
 
+fn cli_create_token_tx(bc: &mut Blockchain, wallet: &Wallet, token_op: TokenOp, fee: u64) -> anyhow::Result<String> {
+    let sk = wallet.get_secret_key()?;
+    let pk = wallet.get_public_key()?;
+    let nonce = bc.accounts.get_nonce(&wallet.address);
+    let data = token_op.encode()?;
+    let tx = Transaction::new(
+        wallet.address.clone(), TOKEN_OP_ADDRESS.to_string(),
+        0, fee, nonce, data, bc.chain_id, &sk, &pk,
+    )?;
+    let txid = tx.txid.clone();
+    bc.add_to_mempool(tx)?;
+    Ok(txid)
+}
+
 fn cmd_token_deploy(name: &str, symbol: &str, decimals: u8, supply: u64, deployer_key: &str, fee: u64) -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
     let mut bc = storage.load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
     let wallet = Wallet::from_private_key(deployer_key)?;
-    let contract_address = bc.deploy_token(&wallet.address, name.to_string(), symbol.to_string(), decimals, supply, fee)?;
+    let token_op = TokenOp::Deploy { name: name.to_string(), symbol: symbol.to_string(), decimals, supply };
+    let txid = cli_create_token_tx(&mut bc, &wallet, token_op, fee)?;
     storage.save_blockchain(&bc)?;
-    println!("Token deployed successfully!");
-    println!("  Name:             {}", name);
-    println!("  Symbol:           {}", symbol);
-    println!("  Decimals:         {}", decimals);
-    println!("  Supply:           {}", supply);
-    println!("  Contract address: {}", contract_address);
-    println!("  Deploy fee paid:  {} sentri", fee);
+    println!("Token deploy transaction submitted to mempool!");
+    println!("  TxID:     {}", txid);
+    println!("  Name:     {}", name);
+    println!("  Symbol:   {}", symbol);
+    println!("  Supply:   {}", supply);
+    println!("  Status:   pending (will execute when block is mined)");
     Ok(())
 }
 
@@ -640,13 +655,16 @@ fn cmd_token_transfer(contract: &str, to: &str, amount: u64, from_key: &str, gas
     let mut bc = storage.load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
     let wallet = Wallet::from_private_key(from_key)?;
-    bc.token_transfer(contract, &wallet.address, to, amount, gas)?;
+    let token_op = TokenOp::Transfer { contract: contract.to_string(), to: to.to_string(), amount };
+    let txid = cli_create_token_tx(&mut bc, &wallet, token_op, gas)?;
     storage.save_blockchain(&bc)?;
-    println!("Token transfer successful!");
+    println!("Token transfer transaction submitted to mempool!");
+    println!("  TxID:     {}", txid);
     println!("  From:     {}", wallet.address);
     println!("  To:       {}", to);
     println!("  Amount:   {}", amount);
     println!("  Contract: {}", contract);
+    println!("  Status:   pending (will execute when block is mined)");
     Ok(())
 }
 
@@ -655,12 +673,15 @@ fn cmd_token_burn(contract: &str, amount: u64, from_key: &str, gas: u64) -> anyh
     let mut bc = storage.load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
     let wallet = Wallet::from_private_key(from_key)?;
-    bc.token_burn(contract, &wallet.address, amount, gas)?;
+    let token_op = TokenOp::Burn { contract: contract.to_string(), amount };
+    let txid = cli_create_token_tx(&mut bc, &wallet, token_op, gas)?;
     storage.save_blockchain(&bc)?;
-    println!("Tokens burned successfully!");
+    println!("Token burn transaction submitted to mempool!");
+    println!("  TxID:     {}", txid);
     println!("  From:     {}", wallet.address);
     println!("  Amount:   {} burned", amount);
     println!("  Contract: {}", contract);
+    println!("  Status:   pending (will execute when block is mined)");
     Ok(())
 }
 
