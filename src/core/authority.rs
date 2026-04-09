@@ -129,8 +129,22 @@ impl AuthorityManager {
                 format!("{} is not admin", caller)
             ));
         }
-        let validator = self.validators.get_mut(address)
+        let validator = self.validators.get(address)
             .ok_or_else(|| SentrixError::NotFound(format!("validator {}", address)))?;
+
+        // H-03 FIX: prevent deactivating the last active validator
+        if validator.is_active {
+            let active_after = self.active_validators().iter()
+                .filter(|v| v.address != address)
+                .count();
+            if active_after < 1 {
+                return Err(SentrixError::InvalidBlock(
+                    "cannot deactivate: at least 1 active validator required".to_string()
+                ));
+            }
+        }
+
+        let validator = self.validators.get_mut(address).unwrap();
         validator.is_active = !validator.is_active;
         Ok(validator.is_active)
     }
@@ -230,6 +244,39 @@ mod tests {
     fn test_admin_cannot_remove_itself() {
         let mut mgr = AuthorityManager::new("admin".to_string());
         let result = mgr.remove_validator("admin", "admin");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_h03_toggle_cannot_deactivate_last_validator() {
+        let mut mgr = AuthorityManager::new("admin".to_string());
+        mgr.add_validator("admin", "val1".to_string(), "V1".to_string(), "pk1".to_string()).unwrap();
+        assert_eq!(mgr.active_count(), 1);
+
+        // Trying to deactivate the only active validator should fail
+        let result = mgr.toggle_validator("admin", "val1");
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("at least 1 active validator"), "Expected min validator error, got: {}", err_str);
+
+        // Validator should still be active
+        assert_eq!(mgr.active_count(), 1);
+    }
+
+    #[test]
+    fn test_h03_toggle_allows_deactivate_with_others() {
+        let mut mgr = AuthorityManager::new("admin".to_string());
+        mgr.add_validator("admin", "val1".to_string(), "V1".to_string(), "pk1".to_string()).unwrap();
+        mgr.add_validator("admin", "val2".to_string(), "V2".to_string(), "pk2".to_string()).unwrap();
+        assert_eq!(mgr.active_count(), 2);
+
+        // With 2 validators, deactivating one should succeed
+        let result = mgr.toggle_validator("admin", "val1");
+        assert!(result.is_ok());
+        assert_eq!(mgr.active_count(), 1);
+
+        // But deactivating the last one should fail
+        let result = mgr.toggle_validator("admin", "val2");
         assert!(result.is_err());
     }
 }

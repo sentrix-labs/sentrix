@@ -123,7 +123,11 @@ impl Blockchain {
         let pending_spend = self.mempool_pending_spend(&tx.from_address);
         let available = self.accounts.get_balance(&tx.from_address)
             .saturating_sub(pending_spend);
-        let needed = tx.amount + tx.fee;
+        // H-02 FIX: checked addition to prevent overflow
+        let needed = tx.amount.checked_add(tx.fee)
+            .ok_or_else(|| SentrixError::InvalidTransaction(
+                "amount + fee overflow".to_string()
+            ))?;
 
         if available < needed {
             return Err(SentrixError::InsufficientBalance {
@@ -220,6 +224,30 @@ impl Blockchain {
         // ── Pass 1: dry-run validation ───────────────────
         block.validate_structure(expected_index, &expected_prev)?;
 
+        // C-02 FIX: Verify validator authorization for this block height
+        if !self.authority.is_authorized(&block.validator, expected_index)? {
+            return Err(SentrixError::UnauthorizedValidator(
+                format!("validator {} not authorized for block {}", block.validator, expected_index)
+            ));
+        }
+
+        // H-06 FIX: Validate block timestamp
+        let prev_timestamp = self.latest_block().timestamp;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if block.timestamp < prev_timestamp {
+            return Err(SentrixError::InvalidBlock(
+                "block timestamp is before previous block".to_string()
+            ));
+        }
+        if block.timestamp > now + 15 {
+            return Err(SentrixError::InvalidBlock(
+                "block timestamp too far in the future".to_string()
+            ));
+        }
+
         // Validate coinbase amount
         let reward = self.get_block_reward();
         let coinbase = block.coinbase()
@@ -250,7 +278,11 @@ impl Blockchain {
             // Validate
             tx.validate(nonce, self.chain_id)?;
 
-            let needed = tx.amount + tx.fee;
+            // H-02 FIX: checked addition to prevent overflow
+            let needed = tx.amount.checked_add(tx.fee)
+                .ok_or_else(|| SentrixError::InvalidTransaction(
+                    "amount + fee overflow".to_string()
+                ))?;
             if balance < needed {
                 return Err(SentrixError::InsufficientBalance {
                     have: balance,
@@ -516,6 +548,10 @@ mod tests {
         secp.generate_keypair(&mut OsRng)
     }
 
+    fn derive_addr(pk: &PublicKey) -> String {
+        crate::wallet::wallet::Wallet::derive_address(pk)
+    }
+
     fn setup_chain() -> Blockchain {
         let mut bc = Blockchain::new("admin".to_string());
         bc.authority.add_validator(
@@ -562,12 +598,13 @@ mod tests {
     fn test_mempool_and_block_inclusion() {
         let mut bc = setup_chain();
         let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
 
-        // Fund an account
-        bc.accounts.credit("sender", 10_000_000).unwrap();
+        // Fund the real derived address
+        bc.accounts.credit(&sender, 10_000_000).unwrap();
 
         let tx = Transaction::new(
-            "sender".to_string(),
+            sender,
             "receiver".to_string(),
             1_000_000,
             MIN_TX_FEE,
@@ -711,20 +748,21 @@ mod tests {
     fn test_mempool_priority_fee_ordering() {
         let mut bc = setup_chain();
         let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
 
-        bc.accounts.credit("sender", 100_000_000).unwrap();
+        bc.accounts.credit(&sender, 100_000_000).unwrap();
 
         // Add 3 txs with different fees: low, high, medium
         let tx_low = Transaction::new(
-            "sender".to_string(), "recv".to_string(),
+            sender.clone(), "recv".to_string(),
             100_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
         ).unwrap();
         let tx_high = Transaction::new(
-            "sender".to_string(), "recv".to_string(),
+            sender.clone(), "recv".to_string(),
             100_000, MIN_TX_FEE * 100, 1, String::new(), CHAIN_ID, &sk, &pk,
         ).unwrap();
         let tx_mid = Transaction::new(
-            "sender".to_string(), "recv".to_string(),
+            sender.clone(), "recv".to_string(),
             100_000, MIN_TX_FEE * 10, 2, String::new(), CHAIN_ID, &sk, &pk,
         ).unwrap();
 
@@ -735,5 +773,90 @@ mod tests {
         // Mempool should be ordered: high, mid, low
         let fees: Vec<u64> = bc.mempool.iter().map(|tx| tx.fee).collect();
         assert_eq!(fees, vec![MIN_TX_FEE * 100, MIN_TX_FEE * 10, MIN_TX_FEE]);
+    }
+
+    #[test]
+    fn test_c02_add_block_rejects_unauthorized_validator() {
+        let mut bc = setup_chain();
+        // Add a second validator
+        bc.authority.add_validator(
+            "admin", "validator2".to_string(), "Validator 2".to_string(), "pk2".to_string(),
+        ).unwrap();
+
+        // Determine who is authorized for block 1
+        let expected = bc.authority.expected_validator(1).unwrap().address.clone();
+        let unauthorized = if expected == "validator1" { "validator2" } else { "validator1" };
+
+        // Create a valid block with the authorized validator
+        let block = bc.create_block(&expected).unwrap();
+        // Tamper the validator field to the unauthorized validator
+        let mut tampered_block = block.clone();
+        tampered_block.validator = unauthorized.to_string();
+        // Recalculate hash so structure validation passes
+        tampered_block.hash = tampered_block.calculate_hash();
+
+        // Should be rejected because the other validator is not authorized for this height
+        let result = bc.add_block(tampered_block);
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("not authorized"), "Expected 'not authorized' error, got: {}", err_str);
+    }
+
+    #[test]
+    fn test_h02_mempool_rejects_overflow_amount_fee() {
+        let mut bc = setup_chain();
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+
+        bc.accounts.credit(&sender, 100_000_000).unwrap();
+
+        // Create tx with amount = u64::MAX and fee = 1 — would overflow
+        let tx = Transaction::new(
+            sender, "recv".to_string(),
+            u64::MAX, 1, 0, String::new(), CHAIN_ID, &sk, &pk,
+        ).unwrap();
+
+        let result = bc.add_to_mempool(tx);
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("overflow") || err_str.contains("fee"),
+            "Expected overflow error, got: {}", err_str
+        );
+    }
+
+    #[test]
+    fn test_h06_add_block_rejects_past_timestamp() {
+        let mut bc = setup_chain();
+
+        // Create a valid block
+        let mut block = bc.create_block("validator1").unwrap();
+        // Set timestamp to before genesis block
+        block.timestamp = 0;
+        block.hash = block.calculate_hash();
+
+        let result = bc.add_block(block);
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("timestamp"), "Expected timestamp error, got: {}", err_str);
+    }
+
+    #[test]
+    fn test_h06_add_block_rejects_future_timestamp() {
+        let mut bc = setup_chain();
+
+        let mut block = bc.create_block("validator1").unwrap();
+        // Set timestamp far in the future (1 hour from now)
+        let future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() + 3600;
+        block.timestamp = future;
+        block.hash = block.calculate_hash();
+
+        let result = bc.add_block(block);
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("future"), "Expected future timestamp error, got: {}", err_str);
     }
 }

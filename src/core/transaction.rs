@@ -135,6 +135,15 @@ impl Transaction {
         let public_key = PublicKey::from_slice(&pub_key_bytes)
             .map_err(|_| SentrixError::InvalidSignature)?;
 
+        // C-01 FIX: Verify public key maps to from_address
+        let derived_address = crate::wallet::wallet::Wallet::derive_address(&public_key);
+        if derived_address != self.from_address {
+            return Err(SentrixError::InvalidTransaction(
+                format!("public key does not match from_address: expected {}, derived {}",
+                        self.from_address, derived_address)
+            ));
+        }
+
         let sig_bytes = hex::decode(&self.signature)
             .map_err(|_| SentrixError::InvalidSignature)?;
         let sig = Signature::from_compact(&sig_bytes)
@@ -197,6 +206,10 @@ mod tests {
         secp.generate_keypair(&mut OsRng)
     }
 
+    fn derive_addr(pk: &PublicKey) -> String {
+        crate::wallet::wallet::Wallet::derive_address(pk)
+    }
+
     #[test]
     fn test_coinbase_transaction() {
         let tx = Transaction::new_coinbase("SRX_validator".to_string(), 100_000_000, 1);
@@ -208,8 +221,9 @@ mod tests {
     #[test]
     fn test_sign_and_verify() {
         let (sk, pk) = make_keypair();
+        let from = derive_addr(&pk);
         let tx = Transaction::new(
-            "SRX_alice".to_string(), "SRX_bob".to_string(),
+            from, "SRX_bob".to_string(),
             1_000_000, MIN_TX_FEE, 0, String::new(), TEST_CHAIN_ID, &sk, &pk,
         ).unwrap();
         assert!(tx.verify().is_ok());
@@ -220,8 +234,9 @@ mod tests {
     #[test]
     fn test_validate_correct_nonce() {
         let (sk, pk) = make_keypair();
+        let from = derive_addr(&pk);
         let tx = Transaction::new(
-            "SRX_alice".to_string(), "SRX_bob".to_string(),
+            from, "SRX_bob".to_string(),
             1_000_000, MIN_TX_FEE, 0, String::new(), TEST_CHAIN_ID, &sk, &pk,
         ).unwrap();
         assert!(tx.validate(0, TEST_CHAIN_ID).is_ok());
@@ -230,8 +245,9 @@ mod tests {
     #[test]
     fn test_validate_wrong_nonce() {
         let (sk, pk) = make_keypair();
+        let from = derive_addr(&pk);
         let tx = Transaction::new(
-            "SRX_alice".to_string(), "SRX_bob".to_string(),
+            from, "SRX_bob".to_string(),
             1_000_000, MIN_TX_FEE, 0, String::new(), TEST_CHAIN_ID, &sk, &pk,
         ).unwrap();
         assert!(tx.validate(1, TEST_CHAIN_ID).is_err());
@@ -240,8 +256,9 @@ mod tests {
     #[test]
     fn test_validate_wrong_chain_id() {
         let (sk, pk) = make_keypair();
+        let from = derive_addr(&pk);
         let tx = Transaction::new(
-            "SRX_alice".to_string(), "SRX_bob".to_string(),
+            from, "SRX_bob".to_string(),
             1_000_000, MIN_TX_FEE, 0, String::new(), TEST_CHAIN_ID, &sk, &pk,
         ).unwrap();
         assert!(tx.validate(0, 9999).is_err()); // wrong chain
@@ -250,8 +267,9 @@ mod tests {
     #[test]
     fn test_validate_fee_too_low() {
         let (sk, pk) = make_keypair();
+        let from = derive_addr(&pk);
         let tx = Transaction::new(
-            "SRX_alice".to_string(), "SRX_bob".to_string(),
+            from, "SRX_bob".to_string(),
             1_000_000, 1, 0, String::new(), TEST_CHAIN_ID, &sk, &pk,
         ).unwrap();
         assert!(tx.validate(0, TEST_CHAIN_ID).is_err());
@@ -260,11 +278,30 @@ mod tests {
     #[test]
     fn test_tampered_signature_fails() {
         let (sk, pk) = make_keypair();
+        let from = derive_addr(&pk);
         let mut tx = Transaction::new(
-            "SRX_alice".to_string(), "SRX_bob".to_string(),
+            from, "SRX_bob".to_string(),
             1_000_000, MIN_TX_FEE, 0, String::new(), TEST_CHAIN_ID, &sk, &pk,
         ).unwrap();
         tx.amount = 999_999_999;
+        assert!(tx.verify().is_err());
+    }
+
+    #[test]
+    fn test_c01_verify_rejects_mismatched_address() {
+        let (sk, pk) = make_keypair();
+        let real_address = derive_addr(&pk);
+
+        // Create valid tx with correct from_address
+        let mut tx = Transaction::new(
+            real_address.clone(), "SRX_bob".to_string(),
+            1_000_000, MIN_TX_FEE, 0, String::new(), TEST_CHAIN_ID, &sk, &pk,
+        ).unwrap();
+        assert!(tx.verify().is_ok());
+
+        // Tamper from_address to a different address
+        tx.from_address = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string();
+        // Should fail: public key doesn't match from_address
         assert!(tx.verify().is_err());
     }
 }

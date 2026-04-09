@@ -6,6 +6,15 @@ use axum::{
 };
 use crate::api::routes::SharedState;
 
+// C-04 FIX: HTML escape to prevent XSS
+pub fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+     .replace('<', "&lt;")
+     .replace('>', "&gt;")
+     .replace('"', "&quot;")
+     .replace('\'', "&#x27;")
+}
+
 const CSS: &str = r#"
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0a0e17; color: #e1e5ee; }
@@ -65,10 +74,10 @@ pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
                 <td class="hash">{}</td>
                 </tr>"#,
                 block.index, block.index,
-                &block.hash[..16],
+                html_escape(&block.hash[..16]),
                 block.tx_count(),
                 block.timestamp,
-                &block.validator[..block.validator.len().min(20)],
+                html_escape(&block.validator[..block.validator.len().min(20)]),
             ));
         }
     }
@@ -128,9 +137,9 @@ pub async fn explorer_block(
                     <td>{}</td>
                     </tr>"#,
                     badge,
-                    tx.txid, &tx.txid[..16],
-                    &tx.from_address,
-                    &tx.to_address,
+                    html_escape(&tx.txid), html_escape(&tx.txid[..16]),
+                    html_escape(&tx.from_address),
+                    html_escape(&tx.to_address),
                     tx.amount,
                     tx.fee,
                 ));
@@ -152,11 +161,11 @@ pub async fn explorer_block(
             {}
             </table>"#,
                 block.index,
-                block.hash,
-                block.previous_hash,
-                block.merkle_root,
+                html_escape(&block.hash),
+                html_escape(&block.previous_hash),
+                html_escape(&block.merkle_root),
                 block.timestamp,
-                block.validator, block.validator,
+                html_escape(&block.validator), html_escape(&block.validator),
                 block.tx_count(),
                 txs_html,
             );
@@ -185,6 +194,8 @@ pub async fn explorer_address(
             "reward" => r#"<span class="badge badge-green">REWARD</span>"#,
             _ => "",
         };
+        let txid = tx["txid"].as_str().unwrap_or("");
+        let txid_short_len = 16.min(txid.len());
         txs_html.push_str(&format!(
             r#"<tr>
             <td>{}</td>
@@ -194,8 +205,8 @@ pub async fn explorer_address(
             <td><a href="/explorer/block/{}">#{}</a></td>
             </tr>"#,
             badge,
-            tx["txid"].as_str().unwrap_or(""),
-            &tx["txid"].as_str().unwrap_or("")[..16.min(tx["txid"].as_str().unwrap_or("").len())],
+            html_escape(txid),
+            html_escape(&txid[..txid_short_len]),
             tx["amount"],
             tx["fee"],
             tx["block_index"], tx["block_index"],
@@ -215,7 +226,7 @@ pub async fn explorer_address(
     <tr><th>Dir</th><th>TxID</th><th>Amount</th><th>Fee</th><th>Block</th></tr>
     {}
     </table>"#,
-        address,
+        html_escape(&address),
         balance, balance as f64 / 100_000_000.0,
         nonce,
         history.len(),
@@ -234,6 +245,8 @@ pub async fn explorer_tx(
     match bc.get_transaction(&txid) {
         Some(tx_data) => {
             let tx = &tx_data["transaction"];
+            let tx_from = tx["from_address"].as_str().unwrap_or("");
+            let tx_to = tx["to_address"].as_str().unwrap_or("");
             let body = format!(r#"
             <h2 style="margin:20px 0">Transaction</h2>
             <table>
@@ -246,9 +259,9 @@ pub async fn explorer_tx(
             <tr><td style="color:#6b7280">Block</td><td><a href="/explorer/block/{}">#{}</a></td></tr>
             <tr><td style="color:#6b7280">Timestamp</td><td>{}</td></tr>
             </table>"#,
-                tx["txid"].as_str().unwrap_or(""),
-                tx["from_address"].as_str().unwrap_or(""), tx["from_address"].as_str().unwrap_or(""),
-                tx["to_address"].as_str().unwrap_or(""), tx["to_address"].as_str().unwrap_or(""),
+                html_escape(tx["txid"].as_str().unwrap_or("")),
+                html_escape(tx_from), html_escape(tx_from),
+                html_escape(tx_to), html_escape(tx_to),
                 tx["amount"],
                 tx["fee"],
                 tx["nonce"],
@@ -279,8 +292,8 @@ pub async fn explorer_validators(State(state): State<SharedState>) -> Html<Strin
             <td>{}</td>
             <td>{}</td>
             </tr>"#,
-            v.name,
-            v.address, &v.address,
+            html_escape(&v.name),
+            html_escape(&v.address), html_escape(&v.address),
             status,
             v.blocks_produced,
         ));
@@ -316,12 +329,12 @@ pub async fn explorer_tokens(State(state): State<SharedState>) -> Html<String> {
             <td>{}</td>
             <td class="mono">{}</td>
             </tr>"#,
-            t["symbol"].as_str().unwrap_or(""),
-            t["name"].as_str().unwrap_or(""),
-            t["contract_address"].as_str().unwrap_or(""),
+            html_escape(t["symbol"].as_str().unwrap_or("")),
+            html_escape(t["name"].as_str().unwrap_or("")),
+            html_escape(t["contract_address"].as_str().unwrap_or("")),
             t["total_supply"],
             t["holders"],
-            t["owner"].as_str().unwrap_or(""),
+            html_escape(t["owner"].as_str().unwrap_or("")),
         ));
     }
 
@@ -337,4 +350,33 @@ pub async fn explorer_tokens(State(state): State<SharedState>) -> Html<String> {
     </table>"#, rows);
 
     page("Tokens", &body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_c04_html_escape_xss_payloads() {
+        assert_eq!(
+            html_escape("<script>alert('xss')</script>"),
+            "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;"
+        );
+        assert_eq!(
+            html_escape("normal text"),
+            "normal text"
+        );
+        assert_eq!(
+            html_escape(r#"<img src=x onerror="alert(1)">"#),
+            "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;"
+        );
+        assert_eq!(
+            html_escape("&amp; already escaped"),
+            "&amp;amp; already escaped"
+        );
+        assert_eq!(
+            html_escape("0x89639929a133562d871dd47304ad3ff597908b79"),
+            "0x89639929a133562d871dd47304ad3ff597908b79"
+        );
+    }
 }

@@ -13,6 +13,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use crate::core::blockchain::Blockchain;
 use crate::core::transaction::Transaction;
+use crate::wallet::wallet::Wallet;
 use crate::api::jsonrpc::rpc_dispatcher;
 use crate::api::explorer;
 
@@ -43,7 +44,7 @@ pub struct SendTxRequest {
 
 #[derive(Deserialize)]
 pub struct DeployTokenRequest {
-    pub deployer: String,
+    pub from_key: String,  // C-03 FIX: private key hex (proves ownership)
     pub name: String,
     pub symbol: String,
     pub decimals: u8,
@@ -53,7 +54,7 @@ pub struct DeployTokenRequest {
 
 #[derive(Deserialize)]
 pub struct TokenTransferRequest {
-    pub caller: String,
+    pub from_key: String,  // C-03 FIX: private key hex (proves ownership)
     pub to: String,
     pub amount: u64,
     pub gas_fee: u64,
@@ -61,7 +62,7 @@ pub struct TokenTransferRequest {
 
 #[derive(Deserialize)]
 pub struct TokenBurnRequest {
-    pub caller: String,
+    pub from_key: String,  // C-03 FIX: private key hex (proves ownership)
     pub amount: u64,
     pub gas_fee: u64,
 }
@@ -302,14 +303,20 @@ async fn deploy_token(
     State(state): State<SharedState>,
     Json(req): Json<DeployTokenRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // C-03 FIX: Derive deployer address from private key
+    let wallet = Wallet::from_private_key(&req.from_key)
+        .map_err(|_| (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success": false, "error": "invalid private key"}))))?;
+    let deployer = wallet.address.clone();
+
     let mut bc = state.write().await;
     match bc.deploy_token(
-        &req.deployer, req.name.clone(), req.symbol.clone(),
+        &deployer, req.name.clone(), req.symbol.clone(),
         req.decimals, req.total_supply, req.deploy_fee,
     ) {
         Ok(addr) => Ok(Json(serde_json::json!({
             "success": true,
             "contract_address": addr,
+            "deployer": deployer,
             "name": req.name,
             "symbol": req.symbol,
             "total_supply": req.total_supply,
@@ -326,12 +333,17 @@ async fn token_transfer(
     Path(contract): Path<String>,
     Json(req): Json<TokenTransferRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // C-03 FIX: Derive caller address from private key
+    let wallet = Wallet::from_private_key(&req.from_key)
+        .map_err(|_| (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success": false, "error": "invalid private key"}))))?;
+    let caller = wallet.address.clone();
+
     let mut bc = state.write().await;
-    match bc.token_transfer(&contract, &req.caller, &req.to, req.amount, req.gas_fee) {
+    match bc.token_transfer(&contract, &caller, &req.to, req.amount, req.gas_fee) {
         Ok(()) => Ok(Json(serde_json::json!({
             "success": true,
             "contract": contract,
-            "from": req.caller,
+            "from": caller,
             "to": req.to,
             "amount": req.amount,
         }))),
@@ -347,12 +359,17 @@ async fn token_burn(
     Path(contract): Path<String>,
     Json(req): Json<TokenBurnRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // C-03 FIX: Derive caller address from private key
+    let wallet = Wallet::from_private_key(&req.from_key)
+        .map_err(|_| (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success": false, "error": "invalid private key"}))))?;
+    let caller = wallet.address.clone();
+
     let mut bc = state.write().await;
-    match bc.token_burn(&contract, &req.caller, req.amount, req.gas_fee) {
+    match bc.token_burn(&contract, &caller, req.amount, req.gas_fee) {
         Ok(()) => Ok(Json(serde_json::json!({
             "success": true,
             "contract": contract,
-            "burned_by": req.caller,
+            "burned_by": caller,
             "amount": req.amount,
         }))),
         Err(e) => Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
