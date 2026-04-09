@@ -375,8 +375,8 @@ mod tests {
             "&amp;amp; already escaped"
         );
         assert_eq!(
-            html_escape("0x89639929a133562d871dd47304ad3ff597908b79"),
-            "0x89639929a133562d871dd47304ad3ff597908b79"
+            html_escape("0x4f3319a747fd564136209cd5d9e7d1a1e4d142be"),
+            "0x4f3319a747fd564136209cd5d9e7d1a1e4d142be"
         );
     }
 }
