@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::cors::{CorsLayer, Any};
 use crate::core::blockchain::Blockchain;
-use crate::core::transaction::Transaction;
+use crate::core::transaction::{Transaction, TokenOp, TOKEN_OP_ADDRESS};
 use crate::wallet::wallet::Wallet;
 use crate::api::jsonrpc::rpc_dispatcher;
 use crate::api::explorer;
@@ -395,29 +395,40 @@ async fn deploy_token(
     State(state): State<SharedState>,
     Json(req): Json<DeployTokenRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    // C-03 FIX: Derive deployer address from private key
     let wallet = Wallet::from_private_key(&req.from_key)
-        .map_err(|_| (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success": false, "error": "invalid private key"}))))?;
-    let deployer = wallet.address.clone();
+        .map_err(|_| api_err("invalid private key"))?;
+    let sk = wallet.get_secret_key().map_err(|_| api_err("invalid key"))?;
+    let pk = wallet.get_public_key().map_err(|_| api_err("invalid key"))?;
+
+    let token_op = TokenOp::Deploy {
+        name: req.name.clone(),
+        symbol: req.symbol.clone(),
+        decimals: req.decimals,
+        supply: req.total_supply,
+    };
 
     let mut bc = state.write().await;
-    match bc.deploy_token(
-        &deployer, req.name.clone(), req.symbol.clone(),
-        req.decimals, req.total_supply, req.deploy_fee,
-    ) {
-        Ok(addr) => Ok(Json(serde_json::json!({
-            "success": true,
-            "contract_address": addr,
-            "deployer": deployer,
-            "name": req.name,
-            "symbol": req.symbol,
-            "total_supply": req.total_supply,
-        }))),
-        Err(e) => Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
-            "success": false,
-            "error": e.to_string(),
-        })))),
-    }
+    let nonce = bc.accounts.get_nonce(&wallet.address);
+    let chain_id = bc.chain_id;
+    let data = token_op.encode().map_err(|e| api_err(&e.to_string()))?;
+
+    let tx = Transaction::new(
+        wallet.address.clone(), TOKEN_OP_ADDRESS.to_string(),
+        0, req.deploy_fee, nonce, data, chain_id, &sk, &pk,
+    ).map_err(|e| api_err(&e.to_string()))?;
+
+    let txid = tx.txid.clone();
+    bc.add_to_mempool(tx).map_err(|e| api_err(&e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "txid": txid,
+        "deployer": wallet.address,
+        "name": req.name,
+        "symbol": req.symbol,
+        "total_supply": req.total_supply,
+        "status": "pending_in_mempool",
+    })))
 }
 
 async fn token_transfer(
@@ -425,25 +436,39 @@ async fn token_transfer(
     Path(contract): Path<String>,
     Json(req): Json<TokenTransferRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    // C-03 FIX: Derive caller address from private key
     let wallet = Wallet::from_private_key(&req.from_key)
-        .map_err(|_| (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success": false, "error": "invalid private key"}))))?;
-    let caller = wallet.address.clone();
+        .map_err(|_| api_err("invalid private key"))?;
+    let sk = wallet.get_secret_key().map_err(|_| api_err("invalid key"))?;
+    let pk = wallet.get_public_key().map_err(|_| api_err("invalid key"))?;
+
+    let token_op = TokenOp::Transfer {
+        contract: contract.clone(),
+        to: req.to.clone(),
+        amount: req.amount,
+    };
 
     let mut bc = state.write().await;
-    match bc.token_transfer(&contract, &caller, &req.to, req.amount, req.gas_fee) {
-        Ok(()) => Ok(Json(serde_json::json!({
-            "success": true,
-            "contract": contract,
-            "from": caller,
-            "to": req.to,
-            "amount": req.amount,
-        }))),
-        Err(e) => Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
-            "success": false,
-            "error": e.to_string(),
-        })))),
-    }
+    let nonce = bc.accounts.get_nonce(&wallet.address);
+    let chain_id = bc.chain_id;
+    let data = token_op.encode().map_err(|e| api_err(&e.to_string()))?;
+
+    let tx = Transaction::new(
+        wallet.address.clone(), TOKEN_OP_ADDRESS.to_string(),
+        0, req.gas_fee, nonce, data, chain_id, &sk, &pk,
+    ).map_err(|e| api_err(&e.to_string()))?;
+
+    let txid = tx.txid.clone();
+    bc.add_to_mempool(tx).map_err(|e| api_err(&e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "txid": txid,
+        "contract": contract,
+        "from": wallet.address,
+        "to": req.to,
+        "amount": req.amount,
+        "status": "pending_in_mempool",
+    })))
 }
 
 async fn token_burn(
@@ -451,24 +476,42 @@ async fn token_burn(
     Path(contract): Path<String>,
     Json(req): Json<TokenBurnRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    // C-03 FIX: Derive caller address from private key
     let wallet = Wallet::from_private_key(&req.from_key)
-        .map_err(|_| (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success": false, "error": "invalid private key"}))))?;
-    let caller = wallet.address.clone();
+        .map_err(|_| api_err("invalid private key"))?;
+    let sk = wallet.get_secret_key().map_err(|_| api_err("invalid key"))?;
+    let pk = wallet.get_public_key().map_err(|_| api_err("invalid key"))?;
+
+    let token_op = TokenOp::Burn {
+        contract: contract.clone(),
+        amount: req.amount,
+    };
 
     let mut bc = state.write().await;
-    match bc.token_burn(&contract, &caller, req.amount, req.gas_fee) {
-        Ok(()) => Ok(Json(serde_json::json!({
-            "success": true,
-            "contract": contract,
-            "burned_by": caller,
-            "amount": req.amount,
-        }))),
-        Err(e) => Err((StatusCode::BAD_REQUEST, Json(serde_json::json!({
-            "success": false,
-            "error": e.to_string(),
-        })))),
-    }
+    let nonce = bc.accounts.get_nonce(&wallet.address);
+    let chain_id = bc.chain_id;
+    let data = token_op.encode().map_err(|e| api_err(&e.to_string()))?;
+
+    let tx = Transaction::new(
+        wallet.address.clone(), TOKEN_OP_ADDRESS.to_string(),
+        0, req.gas_fee, nonce, data, chain_id, &sk, &pk,
+    ).map_err(|e| api_err(&e.to_string()))?;
+
+    let txid = tx.txid.clone();
+    bc.add_to_mempool(tx).map_err(|e| api_err(&e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "txid": txid,
+        "contract": contract,
+        "burned_by": wallet.address,
+        "amount": req.amount,
+        "status": "pending_in_mempool",
+    })))
+}
+
+// Helper for API error responses
+fn api_err(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
+    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success": false, "error": msg})))
 }
 
 // ── Address history handlers ─────────────────────────────

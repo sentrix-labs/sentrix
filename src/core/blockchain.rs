@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use crate::core::block::Block;
-use crate::core::transaction::Transaction;
+use crate::core::transaction::{Transaction, TokenOp};
 use crate::core::account::AccountDB;
 use crate::core::authority::AuthorityManager;
 use crate::core::merkle::merkle_root;
@@ -309,6 +309,49 @@ impl Blockchain {
                 });
             }
 
+            // Validate token operation if present
+            if let Some(token_op) = TokenOp::decode(&tx.data) {
+                match &token_op {
+                    TokenOp::Transfer { contract, amount, .. } => {
+                        if !self.contracts.exists(contract) {
+                            return Err(SentrixError::InvalidTransaction(
+                                format!("token contract {} not found", contract)
+                            ));
+                        }
+                        let token_bal = self.contracts.get_token_balance(contract, &tx.from_address);
+                        if token_bal < *amount {
+                            return Err(SentrixError::InsufficientBalance { have: token_bal, need: *amount });
+                        }
+                    }
+                    TokenOp::Burn { contract, amount } => {
+                        if !self.contracts.exists(contract) {
+                            return Err(SentrixError::InvalidTransaction(
+                                format!("token contract {} not found", contract)
+                            ));
+                        }
+                        let token_bal = self.contracts.get_token_balance(contract, &tx.from_address);
+                        if token_bal < *amount {
+                            return Err(SentrixError::InsufficientBalance { have: token_bal, need: *amount });
+                        }
+                    }
+                    TokenOp::Mint { contract, .. } => {
+                        if !self.contracts.exists(contract) {
+                            return Err(SentrixError::InvalidTransaction(
+                                format!("token contract {} not found", contract)
+                            ));
+                        }
+                    }
+                    TokenOp::Approve { contract, .. } => {
+                        if !self.contracts.exists(contract) {
+                            return Err(SentrixError::InvalidTransaction(
+                                format!("token contract {} not found", contract)
+                            ));
+                        }
+                    }
+                    TokenOp::Deploy { .. } => {} // deploy creates new contract, no pre-check needed
+                }
+            }
+
             // Update working state
             *working_balances.entry(tx.from_address.clone()).or_insert(balance) -= needed;
             *working_nonces.entry(tx.from_address.clone()).or_insert(nonce) += 1;
@@ -329,6 +372,27 @@ impl Blockchain {
                 tx.fee,
             )?;
             total_fee += tx.fee;
+
+            // Execute token operation if present in data field
+            if let Some(token_op) = TokenOp::decode(&tx.data) {
+                match token_op {
+                    TokenOp::Deploy { name, symbol, decimals, supply } => {
+                        self.contracts.deploy(&tx.from_address, &name, &symbol, decimals, supply)?;
+                    }
+                    TokenOp::Transfer { contract, to, amount } => {
+                        self.contracts.execute_transfer(&contract, &tx.from_address, &to, amount)?;
+                    }
+                    TokenOp::Burn { contract, amount } => {
+                        self.contracts.execute_burn(&contract, &tx.from_address, amount)?;
+                    }
+                    TokenOp::Mint { contract, to, amount } => {
+                        self.contracts.execute_mint(&contract, &tx.from_address, &to, amount)?;
+                    }
+                    TokenOp::Approve { contract, spender, amount } => {
+                        self.contracts.execute_approve(&contract, &tx.from_address, &spender, amount)?;
+                    }
+                }
+            }
         }
 
         // Validator gets 50% of fees (other 50% already burned in transfer)
@@ -927,5 +991,147 @@ mod tests {
         // Offset past end: empty
         let empty = bc.get_address_history("validator1", 2, 100);
         assert_eq!(empty.len(), 0);
+    }
+
+    // ── CRIT-01 FIX: On-chain token operation tests ─────
+
+    #[test]
+    fn test_onchain_token_deploy_via_block() {
+        use crate::core::transaction::{TokenOp, TOKEN_OP_ADDRESS};
+
+        let mut bc = setup_chain();
+        let (sk, pk) = make_keypair();
+        let deployer = derive_addr(&pk);
+        bc.accounts.credit(&deployer, 10_000_000).unwrap();
+
+        // Create token deploy transaction
+        let token_op = TokenOp::Deploy {
+            name: "TestToken".to_string(),
+            symbol: "TT".to_string(),
+            decimals: 8,
+            supply: 1_000_000,
+        };
+
+        let tx = Transaction::new(
+            deployer.clone(), TOKEN_OP_ADDRESS.to_string(),
+            0, MIN_TX_FEE, 0, token_op.encode().unwrap(),
+            CHAIN_ID, &sk, &pk,
+        ).unwrap();
+        bc.add_to_mempool(tx).unwrap();
+
+        // Mine block
+        let block = bc.create_block("validator1").unwrap();
+        assert_eq!(block.tx_count(), 2); // coinbase + token deploy
+        bc.add_block(block).unwrap();
+
+        // Token should now be deployed
+        assert_eq!(bc.contracts.contract_count(), 1);
+        let tokens = bc.list_tokens();
+        assert_eq!(tokens[0]["symbol"], "TT");
+        assert_eq!(tokens[0]["total_supply"], 1_000_000);
+    }
+
+    #[test]
+    fn test_onchain_token_transfer_via_block() {
+        use crate::core::transaction::{TokenOp, TOKEN_OP_ADDRESS};
+
+        let mut bc = setup_chain();
+        let (sk, pk) = make_keypair();
+        let alice = derive_addr(&pk);
+        bc.accounts.credit(&alice, 10_000_000).unwrap();
+
+        // Deploy token first (old method for setup)
+        let contract = bc.deploy_token(
+            &alice, "Coin".to_string(), "CN".to_string(), 8, 500_000, 0,
+        ).unwrap();
+
+        // Create transfer transaction
+        let token_op = TokenOp::Transfer {
+            contract: contract.clone(),
+            to: "bob".to_string(),
+            amount: 100_000,
+        };
+        let tx = Transaction::new(
+            alice.clone(), TOKEN_OP_ADDRESS.to_string(),
+            0, MIN_TX_FEE, 0, token_op.encode().unwrap(),
+            CHAIN_ID, &sk, &pk,
+        ).unwrap();
+        bc.add_to_mempool(tx).unwrap();
+
+        // Mine block
+        let block = bc.create_block("validator1").unwrap();
+        bc.add_block(block).unwrap();
+
+        // Verify token balances
+        assert_eq!(bc.token_balance(&contract, &alice), 400_000);
+        assert_eq!(bc.token_balance(&contract, "bob"), 100_000);
+    }
+
+    #[test]
+    fn test_onchain_token_op_recorded_in_block() {
+        use crate::core::transaction::{TokenOp, TOKEN_OP_ADDRESS};
+
+        let mut bc = setup_chain();
+        let (sk, pk) = make_keypair();
+        let deployer = derive_addr(&pk);
+        bc.accounts.credit(&deployer, 10_000_000).unwrap();
+
+        let token_op = TokenOp::Deploy {
+            name: "OnChain".to_string(),
+            symbol: "OC".to_string(),
+            decimals: 8,
+            supply: 999,
+        };
+        let tx = Transaction::new(
+            deployer.clone(), TOKEN_OP_ADDRESS.to_string(),
+            0, MIN_TX_FEE, 0, token_op.encode().unwrap(),
+            CHAIN_ID, &sk, &pk,
+        ).unwrap();
+        let txid = tx.txid.clone();
+        bc.add_to_mempool(tx).unwrap();
+
+        let block = bc.create_block("validator1").unwrap();
+        bc.add_block(block).unwrap();
+
+        // Transaction should be findable in chain
+        let found = bc.get_transaction(&txid);
+        assert!(found.is_some());
+        // Data field should contain the token op
+        let tx_data = found.unwrap();
+        let block_idx = tx_data["block_index"].as_u64().unwrap();
+        assert_eq!(block_idx, 1);
+    }
+
+    #[test]
+    fn test_onchain_token_transfer_insufficient_rejected() {
+        use crate::core::transaction::{TokenOp, TOKEN_OP_ADDRESS};
+
+        let mut bc = setup_chain();
+        let (sk, pk) = make_keypair();
+        let alice = derive_addr(&pk);
+        bc.accounts.credit(&alice, 10_000_000).unwrap();
+
+        let contract = bc.deploy_token(
+            &alice, "Coin".to_string(), "CN".to_string(), 8, 100, 0,
+        ).unwrap();
+
+        // Try to transfer more than token balance
+        let token_op = TokenOp::Transfer {
+            contract: contract.clone(),
+            to: "bob".to_string(),
+            amount: 999, // alice only has 100
+        };
+        let tx = Transaction::new(
+            alice.clone(), TOKEN_OP_ADDRESS.to_string(),
+            0, MIN_TX_FEE, 0, token_op.encode().unwrap(),
+            CHAIN_ID, &sk, &pk,
+        ).unwrap();
+
+        // Should be rejected at mempool (or add_block validation)
+        // add_to_mempool doesn't validate token ops, but add_block Pass 1 does
+        bc.add_to_mempool(tx).unwrap();
+        let block = bc.create_block("validator1").unwrap();
+        let result = bc.add_block(block);
+        assert!(result.is_err());
     }
 }

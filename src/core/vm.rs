@@ -267,6 +267,45 @@ impl ContractRegistry {
         self.contracts.len()
     }
 
+    pub fn exists(&self, address: &str) -> bool {
+        self.contracts.contains_key(address)
+    }
+
+    pub fn get_token_balance(&self, contract: &str, address: &str) -> u64 {
+        self.contracts.get(contract)
+            .map(|c| c.balance_of(address))
+            .unwrap_or(0)
+    }
+
+    // ── On-chain token op helpers (called from add_block) ──
+
+    pub fn execute_transfer(&mut self, contract: &str, from: &str, to: &str, amount: u64) -> SentrixResult<()> {
+        let c = self.contracts.get_mut(contract)
+            .ok_or_else(|| SentrixError::NotFound(format!("contract {}", contract)))?;
+        c.transfer(from, to, amount)
+    }
+
+    pub fn execute_burn(&mut self, contract: &str, from: &str, amount: u64) -> SentrixResult<()> {
+        let c = self.contracts.get_mut(contract)
+            .ok_or_else(|| SentrixError::NotFound(format!("contract {}", contract)))?;
+        c.burn(from, amount)
+    }
+
+    pub fn execute_mint(&mut self, contract: &str, caller: &str, to: &str, amount: u64) -> SentrixResult<()> {
+        let c = self.contracts.get_mut(contract)
+            .ok_or_else(|| SentrixError::NotFound(format!("contract {}", contract)))?;
+        if caller != c.owner {
+            return Err(SentrixError::UnauthorizedValidator("only owner can mint".to_string()));
+        }
+        c.mint(to, amount)
+    }
+
+    pub fn execute_approve(&mut self, contract: &str, owner: &str, spender: &str, amount: u64) -> SentrixResult<()> {
+        let c = self.contracts.get_mut(contract)
+            .ok_or_else(|| SentrixError::NotFound(format!("contract {}", contract)))?;
+        c.approve(owner, spender, amount)
+    }
+
     // ── Dispatch ─────────────────────────────────────────
     pub fn call(
         &mut self,

@@ -8,6 +8,33 @@ use crate::types::error::{SentrixError, SentrixResult};
 
 pub const MIN_TX_FEE: u64 = 10_000; // 0.0001 SRX in sentri
 pub const COINBASE_ADDRESS: &str = "COINBASE";
+pub const TOKEN_OP_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+
+// ── Token operation types (encoded in Transaction.data field) ──
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum TokenOp {
+    Deploy { name: String, symbol: String, decimals: u8, supply: u64 },
+    Transfer { contract: String, to: String, amount: u64 },
+    Burn { contract: String, amount: u64 },
+    Mint { contract: String, to: String, amount: u64 },
+    Approve { contract: String, spender: String, amount: u64 },
+}
+
+impl TokenOp {
+    pub fn encode(&self) -> SentrixResult<String> {
+        serde_json::to_string(self)
+            .map_err(|e| SentrixError::InvalidTransaction(e.to_string()))
+    }
+
+    pub fn decode(data: &str) -> Option<Self> {
+        serde_json::from_str(data).ok()
+    }
+
+    pub fn is_token_op(data: &str) -> bool {
+        data.contains("\"op\":")
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
@@ -169,9 +196,10 @@ impl Transaction {
             ));
         }
 
-        if self.amount == 0 {
+        // amount=0 is allowed for token operations (data field carries the op)
+        if self.amount == 0 && !TokenOp::is_token_op(&self.data) {
             return Err(SentrixError::InvalidTransaction(
-                "amount must be > 0".to_string()
+                "amount must be > 0 (unless token operation)".to_string()
             ));
         }
 
