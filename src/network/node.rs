@@ -252,11 +252,8 @@ impl Node {
 
                 Message::NewTransaction { transaction } => {
                     let mut bc = blockchain.write().await;
-                    match bc.add_to_mempool(transaction.clone()) {
-                        Ok(()) => {
-                            let _ = event_tx.send(NodeEvent::NewTransaction(transaction)).await;
-                        }
-                        Err(_) => {} // duplicate or invalid — silent
+                    if let Ok(()) = bc.add_to_mempool(transaction.clone()) {
+                        let _ = event_tx.send(NodeEvent::NewTransaction(transaction)).await;
                     }
                 }
 

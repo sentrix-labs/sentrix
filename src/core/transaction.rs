@@ -25,6 +25,7 @@ pub struct Transaction {
 }
 
 impl Transaction {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         from_address: String,
         to_address: String,

@@ -12,7 +12,7 @@ use crate::types::error::{SentrixError, SentrixResult};
 
 // ── Chain constants ──────────────────────────────────────
 pub const MAX_SUPPLY: u64         = 210_000_000 * 100_000_000; // in sentri
-pub const BLOCK_REWARD: u64       = 1 * 100_000_000;           // 1 SRX in sentri
+pub const BLOCK_REWARD: u64       = 100_000_000;               // 1 SRX in sentri
 pub const HALVING_INTERVAL: u64   = 42_000_000;                 // blocks
 pub const BLOCK_TIME_SECS: u64    = 3;
 pub const MAX_TX_PER_BLOCK: usize = 100;
@@ -230,7 +230,7 @@ impl Blockchain {
     // ── Block application (two-pass atomic) ─────────────
     pub fn add_block(&mut self, block: Block) -> SentrixResult<()> {
         // L-04 FIX: warn on large chain
-        if self.chain.len() > 0 && self.chain.len() % 10_000 == 0 {
+        if !self.chain.is_empty() && self.chain.len().is_multiple_of(10_000) {
             tracing::warn!(
                 "chain length is {} blocks ({}) — consider archival strategy",
                 self.chain.len(), self.get_memory_estimate()
