@@ -1,4 +1,4 @@
-# Sentrix Chain — Technical Whitepaper
+# Sentrix — Technical Whitepaper
 
 **Version 3.0 — April 2026**
 **Author: SentrisCloud**
@@ -7,7 +7,7 @@
 
 ## Abstract
 
-Sentrix Chain is a Layer-1 Proof-of-Authority blockchain engineered for fast, deterministic settlement. Built from scratch in Rust, it delivers 3-second block finality, Ethereum-compatible addressing, and a native fungible token standard (SRX-20). The chain is designed to evolve from a permissioned PoA network into a fully decentralized public chain through a phased transition to Delegated Proof of Stake.
+Sentrix is a Layer-1 Proof-of-Authority blockchain engineered for fast, deterministic settlement. Built from scratch in Rust, it delivers 3-second block finality, Ethereum-compatible addressing, and a native fungible token standard (SRX-20). The chain is designed to evolve from a permissioned PoA network into a fully decentralized public chain through a phased transition to Delegated Proof of Stake.
 
 ---
 
@@ -26,7 +26,7 @@ There is a need for a blockchain that starts simple and controlled, then progres
 
 ### 1.2 Solution
 
-Sentrix Chain takes the **progressive decentralization** approach:
+Sentrix takes the **progressive decentralization** approach:
 
 1. **Phase 1**: Proof of Authority — fast, controlled, battle-tested
 2. **Phase 2**: Public PoA — open participation, token economy
@@ -241,7 +241,7 @@ Any token holder can burn their tokens, permanently removing them from circulati
 
 ### 7.5 Three-Token Economy
 
-Sentrix Chain operates a three-token model:
+Sentrix operates a three-token model:
 
 | Token | Type | Supply | Role |
 |---|---|---|---|
@@ -330,7 +330,7 @@ Sentrix exposes an Ethereum-compatible JSON-RPC 2.0 interface supporting 20 stan
 - **Hardhat** — smart contract development and testing
 - **Block explorers** — third-party chain analysis
 
-Chain ID `7119` (`0x1bcf`) is registered for Sentrix Chain.
+Chain ID `7119` (`0x1bcf`) is registered for Sentrix.
 
 ---
 
@@ -350,7 +350,7 @@ Chain ID `7119` (`0x1bcf`) is registered for Sentrix Chain.
 
 ### 14.1 Funding Status
 
-Sentrix Chain is currently self-funded by SentrisCloud. The project is bootstrapped — no external venture capital or token sale has occurred.
+Sentrix is currently self-funded by SentrisCloud. The project is bootstrapped — no external venture capital or token sale has occurred.
 
 External investment and partnership opportunities will be announced through official channels at sentrix.io when the time is right.
 
@@ -358,7 +358,7 @@ External investment and partnership opportunities will be announced through offi
 
 SentrisCloud allocates **21,000,000 SRX** from the Ecosystem Fund for developer grants. Grants are available for:
 
-- Applications built on Sentrix Chain
+- Applications built on Sentrix
 - Developer tooling (SDKs, libraries, integrations)
 - Community infrastructure (wallets, explorers, bridges)
 - Security research and auditing
@@ -390,7 +390,7 @@ See [SECURITY.md](SECURITY.md) for responsible disclosure policy.
 
 ## 15. Conclusion
 
-Sentrix Chain demonstrates that a production-quality blockchain can be built with a lean codebase, clear design principles, and a progressive decentralization strategy. By starting with Proof of Authority and evolving toward Delegated Proof of Stake, Sentrix balances the practical needs of early-stage networks with the long-term goal of trustless, permissionless operation.
+Sentrix demonstrates that a production-quality blockchain can be built with a lean codebase, clear design principles, and a progressive decentralization strategy. By starting with Proof of Authority and evolving toward Delegated Proof of Stake, Sentrix balances the practical needs of early-stage networks with the long-term goal of trustless, permissionless operation.
 
 The combination of Rust's performance guarantees, Ethereum-compatible tooling, and a deflationary token model positions Sentrix as a viable foundation for application-specific blockchain ecosystems.
 

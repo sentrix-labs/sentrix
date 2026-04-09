@@ -1,3 +1,3 @@
-// wallet/mod.rs - Sentrix Chain
+// wallet/mod.rs - Sentrix
 pub mod wallet;
 pub mod keystore;

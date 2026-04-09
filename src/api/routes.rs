@@ -1,4 +1,4 @@
-// routes.rs - Sentrix Chain
+// routes.rs - Sentrix
 
 use axum::{
     Router,

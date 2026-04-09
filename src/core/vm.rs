@@ -1,4 +1,4 @@
-// vm.rs - Sentrix Chain — SRX-20 Token Standard
+// vm.rs - Sentrix — SRX-20 Token Standard
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

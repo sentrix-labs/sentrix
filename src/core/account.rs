@@ -1,4 +1,4 @@
-// account.rs - Sentrix Chain
+// account.rs - Sentrix
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

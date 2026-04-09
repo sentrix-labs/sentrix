@@ -1,4 +1,4 @@
-// lib.rs - Sentrix Chain
+// lib.rs - Sentrix
 pub mod core;
 pub mod wallet;
 pub mod network;

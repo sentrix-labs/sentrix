@@ -1,3 +1,3 @@
-// network/mod.rs - Sentrix Chain
+// network/mod.rs - Sentrix
 pub mod node;
 pub mod sync;

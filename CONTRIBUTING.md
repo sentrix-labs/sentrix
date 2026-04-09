@@ -1,6 +1,6 @@
-# Contributing to Sentrix Chain
+# Contributing to Sentrix
 
-Thank you for considering contributing to Sentrix Chain! We welcome contributions from the community and are grateful for every pull request, bug report, and feature suggestion.
+Thank you for considering contributing to Sentrix! We welcome contributions from the community and are grateful for every pull request, bug report, and feature suggestion.
 
 ---
 
@@ -208,8 +208,8 @@ If you find a security vulnerability, **do NOT open a public issue**. See [SECUR
 
 ## License
 
-By contributing to Sentrix Chain, you agree that your contributions will be licensed under the [BUSL-1.1](LICENSE) license.
+By contributing to Sentrix, you agree that your contributions will be licensed under the [BUSL-1.1](LICENSE) license.
 
 ---
 
-Thank you for being part of building Sentrix Chain!
+Thank you for being part of building Sentrix!

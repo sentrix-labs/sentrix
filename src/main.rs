@@ -1,4 +1,4 @@
-// main.rs - Sentrix Chain CLI entry point
+// main.rs - Sentrix CLI entry point
 
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
@@ -33,7 +33,7 @@ fn get_wallets_dir() -> String {
 
 #[derive(Parser)]
 #[command(name = "sentrix")]
-#[command(about = "Sentrix Chain (SRX) — Layer-1 PoA Blockchain")]
+#[command(about = "Sentrix (SRX) — Layer-1 PoA Blockchain")]
 #[command(version = "0.1.0")]
 struct Cli {
     #[command(subcommand)]
@@ -550,7 +550,7 @@ fn cmd_balance(address: &str) -> anyhow::Result<()> {
 }
 
 fn cmd_genesis_wallets() -> anyhow::Result<()> {
-    println!("Generating 7 genesis wallets for Sentrix Chain...\n");
+    println!("Generating 7 genesis wallets for Sentrix...\n");
 
     let roles = [
         "founder",

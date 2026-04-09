@@ -1,4 +1,4 @@
-// explorer.rs - Sentrix Chain — Block Explorer Web UI
+// explorer.rs - Sentrix — Block Explorer Web UI
 
 use axum::{
     extract::{State, Path},

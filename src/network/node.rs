@@ -1,4 +1,4 @@
-// node.rs - Sentrix Chain — Full P2P TCP Node
+// node.rs - Sentrix — Full P2P TCP Node
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

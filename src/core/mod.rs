@@ -1,4 +1,4 @@
-// core/mod.rs - Sentrix Chain
+// core/mod.rs - Sentrix
 pub mod block;
 pub mod transaction;
 pub mod account;

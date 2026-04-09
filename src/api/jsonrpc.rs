@@ -1,4 +1,4 @@
-// jsonrpc.rs - Sentrix Chain — Ethereum-compatible JSON-RPC 2.0
+// jsonrpc.rs - Sentrix — Ethereum-compatible JSON-RPC 2.0
 
 use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};

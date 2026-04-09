@@ -1,4 +1,4 @@
-// block.rs - Sentrix Chain
+// block.rs - Sentrix
 
 use serde::{Deserialize, Serialize};
 use crate::core::transaction::Transaction;

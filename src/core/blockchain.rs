@@ -1,4 +1,4 @@
-// blockchain.rs - Sentrix Chain
+// blockchain.rs - Sentrix
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;

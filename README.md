@@ -211,7 +211,7 @@ Add Sentrix as a custom network in MetaMask:
 
 | Field | Value |
 |---|---|
-| Network name | Sentrix Chain |
+| Network name | Sentrix |
 | RPC URL | `https://sentrix-rpc.sentriscloud.com` |
 | Chain ID | `7119` |
 | Currency symbol | `SRX` |
@@ -326,7 +326,7 @@ src/
 
 ## Three-Token Model
 
-Sentrix Chain operates a three-token economy:
+Sentrix operates a three-token economy:
 
 | Token | Type | Supply | Purpose |
 |---|---|---|---|
@@ -464,7 +464,7 @@ See [SECURITY.md](SECURITY.md) for responsible disclosure policy.
 
 ## Contributing
 
-Sentrix Chain is open for contributions under the BUSL-1.1 license.
+Sentrix is open for contributions under the BUSL-1.1 license.
 
 - **Bug reports**: Open a GitHub issue
 - **Bug bounty**: Critical bugs rewarded in SRX — see [SECURITY.md](SECURITY.md)
@@ -487,7 +487,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-Sentrix Chain is licensed under the **Business Source License 1.1 (BUSL-1.1)**.
+Sentrix is licensed under the **Business Source License 1.1 (BUSL-1.1)**.
 
 - **Licensor:** SentrisCloud
 - **Change Date:** 2030-01-01 (converts to MIT)
@@ -499,7 +499,7 @@ See the [LICENSE](LICENSE) file for the full text.
 
 ## Built by SentrisCloud
 
-Sentrix Chain is developed and maintained by **SentrisCloud**.
+Sentrix is developed and maintained by **SentrisCloud**.
 
 For commercial licensing, partnership inquiries, or validator onboarding, reach out through the official channels.
 

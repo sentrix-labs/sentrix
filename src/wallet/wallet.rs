@@ -1,4 +1,4 @@
-// wallet.rs - Sentrix Chain
+// wallet.rs - Sentrix
 
 use secp256k1::{Secp256k1, SecretKey, PublicKey};
 use secp256k1::rand::rngs::OsRng;

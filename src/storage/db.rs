@@ -1,4 +1,4 @@
-// db.rs - Sentrix Chain — Per-block persistent storage
+// db.rs - Sentrix — Per-block persistent storage
 
 use sled::Db;
 use serde::{Serialize, de::DeserializeOwned};

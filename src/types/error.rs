@@ -1,4 +1,4 @@
-// error.rs - Sentrix Chain
+// error.rs - Sentrix
 
 use thiserror::Error;
 

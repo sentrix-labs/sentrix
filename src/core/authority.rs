@@ -1,4 +1,4 @@
-// authority.rs - Sentrix Chain
+// authority.rs - Sentrix
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

@@ -1,4 +1,4 @@
-// keystore.rs - Sentrix Chain
+// keystore.rs - Sentrix
 
 use aes_gcm::{Aes256Gcm, Key, Nonce, aead::{Aead, KeyInit}};
 use pbkdf2::pbkdf2_hmac;

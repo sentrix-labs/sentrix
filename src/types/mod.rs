@@ -1,2 +1,2 @@
-// types/mod.rs - Sentrix Chain
+// types/mod.rs - Sentrix
 pub mod error;

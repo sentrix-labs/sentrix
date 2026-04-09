@@ -4,7 +4,7 @@
 
 **Please do NOT report security vulnerabilities through public GitHub issues.**
 
-If you discover a security vulnerability in Sentrix Chain, we appreciate your responsible disclosure. Security is our top priority, and we take every report seriously.
+If you discover a security vulnerability in Sentrix, we appreciate your responsible disclosure. Security is our top priority, and we take every report seriously.
 
 ### How to report
 
@@ -66,4 +66,4 @@ We maintain a [Hall of Fame](#hall-of-fame) for researchers who responsibly disc
 
 ---
 
-Thank you for helping keep Sentrix Chain and its users safe.
+Thank you for helping keep Sentrix and its users safe.

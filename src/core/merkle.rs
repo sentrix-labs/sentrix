@@ -1,4 +1,4 @@
-// merkle.rs - Sentrix Chain
+// merkle.rs - Sentrix
 
 use sha2::{Sha256, Digest};
 

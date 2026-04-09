@@ -1,4 +1,4 @@
-// sync.rs - Sentrix Chain — Chain synchronization
+// sync.rs - Sentrix — Chain synchronization
 
 use crate::core::block::Block;
 use crate::network::node::{Node, Message, SharedBlockchain};
