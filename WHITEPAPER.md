@@ -380,9 +380,11 @@ See [SECURITY.md](SECURITY.md) for responsible disclosure policy.
 
 ### 14.4 Official Channels
 
-- Website: sentrix.io *(coming soon)*
+- Explorer: sentrix-explorer.sentriscloud.com
+- API: sentrix-api.sentriscloud.com
+- RPC: sentrix-rpc.sentriscloud.com
 - GitHub: github.com/satyakwok/sentrix
-- Email: hello@sentrix.io *(coming soon)*
+- Email: sentriscloud@gmail.com
 
 ---
 
