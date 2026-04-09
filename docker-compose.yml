@@ -1,18 +1,25 @@
 services:
-  sentrix:
-    build: .
+  sentrix-node:
+    image: ghcr.io/satyakwok/sentrix:latest
     container_name: sentrix-node
     restart: unless-stopped
     ports:
-      - "8545:8545"   # REST API + JSON-RPC + Explorer
-      - "30303:30303" # P2P
+      - "8545:8545"
+      - "30303:30303"
     volumes:
       - sentrix-data:/data
+    env_file:
+      - .env
     environment:
-      - SENTRIX_API_KEY=${SENTRIX_API_KEY:-}
+      - SENTRIX_DATA_DIR=/data
       - RUST_LOG=info
-    command: ["start", "--validator-key", "${VALIDATOR_KEY}"]
+    command: ["start"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8545/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
 volumes:
   sentrix-data:
-    external: true

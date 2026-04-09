@@ -22,6 +22,8 @@
 *.env
 *.env.*
 .env.local
+# Allow .env.example (safe template, no real values)
+!.env.example
 
 # Build helper scripts (local dev only)
 *.bat
