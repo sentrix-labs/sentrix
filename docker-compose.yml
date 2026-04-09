@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  sentrix:
+    build: .
+    container_name: sentrix-node
+    restart: unless-stopped
+    ports:
+      - "8545:8545"   # REST API + JSON-RPC + Explorer
+      - "30303:30303" # P2P
+    volumes:
+      - sentrix-data:/data
+    environment:
+      - SENTRIX_API_KEY=${SENTRIX_API_KEY:-}
+      - RUST_LOG=info
+    command: ["start", "--validator-key", "${VALIDATOR_KEY}"]
+
+volumes:
+  sentrix-data:
