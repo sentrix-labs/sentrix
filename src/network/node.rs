@@ -177,8 +177,9 @@ impl Node {
                     let peers = peers.clone();
                     let etx = event_tx.clone();
 
+                    let peer_ip = peer_addr.ip().to_string();
                     tokio::spawn(async move {
-                        if let Err(e) = Self::handle_connection(stream, bc, peers, etx).await {
+                        if let Err(e) = Self::handle_connection(stream, bc, peers, etx, peer_ip).await {
                             tracing::warn!("Peer {} error: {}", peer_addr, e);
                         }
                     });
@@ -197,6 +198,7 @@ impl Node {
         blockchain: SharedBlockchain,
         peers: SharedPeers,
         event_tx: mpsc::Sender<NodeEvent>,
+        peer_ip: String,
     ) -> SentrixResult<()> {
         loop {
             let msg = match Self::read_message(&mut stream).await {
@@ -205,7 +207,7 @@ impl Node {
             };
 
             match msg {
-                Message::Handshake { host, port, height, chain_id } => {
+                Message::Handshake { host: _, port, height, chain_id } => {
                     // Validate chain_id matches
                     let bc = blockchain.read().await;
                     if chain_id != bc.chain_id {
@@ -215,8 +217,8 @@ impl Node {
                         ));
                     }
 
-                    // Register peer
-                    let peer = Peer { host: host.clone(), port, height, chain_id };
+                    // Register peer using actual TCP IP + declared P2P port
+                    let peer = Peer { host: peer_ip.clone(), port, height, chain_id };
                     let peer_addr = peer.addr();
                     peers.write().await.insert(peer_addr.clone(), peer);
                     let _ = event_tx.send(NodeEvent::PeerConnected(peer_addr)).await;
@@ -328,7 +330,7 @@ impl Node {
 
         // Read handshake response + verify chain_id
         match Self::read_message(&mut stream).await? {
-            Message::Handshake { host, port, height, chain_id } => {
+            Message::Handshake { host: _, port: _, height, chain_id } => {
                 // M-02 FIX: verify chain_id on outbound connections too
                 let our_chain_id = self.blockchain.read().await.chain_id;
                 if chain_id != our_chain_id {
@@ -337,7 +339,8 @@ impl Node {
                     ));
                 }
 
-                let peer = Peer { host: host.clone(), port, height, chain_id };
+                // Use the actual connection target (host:port) for broadcasting, not the handshake response
+                let peer = Peer { host: host.to_string(), port, height, chain_id };
                 let peer_addr = peer.addr();
                 self.peers.write().await.insert(peer_addr.clone(), peer);
                 let _ = self.event_tx.send(NodeEvent::PeerConnected(peer_addr.clone())).await;
