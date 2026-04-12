@@ -22,6 +22,37 @@ fn truncate(s: &str, n: usize) -> String {
 
 fn srx(sentri: u64) -> f64 { sentri as f64 / 100_000_000.0 }
 
+/// Format unix timestamp as "DD Mon YYYY, HH:MM WIB" (UTC+7)
+fn fmt_ts(unix: u64) -> String {
+    const WIB: u64 = 7 * 3600;
+    let t = unix + WIB;
+    let secs_in_day = t % 86400;
+    let days_total  = t / 86400;                        // days since 1970-01-01
+
+    let hh = secs_in_day / 3600;
+    let mm = (secs_in_day % 3600) / 60;
+
+    // Calendar calculation (Gregorian)
+    let mut y = 1970u64;
+    let mut d = days_total;
+    loop {
+        let dy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366 } else { 365 };
+        if d < dy { break; }
+        d -= dy;
+        y += 1;
+    }
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days_in_month = [31u64, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut m = 0usize;
+    for &dim in &days_in_month {
+        if d < dim { break; }
+        d -= dim;
+        m += 1;
+    }
+    let month = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m];
+    format!("{} {} {}, {:02}:{:02} WIB", d + 1, month, y, hh, mm)
+}
+
 const CSS: &str = r#"
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0a0e17; color: #e1e5ee; }
@@ -103,7 +134,7 @@ pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
                 </tr>"#,
                 block.index, block.index,
                 block.index, html_escape(&truncate(&block.hash, 16)),
-                block.timestamp,
+                html_escape(&fmt_ts(block.timestamp)),
                 block.tx_count(),
                 html_escape(&block.validator), html_escape(&truncate(&block.validator, 20)),
             ));
@@ -157,7 +188,7 @@ pub async fn explorer_blocks(State(state): State<SharedState>) -> Html<String> {
                 </tr>"#,
                 block.index, block.index,
                 block.index, html_escape(&truncate(&block.hash, 20)),
-                block.timestamp,
+                html_escape(&fmt_ts(block.timestamp)),
                 block.tx_count(),
                 html_escape(&block.validator), html_escape(&truncate(&block.validator, 20)),
             ));
@@ -181,7 +212,8 @@ pub async fn explorer_blocks(State(state): State<SharedState>) -> Html<String> {
 // ── Transactions list ────────────────────────────────────
 pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<String> {
     let bc = state.read().await;
-    let txs = bc.get_latest_transactions(50, 0);
+    // Fetch 500 to ensure we capture any regular TXs buried among coinbase rewards
+    let txs = bc.get_latest_transactions(500, 0);
 
     let mut coinbase_rows = String::new();
     let mut regular_rows = String::new();
@@ -216,26 +248,46 @@ pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<Str
             html_escape(txid), html_escape(&truncate(txid, 16)),
             from_disp, to_disp,
             srx(amount), fee,
-            blk, blk, ts,
+            blk, blk,
+            html_escape(&fmt_ts(ts)),
         );
 
         if is_cb { coinbase_rows.push_str(&row); }
         else { regular_rows.push_str(&row); }
     }
 
-    let body = format!(r#"
-    {}
-    <h3>Regular Transactions</h3>
-    <table>
-    <tr><th>TxID</th><th>From</th><th>To</th><th>Amount</th><th>Fee</th><th>Block</th><th>Timestamp</th></tr>
-    {regular_rows}
-    </table>
-    <h3 style="margin-top:32px">Coinbase Rewards</h3>
-    <table>
-    <tr><th>TxID</th><th>From</th><th>To (Validator)</th><th>Amount</th><th>Fee</th><th>Block</th><th>Timestamp</th></tr>
+    let regular_content = if regular_rows.is_empty() {
+        r#"<p style="color:#6b7280;padding:24px 0;text-align:center">No regular transactions yet</p>"#.to_string()
+    } else {
+        format!(r#"<table>
+        <tr><th>TxID</th><th>From</th><th>To</th><th>Amount</th><th>Fee</th><th>Block</th><th>Time (WIB)</th></tr>
+        {regular_rows}
+        </table>"#)
+    };
+
+    let coinbase_content = format!(r#"<table>
+    <tr><th>TxID</th><th>From</th><th>To (Validator)</th><th>Amount</th><th>Fee</th><th>Block</th><th>Time (WIB)</th></tr>
     {coinbase_rows}
-    </table>"#,
-        nav_tabs("transactions"),
+    </table>"#);
+
+    let body = format!(r#"
+    {nav}
+    <div class="tabs" style="margin-top:0">
+        <button class="tab active" onclick="showTab('regular',this)">Regular Transactions</button>
+        <button class="tab" onclick="showTab('coinbase',this)">Coinbase Rewards</button>
+    </div>
+    <div id="tab-regular">{regular_content}</div>
+    <div id="tab-coinbase" style="display:none">{coinbase_content}</div>
+    <script>
+    function showTab(name,btn){{
+        document.getElementById('tab-regular').style.display='none';
+        document.getElementById('tab-coinbase').style.display='none';
+        document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));
+        document.getElementById('tab-'+name).style.display='';
+        btn.classList.add('active');
+    }}
+    </script>"#,
+        nav = nav_tabs("transactions"),
     );
 
     page("Transactions", &body)
@@ -294,7 +346,7 @@ pub async fn explorer_block(
                 html_escape(&block.hash),
                 html_escape(&block.previous_hash),
                 html_escape(&block.merkle_root),
-                block.timestamp,
+                html_escape(&fmt_ts(block.timestamp)),
                 html_escape(&block.validator), html_escape(&block.validator),
                 block.tx_count(),
                 txs_html,
@@ -412,7 +464,7 @@ pub async fn explorer_tx(
                 fee,
                 tx["nonce"],
                 blk, blk,
-                tx["timestamp"],
+                html_escape(&fmt_ts(tx["timestamp"].as_u64().unwrap_or(0))),
             );
             page("Transaction", &body)
         }
@@ -537,5 +589,21 @@ mod tests {
     fn test_srx_conversion() {
         assert!((srx(100_000_000) - 1.0).abs() < 1e-9);
         assert!((srx(0) - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_fmt_ts() {
+        // 2026-04-12 11:05:00 UTC = 2026-04-12 18:05:00 WIB
+        // Unix: 1775991900 (from actual chain block timestamps)
+        let s = fmt_ts(1775991900);
+        assert!(s.contains("WIB"), "should contain WIB: {s}");
+        assert!(s.contains("Apr"), "should contain Apr: {s}");
+        assert!(s.contains("2026"), "should contain 2026: {s}");
+        assert!(s.contains("12"), "should contain day 12: {s}");
+        assert!(s.contains("18:05"), "should contain 18:05 WIB: {s}");
+        // epoch 0 = 1 Jan 1970 00:00 UTC = 07:00 WIB
+        let epoch = fmt_ts(0);
+        assert!(epoch.contains("WIB"), "epoch should contain WIB: {epoch}");
+        assert!(epoch.contains("1970"), "epoch should contain 1970: {epoch}");
     }
 }
