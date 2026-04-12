@@ -204,6 +204,18 @@ impl SRX20Contract {
             "holders": self.holders(),
         })
     }
+
+    pub fn list_holders(&self) -> Vec<serde_json::Value> {
+        let mut holders: Vec<(&String, u64)> = self.balances.iter()
+            .filter(|(_, b)| **b > 0)
+            .map(|(addr, bal)| (addr, *bal))
+            .collect();
+        holders.sort_by(|a, b| b.1.cmp(&a.1));
+        holders.iter().map(|(addr, bal)| serde_json::json!({
+            "address": addr,
+            "balance": bal,
+        })).collect()
+    }
 }
 
 // ── Contract Registry ────────────────────────────────────
@@ -275,6 +287,10 @@ impl ContractRegistry {
         self.contracts.get(contract)
             .map(|c| c.balance_of(address))
             .unwrap_or(0)
+    }
+
+    pub fn get_holders_list(&self, contract: &str) -> Option<Vec<serde_json::Value>> {
+        self.contracts.get(contract).map(|c| c.list_holders())
     }
 
     // ── On-chain token op helpers (called from add_block) ──

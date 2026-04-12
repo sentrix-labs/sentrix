@@ -138,22 +138,31 @@ pub fn create_router(state: SharedState) -> Router {
 
     // Public routes (GET — no auth needed)
     let public = Router::new()
-        .route("/",                          get(root))
-        .route("/health",                    get(health))
-        .route("/chain/info",                get(chain_info))
-        .route("/chain/blocks",              get(get_blocks))
-        .route("/chain/blocks/:index",      get(get_block))
-        .route("/chain/validate",            get(validate_chain))
-        .route("/accounts/:address/balance", get(get_balance))
-        .route("/accounts/:address/nonce",   get(get_nonce))
-        .route("/transactions/:txid",       get(get_transaction))
-        .route("/mempool",                   get(get_mempool))
-        .route("/validators",                get(get_validators))
-        .route("/tokens",                    get(list_tokens))
-        .route("/tokens/:contract",         get(get_token_info))
+        .route("/",                              get(root))
+        .route("/health",                        get(health))
+        .route("/chain/info",                    get(chain_info))
+        .route("/chain/blocks",                  get(get_blocks))
+        .route("/chain/blocks/:index",           get(get_block))
+        .route("/chain/validate",                get(validate_chain))
+        .route("/accounts/:address/balance",     get(get_balance))
+        .route("/accounts/:address/nonce",       get(get_nonce))
+        .route("/mempool",                       get(get_mempool))
+        .route("/validators",                    get(get_validators))
+        // ── Short-form aliases (used by CoinBlast / Faucet) ──────
+        .route("/blocks",                        get(get_blocks))
+        .route("/blocks/:height",                get(get_block))
+        .route("/wallets/:address",              get(get_wallet_info))
+        .route("/transactions",                  get(list_transactions))
+        .route("/transactions/:txid",            get(get_transaction))
+        // ── Token endpoints ──────────────────────────────────────
+        .route("/tokens",                        get(list_tokens))
+        .route("/tokens/:contract",              get(get_token_info))
         .route("/tokens/:contract/balance/:addr", get(get_token_balance))
-        .route("/address/:address/history",  get(get_address_history))
-        .route("/address/:address/info",     get(get_address_info));
+        .route("/tokens/:contract/holders",      get(get_token_holders_list))
+        .route("/tokens/:contract/trades",       get(get_token_trades_list))
+        // ── Address history ──────────────────────────────────────
+        .route("/address/:address/history",      get(get_address_history))
+        .route("/address/:address/info",         get(get_address_info));
 
     // Protected routes (POST — require X-API-Key if SENTRIX_API_KEY is set)
     let protected = Router::new()
@@ -507,6 +516,77 @@ async fn token_burn(
         "amount": req.amount,
         "status": "pending_in_mempool",
     })))
+}
+
+// ── Short-form alias handlers ────────────────────────────
+
+async fn get_wallet_info(
+    State(state): State<SharedState>,
+    Path(address): Path<String>,
+) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    let balance = bc.accounts.get_balance(&address);
+    let nonce = bc.accounts.get_nonce(&address);
+    let tx_count = bc.get_address_tx_count(&address);
+    Json(serde_json::json!({
+        "address": address,
+        "balance_sentri": balance,
+        "balance_srx": balance as f64 / 100_000_000.0,
+        "nonce": nonce,
+        "tx_count": tx_count,
+    }))
+}
+
+async fn list_transactions(
+    State(state): State<SharedState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    let limit: usize = params.get("limit").and_then(|l| l.parse().ok()).unwrap_or(20).min(100);
+    let offset: usize = params.get("offset").and_then(|o| o.parse().ok()).unwrap_or(0);
+    let txs = bc.get_latest_transactions(limit, offset);
+    let count = txs.len();
+    Json(serde_json::json!({
+        "transactions": txs,
+        "count": count,
+        "pagination": { "limit": limit, "offset": offset },
+    }))
+}
+
+async fn get_token_holders_list(
+    State(state): State<SharedState>,
+    Path(contract): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let bc = state.read().await;
+    match bc.get_token_holders(&contract) {
+        Some(holders) => {
+            let total = holders.len();
+            Ok(Json(serde_json::json!({
+                "contract": contract,
+                "holders": holders,
+                "total": total,
+            })))
+        }
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn get_token_trades_list(
+    State(state): State<SharedState>,
+    Path(contract): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    let limit: usize = params.get("limit").and_then(|l| l.parse().ok()).unwrap_or(20).min(100);
+    let offset: usize = params.get("offset").and_then(|o| o.parse().ok()).unwrap_or(0);
+    let trades = bc.get_token_trades(&contract, limit, offset);
+    let count = trades.len();
+    Json(serde_json::json!({
+        "contract": contract,
+        "trades": trades,
+        "count": count,
+        "pagination": { "limit": limit, "offset": offset },
+    }))
 }
 
 // Helper for API error responses
