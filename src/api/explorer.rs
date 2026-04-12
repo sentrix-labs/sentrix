@@ -15,6 +15,13 @@ pub fn html_escape(s: &str) -> String {
      .replace('\'', "&#x27;")
 }
 
+fn truncate(s: &str, n: usize) -> String {
+    if s.len() <= n { s.to_string() }
+    else { format!("{}…", &s[..n]) }
+}
+
+fn srx(sentri: u64) -> f64 { sentri as f64 / 100_000_000.0 }
+
 const CSS: &str = r#"
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0a0e17; color: #e1e5ee; }
@@ -36,10 +43,14 @@ a:hover { text-decoration: underline; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
 .badge-green { background: #064e3b; color: #34d399; }
 .badge-blue { background: #1e3a5f; color: #60a5fa; }
-.tabs { display: flex; gap: 8px; margin: 20px 0; }
+.badge-yellow { background: #3d2b00; color: #fbbf24; }
+.tabs { display: flex; gap: 8px; margin: 20px 0; flex-wrap: wrap; }
 .tab { padding: 8px 16px; border-radius: 8px; background: #111827; color: #9ca3af; border: 1px solid #1f2937; }
 .tab.active { background: #1e3a5f; color: #60a5fa; border-color: #3b82f6; }
 .mono { font-family: 'Consolas', monospace; }
+.detail-table td:first-child { color: #6b7280; width: 160px; font-size: 13px; }
+h2 { margin: 20px 0; font-size: 20px; color: #f9fafb; }
+h3 { margin: 24px 0 12px; font-size: 16px; color: #9ca3af; }
 "#;
 
 fn page(title: &str, body: &str) -> Html<String> {
@@ -48,11 +59,28 @@ fn page(title: &str, body: &str) -> Html<String> {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>{CSS}</style></head><body>
 <header><div class="container">
-<h1>Sentrix Explorer</h1>
-<span>Chain ID: 7119 | PoA Blockchain</span>
+<h1>⬡ Sentrix Explorer</h1>
+<span>Chain ID: 7119 &nbsp;|&nbsp; PoA Blockchain</span>
 </div></header>
 <div class="container">{body}</div>
 </body></html>"#))
+}
+
+fn nav_tabs(active: &str) -> String {
+    let tabs = [
+        ("Home",         "/explorer",              "home"),
+        ("Blocks",       "/explorer/blocks",       "blocks"),
+        ("Transactions", "/explorer/transactions", "transactions"),
+        ("Validators",   "/explorer/validators",   "validators"),
+        ("Tokens",       "/explorer/tokens",       "tokens"),
+    ];
+    let mut html = String::from(r#"<div class="tabs">"#);
+    for (label, href, key) in &tabs {
+        let cls = if *key == active { "tab active" } else { "tab" };
+        html.push_str(&format!(r#"<a class="{cls}" href="{href}">{label}</a>"#));
+    }
+    html.push_str("</div>");
+    html
 }
 
 // ── Explorer home ────────────────────────────────────────
@@ -62,22 +90,22 @@ pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
     let height = bc.height();
 
     let mut blocks_html = String::new();
-    let start = height.saturating_sub(20);
+    let start = height.saturating_sub(19);
     for i in (start..=height).rev() {
         if let Some(block) = bc.get_block(i) {
             blocks_html.push_str(&format!(
                 r#"<tr>
                 <td><a href="/explorer/block/{}">{}</a></td>
-                <td class="hash">{}</td>
+                <td class="hash"><a href="/explorer/block/{}">{}</a></td>
                 <td>{}</td>
                 <td>{}</td>
-                <td class="hash">{}</td>
+                <td class="mono"><a href="/explorer/address/{}">{}</a></td>
                 </tr>"#,
                 block.index, block.index,
-                html_escape(&block.hash[..16]),
-                block.tx_count(),
+                block.index, html_escape(&truncate(&block.hash, 16)),
                 block.timestamp,
-                html_escape(&block.validator[..block.validator.len().min(20)]),
+                block.tx_count(),
+                html_escape(&block.validator), html_escape(&truncate(&block.validator, 20)),
             ));
         }
     }
@@ -91,13 +119,10 @@ pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
         <div class="stat-card"><div class="label">Tokens</div><div class="value">{}</div></div>
         <div class="stat-card"><div class="label">Mempool</div><div class="value">{}</div></div>
     </div>
-    <div class="tabs">
-        <a class="tab active" href="/explorer">Blocks</a>
-        <a class="tab" href="/explorer/validators">Validators</a>
-        <a class="tab" href="/explorer/tokens">Tokens</a>
-    </div>
+    {}
+    <h3>Latest Blocks</h3>
     <table>
-    <tr><th>Block</th><th>Hash</th><th>Txs</th><th>Timestamp</th><th>Validator</th></tr>
+    <tr><th>Height</th><th>Hash</th><th>Timestamp</th><th>Txs</th><th>Validator</th></tr>
     {}
     </table>"#,
         stats["height"],
@@ -106,10 +131,114 @@ pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
         stats["active_validators"],
         stats["deployed_tokens"],
         stats["mempool_size"],
+        nav_tabs("home"),
         blocks_html,
     );
 
     page("Home", &body)
+}
+
+// ── Blocks list ──────────────────────────────────────────
+pub async fn explorer_blocks(State(state): State<SharedState>) -> Html<String> {
+    let bc = state.read().await;
+    let height = bc.height();
+
+    let mut rows = String::new();
+    let start = height.saturating_sub(49);
+    for i in (start..=height).rev() {
+        if let Some(block) = bc.get_block(i) {
+            rows.push_str(&format!(
+                r#"<tr>
+                <td><a href="/explorer/block/{}">{}</a></td>
+                <td class="hash"><a href="/explorer/block/{}">{}</a></td>
+                <td>{}</td>
+                <td>{}</td>
+                <td class="mono"><a href="/explorer/address/{}">{}</a></td>
+                </tr>"#,
+                block.index, block.index,
+                block.index, html_escape(&truncate(&block.hash, 20)),
+                block.timestamp,
+                block.tx_count(),
+                html_escape(&block.validator), html_escape(&truncate(&block.validator, 20)),
+            ));
+        }
+    }
+
+    let body = format!(r#"
+    {}
+    <h3>Latest 50 Blocks</h3>
+    <table>
+    <tr><th>Height</th><th>Hash</th><th>Timestamp</th><th>Txs</th><th>Validator</th></tr>
+    {}
+    </table>"#,
+        nav_tabs("blocks"),
+        rows,
+    );
+
+    page("Blocks", &body)
+}
+
+// ── Transactions list ────────────────────────────────────
+pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<String> {
+    let bc = state.read().await;
+    let txs = bc.get_latest_transactions(50, 0);
+
+    let mut coinbase_rows = String::new();
+    let mut regular_rows = String::new();
+
+    for tx in &txs {
+        let txid   = tx["txid"].as_str().unwrap_or("");
+        let from   = tx["from"].as_str().unwrap_or("");
+        let to     = tx["to"].as_str().unwrap_or("");
+        let amount = tx["amount"].as_u64().unwrap_or(0);
+        let fee    = tx["fee"].as_u64().unwrap_or(0);
+        let is_cb  = tx["is_coinbase"].as_bool().unwrap_or(false);
+        let blk    = tx["block_index"].as_u64().unwrap_or(0);
+        let ts     = tx["block_timestamp"].as_u64().unwrap_or(0);
+
+        let from_disp = if from == "COINBASE" {
+            "COINBASE".to_string()
+        } else {
+            html_escape(&truncate(from, 14))
+        };
+        let to_disp = html_escape(&truncate(to, 14));
+
+        let row = format!(
+            r#"<tr>
+            <td class="hash"><a href="/explorer/tx/{}">{}</a></td>
+            <td class="mono">{}</td>
+            <td class="mono">{}</td>
+            <td>{:.4} SRX</td>
+            <td>{} sentri</td>
+            <td><a href="/explorer/block/{}">#{}</a></td>
+            <td>{}</td>
+            </tr>"#,
+            html_escape(txid), html_escape(&truncate(txid, 16)),
+            from_disp, to_disp,
+            srx(amount), fee,
+            blk, blk, ts,
+        );
+
+        if is_cb { coinbase_rows.push_str(&row); }
+        else { regular_rows.push_str(&row); }
+    }
+
+    let body = format!(r#"
+    {}
+    <h3>Regular Transactions</h3>
+    <table>
+    <tr><th>TxID</th><th>From</th><th>To</th><th>Amount</th><th>Fee</th><th>Block</th><th>Timestamp</th></tr>
+    {regular_rows}
+    </table>
+    <h3 style="margin-top:32px">Coinbase Rewards</h3>
+    <table>
+    <tr><th>TxID</th><th>From</th><th>To (Validator)</th><th>Amount</th><th>Fee</th><th>Block</th><th>Timestamp</th></tr>
+    {coinbase_rows}
+    </table>"#,
+        nav_tabs("transactions"),
+    );
+
+    page("Transactions", &body)
 }
 
 // ── Block detail ─────────────────────────────────────────
@@ -133,33 +262,34 @@ pub async fn explorer_block(
                     <td class="hash"><a href="/explorer/tx/{}">{}</a></td>
                     <td class="mono">{}</td>
                     <td class="mono">{}</td>
-                    <td>{}</td>
-                    <td>{}</td>
+                    <td>{:.4} SRX</td>
+                    <td>{} sentri</td>
                     </tr>"#,
                     badge,
-                    html_escape(&tx.txid), html_escape(&tx.txid[..16]),
+                    html_escape(&tx.txid), html_escape(&truncate(&tx.txid, 16)),
                     html_escape(&tx.from_address),
                     html_escape(&tx.to_address),
-                    tx.amount,
-                    tx.fee,
+                    srx(tx.amount), tx.fee,
                 ));
             }
 
             let body = format!(r#"
-            <h2 style="margin:20px 0">Block #{}</h2>
-            <table>
-            <tr><td style="color:#6b7280;width:150px">Hash</td><td class="hash">{}</td></tr>
-            <tr><td style="color:#6b7280">Previous Hash</td><td class="hash">{}</td></tr>
-            <tr><td style="color:#6b7280">Merkle Root</td><td class="hash">{}</td></tr>
-            <tr><td style="color:#6b7280">Timestamp</td><td>{}</td></tr>
-            <tr><td style="color:#6b7280">Validator</td><td class="mono"><a href="/explorer/address/{}">{}</a></td></tr>
-            <tr><td style="color:#6b7280">Transactions</td><td>{}</td></tr>
+            {}
+            <h2>Block #{}</h2>
+            <table class="detail-table">
+            <tr><td>Hash</td><td class="hash">{}</td></tr>
+            <tr><td>Previous Hash</td><td class="hash">{}</td></tr>
+            <tr><td>Merkle Root</td><td class="hash">{}</td></tr>
+            <tr><td>Timestamp</td><td>{}</td></tr>
+            <tr><td>Validator</td><td class="mono"><a href="/explorer/address/{}">{}</a></td></tr>
+            <tr><td>Transactions</td><td>{}</td></tr>
             </table>
-            <h3 style="margin:24px 0 12px">Transactions</h3>
+            <h3>Transactions</h3>
             <table>
             <tr><th>Type</th><th>TxID</th><th>From</th><th>To</th><th>Amount</th><th>Fee</th></tr>
             {}
             </table>"#,
+                nav_tabs("blocks"),
                 block.index,
                 html_escape(&block.hash),
                 html_escape(&block.previous_hash),
@@ -189,51 +319,53 @@ pub async fn explorer_address(
     for tx in history.iter().rev().take(50) {
         let dir = tx["direction"].as_str().unwrap_or("?");
         let badge = match dir {
-            "in" => r#"<span class="badge badge-green">IN</span>"#,
-            "out" => r#"<span class="badge badge-blue">OUT</span>"#,
-            "reward" => r#"<span class="badge badge-green">REWARD</span>"#,
-            _ => "",
+            "in"     => r#"<span class="badge badge-green">IN</span>"#,
+            "out"    => r#"<span class="badge badge-blue">OUT</span>"#,
+            "reward" => r#"<span class="badge badge-yellow">REWARD</span>"#,
+            _        => r#"<span class="badge">?</span>"#,
         };
         let txid = tx["txid"].as_str().unwrap_or("");
-        let txid_short_len = 16.min(txid.len());
+        let amount = tx["amount"].as_u64().unwrap_or(0);
+        let fee    = tx["fee"].as_u64().unwrap_or(0);
+        let blk    = tx["block_index"].as_u64().unwrap_or(0);
         txs_html.push_str(&format!(
             r#"<tr>
             <td>{}</td>
             <td class="hash"><a href="/explorer/tx/{}">{}</a></td>
-            <td>{}</td>
-            <td>{}</td>
+            <td>{:.4} SRX</td>
+            <td>{} sentri</td>
             <td><a href="/explorer/block/{}">#{}</a></td>
             </tr>"#,
             badge,
-            html_escape(txid),
-            html_escape(&txid[..txid_short_len]),
-            tx["amount"],
-            tx["fee"],
-            tx["block_index"], tx["block_index"],
+            html_escape(txid), html_escape(&truncate(txid, 16)),
+            srx(amount), fee,
+            blk, blk,
         ));
     }
 
     let body = format!(r#"
-    <h2 style="margin:20px 0">Address</h2>
-    <table>
-    <tr><td style="color:#6b7280;width:150px">Address</td><td class="mono">{}</td></tr>
-    <tr><td style="color:#6b7280">Balance</td><td>{} sentri ({} SRX)</td></tr>
-    <tr><td style="color:#6b7280">Nonce</td><td>{}</td></tr>
-    <tr><td style="color:#6b7280">Transactions</td><td>{}</td></tr>
+    {}
+    <h2>Address</h2>
+    <table class="detail-table">
+    <tr><td>Address</td><td class="mono">{}</td></tr>
+    <tr><td>Balance</td><td>{:.8} SRX <span style="color:#6b7280">({} sentri)</span></td></tr>
+    <tr><td>Nonce</td><td>{}</td></tr>
+    <tr><td>Transactions</td><td>{}</td></tr>
     </table>
-    <h3 style="margin:24px 0 12px">Transaction History</h3>
+    <h3>Transaction History</h3>
     <table>
-    <tr><th>Dir</th><th>TxID</th><th>Amount</th><th>Fee</th><th>Block</th></tr>
+    <tr><th>Direction</th><th>TxID</th><th>Amount</th><th>Fee</th><th>Block</th></tr>
     {}
     </table>"#,
+        nav_tabs(""),
         html_escape(&address),
-        balance, balance as f64 / 100_000_000.0,
+        srx(balance), balance,
         nonce,
         history.len(),
         txs_html,
     );
 
-    page(&format!("Address {}", &address[..10]), &body)
+    page(&format!("Address {}", &address[..address.len().min(10)]), &body)
 }
 
 // ── Transaction detail ───────────────────────────────────
@@ -246,26 +378,40 @@ pub async fn explorer_tx(
         Some(tx_data) => {
             let tx = &tx_data["transaction"];
             let tx_from = tx["from_address"].as_str().unwrap_or("");
-            let tx_to = tx["to_address"].as_str().unwrap_or("");
+            let tx_to   = tx["to_address"].as_str().unwrap_or("");
+            let amount  = tx["amount"].as_u64().unwrap_or(0);
+            let fee     = tx["fee"].as_u64().unwrap_or(0);
+            let blk     = tx_data["block_index"].as_u64().unwrap_or(0);
+
+            let from_link = if tx_from == "COINBASE" {
+                "COINBASE".to_string()
+            } else {
+                format!(r#"<a href="/explorer/address/{}">{}</a>"#,
+                    html_escape(tx_from), html_escape(tx_from))
+            };
+
             let body = format!(r#"
-            <h2 style="margin:20px 0">Transaction</h2>
-            <table>
-            <tr><td style="color:#6b7280;width:150px">TxID</td><td class="hash">{}</td></tr>
-            <tr><td style="color:#6b7280">From</td><td class="mono"><a href="/explorer/address/{}">{}</a></td></tr>
-            <tr><td style="color:#6b7280">To</td><td class="mono"><a href="/explorer/address/{}">{}</a></td></tr>
-            <tr><td style="color:#6b7280">Amount</td><td>{} sentri</td></tr>
-            <tr><td style="color:#6b7280">Fee</td><td>{} sentri</td></tr>
-            <tr><td style="color:#6b7280">Nonce</td><td>{}</td></tr>
-            <tr><td style="color:#6b7280">Block</td><td><a href="/explorer/block/{}">#{}</a></td></tr>
-            <tr><td style="color:#6b7280">Timestamp</td><td>{}</td></tr>
+            {}
+            <h2>Transaction</h2>
+            <table class="detail-table">
+            <tr><td>TxID</td><td class="hash">{}</td></tr>
+            <tr><td>Status</td><td><span class="badge badge-green">CONFIRMED</span></td></tr>
+            <tr><td>From</td><td class="mono">{}</td></tr>
+            <tr><td>To</td><td class="mono"><a href="/explorer/address/{}">{}</a></td></tr>
+            <tr><td>Amount</td><td>{:.8} SRX <span style="color:#6b7280">({} sentri)</span></td></tr>
+            <tr><td>Fee</td><td>{} sentri</td></tr>
+            <tr><td>Nonce</td><td>{}</td></tr>
+            <tr><td>Block</td><td><a href="/explorer/block/{}">#{}</a></td></tr>
+            <tr><td>Timestamp</td><td>{}</td></tr>
             </table>"#,
+                nav_tabs("transactions"),
                 html_escape(tx["txid"].as_str().unwrap_or("")),
-                html_escape(tx_from), html_escape(tx_from),
+                from_link,
                 html_escape(tx_to), html_escape(tx_to),
-                tx["amount"],
-                tx["fee"],
+                srx(amount), amount,
+                fee,
                 tx["nonce"],
-                tx_data["block_index"], tx_data["block_index"],
+                blk, blk,
                 tx["timestamp"],
             );
             page("Transaction", &body)
@@ -300,15 +446,14 @@ pub async fn explorer_validators(State(state): State<SharedState>) -> Html<Strin
     }
 
     let body = format!(r#"
-    <div class="tabs">
-        <a class="tab" href="/explorer">Blocks</a>
-        <a class="tab active" href="/explorer/validators">Validators</a>
-        <a class="tab" href="/explorer/tokens">Tokens</a>
-    </div>
+    {}
     <table>
     <tr><th>Name</th><th>Address</th><th>Status</th><th>Blocks Produced</th></tr>
     {}
-    </table>"#, rows);
+    </table>"#,
+        nav_tabs("validators"),
+        rows,
+    );
 
     page("Validators", &body)
 }
@@ -320,6 +465,7 @@ pub async fn explorer_tokens(State(state): State<SharedState>) -> Html<String> {
 
     let mut rows = String::new();
     for t in &tokens {
+        let contract = t["contract_address"].as_str().unwrap_or("");
         rows.push_str(&format!(
             r#"<tr>
             <td><strong>{}</strong></td>
@@ -327,27 +473,27 @@ pub async fn explorer_tokens(State(state): State<SharedState>) -> Html<String> {
             <td class="hash">{}</td>
             <td>{}</td>
             <td>{}</td>
-            <td class="mono">{}</td>
+            <td class="mono"><a href="/explorer/address/{}">{}</a></td>
             </tr>"#,
             html_escape(t["symbol"].as_str().unwrap_or("")),
             html_escape(t["name"].as_str().unwrap_or("")),
-            html_escape(t["contract_address"].as_str().unwrap_or("")),
+            html_escape(&truncate(contract, 24)),
             t["total_supply"],
             t["holders"],
             html_escape(t["owner"].as_str().unwrap_or("")),
+            html_escape(&truncate(t["owner"].as_str().unwrap_or(""), 20)),
         ));
     }
 
     let body = format!(r#"
-    <div class="tabs">
-        <a class="tab" href="/explorer">Blocks</a>
-        <a class="tab" href="/explorer/validators">Validators</a>
-        <a class="tab active" href="/explorer/tokens">Tokens</a>
-    </div>
+    {}
     <table>
     <tr><th>Symbol</th><th>Name</th><th>Contract</th><th>Supply</th><th>Holders</th><th>Owner</th></tr>
     {}
-    </table>"#, rows);
+    </table>"#,
+        nav_tabs("tokens"),
+        rows,
+    );
 
     page("Tokens", &body)
 }
@@ -378,5 +524,18 @@ mod tests {
             html_escape("0x4f3319a747fd564136209cd5d9e7d1a1e4d142be"),
             "0x4f3319a747fd564136209cd5d9e7d1a1e4d142be"
         );
+    }
+
+    #[test]
+    fn test_truncate() {
+        assert_eq!(truncate("hello", 10), "hello");
+        assert_eq!(truncate("hello world long string", 5), "hello…");
+        assert_eq!(truncate("", 5), "");
+    }
+
+    #[test]
+    fn test_srx_conversion() {
+        assert!((srx(100_000_000) - 1.0).abs() < 1e-9);
+        assert!((srx(0) - 0.0).abs() < 1e-9);
     }
 }
