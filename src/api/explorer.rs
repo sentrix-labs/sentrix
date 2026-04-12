@@ -22,6 +22,31 @@ fn truncate(s: &str, n: usize) -> String {
 
 fn srx(sentri: u64) -> f64 { sentri as f64 / 100_000_000.0 }
 
+/// Known address labels
+fn address_label(addr: &str) -> Option<&'static str> {
+    match addr {
+        a if a.starts_with("0x753f2f") => Some("Sentrix Foundation"),
+        a if a.starts_with("0x0804a0") => Some("Sentrix Treasury"),
+        a if a.starts_with("0xdd3cd7") => Some("Nusantara Node"),
+        a if a.starts_with("0x7be6d0") => Some("BlockForge Asia"),
+        a if a.starts_with("0x7dcc4f") => Some("PacificStake"),
+        a if a.starts_with("0xd2116b") => Some("Archipelago Network"),
+        a if a.starts_with("0xeb70fd") => Some("Ecosystem Fund"),
+        _ => None,
+    }
+}
+
+/// Render address with optional label badge
+fn addr_with_label(addr: &str) -> String {
+    match address_label(addr) {
+        Some(label) => format!(
+            r#"{} <span style="background:#1a2a1a;color:#4ade80;font-size:11px;padding:1px 6px;border-radius:4px;margin-left:4px">{}</span>"#,
+            html_escape(addr), label
+        ),
+        None => html_escape(addr).to_string(),
+    }
+}
+
 /// Format unix timestamp as "DD Mon YYYY, HH:MM WIB" (UTC+7)
 fn fmt_ts(unix: u64) -> String {
     const WIB: u64 = 7 * 3600;
@@ -130,6 +155,7 @@ fn nav_tabs(active: &str) -> String {
         ("Validators",   "/explorer/validators",   "validators"),
         ("Tokens",       "/explorer/tokens",       "tokens"),
         ("Rich List",    "/explorer/richlist",     "richlist"),
+        ("Mempool",      "/explorer/mempool",      "mempool"),
     ];
     let mut html = String::from(r#"<div class="tabs">"#);
     for (label, href, key) in &tabs {
@@ -502,7 +528,7 @@ pub async fn explorer_address(
     {}
     </table>"#,
         nav_tabs(""),
-        html_escape(&address),
+        addr_with_label(&address),
         srx(balance), balance,
         nonce,
         history.len(),
@@ -577,12 +603,12 @@ pub async fn explorer_validators(State(state): State<SharedState>) -> Html<Strin
         };
         rows.push_str(&format!(
             r#"<tr>
-            <td>{}</td>
+            <td><a href="/explorer/validator/{}">{}</a></td>
             <td class="mono"><a href="/explorer/address/{}">{}</a></td>
             <td>{}</td>
             <td>{}</td>
             </tr>"#,
-            html_escape(&v.name),
+            html_escape(&v.address), html_escape(&v.name),
             html_escape(&v.address), html_escape(&v.address),
             status,
             v.blocks_produced,
@@ -612,16 +638,16 @@ pub async fn explorer_tokens(State(state): State<SharedState>) -> Html<String> {
         let contract = t["contract_address"].as_str().unwrap_or("");
         rows.push_str(&format!(
             r#"<tr>
-            <td><strong>{}</strong></td>
+            <td><a href="/explorer/token/{}"><strong>{}</strong></a></td>
             <td>{}</td>
-            <td class="hash">{}</td>
+            <td class="hash"><a href="/explorer/token/{}">{}</a></td>
             <td>{}</td>
             <td>{}</td>
             <td class="mono"><a href="/explorer/address/{}">{}</a></td>
             </tr>"#,
-            html_escape(t["symbol"].as_str().unwrap_or("")),
+            html_escape(contract), html_escape(t["symbol"].as_str().unwrap_or("")),
             html_escape(t["name"].as_str().unwrap_or("")),
-            html_escape(&truncate(contract, 24)),
+            html_escape(contract), html_escape(&truncate(contract, 24)),
             t["total_supply"],
             t["holders"],
             html_escape(t["owner"].as_str().unwrap_or("")),
@@ -669,7 +695,7 @@ pub async fn explorer_richlist(State(state): State<SharedState>) -> Html<String>
             <td style="color:#9ca3af">{:.6}%</td>
             </tr>"#,
             rank + 1,
-            html_escape(address), html_escape(address),
+            html_escape(address), addr_with_label(address),
             balance_srx,
             pct,
         ));
@@ -694,6 +720,229 @@ pub async fn explorer_richlist(State(state): State<SharedState>) -> Html<String>
     );
 
     page("Rich List", &body)
+}
+
+// ── Validator detail ──────────────────────────────────────
+pub async fn explorer_validator(
+    State(state): State<SharedState>,
+    Path(address): Path<String>,
+) -> Html<String> {
+    let bc = state.read().await;
+    let v = match bc.authority.validators.get(&address) {
+        Some(v) => v,
+        None => return page("Not Found", "<h2>Validator not found</h2>"),
+    };
+
+    let status = if v.is_active {
+        r#"<span class="badge badge-green">ACTIVE</span>"#
+    } else {
+        r#"<span class="badge" style="background:#4a1c1c;color:#f87171">INACTIVE</span>"#
+    };
+
+    // Slot in round-robin (position among active validators sorted by address)
+    let active_validators = bc.authority.active_validators();
+    let slot = active_validators.iter().position(|av| av.address == v.address)
+        .map(|i| format!("#{}", i + 1))
+        .unwrap_or_else(|| "—".to_string());
+
+    let earned_srx = v.blocks_produced as f64 * 1.0; // 1 SRX per block
+
+    // Last 20 blocks produced by this validator
+    let mut block_rows = String::new();
+    let mut found = 0u32;
+    for block in bc.chain.iter().rev() {
+        if block.validator == v.address {
+            block_rows.push_str(&format!(
+                r#"<tr>
+                <td><a href="/explorer/block/{}">{}</a></td>
+                <td class="hash"><a href="/explorer/block/{}">{}</a></td>
+                <td>{}</td>
+                <td>{}</td>
+                </tr>"#,
+                block.index, block.index,
+                block.index, html_escape(&truncate(&block.hash, 20)),
+                html_escape(&fmt_ts(block.timestamp)),
+                block.tx_count(),
+            ));
+            found += 1;
+            if found >= 20 { break; }
+        }
+    }
+
+    let body = format!(r#"
+    {}
+    <h2>Validator: {}</h2>
+    <table class="detail-table">
+    <tr><td>Name</td><td>{}</td></tr>
+    <tr><td>Address</td><td class="mono"><a href="/explorer/address/{}">{}</a></td></tr>
+    <tr><td>Status</td><td>{}</td></tr>
+    <tr><td>Blocks Produced</td><td>{}</td></tr>
+    <tr><td>Total Earned</td><td>{:.2} SRX</td></tr>
+    <tr><td>Round-Robin Slot</td><td>{}</td></tr>
+    <tr><td>Registered At</td><td>{}</td></tr>
+    <tr><td>Last Block Time</td><td>{}</td></tr>
+    </table>
+    <h3>Last 20 Blocks Produced</h3>
+    <table>
+    <tr><th>Height</th><th>Hash</th><th>Timestamp</th><th>Txs</th></tr>
+    {}
+    </table>"#,
+        nav_tabs("validators"),
+        html_escape(&v.name),
+        html_escape(&v.name),
+        html_escape(&v.address), html_escape(&v.address),
+        status,
+        v.blocks_produced,
+        earned_srx,
+        slot,
+        html_escape(&fmt_ts(v.registered_at)),
+        if v.last_block_time > 0 { html_escape(&fmt_ts(v.last_block_time)) } else { "—".to_string() },
+        block_rows,
+    );
+
+    page(&format!("Validator {}", &v.name), &body)
+}
+
+// ── Token detail ──────────────────────────────────────────
+pub async fn explorer_token(
+    State(state): State<SharedState>,
+    Path(contract): Path<String>,
+) -> Html<String> {
+    let bc = state.read().await;
+    let info = match bc.token_info(&contract) {
+        Ok(i) => i,
+        Err(_) => return page("Not Found", "<h2>Token not found</h2>"),
+    };
+
+    let holders_list = bc.get_token_holders(&contract).unwrap_or_default();
+    let trades = bc.get_token_trades(&contract, 20, 0);
+
+    // Top holders table (up to 20)
+    let mut holder_rows = String::new();
+    for (i, h) in holders_list.iter().take(20).enumerate() {
+        let addr = h["address"].as_str().unwrap_or("");
+        let bal  = h["balance"].as_u64().unwrap_or(0);
+        holder_rows.push_str(&format!(
+            r#"<tr>
+            <td style="color:#6b7280">#{}</td>
+            <td class="mono"><a href="/explorer/address/{}">{}</a></td>
+            <td>{}</td>
+            </tr>"#,
+            i + 1,
+            html_escape(addr), html_escape(addr),
+            bal,
+        ));
+    }
+
+    // Recent transfers table
+    let mut trade_rows = String::new();
+    for t in &trades {
+        let txid = t["txid"].as_str().unwrap_or("");
+        let from = t["from"].as_str().unwrap_or("");
+        let to   = t["to"].as_str().unwrap_or("");
+        let amt  = t["amount"].as_u64().unwrap_or(0);
+        let blk  = t["block_index"].as_u64().unwrap_or(0);
+        trade_rows.push_str(&format!(
+            r#"<tr>
+            <td class="hash"><a href="/explorer/tx/{}">{}</a></td>
+            <td class="mono"><a href="/explorer/address/{}">{}</a></td>
+            <td class="mono"><a href="/explorer/address/{}">{}</a></td>
+            <td>{}</td>
+            <td><a href="/explorer/block/{}">#{}</a></td>
+            </tr>"#,
+            html_escape(txid), html_escape(&truncate(txid, 16)),
+            html_escape(from), html_escape(&truncate(from, 14)),
+            html_escape(to),   html_escape(&truncate(to,   14)),
+            amt,
+            blk, blk,
+        ));
+    }
+
+    let owner = info["owner"].as_str().unwrap_or("");
+    let body = format!(r#"
+    {}
+    <h2>Token: {} ({})</h2>
+    <table class="detail-table">
+    <tr><td>Name</td><td>{}</td></tr>
+    <tr><td>Symbol</td><td><strong>{}</strong></td></tr>
+    <tr><td>Contract</td><td class="hash">{}</td></tr>
+    <tr><td>Total Supply</td><td>{}</td></tr>
+    <tr><td>Decimals</td><td>{}</td></tr>
+    <tr><td>Holders</td><td>{}</td></tr>
+    <tr><td>Owner</td><td class="mono"><a href="/explorer/address/{}">{}</a></td></tr>
+    </table>
+    <h3>Top Holders</h3>
+    {}
+    <table>
+    <tr><th>Rank</th><th>Address</th><th>Balance</th></tr>
+    {}
+    </table>
+    <h3>Recent Transfers</h3>
+    {}
+    <table>
+    <tr><th>TxID</th><th>From</th><th>To</th><th>Amount</th><th>Block</th></tr>
+    {}
+    </table>"#,
+        nav_tabs("tokens"),
+        html_escape(info["name"].as_str().unwrap_or("")),
+        html_escape(info["symbol"].as_str().unwrap_or("")),
+        html_escape(info["name"].as_str().unwrap_or("")),
+        html_escape(info["symbol"].as_str().unwrap_or("")),
+        html_escape(&contract),
+        info["total_supply"],
+        info["decimals"],
+        info["holders"],
+        html_escape(owner), html_escape(owner),
+        if holder_rows.is_empty() { r#"<p style="color:#6b7280;padding:12px 0">No holders yet</p>"# } else { "" },
+        holder_rows,
+        if trade_rows.is_empty() { r#"<p style="color:#6b7280;padding:12px 0">No transfers yet</p>"# } else { "" },
+        trade_rows,
+    );
+
+    page(&format!("Token {}", info["symbol"].as_str().unwrap_or("")), &body)
+}
+
+// ── Mempool page ──────────────────────────────────────────
+pub async fn explorer_mempool(State(state): State<SharedState>) -> Html<String> {
+    let bc = state.read().await;
+    let mempool: Vec<_> = bc.mempool.iter().collect();
+
+    let content = if mempool.is_empty() {
+        r#"<p style="color:#6b7280;padding:48px 0;text-align:center;font-size:16px">No pending transactions</p>"#.to_string()
+    } else {
+        let mut rows = String::new();
+        for tx in &mempool {
+            rows.push_str(&format!(
+                r#"<tr>
+                <td class="hash"><a href="/explorer/tx/{}">{}</a></td>
+                <td class="mono">{}</td>
+                <td class="mono">{}</td>
+                <td>{:.8} SRX</td>
+                <td>{} sentri</td>
+                </tr>"#,
+                html_escape(&tx.txid), html_escape(&truncate(&tx.txid, 16)),
+                html_escape(&truncate(&tx.from_address, 16)),
+                html_escape(&truncate(&tx.to_address,   16)),
+                srx(tx.amount), tx.fee,
+            ));
+        }
+        format!(r#"<table>
+        <tr><th>TxID</th><th>From</th><th>To</th><th>Amount</th><th>Fee</th></tr>
+        {rows}
+        </table>"#)
+    };
+
+    let body = format!(r#"
+    {}
+    <h2>Mempool <span style="color:#6b7280;font-size:14px;font-weight:400">({} pending)</span></h2>
+    {}
+    <script>setTimeout(function(){{location.reload();}}, 5000);</script>"#,
+        nav_tabs("mempool"),
+        mempool.len(),
+        content,
+    );
+
+    page("Mempool", &body)
 }
 
 #[cfg(test)]

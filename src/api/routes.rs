@@ -187,10 +187,13 @@ fn explorer_router(_state: SharedState) -> Router<SharedState> {
         .route("/transactions",     get(explorer::explorer_transactions))
         .route("/validators",       get(explorer::explorer_validators))
         .route("/tokens",           get(explorer::explorer_tokens))
-        .route("/richlist",         get(explorer::explorer_richlist))
-        .route("/block/:index",     get(explorer::explorer_block))
-        .route("/address/:address", get(explorer::explorer_address))
-        .route("/tx/:txid",         get(explorer::explorer_tx))
+        .route("/richlist",           get(explorer::explorer_richlist))
+        .route("/mempool",            get(explorer::explorer_mempool))
+        .route("/validator/:address", get(explorer::explorer_validator))
+        .route("/token/:contract",    get(explorer::explorer_token))
+        .route("/block/:index",       get(explorer::explorer_block))
+        .route("/address/:address",   get(explorer::explorer_address))
+        .route("/tx/:txid",           get(explorer::explorer_tx))
 }
 
 // ── Handlers ─────────────────────────────────────────────
