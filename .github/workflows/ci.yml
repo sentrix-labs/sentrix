@@ -74,19 +74,45 @@ jobs:
 
   deploy:
     name: Deploy to VPS
-    needs: build-and-push
+    needs: test
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
-      - name: Deploy to VPS 1
-        uses: appleboy/ssh-action@v1
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
         with:
-          host: ${{ secrets.VPS1_HOST }}
-          username: ${{ secrets.VPS1_USER }}
-          key: ${{ secrets.VPS1_SSH_KEY }}
-          script: |
-            cd /home/sentriscloud/projects/sentrix
-            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            docker pull ghcr.io/satyakwok/sentrix:latest
-            docker compose up -d --no-build
-            docker image prune -f
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/index
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Install SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS1_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VPS1_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Copy binary to VPS1
+        run: |
+          scp target/release/sentrix \
+            ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }}:/tmp/sentrix_new
+
+      - name: Install and restart on VPS1
+        run: |
+          ssh ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }} "
+            sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
+            sudo chmod +x /opt/sentrix/sentrix
+            sudo systemctl restart sentrix-node
+            sleep 2
+            systemctl is-active sentrix-node
+          "
