@@ -240,7 +240,7 @@ pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<Str
             <td class="hash"><a href="/explorer/tx/{}">{}</a></td>
             <td class="mono">{}</td>
             <td class="mono">{}</td>
-            <td>{:.4} SRX</td>
+            <td>{:.8} SRX</td>
             <td>{} sentri</td>
             <td><a href="/explorer/block/{}">#{}</a></td>
             <td>{}</td>
@@ -314,7 +314,7 @@ pub async fn explorer_block(
                     <td class="hash"><a href="/explorer/tx/{}">{}</a></td>
                     <td class="mono">{}</td>
                     <td class="mono">{}</td>
-                    <td>{:.4} SRX</td>
+                    <td>{:.8} SRX</td>
                     <td>{} sentri</td>
                     </tr>"#,
                     badge,
@@ -384,7 +384,7 @@ pub async fn explorer_address(
             r#"<tr>
             <td>{}</td>
             <td class="hash"><a href="/explorer/tx/{}">{}</a></td>
-            <td>{:.4} SRX</td>
+            <td>{:.8} SRX</td>
             <td>{} sentri</td>
             <td><a href="/explorer/block/{}">#{}</a></td>
             </tr>"#,
