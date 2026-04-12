@@ -12,7 +12,14 @@ use sentrix::api::routes::{create_router, SharedState};
 use sentrix::network::node::{DEFAULT_PORT, Node, NodeEvent};
 use sentrix::network::sync::ChainSync;
 
-const API_PORT: u16 = 8545;
+const DEFAULT_API_PORT: u16 = 8545;
+
+fn get_api_port() -> u16 {
+    std::env::var("SENTRIX_API_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_API_PORT)
+}
 
 fn get_data_dir() -> std::path::PathBuf {
     // Check SENTRIX_DATA_DIR env var first (Docker / custom deploy)
@@ -433,7 +440,7 @@ async fn cmd_start(
 
     // Start REST API
     let app = create_router(shared.clone());
-    let api_addr = format!("0.0.0.0:{}", API_PORT);
+    let api_addr = format!("0.0.0.0:{}", get_api_port());
     println!("REST API listening on http://{}", api_addr);
 
     let listener = tokio::net::TcpListener::bind(&api_addr).await?;
