@@ -95,21 +95,30 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Install SSH key
+      - name: Deploy to VPS1
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.VPS1_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.VPS1_HOST }} >> ~/.ssh/known_hosts
-
-      - name: Copy binary to VPS1
-        run: |
           scp target/release/sentrix \
             ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }}:/tmp/sentrix_new
-
-      - name: Install and restart on VPS1
-        run: |
           ssh ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }} "
+            sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
+            sudo chmod +x /opt/sentrix/sentrix
+            sudo systemctl restart sentrix-node
+            sleep 2
+            systemctl is-active sentrix-node
+          "
+
+      - name: Deploy to VPS2
+        run: |
+          echo "${{ secrets.VPS2_SSH_KEY }}" > ~/.ssh/id_rsa_vps2
+          chmod 600 ~/.ssh/id_rsa_vps2
+          ssh-keyscan -H ${{ secrets.VPS2_HOST }} >> ~/.ssh/known_hosts
+          scp -i ~/.ssh/id_rsa_vps2 target/release/sentrix \
+            ${{ secrets.VPS2_USER }}@${{ secrets.VPS2_HOST }}:/tmp/sentrix_new
+          ssh -i ~/.ssh/id_rsa_vps2 ${{ secrets.VPS2_USER }}@${{ secrets.VPS2_HOST }} "
             sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
             sudo chmod +x /opt/sentrix/sentrix
             sudo systemctl restart sentrix-node
