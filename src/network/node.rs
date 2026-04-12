@@ -218,6 +218,10 @@ impl Node {
                     }
 
                     // Register peer using actual TCP IP + declared P2P port
+                    let our_height = bc.height();
+                    let our_chain_id = bc.chain_id;
+                    drop(bc);
+
                     let peer = Peer { host: peer_ip.clone(), port, height, chain_id };
                     let peer_addr = peer.addr();
                     peers.write().await.insert(peer_addr.clone(), peer);
@@ -225,17 +229,20 @@ impl Node {
                     let response = Message::Handshake {
                         host: "0.0.0.0".to_string(),
                         port: 0,
-                        height: bc.height(),
-                        chain_id: bc.chain_id,
+                        height: our_height,
+                        chain_id: our_chain_id,
                     };
                     Self::send_message(&mut stream, &response).await?;
 
-                    // If peer has more blocks, request sync
-                    if height > bc.height() {
-                        let our_height = bc.height();
-                        drop(bc);
-                        let get_blocks = Message::GetBlocks { from_height: our_height + 1 };
-                        Self::send_message(&mut stream, &get_blocks).await?;
+                    // If peer has more blocks, trigger proactive sync via a dedicated connection.
+                    // Do NOT send GetBlocks inline here — connect_peer callers only read one
+                    // Handshake response and would close the stream, leaving our GetBlocks unanswered.
+                    if height > our_height {
+                        let sync_addr = format!("{}:{}", peer_ip, port);
+                        let _ = event_tx.send(NodeEvent::SyncNeeded {
+                            peer_addr: sync_addr,
+                            peer_height: height,
+                        }).await;
                     }
                 }
 

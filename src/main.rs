@@ -10,6 +10,7 @@ use sentrix::wallet::keystore::Keystore;
 use sentrix::storage::db::Storage;
 use sentrix::api::routes::{create_router, SharedState};
 use sentrix::network::node::{DEFAULT_PORT, Node, NodeEvent};
+use sentrix::network::sync::ChainSync;
 
 const API_PORT: u16 = 8545;
 
@@ -486,7 +487,8 @@ async fn cmd_start(
         });
     }
 
-    // Event handler (log P2P events)
+    // Event handler (log P2P events + handle sync triggers)
+    let shared_for_events = shared.clone();
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             match event {
@@ -496,10 +498,39 @@ async fn cmd_start(
                 NodeEvent::NewTransaction(_) => {},
                 NodeEvent::SyncNeeded { peer_addr, peer_height } => {
                     tracing::info!("Sync needed from {} (height: {})", peer_addr, peer_height);
+                    let shared_sync = shared_for_events.clone();
+                    tokio::spawn(async move {
+                        match ChainSync::sync_from_peer(&peer_addr, &shared_sync).await {
+                            Ok(n) if n > 0 => tracing::info!("Synced {} blocks from {}", n, peer_addr),
+                            Ok(_) => {},
+                            Err(e) => tracing::warn!("Sync from {} failed: {}", peer_addr, e),
+                        }
+                    });
                 }
             }
         }
     });
+
+    // Periodic sync: every 30s, pull any missing blocks from all known peers.
+    // Prevents stall if initial handshake sync was missed (e.g. simultaneous restart).
+    {
+        let shared_ps = shared.clone();
+        let node_ps = node.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                let peer_addrs: Vec<String> = node_ps.peers.read().await
+                    .keys().cloned().collect();
+                for addr in peer_addrs {
+                    match ChainSync::sync_from_peer(&addr, &shared_ps).await {
+                        Ok(n) if n > 0 => tracing::info!("Periodic sync: {} blocks from {}", n, addr),
+                        Ok(_) => {},
+                        Err(_) => {},
+                    }
+                }
+            }
+        });
+    }
 
     println!("Node started. Press Ctrl+C to stop.");
     axum::serve(listener, app).await?;
