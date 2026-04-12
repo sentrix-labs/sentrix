@@ -129,6 +129,7 @@ fn nav_tabs(active: &str) -> String {
         ("Transactions", "/explorer/transactions", "transactions"),
         ("Validators",   "/explorer/validators",   "validators"),
         ("Tokens",       "/explorer/tokens",       "tokens"),
+        ("Rich List",    "/explorer/richlist",     "richlist"),
     ];
     let mut html = String::from(r#"<div class="tabs">"#);
     for (label, href, key) in &tabs {
@@ -639,6 +640,60 @@ pub async fn explorer_tokens(State(state): State<SharedState>) -> Html<String> {
     );
 
     page("Tokens", &body)
+}
+
+// ── Rich List ─────────────────────────────────────────────
+pub async fn explorer_richlist(State(state): State<SharedState>) -> Html<String> {
+    const TOTAL_SUPPLY: f64 = 210_000_000.0; // SRX
+
+    let bc = state.read().await;
+
+    // Collect all non-zero balances, sort descending
+    let mut holders: Vec<(&String, u64)> = bc.accounts.accounts
+        .iter()
+        .filter(|(_, a)| a.balance > 0)
+        .map(|(addr, a)| (addr, a.balance))
+        .collect();
+    holders.sort_by(|a, b| b.1.cmp(&a.1));
+    let holders = &holders[..holders.len().min(50)];
+
+    let mut rows = String::new();
+    for (rank, (address, balance_sentri)) in holders.iter().enumerate() {
+        let balance_srx = *balance_sentri as f64 / 100_000_000.0;
+        let pct = balance_srx / TOTAL_SUPPLY * 100.0;
+        rows.push_str(&format!(
+            r#"<tr>
+            <td style="color:#6b7280">#{}</td>
+            <td class="mono"><a href="/explorer/address/{}">{}</a></td>
+            <td>{:.8} SRX</td>
+            <td style="color:#9ca3af">{:.6}%</td>
+            </tr>"#,
+            rank + 1,
+            html_escape(address), html_escape(address),
+            balance_srx,
+            pct,
+        ));
+    }
+
+    let empty = if rows.is_empty() {
+        r#"<p style="color:#6b7280;padding:24px 0;text-align:center">No accounts found</p>"#
+    } else { "" };
+
+    let body = format!(r#"
+    {}
+    <h2>Rich List — Top SRX Holders</h2>
+    <p style="color:#6b7280;font-size:13px;margin-bottom:16px">Top 50 addresses by SRX balance &nbsp;|&nbsp; Total supply: 210,000,000 SRX</p>
+    {}
+    <table>
+    <tr><th>Rank</th><th>Address</th><th>Balance</th><th>% of Supply</th></tr>
+    {}
+    </table>"#,
+        nav_tabs("richlist"),
+        empty,
+        rows,
+    );
+
+    page("Rich List", &body)
 }
 
 #[cfg(test)]
