@@ -136,45 +136,50 @@ pub fn create_router(state: SharedState) -> Router {
         }
     };
 
-    // Public routes (GET — no auth needed)
-    let public = Router::new()
-        .route("/",                              get(root))
-        .route("/health",                        get(health))
-        .route("/chain/info",                    get(chain_info))
-        .route("/chain/blocks",                  get(get_blocks))
-        .route("/chain/blocks/:index",           get(get_block))
-        .route("/chain/validate",                get(validate_chain))
-        .route("/accounts/:address/balance",     get(get_balance))
-        .route("/accounts/:address/nonce",       get(get_nonce))
-        .route("/mempool",                       get(get_mempool))
-        .route("/validators",                    get(get_validators))
-        // ── Short-form aliases (used by CoinBlast / Faucet) ──────
-        .route("/blocks",                        get(get_blocks))
-        .route("/blocks/:height",                get(get_block))
-        .route("/wallets/:address",              get(get_wallet_info))
-        .route("/transactions",                  get(list_transactions))
-        .route("/transactions/:txid",            get(get_transaction))
+    // Build a single router. Apply auth middleware directly on each protected
+    // POST MethodRouter via .layer() — avoids merge-bleed in axum 0.7.
+    let auth = middleware::from_fn(require_api_key);
+
+    Router::new()
+        // ── Public GET routes (no auth) ──────────────────────────
+        .route("/",                               get(root))
+        .route("/health",                         get(health))
+        .route("/chain/info",                     get(chain_info))
+        .route("/chain/blocks",                   get(get_blocks))
+        .route("/chain/blocks/:index",            get(get_block))
+        .route("/chain/validate",                 get(validate_chain))
+        .route("/accounts/:address/balance",      get(get_balance))
+        .route("/accounts/:address/nonce",        get(get_nonce))
+        .route("/mempool",                        get(get_mempool))
+        .route("/validators",                     get(get_validators))
+        // ── Short-form aliases (CoinBlast / Faucet) ──────────────
+        .route("/blocks",                         get(get_blocks))
+        .route("/blocks/:height",                 get(get_block))
+        .route("/wallets/:address",               get(get_wallet_info))
+        .route("/transactions/:txid",             get(get_transaction))
         // ── Token endpoints ──────────────────────────────────────
-        .route("/tokens",                        get(list_tokens))
-        .route("/tokens/:contract",              get(get_token_info))
+        .route("/tokens",                         get(list_tokens))
+        .route("/tokens/:contract",               get(get_token_info))
         .route("/tokens/:contract/balance/:addr", get(get_token_balance))
-        .route("/tokens/:contract/holders",      get(get_token_holders_list))
-        .route("/tokens/:contract/trades",       get(get_token_trades_list))
+        .route("/tokens/:contract/holders",       get(get_token_holders_list))
+        .route("/tokens/:contract/trades",        get(get_token_trades_list))
         // ── Address history ──────────────────────────────────────
-        .route("/address/:address/history",      get(get_address_history))
-        .route("/address/:address/info",         get(get_address_info));
-
-    // Protected routes (POST — require X-API-Key if SENTRIX_API_KEY is set)
-    let protected = Router::new()
-        .route("/transactions",              post(send_transaction))
-        .route("/tokens/deploy",             post(deploy_token))
-        .route("/tokens/:contract/transfer", post(token_transfer))
-        .route("/tokens/:contract/burn",     post(token_burn))
-        .route("/rpc",                        post(rpc_dispatcher))
-        .layer(middleware::from_fn(require_api_key));
-
-    public
-        .merge(protected)
+        .route("/address/:address/history",       get(get_address_history))
+        .route("/address/:address/info",          get(get_address_info))
+        // ── /transactions: GET public, POST protected ────────────
+        .route("/transactions",
+            get(list_transactions)
+            .post(send_transaction).layer(auth.clone()))
+        // ── Protected POST routes (auth per method-router) ───────
+        .route("/tokens/deploy",
+            post(deploy_token).layer(auth.clone()))
+        .route("/tokens/:contract/transfer",
+            post(token_transfer).layer(auth.clone()))
+        .route("/tokens/:contract/burn",
+            post(token_burn).layer(auth.clone()))
+        .route("/rpc",
+            post(rpc_dispatcher).layer(auth))
+        // ── Explorer ─────────────────────────────────────────────
         .nest("/explorer", explorer_router(state.clone()))
         .layer(cors)
         .with_state(state)
