@@ -149,6 +149,18 @@ impl AuthorityManager {
         Ok(validator.is_active)
     }
 
+    pub fn rename_validator(&mut self, caller: &str, address: &str, new_name: String) -> SentrixResult<()> {
+        if caller != self.admin_address {
+            return Err(SentrixError::UnauthorizedValidator(
+                format!("{} is not admin", caller)
+            ));
+        }
+        let validator = self.validators.get_mut(address)
+            .ok_or_else(|| SentrixError::NotFound(format!("validator {}", address)))?;
+        validator.name = new_name;
+        Ok(())
+    }
+
     pub fn record_block_produced(&mut self, address: &str, timestamp: u64) {
         if let Some(v) = self.validators.get_mut(address) {
             v.blocks_produced += 1;
@@ -261,6 +273,25 @@ mod tests {
 
         // Validator should still be active
         assert_eq!(mgr.active_count(), 1);
+    }
+
+    #[test]
+    fn test_rename_validator() {
+        let mut mgr = setup();
+        let addr = mgr.active_validators()[0].address.clone();
+        let blocks_before = mgr.validators[&addr].blocks_produced;
+
+        mgr.rename_validator("admin", &addr, "New Name".to_string()).unwrap();
+        assert_eq!(mgr.validators[&addr].name, "New Name");
+        assert_eq!(mgr.validators[&addr].blocks_produced, blocks_before); // counter preserved
+    }
+
+    #[test]
+    fn test_rename_non_admin_fails() {
+        let mut mgr = setup();
+        let addr = mgr.active_validators()[0].address.clone();
+        let result = mgr.rename_validator("not_admin", &addr, "X".to_string());
+        assert!(result.is_err());
     }
 
     #[test]

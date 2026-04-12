@@ -145,6 +145,14 @@ enum ValidatorCommands {
         #[arg(long)]
         admin_key: Option<String>,
     },
+    /// Rename a validator without resetting blocks_produced (admin only)
+    Rename {
+        address: String,
+        new_name: String,
+        /// Admin private key (prefer SENTRIX_ADMIN_KEY env var)
+        #[arg(long)]
+        admin_key: Option<String>,
+    },
     /// List all validators
     List,
 }
@@ -230,6 +238,10 @@ async fn main() -> anyhow::Result<()> {
             ValidatorCommands::Toggle { address, admin_key } => {
                 let key = resolve_key(admin_key, "SENTRIX_ADMIN_KEY", "admin key")?;
                 cmd_validator_toggle(&address, &key)?;
+            }
+            ValidatorCommands::Rename { address, new_name, admin_key } => {
+                let key = resolve_key(admin_key, "SENTRIX_ADMIN_KEY", "admin key")?;
+                cmd_validator_rename(&address, &new_name, &key)?;
             }
             ValidatorCommands::List => cmd_validator_list()?,
         },
@@ -402,6 +414,17 @@ fn cmd_validator_toggle(address: &str, admin_key: &str) -> anyhow::Result<()> {
     storage.save_blockchain(&bc)?;
     let status = if is_active { "ACTIVE" } else { "INACTIVE" };
     println!("Validator {} toggled to: {}", address, status);
+    Ok(())
+}
+
+fn cmd_validator_rename(address: &str, new_name: &str, admin_key: &str) -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    let mut bc = storage.load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+    let admin_wallet = Wallet::from_private_key(admin_key)?;
+    bc.authority.rename_validator(&admin_wallet.address, address, new_name.to_string())?;
+    storage.save_blockchain(&bc)?;
+    println!("Validator {} renamed to: {}", address, new_name);
     Ok(())
 }
 
