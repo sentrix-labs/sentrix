@@ -5,6 +5,13 @@ use axum::{
     response::Html,
 };
 use crate::api::routes::SharedState;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex as TokioMutex;
+
+struct CachedPage { html: String, at: Instant }
+static HOME_CACHE: OnceLock<TokioMutex<Option<CachedPage>>> = OnceLock::new();
+static RICHLIST_CACHE: OnceLock<TokioMutex<Option<CachedPage>>> = OnceLock::new();
 
 // C-04 FIX: HTML escape to prevent XSS
 pub fn html_escape(s: &str) -> String {
@@ -168,6 +175,16 @@ fn nav_tabs(active: &str) -> String {
 
 // ── Explorer home ────────────────────────────────────────
 pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
+    const HOME_TTL: Duration = Duration::from_secs(10);
+    let cache = HOME_CACHE.get_or_init(|| TokioMutex::new(None));
+    {
+        let guard = cache.lock().await;
+        if let Some(ref c) = *guard {
+            if c.at.elapsed() < HOME_TTL {
+                return Html(c.html.clone());
+            }
+        }
+    }
     let bc = state.read().await;
     let stats = bc.chain_stats();
     let height = bc.height();
@@ -284,7 +301,12 @@ pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
         blocks_html,
     );
 
-    page("Home", &body)
+    let result = page("Home", &body);
+    {
+        let mut guard = HOME_CACHE.get_or_init(|| TokioMutex::new(None)).lock().await;
+        *guard = Some(CachedPage { html: result.0.clone(), at: Instant::now() });
+    }
+    result
 }
 
 // ── Blocks list ──────────────────────────────────────────
@@ -330,48 +352,45 @@ pub async fn explorer_blocks(State(state): State<SharedState>) -> Html<String> {
 // ── Transactions list ────────────────────────────────────
 pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<String> {
     let bc = state.read().await;
-    // Fetch 500 to ensure we capture any regular TXs buried among coinbase rewards
-    let txs = bc.get_latest_transactions(500, 0);
+    // Scan only last 1000 blocks for performance
+    let height = bc.height();
+    let scan_start = height.saturating_sub(999);
 
     let mut coinbase_rows = String::new();
     let mut regular_rows = String::new();
 
-    for tx in &txs {
-        let txid   = tx["txid"].as_str().unwrap_or("");
-        let from   = tx["from"].as_str().unwrap_or("");
-        let to     = tx["to"].as_str().unwrap_or("");
-        let amount = tx["amount"].as_u64().unwrap_or(0);
-        let fee    = tx["fee"].as_u64().unwrap_or(0);
-        let is_cb  = tx["is_coinbase"].as_bool().unwrap_or(false);
-        let blk    = tx["block_index"].as_u64().unwrap_or(0);
-        let ts     = tx["block_timestamp"].as_u64().unwrap_or(0);
+    for i in (scan_start..=height).rev() {
+        if let Some(block) = bc.get_block(i) {
+            for tx in &block.transactions {
+                let is_cb = tx.is_coinbase();
+                let from_disp = if tx.from_address == "COINBASE" {
+                    "COINBASE".to_string()
+                } else {
+                    html_escape(&truncate(&tx.from_address, 14))
+                };
+                let to_disp = html_escape(&truncate(&tx.to_address, 14));
 
-        let from_disp = if from == "COINBASE" {
-            "COINBASE".to_string()
-        } else {
-            html_escape(&truncate(from, 14))
-        };
-        let to_disp = html_escape(&truncate(to, 14));
+                let row = format!(
+                    r#"<tr>
+                    <td class="hash"><a href="/explorer/tx/{}">{}</a></td>
+                    <td class="mono">{}</td>
+                    <td class="mono">{}</td>
+                    <td>{:.8} SRX</td>
+                    <td>{} sentri</td>
+                    <td><a href="/explorer/block/{}">#{}</a></td>
+                    <td>{}</td>
+                    </tr>"#,
+                    html_escape(&tx.txid), html_escape(&truncate(&tx.txid, 16)),
+                    from_disp, to_disp,
+                    srx(tx.amount), tx.fee,
+                    block.index, block.index,
+                    html_escape(&fmt_ts(block.timestamp)),
+                );
 
-        let row = format!(
-            r#"<tr>
-            <td class="hash"><a href="/explorer/tx/{}">{}</a></td>
-            <td class="mono">{}</td>
-            <td class="mono">{}</td>
-            <td>{:.8} SRX</td>
-            <td>{} sentri</td>
-            <td><a href="/explorer/block/{}">#{}</a></td>
-            <td>{}</td>
-            </tr>"#,
-            html_escape(txid), html_escape(&truncate(txid, 16)),
-            from_disp, to_disp,
-            srx(amount), fee,
-            blk, blk,
-            html_escape(&fmt_ts(ts)),
-        );
-
-        if is_cb { coinbase_rows.push_str(&row); }
-        else { regular_rows.push_str(&row); }
+                if is_cb { coinbase_rows.push_str(&row); }
+                else { regular_rows.push_str(&row); }
+            }
+        }
     }
 
     let regular_content = if regular_rows.is_empty() {
@@ -671,7 +690,16 @@ pub async fn explorer_tokens(State(state): State<SharedState>) -> Html<String> {
 // ── Rich List ─────────────────────────────────────────────
 pub async fn explorer_richlist(State(state): State<SharedState>) -> Html<String> {
     const TOTAL_SUPPLY: f64 = 210_000_000.0; // SRX
-
+    const RICHLIST_TTL: Duration = Duration::from_secs(30);
+    let cache = RICHLIST_CACHE.get_or_init(|| TokioMutex::new(None));
+    {
+        let guard = cache.lock().await;
+        if let Some(ref c) = *guard {
+            if c.at.elapsed() < RICHLIST_TTL {
+                return Html(c.html.clone());
+            }
+        }
+    }
     let bc = state.read().await;
 
     // Collect all non-zero balances, sort descending
@@ -719,7 +747,12 @@ pub async fn explorer_richlist(State(state): State<SharedState>) -> Html<String>
         rows,
     );
 
-    page("Rich List", &body)
+    let result = page("Rich List", &body);
+    {
+        let mut guard = RICHLIST_CACHE.get_or_init(|| TokioMutex::new(None)).lock().await;
+        *guard = Some(CachedPage { html: result.0.clone(), at: Instant::now() });
+    }
+    result
 }
 
 // ── Validator detail ──────────────────────────────────────
