@@ -17,7 +17,7 @@ pub const DEFAULT_PORT: u16 = 30303;
 pub const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024; // 10MB
 
 // M-02 FIX: rate limiting and peer cap constants
-pub const MAX_CONNECTIONS_PER_IP: u32 = 5;
+pub const MAX_CONNECTIONS_PER_IP: u32 = 100;
 pub const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 pub const MAX_PEERS: usize = 50;
 
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn test_m02_max_peers_constant() {
         assert_eq!(MAX_PEERS, 50);
-        assert_eq!(MAX_CONNECTIONS_PER_IP, 5);
+        assert_eq!(MAX_CONNECTIONS_PER_IP, 100);
     }
 
     #[tokio::test]
