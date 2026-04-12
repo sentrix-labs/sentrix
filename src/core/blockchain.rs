@@ -611,6 +611,93 @@ impl Blockchain {
             .count()
     }
 
+    pub fn get_latest_transactions(&self, limit: usize, offset: usize) -> Vec<serde_json::Value> {
+        let mut result = Vec::new();
+        let mut skipped = 0usize;
+        for block in self.chain.iter().rev() {
+            for tx in block.transactions.iter().rev() {
+                if skipped < offset {
+                    skipped += 1;
+                    continue;
+                }
+                if result.len() >= limit {
+                    return result;
+                }
+                result.push(serde_json::json!({
+                    "txid": tx.txid,
+                    "from": tx.from_address,
+                    "to": tx.to_address,
+                    "amount": tx.amount,
+                    "fee": tx.fee,
+                    "is_coinbase": tx.is_coinbase(),
+                    "block_index": block.index,
+                    "block_timestamp": block.timestamp,
+                }));
+            }
+        }
+        result
+    }
+
+    pub fn get_token_holders(&self, contract: &str) -> Option<Vec<serde_json::Value>> {
+        self.contracts.get_holders_list(contract)
+    }
+
+    pub fn get_token_trades(&self, contract_addr: &str, limit: usize, offset: usize) -> Vec<serde_json::Value> {
+        let mut result = Vec::new();
+        let mut skipped = 0usize;
+        for block in self.chain.iter().rev() {
+            for tx in block.transactions.iter() {
+                let entry = match TokenOp::decode(&tx.data) {
+                    Some(TokenOp::Transfer { contract, to, amount }) if contract == contract_addr => {
+                        Some(serde_json::json!({
+                            "type": "transfer",
+                            "from": tx.from_address,
+                            "to": to,
+                            "amount": amount,
+                            "txid": tx.txid,
+                            "block_index": block.index,
+                            "block_timestamp": block.timestamp,
+                        }))
+                    }
+                    Some(TokenOp::Burn { contract, amount }) if contract == contract_addr => {
+                        Some(serde_json::json!({
+                            "type": "burn",
+                            "from": tx.from_address,
+                            "to": serde_json::Value::Null,
+                            "amount": amount,
+                            "txid": tx.txid,
+                            "block_index": block.index,
+                            "block_timestamp": block.timestamp,
+                        }))
+                    }
+                    Some(TokenOp::Mint { contract, to, amount }) if contract == contract_addr => {
+                        Some(serde_json::json!({
+                            "type": "mint",
+                            "from": tx.from_address,
+                            "to": to,
+                            "amount": amount,
+                            "txid": tx.txid,
+                            "block_index": block.index,
+                            "block_timestamp": block.timestamp,
+                        }))
+                    }
+                    _ => None,
+                };
+                if let Some(e) = entry {
+                    if skipped < offset {
+                        skipped += 1;
+                    } else {
+                        result.push(e);
+                        if result.len() >= limit {
+                            return result;
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+
     // ── Stats ────────────────────────────────────────────
     pub fn chain_stats(&self) -> serde_json::Value {
         serde_json::json!({
