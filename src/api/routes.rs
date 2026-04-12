@@ -167,6 +167,8 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/tokens/deploy",                  post(deploy_token))
         .route("/tokens/:contract/transfer",      post(token_transfer))
         .route("/tokens/:contract/burn",          post(token_burn))
+        // ── Rich list ────────────────────────────────────────────
+        .route("/richlist",                       get(get_richlist))
         // ── Address history ──────────────────────────────────────
         .route("/address/:address/history",       get(get_address_history))
         .route("/address/:address/info",          get(get_address_info))
@@ -185,6 +187,7 @@ fn explorer_router(_state: SharedState) -> Router<SharedState> {
         .route("/transactions",     get(explorer::explorer_transactions))
         .route("/validators",       get(explorer::explorer_validators))
         .route("/tokens",           get(explorer::explorer_tokens))
+        .route("/richlist",         get(explorer::explorer_richlist))
         .route("/block/:index",     get(explorer::explorer_block))
         .route("/address/:address", get(explorer::explorer_address))
         .route("/tx/:txid",         get(explorer::explorer_tx))
@@ -591,6 +594,32 @@ async fn get_token_trades_list(
         "count": count,
         "pagination": { "limit": limit, "offset": offset },
     }))
+}
+
+async fn get_richlist(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    const TOTAL_SUPPLY_SENTRI: u64 = 210_000_000 * 100_000_000;
+    let bc = state.read().await;
+    let mut holders: Vec<serde_json::Value> = bc.accounts.accounts
+        .iter()
+        .filter(|(_, a)| a.balance > 0)
+        .map(|(addr, a)| {
+            let pct = a.balance as f64 / TOTAL_SUPPLY_SENTRI as f64 * 100.0;
+            serde_json::json!({
+                "address": addr,
+                "balance_sentri": a.balance,
+                "balance_srx": a.balance as f64 / 100_000_000.0,
+                "percent_of_supply": pct,
+            })
+        })
+        .collect();
+    holders.sort_by(|a, b| {
+        let ba = a["balance_sentri"].as_u64().unwrap_or(0);
+        let bb = b["balance_sentri"].as_u64().unwrap_or(0);
+        bb.cmp(&ba)
+    });
+    holders.truncate(50);
+    let total = holders.len();
+    Json(serde_json::json!({ "holders": holders, "total": total }))
 }
 
 // Helper for API error responses
