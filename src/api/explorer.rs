@@ -64,6 +64,7 @@ header span { color: #5a6380; font-size: 14px; }
 .stat-card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 20px; }
 .stat-card .label { color: #6b7280; font-size: 13px; text-transform: uppercase; }
 .stat-card .value { color: #f9fafb; font-size: 22px; font-weight: 600; margin-top: 4px; }
+.stat-card .sub { color: #4b5563; font-size: 11px; margin-top: 2px; }
 table { width: 100%; border-collapse: collapse; margin-top: 16px; }
 th { background: #111827; color: #9ca3af; font-size: 12px; text-transform: uppercase; padding: 12px 16px; text-align: left; }
 td { padding: 12px 16px; border-bottom: 1px solid #1f2937; font-size: 14px; }
@@ -144,6 +145,41 @@ pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
     let stats = bc.chain_stats();
     let height = bc.height();
 
+    // ── Compute extended network stats ────────────────────
+    // One pass over all blocks: count regular TXs and gather sample timestamps
+    let sample_start = height.saturating_sub(99); // last 100 blocks
+    let mut total_regular_txs: u64 = 0;
+    let mut sample_regular_txs: u64 = 0;
+    let mut sample_oldest_ts: u64 = 0;
+    let mut sample_newest_ts: u64 = 0;
+
+    for i in 0..=height {
+        if let Some(block) = bc.get_block(i) {
+            let non_cb = block.transactions.iter().filter(|t| !t.is_coinbase()).count() as u64;
+            total_regular_txs += non_cb;
+            if i >= sample_start {
+                sample_regular_txs += non_cb;
+                if i == sample_start { sample_oldest_ts = block.timestamp; }
+                if i == height       { sample_newest_ts = block.timestamp; }
+            }
+        }
+    }
+
+    let sample_span = sample_newest_ts.saturating_sub(sample_oldest_ts);
+    let sample_blocks = height.saturating_sub(sample_start); // number of intervals
+
+    let tps = if sample_span > 0 {
+        format!("{:.4}", sample_regular_txs as f64 / sample_span as f64)
+    } else {
+        "0.0000".to_string()
+    };
+    let avg_block_time = if sample_blocks > 0 && sample_span > 0 {
+        format!("{:.1}s", sample_span as f64 / sample_blocks as f64)
+    } else {
+        "—".to_string()
+    };
+
+    // ── Latest blocks table ───────────────────────────────
     let mut blocks_html = String::new();
     let start = height.saturating_sub(19);
     for i in (start..=height).rev() {
@@ -167,12 +203,41 @@ pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
 
     let body = format!(r#"
     <div class="stats">
-        <div class="stat-card"><div class="label">Height</div><div class="value">{}</div></div>
-        <div class="stat-card"><div class="label">Total Minted</div><div class="value">{} SRX</div></div>
-        <div class="stat-card"><div class="label">Total Burned</div><div class="value">{} SRX</div></div>
-        <div class="stat-card"><div class="label">Validators</div><div class="value">{}</div></div>
-        <div class="stat-card"><div class="label">Tokens</div><div class="value">{}</div></div>
-        <div class="stat-card"><div class="label">Mempool</div><div class="value">{}</div></div>
+        <div class="stat-card">
+            <div class="label">Block Height</div>
+            <div class="value">{}</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Total Transactions</div>
+            <div class="value">{}</div>
+            <div class="sub">non-coinbase</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">TPS</div>
+            <div class="value">{}</div>
+            <div class="sub">last 100 blocks</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Avg Block Time</div>
+            <div class="value">{}</div>
+            <div class="sub">last 100 blocks</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Active Validators</div>
+            <div class="value">{}</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Total Minted</div>
+            <div class="value">{:.2} SRX</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Total Burned</div>
+            <div class="value">{:.4} SRX</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Tokens Deployed</div>
+            <div class="value">{}</div>
+        </div>
     </div>
     {}
     <h3>Latest Blocks</h3>
@@ -180,12 +245,14 @@ pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
     <tr><th>Height</th><th>Hash</th><th>Timestamp</th><th>Txs</th><th>Validator</th></tr>
     {}
     </table>"#,
-        stats["height"],
-        stats["total_minted_srx"],
-        stats["total_burned_srx"],
+        height,
+        total_regular_txs,
+        tps,
+        avg_block_time,
         stats["active_validators"],
+        stats["total_minted_srx"].as_f64().unwrap_or(0.0),
+        stats["total_burned_srx"].as_f64().unwrap_or(0.0),
         stats["deployed_tokens"],
-        stats["mempool_size"],
         nav_tabs("home"),
         blocks_html,
     );
