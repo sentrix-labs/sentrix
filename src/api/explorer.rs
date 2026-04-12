@@ -82,6 +82,12 @@ a:hover { text-decoration: underline; }
 .detail-table td:first-child { color: #6b7280; width: 160px; font-size: 13px; }
 h2 { margin: 20px 0; font-size: 20px; color: #f9fafb; }
 h3 { margin: 24px 0 12px; font-size: 16px; color: #9ca3af; }
+.search-bar { display: flex; gap: 8px; margin-top: 14px; }
+.search-bar input { flex: 1; padding: 9px 14px; border-radius: 8px; background: #1a1f35; border: 1px solid #2a3050; color: #e1e5ee; font-size: 14px; outline: none; }
+.search-bar input:focus { border-color: #7c8aff; }
+.search-bar button { padding: 9px 18px; border-radius: 8px; background: #1e3a5f; color: #60a5fa; border: 1px solid #3b82f6; font-size: 14px; cursor: pointer; }
+.search-bar button:hover { background: #2a4f7f; }
+.search-error { color: #f87171; font-size: 13px; margin-top: 6px; min-height: 18px; }
 "#;
 
 fn page(title: &str, body: &str) -> Html<String> {
@@ -92,6 +98,24 @@ fn page(title: &str, body: &str) -> Html<String> {
 <header><div class="container">
 <h1>⬡ Sentrix Explorer</h1>
 <span>Chain ID: 7119 &nbsp;|&nbsp; PoA Blockchain</span>
+<div class="search-bar">
+  <input id="srx-search" type="text" placeholder="Search by TX hash, block height, or address" autocomplete="off" />
+  <button onclick="srxSearch()">Search</button>
+</div>
+<div class="search-error" id="srx-search-err"></div>
+<script>
+function srxSearch(){{
+  var q=(document.getElementById('srx-search').value||'').trim();
+  var err=document.getElementById('srx-search-err');
+  err.textContent='';
+  if(!q){{err.textContent='Please enter a search term.';return;}}
+  if(/^[0-9]+$/.test(q)){{window.location='/explorer/block/'+q;return;}}
+  if(/^(0x)?[0-9a-fA-F]{{64}}$/.test(q)){{window.location='/explorer/tx/'+q.replace(/^0x/,'');return;}}
+  if(/^0x[0-9a-fA-F]{{40}}$/.test(q)){{window.location='/explorer/address/'+q;return;}}
+  err.textContent='Unrecognized format. Enter a block height (number), TX hash (64 hex), or address (0x + 40 hex).';
+}}
+document.getElementById('srx-search').addEventListener('keydown',function(e){{if(e.key==='Enter')srxSearch();}});
+</script>
 </div></header>
 <div class="container">{body}</div>
 </body></html>"#))
