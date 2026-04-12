@@ -112,13 +112,18 @@ jobs:
           "
 
       - name: Deploy to VPS2
+        env:
+          VPS2_HOST: ${{ secrets.VPS2_HOST }}
+          VPS2_USER: ${{ secrets.VPS2_USER }}
+          VPS2_SSH_KEY: ${{ secrets.VPS2_SSH_KEY }}
         run: |
-          echo "${{ secrets.VPS2_SSH_KEY }}" > ~/.ssh/id_rsa_vps2
+          if [ -z "$VPS2_HOST" ]; then echo "VPS2 secrets not configured, skipping"; exit 0; fi
+          echo "$VPS2_SSH_KEY" > ~/.ssh/id_rsa_vps2
           chmod 600 ~/.ssh/id_rsa_vps2
-          ssh-keyscan -H ${{ secrets.VPS2_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$VPS2_HOST" >> ~/.ssh/known_hosts
           scp -i ~/.ssh/id_rsa_vps2 target/release/sentrix \
-            ${{ secrets.VPS2_USER }}@${{ secrets.VPS2_HOST }}:/tmp/sentrix_new
-          ssh -i ~/.ssh/id_rsa_vps2 ${{ secrets.VPS2_USER }}@${{ secrets.VPS2_HOST }} "
+            "$VPS2_USER@$VPS2_HOST:/tmp/sentrix_new"
+          ssh -i ~/.ssh/id_rsa_vps2 "$VPS2_USER@$VPS2_HOST" "
             sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
             sudo chmod +x /opt/sentrix/sentrix
             sudo systemctl restart sentrix-node
