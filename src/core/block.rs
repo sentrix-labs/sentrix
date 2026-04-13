@@ -1,9 +1,19 @@
 // block.rs - Sentrix
 
 use serde::{Deserialize, Serialize};
+use hex;
 use crate::core::transaction::Transaction;
 use crate::core::merkle::{merkle_root, sha256_hex};
 use crate::types::error::{SentrixError, SentrixResult};
+
+/// Block height at which `state_root` is included in `calculate_hash()`.
+///
+/// Before this height: hash = SHA-256(index ‖ prev_hash ‖ merkle ‖ timestamp ‖ validator)
+/// At/after this height: hash = SHA-256(index ‖ prev_hash ‖ merkle ‖ timestamp ‖ validator ‖ state_root_hex)
+///
+/// **Hard fork**: all validators must upgrade before this height is reached.
+/// Current chain height at time of writing: ~97 K — buffer of ~3 K blocks.
+pub const STATE_ROOT_FORK_HEIGHT: u64 = 100_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
@@ -51,15 +61,34 @@ impl Block {
     }
 
     pub fn calculate_hash(&self) -> String {
-        let payload = format!(
-            "{}{}{}{}{}",
-            self.index,
-            self.previous_hash,
-            self.merkle_root,
-            self.timestamp,
-            self.validator,
-        );
-        sha256_hex(payload.as_bytes())
+        if self.index >= STATE_ROOT_FORK_HEIGHT {
+            // V7-C-01: include state_root in hash to cryptographically commit it.
+            // state_root = None → 64 zero hex chars (pre-trie or genesis sentinel).
+            let state_root_hex = self.state_root
+                .map(hex::encode)
+                .unwrap_or_else(|| "0".repeat(64));
+            let payload = format!(
+                "{}{}{}{}{}{}",
+                self.index,
+                self.previous_hash,
+                self.merkle_root,
+                self.timestamp,
+                self.validator,
+                state_root_hex,
+            );
+            sha256_hex(payload.as_bytes())
+        } else {
+            // Legacy format — backward compatible with all existing blocks < FORK_HEIGHT.
+            let payload = format!(
+                "{}{}{}{}{}",
+                self.index,
+                self.previous_hash,
+                self.merkle_root,
+                self.timestamp,
+                self.validator,
+            );
+            sha256_hex(payload.as_bytes())
+        }
     }
 
     pub fn is_valid_hash(&self) -> bool {
@@ -203,5 +232,40 @@ mod tests {
             "validator1".to_string(),
         );
         assert!(block1.validate_structure(1, &genesis.hash).is_ok());
+    }
+
+    #[test]
+    fn test_hash_below_fork_height_does_not_include_state_root() {
+        // Blocks below STATE_ROOT_FORK_HEIGHT must use old hash format (no state_root).
+        // This ensures backward compatibility with all existing chain history.
+        let mut block = Block::genesis(); // index = 0 < 100_000
+        block.state_root = Some([0xABu8; 32]);
+        // Hash must NOT change when state_root is modified (old format ignores it)
+        let hash_with_root = block.calculate_hash();
+        block.state_root = None;
+        let hash_without_root = block.calculate_hash();
+        assert_eq!(hash_with_root, hash_without_root,
+            "blocks below fork height must not include state_root in hash");
+    }
+
+    #[test]
+    fn test_hash_at_fork_height_includes_state_root() {
+        // Blocks AT fork height must include state_root in hash.
+        let mut block = Block::new(
+            STATE_ROOT_FORK_HEIGHT,
+            "0".repeat(64),
+            vec![Transaction::new_coinbase("v1".to_string(), 100_000_000, STATE_ROOT_FORK_HEIGHT)],
+            "v1".to_string(),
+        );
+        // state_root = None → "0"*64 sentinel in hash
+        let hash_no_root = block.calculate_hash();
+        // Setting state_root to Some changes the hash
+        block.state_root = Some([0xFFu8; 32]);
+        let hash_with_root = block.calculate_hash();
+        assert_ne!(hash_no_root, hash_with_root,
+            "blocks at fork height must include state_root in hash");
+        // is_valid_hash must still work (block.hash was computed with old state_root=None)
+        assert!(!block.is_valid_hash(),
+            "is_valid_hash must fail when state_root changed after hash was set");
     }
 }

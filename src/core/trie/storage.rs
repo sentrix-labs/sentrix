@@ -98,7 +98,16 @@ impl TrieStorage {
         self.roots
             .insert(version.to_be_bytes(), root.as_slice())
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
-        // Flush to guarantee crash-safety for the version→root mapping
+        // V7-H-02: flush all three trees in order (nodes → values → roots) so that
+        // node/value writes that preceded this root are durable before the root pointer
+        // is committed.  Flushing only `roots` would leave nodes/values in the OS page
+        // cache — a crash could produce a valid root pointing to missing nodes.
+        self.nodes
+            .flush()
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        self.values
+            .flush()
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         self.roots
             .flush()
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
@@ -123,10 +132,13 @@ impl TrieStorage {
         }
     }
 
-    /// T-F: Garbage-collect node entries not present in `live_hashes`.
+    /// T-F: Garbage-collect node and value entries not present in `live_hashes`.
     ///
-    /// Scans `trie_nodes`, collects every hash not in the live set, then deletes them.
-    /// Returns the count of entries removed.
+    /// Scans both `trie_nodes` and `trie_values`, collecting every hash not in the live
+    /// set, then deletes them.  Returns the total count of entries removed across both trees.
+    ///
+    /// V7-M-02: previously only GC'd `trie_nodes`; orphaned value blobs (from delete()
+    /// calls) were never cleaned.  Now both trees are scanned.
     ///
     /// Callers must supply a complete set of hashes reachable from all committed roots
     /// they wish to preserve.  Nodes referenced only by un-committed (in-flight) mutations
@@ -135,8 +147,20 @@ impl TrieStorage {
         &self,
         live_hashes: &std::collections::HashSet<NodeHash>,
     ) -> SentrixResult<usize> {
+        let node_count = self.gc_tree(&self.nodes, live_hashes)?;
+        // V7-M-02: also GC value blobs — leaf value_hash == leaf node_hash, same live set.
+        let value_count = self.gc_tree(&self.values, live_hashes)?;
+        Ok(node_count + value_count)
+    }
+
+    /// Shared helper: scan a sled Tree for hashes not in `live_hashes` and remove them.
+    fn gc_tree(
+        &self,
+        tree: &sled::Tree,
+        live_hashes: &std::collections::HashSet<NodeHash>,
+    ) -> SentrixResult<usize> {
         let mut to_delete: Vec<NodeHash> = Vec::new();
-        for entry in self.nodes.iter() {
+        for entry in tree.iter() {
             let (k, _) = entry.map_err(|e| SentrixError::StorageError(e.to_string()))?;
             if k.len() == 32 {
                 let mut arr = [0u8; 32];
@@ -148,8 +172,7 @@ impl TrieStorage {
         }
         let count = to_delete.len();
         for hash in &to_delete {
-            self.nodes
-                .remove(hash)
+            tree.remove(hash)
                 .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         }
         Ok(count)
@@ -229,5 +252,28 @@ mod tests {
         }
         let removed = storage.gc_orphaned_nodes(&HashSet::new()).unwrap();
         assert_eq!(removed, 5, "all 5 nodes must be removed when live set is empty");
+    }
+
+    #[test]
+    fn test_gc_also_removes_orphan_values() {
+        let (_dir, storage) = temp_storage();
+        let live_hash   = dummy_hash(0x01);
+        let orphan_hash = dummy_hash(0x02);
+
+        let node = TrieNode::Leaf { key: [0u8; 32], value_hash: empty_hash(0) };
+        storage.store_node(&live_hash,   &node).unwrap();
+        storage.store_node(&orphan_hash, &node).unwrap();
+        // Also store value blobs (as if delete() leaked them)
+        storage.store_value(&live_hash,   b"live_data").unwrap();
+        storage.store_value(&orphan_hash, b"orphan_data").unwrap();
+
+        let mut live: std::collections::HashSet<NodeHash> = std::collections::HashSet::new();
+        live.insert(live_hash);
+
+        let removed = storage.gc_orphaned_nodes(&live).unwrap();
+        // 1 orphan node + 1 orphan value = 2 removed
+        assert_eq!(removed, 2, "GC must remove both orphan node and orphan value");
+        assert!(storage.load_value(&live_hash).unwrap().is_some(),   "live value must survive GC");
+        assert!(storage.load_value(&orphan_hash).unwrap().is_none(), "orphan value must be removed");
     }
 }

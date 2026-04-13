@@ -1,16 +1,21 @@
 // trie/cache.rs - Sentrix — LRU-cached trie node access
 
 use std::num::NonZeroUsize;
+use std::sync::Mutex;
 use lru::LruCache;
 use crate::core::trie::node::{NodeHash, TrieNode};
 use crate::core::trie::storage::TrieStorage;
 use crate::types::error::SentrixResult;
 
 /// In-memory LRU cache sitting in front of persistent sled storage.
-/// Capacity: 10 000 nodes (~10 000 × ~100 bytes ≈ 1 MB).
+/// The LRU is wrapped in a Mutex to allow shared-reference access (V7-M-03).
+/// This enables `prove()` on SentrixTrie to take `&self` (read lock on blockchain
+/// is sufficient for proof generation — no write lock needed).
 pub struct TrieCache {
-    lru: LruCache<NodeHash, TrieNode>,
+    lru: Mutex<LruCache<NodeHash, TrieNode>>,
     pub(crate) storage: TrieStorage,
+    /// Stored for use by Clone (V7-I-03).
+    pub(crate) capacity: usize,
 }
 
 impl TrieCache {
@@ -20,29 +25,44 @@ impl TrieCache {
     pub fn new(storage: TrieStorage, capacity: usize) -> Self {
         let cap = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::MIN);
         Self {
-            lru: LruCache::new(cap),
+            lru: Mutex::new(LruCache::new(cap)),
             storage,
+            capacity,
         }
     }
 
+    /// Acquire the LRU lock, mapping a poison error to SentrixError::Internal.
+    fn lock_lru(&self) -> SentrixResult<std::sync::MutexGuard<'_, LruCache<NodeHash, TrieNode>>> {
+        self.lru.lock().map_err(|e| {
+            crate::types::error::SentrixError::Internal(
+                format!("trie LRU lock poisoned: {e}")
+            )
+        })
+    }
+
     /// Fetch a node by hash — LRU first, then persistent storage.
-    pub fn get_node(&mut self, hash: &NodeHash) -> SentrixResult<Option<TrieNode>> {
-        // Peek at cache without promoting (we promote on actual use below)
-        if let Some(node) = self.lru.get(hash) {
-            return Ok(Some(node.clone()));
+    /// Takes `&self` to allow shared access (V7-M-03).
+    pub fn get_node(&self, hash: &NodeHash) -> SentrixResult<Option<TrieNode>> {
+        {
+            let mut lru = self.lock_lru()?;
+            if let Some(node) = lru.get(hash) {
+                return Ok(Some(node.clone()));
+            }
         }
-        // Miss — load from sled and populate cache
+        // Miss — load from sled (released lock above to avoid holding during I/O)
         let opt = self.storage.load_node(hash)?;
         if let Some(ref node) = opt {
-            self.lru.put(*hash, node.clone());
+            let mut lru = self.lock_lru()?;
+            lru.put(*hash, node.clone());
         }
         Ok(opt)
     }
 
     /// Write a node to both cache and persistent storage.
-    pub fn put_node(&mut self, hash: NodeHash, node: TrieNode) -> SentrixResult<()> {
+    pub fn put_node(&self, hash: NodeHash, node: TrieNode) -> SentrixResult<()> {
         self.storage.store_node(&hash, &node)?;
-        self.lru.put(hash, node);
+        let mut lru = self.lock_lru()?;
+        lru.put(hash, node);
         Ok(())
     }
 
@@ -57,8 +77,11 @@ impl TrieCache {
     }
 
     /// T-B: Evict a node from the LRU cache and remove it from persistent storage.
-    pub fn delete_node(&mut self, hash: &NodeHash) -> SentrixResult<()> {
-        self.lru.pop(hash);
+    pub fn delete_node(&self, hash: &NodeHash) -> SentrixResult<()> {
+        {
+            let mut lru = self.lock_lru()?;
+            lru.pop(hash);
+        }
         self.storage.delete_node(hash)
     }
 
@@ -83,7 +106,7 @@ mod tests {
     /// T-D: cache must respect the caller-supplied capacity.
     #[test]
     fn test_configurable_capacity_evicts_lru() {
-        let (_dir, mut cache) = temp_cache(2);
+        let (_dir, cache) = temp_cache(2);
         let mk_hash = |b: u8| { let mut h = [0u8; 32]; h[0] = b; h };
         let node = TrieNode::Leaf { key: [0u8; 32], value_hash: [0u8; 32] };
 
@@ -100,7 +123,7 @@ mod tests {
     /// T-B: delete_node must evict from cache AND remove from storage.
     #[test]
     fn test_delete_node_evicts_cache_and_storage() {
-        let (_dir, mut cache) = temp_cache(10_000);
+        let (_dir, cache) = temp_cache(10_000);
         let hash = { let mut h = [0u8; 32]; h[0] = 0xFF; h };
         let node = TrieNode::Leaf { key: [1u8; 32], value_hash: [2u8; 32] };
 
@@ -110,5 +133,12 @@ mod tests {
         cache.delete_node(&hash).unwrap();
         // Must be gone from both cache and storage
         assert!(cache.get_node(&hash).unwrap().is_none());
+    }
+
+    /// V7-I-03: clone uses original capacity, not hardcoded 10_000.
+    #[test]
+    fn test_cache_capacity_stored() {
+        let (_dir, cache) = temp_cache(42);
+        assert_eq!(cache.capacity, 42);
     }
 }

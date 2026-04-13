@@ -1,6 +1,7 @@
 // blockchain.rs - Sentrix — Blockchain struct, constants, genesis, core state methods
 
 use serde::{Deserialize, Serialize};
+use hex;
 use std::collections::VecDeque;
 use crate::core::block::Block;
 use crate::core::transaction::Transaction;
@@ -8,6 +9,7 @@ use crate::core::account::AccountDB;
 use crate::core::authority::AuthorityManager;
 use crate::core::merkle::merkle_root;
 use crate::core::vm::ContractRegistry;
+use crate::core::transaction::TOKEN_OP_ADDRESS;
 use crate::core::trie::tree::SentrixTrie;
 use crate::core::trie::address::{address_to_key, account_value_bytes};
 use crate::types::error::{SentrixError, SentrixResult};
@@ -202,31 +204,71 @@ impl Blockchain {
     /// Initialize the state trie from a sled database.
     /// Loads the committed root for the current height, or starts from an empty trie.
     /// Call once at node startup, after loading blockchain state from storage.
+    ///
+    /// V7-I-02: if no root exists for current height AND chain has history, backfills
+    /// all non-zero accounts from AccountDB into the trie (one-time migration).
     pub fn init_trie(&mut self, db: &sled::Db) -> SentrixResult<()> {
-        let trie = SentrixTrie::open(db, self.height())?;
+        let height = self.height();
+        let mut trie = SentrixTrie::open(db, height)?;
+
+        // V7-I-02: first-time trie init on a node that ran before SentrixTrie existed.
+        // AccountDB has the correct state but the trie is empty — backfill now.
+        if height > 0 && trie.root_at_version(height)?.is_none() {
+            let accounts: Vec<(String, u64, u64)> = self.accounts.accounts
+                .values()
+                .filter(|a| a.balance > 0)
+                .map(|a| (a.address.clone(), a.balance, a.nonce))
+                .collect();
+            if !accounts.is_empty() {
+                tracing::info!(
+                    "trie: backfilling {} accounts at height {} (first trie init on existing chain)",
+                    accounts.len(), height
+                );
+                for (addr, balance, nonce) in accounts {
+                    let key = address_to_key(&addr);
+                    let val = account_value_bytes(balance, nonce);
+                    trie.insert(&key, &val)?;
+                }
+                trie.commit(height)?;
+                tracing::info!(
+                    "trie: backfill complete at height {}, root = {}",
+                    height, hex::encode(trie.root_hash())
+                );
+            }
+        }
+
         self.state_trie = Some(trie);
         Ok(())
     }
 
     /// Update the trie with current account state for every address touched in the last block,
     /// commit at that block's height, and return the new state root.
-    /// Returns None if the trie has not been initialized.
+    /// Returns Ok(None) if the trie has not been initialized.
+    ///
+    /// V7-H-01: trie errors are now propagated (no longer silently swallowed).
     ///
     /// Split into two phases to satisfy the borrow checker:
     ///   Phase 1 — immutable borrows of `chain` and `accounts` → collect owned data.
     ///   Phase 2 — mutable borrow of `state_trie` → insert + commit.
-    pub(crate) fn update_trie_for_block(&mut self) -> Option<[u8; 32]> {
-        self.state_trie.as_ref()?;
+    pub(crate) fn update_trie_for_block(&mut self) -> SentrixResult<Option<[u8; 32]>> {
+        if self.state_trie.is_none() {
+            return Ok(None);
+        }
 
         // Phase 1: extract addresses + block index from the last block
         let (touched_addrs, block_index) = {
-            let block = self.chain.last()?;
+            let block = match self.chain.last() {
+                Some(b) => b,
+                None => return Ok(None),
+            };
             let mut addrs: Vec<String> = Vec::new();
             for tx in &block.transactions {
                 if is_valid_sentrix_address(&tx.from_address) {
                     addrs.push(tx.from_address.clone());
                 }
-                if is_valid_sentrix_address(&tx.to_address) {
+                // V7-I-04: skip TOKEN_OP_ADDRESS — its SRX balance is always 0,
+                // causing a no-op delete() traversal on every token-op block.
+                if is_valid_sentrix_address(&tx.to_address) && tx.to_address != TOKEN_OP_ADDRESS {
                     addrs.push(tx.to_address.clone());
                 }
             }
@@ -252,30 +294,26 @@ impl Blockchain {
         // Borrow of `accounts` ends after collect().
 
         // Phase 2: mutable borrow of `state_trie`
-        let trie = self.state_trie.as_mut()?;
+        let trie = match self.state_trie.as_mut() {
+            Some(t) => t,
+            None => return Ok(None),
+        };
         for (addr, balance, nonce) in updates {
             let key = address_to_key(&addr);
             if balance == 0 {
-                // Remove zero-balance accounts from the trie — prevents dead entries
-                // from accumulating and keeps the tree compact.
+                // Remove zero-balance accounts from the trie.
                 // delete() is a no-op if the key was never inserted.
-                if let Err(e) = trie.delete(&key) {
-                    tracing::warn!("trie: delete zero-balance {} failed: {}", addr, e);
-                }
+                // V7-H-01: propagate errors instead of swallowing them.
+                trie.delete(&key)?;
             } else {
                 let value = account_value_bytes(balance, nonce);
-                if let Err(e) = trie.insert(&key, &value) {
-                    tracing::warn!("trie: insert failed for {}: {}", addr, e);
-                }
+                // V7-H-01: propagate insert errors.
+                trie.insert(&key, &value)?;
             }
         }
-        match trie.commit(block_index) {
-            Ok(root) => Some(root),
-            Err(e) => {
-                tracing::warn!("trie: commit failed at block {}: {}", block_index, e);
-                None
-            }
-        }
+        // V7-H-01: propagate commit errors.
+        let root = trie.commit(block_index)?;
+        Ok(Some(root))
     }
 }
 

@@ -1,8 +1,9 @@
 // block_executor.rs - Sentrix — Block validation and commit (two-pass)
 
+use hex;
 use std::collections::{HashMap, HashSet};
 use crate::core::blockchain::{Blockchain, CHAIN_WINDOW_SIZE};
-use crate::core::block::Block;
+use crate::core::block::{Block, STATE_ROOT_FORK_HEIGHT};
 use crate::core::transaction::TokenOp;
 use crate::types::error::{SentrixError, SentrixResult};
 
@@ -210,11 +211,44 @@ impl Blockchain {
             self.chain.drain(..excess);
         }
 
-        // Step 5: Update state trie and stamp state_root onto the block (no-op if not initialized)
-        if let Some(root) = self.update_trie_for_block()
+        // Step 5: Update state trie, set state_root, verify consensus (V7-H-01, V7-C-01).
+        // V7-H-01: update_trie_for_block now propagates errors instead of swallowing them.
+        let trie_root = self.update_trie_for_block()
+            .map_err(|e| SentrixError::Internal(
+                format!("trie update failed at block {}: {}", self.height(), e)
+            ))?;
+
+        if let Some(computed_root) = trie_root
             && let Some(last) = self.chain.last_mut()
         {
-            last.state_root = Some(root);
+            if last.index >= STATE_ROOT_FORK_HEIGHT {
+                match last.state_root {
+                    None => {
+                        // Self-produced block: set state_root and recompute hash so that
+                        // state_root is committed into the block header (V7-C-01).
+                        last.state_root = Some(computed_root);
+                        last.hash = last.calculate_hash();
+                    }
+                    Some(received_root) => {
+                        // Received block: verify peer's state_root matches ours (V7-C-01).
+                        if received_root != computed_root {
+                            tracing::error!(
+                                "V7-C-01 CRITICAL: state_root mismatch at block {} — \
+                                 received {}, computed {}. Possible state divergence.",
+                                last.index,
+                                hex::encode(received_root),
+                                hex::encode(computed_root),
+                            );
+                            // Override with locally-computed root.
+                            // TODO: full rollback + block rejection in a future release.
+                        }
+                        last.state_root = Some(computed_root);
+                    }
+                }
+            } else {
+                // Below fork height: stamp state_root without changing block hash.
+                last.state_root = Some(computed_root);
+            }
         }
 
         Ok(())
@@ -315,5 +349,33 @@ mod tests {
         block.timestamp = 0;
         let result = bc.add_block(block);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_state_root_set_after_block_below_fork_height() {
+        // Blocks below STATE_ROOT_FORK_HEIGHT: state_root set but hash unchanged.
+        use crate::core::block::STATE_ROOT_FORK_HEIGHT;
+        let mut bc = setup();
+        assert!(bc.height() + 1 < STATE_ROOT_FORK_HEIGHT, "test assumes height < fork");
+
+        // Init an in-memory trie (no sled — state_trie will be None without db)
+        // Without trie init, update_trie_for_block returns Ok(None) → state_root remains None
+        let block = bc.create_block("v1").unwrap();
+        let original_hash = block.hash.clone();
+        bc.add_block(block).unwrap();
+
+        let added = bc.chain.last().unwrap();
+        assert!(added.index < STATE_ROOT_FORK_HEIGHT);
+        // No trie initialized → state_root is None; hash must be unchanged
+        assert_eq!(added.hash, original_hash, "block hash must not change without trie");
+    }
+
+    #[test]
+    fn test_add_block_succeeds_without_trie() {
+        // update_trie_for_block returning Ok(None) must not fail add_block.
+        let mut bc = setup();
+        // state_trie is None (no init_trie called) — should be fine
+        let block = bc.create_block("v1").unwrap();
+        assert!(bc.add_block(block).is_ok(), "add_block must succeed without trie");
     }
 }

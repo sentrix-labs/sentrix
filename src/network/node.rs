@@ -263,7 +263,11 @@ impl Node {
                     match bc.add_block(block.clone()) {
                         Ok(()) => {
                             tracing::info!("Received block {} from peer", block.index);
-                            let _ = event_tx.send(NodeEvent::NewBlock(block)).await;
+                            // V7-M-05: send the block FROM THE CHAIN (which has state_root set
+                            // by add_block) rather than the received block (state_root unset).
+                            // The event consumer can then persist the block with state_root.
+                            let chain_block = bc.chain.last().cloned().unwrap_or(block);
+                            let _ = event_tx.send(NodeEvent::NewBlock(chain_block)).await;
                         }
                         Err(e) => {
                             tracing::warn!("Rejected block {}: {}", block.index, e);
