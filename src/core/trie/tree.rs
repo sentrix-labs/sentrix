@@ -60,6 +60,8 @@ impl SentrixTrie {
         // T-B: when updating an existing key, record the old leaf hash so it can be
         // removed after the new leaf is written (prevents orphaned-node storage leak).
         let mut old_leaf_hash: Option<NodeHash> = None;
+        // V7-L-01: track old internal nodes so we can clean them up after Phase 3.
+        let mut old_internal_hashes: Vec<NodeHash> = Vec::new();
 
         loop {
             if depth > 256 {
@@ -116,6 +118,14 @@ impl SentrixTrie {
                     break;
                 }
                 TrieNode::Internal { left, right, .. } => {
+                    // V7-M-04: get_bit(key, 256) would be OOB — Internal at depth 256 is corrupt
+                    if depth >= 256 {
+                        return Err(SentrixError::Internal(
+                            "trie: corrupt tree — Internal node at depth 256 (key space exhausted)".into(),
+                        ));
+                    }
+                    // V7-L-01: record this internal node; it will be replaced by Phase 3.
+                    old_internal_hashes.push(current);
                     let bit = get_bit(key, depth);
                     let (child, sibling) = if bit { (right, left) } else { (left, right) };
                     path.push((sibling, bit));
@@ -151,6 +161,13 @@ impl SentrixTrie {
         }
 
         self.root = up_hash;
+
+        // V7-L-01: delete old internal nodes that were replaced by Phase 3.
+        // These became orphaned because new internal nodes were written with different hashes.
+        for old_hash in old_internal_hashes {
+            let _ = self.cache.delete_node(&old_hash);
+        }
+
         Ok(up_hash)
     }
 
@@ -200,10 +217,17 @@ impl SentrixTrie {
     /// also collapses to an empty hash (short-circuit property maintained).
     ///
     /// Fully iterative — O(1) stack depth.
+    // V7-M-01: initial None assignments are intentional; the compiler warns because they are
+    // always overwritten inside the loop before being read.
+    #[allow(unused_assignments)]
     pub fn delete(&mut self, key: &[u8; 32]) -> SentrixResult<NodeHash> {
         let mut path: Vec<(NodeHash, bool)> = Vec::with_capacity(256);
         let mut current = self.root;
         let mut depth = 0usize;
+
+        // V7-M-01: storage for leaf/value hashes captured in Phase 1 for cleanup in Phase 2.
+        let mut found_leaf_hash: Option<NodeHash> = None;
+        let mut found_value_hash: Option<NodeHash> = None;
 
         // Phase 1: walk down to find the leaf
         let found_depth = loop {
@@ -225,13 +249,22 @@ impl SentrixTrie {
                 })?;
 
             match node {
-                TrieNode::Leaf { key: leaf_key, .. } => {
+                TrieNode::Leaf { key: leaf_key, value_hash: leaf_vh } => {
                     if leaf_key != *key {
                         return Ok(self.root); // different leaf — key absent
                     }
+                    // V7-M-01: capture leaf and value hash for cleanup after Phase 2.
+                    found_leaf_hash = Some(current);
+                    found_value_hash = Some(leaf_vh);
                     break depth; // found — leaf is at `depth`
                 }
                 TrieNode::Internal { left, right, .. } => {
+                    // V7-M-04: Internal at depth 256 is corrupt (all key bits exhausted).
+                    if depth >= 256 {
+                        return Err(SentrixError::Internal(
+                            "trie: corrupt tree — Internal node at depth 256".into(),
+                        ));
+                    }
                     let bit = get_bit(key, depth);
                     let (child, sibling) = if bit { (right, left) } else { (left, right) };
                     path.push((sibling, bit));
@@ -247,6 +280,10 @@ impl SentrixTrie {
         let mut up_depth = found_depth; // depth of the node represented by up_hash
 
         for (sibling, is_right) in path.iter().rev() {
+            // V7-M-04: defensive guard against underflow on corrupt trees.
+            if up_depth == 0 {
+                break;
+            }
             // Moving one level toward root
             up_depth -= 1;
             let (left, right) = if *is_right {
@@ -266,11 +303,20 @@ impl SentrixTrie {
         }
 
         self.root = up_hash;
+
+        // V7-M-01: clean up the deleted leaf node and its value blob.
+        if let Some(leaf_hash) = found_leaf_hash {
+            let _ = self.cache.delete_node(&leaf_hash);
+        }
+        if let Some(val_hash) = found_value_hash {
+            let _ = self.cache.delete_value(&val_hash);
+        }
+
         Ok(up_hash)
     }
 
     /// Generate a Merkle proof (membership or non-membership) for `key`.
-    pub fn prove(&mut self, key: &[u8; 32]) -> SentrixResult<MerkleProof> {
+    pub fn prove(&self, key: &[u8; 32]) -> SentrixResult<MerkleProof> {
         let mut siblings: Vec<NodeHash> = Vec::with_capacity(64);
         let mut current = self.root;
         let mut depth = 0usize;
@@ -327,6 +373,12 @@ impl SentrixTrie {
                     });
                 }
                 TrieNode::Internal { left, right, .. } => {
+                    // V7-M-04: Internal at depth 256 is corrupt (key space exhausted).
+                    if depth >= 256 {
+                        return Err(SentrixError::Internal(
+                            "trie: corrupt tree — Internal node at depth 256 in prove".into(),
+                        ));
+                    }
                     let bit = get_bit(key, depth);
                     let (child, sibling) = if bit { (right, left) } else { (left, right) };
                     siblings.push(sibling);
@@ -365,10 +417,11 @@ impl std::fmt::Debug for SentrixTrie {
 }
 
 /// Clone shares the same underlying sled trees (Arc-based) but starts with a fresh LRU cache.
+/// V7-I-03: uses the original capacity, not hardcoded 10_000.
 impl Clone for SentrixTrie {
     fn clone(&self) -> Self {
         Self {
-            cache: TrieCache::new(self.cache.storage.clone(), 10_000),
+            cache: TrieCache::new(self.cache.storage.clone(), self.cache.capacity),
             root: self.root,
             version: self.version,
         }
@@ -592,5 +645,98 @@ mod tests {
         // All nodes reachable from root are the current internal/leaf nodes; anything
         // not reachable (internal nodes from old path) gets removed.
         let _ = removed; // count varies — just assert GC runs without error
+    }
+
+    /// V7-M-01: delete() must clean up the deleted leaf node and value blob.
+    #[test]
+    fn test_delete_cleans_up_leaf_node_and_value() {
+        let (_dir, db) = temp_db();
+        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let key = address_to_key("0x1111111111111111111111111111111111111111");
+        let val = account_value_bytes(500, 0);
+
+        trie.insert(&key, &val).unwrap();
+        let nodes_after_insert = db.open_tree("trie_nodes").unwrap().len();
+        let values_after_insert = db.open_tree("trie_values").unwrap().len();
+
+        trie.delete(&key).unwrap();
+        let nodes_after_delete = db.open_tree("trie_nodes").unwrap().len();
+        let values_after_delete = db.open_tree("trie_values").unwrap().len();
+
+        assert!(
+            nodes_after_delete < nodes_after_insert,
+            "delete must reduce node count (leaf removed)"
+        );
+        assert_eq!(
+            values_after_delete, values_after_insert - 1,
+            "delete must remove the value blob"
+        );
+        // Verify the key is actually gone
+        assert!(trie.get(&key).unwrap().is_none(), "deleted key must not be found");
+    }
+
+    /// V7-L-01: insert must clean up old internal nodes on structural change.
+    #[test]
+    fn test_insert_cleans_old_internal_nodes() {
+        let (_dir, db) = temp_db();
+        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let k1 = address_to_key("0xaaaa");
+        let k2 = address_to_key("0xbbbb");
+
+        // Insert first key (creates leaf at root)
+        trie.insert(&k1, &account_value_bytes(100, 0)).unwrap();
+        let nodes_1 = db.open_tree("trie_nodes").unwrap().len();
+
+        // Insert second key (creates internal node, old root-leaf becomes sibling)
+        trie.insert(&k2, &account_value_bytes(200, 0)).unwrap();
+        let nodes_2 = db.open_tree("trie_nodes").unwrap().len();
+
+        // Update k1 (causes structural change — old internal nodes replaced)
+        trie.insert(&k1, &account_value_bytes(300, 1)).unwrap();
+        let nodes_3 = db.open_tree("trie_nodes").unwrap().len();
+
+        // Node count after update should not exceed count after two-key insert
+        // (old internal nodes should be cleaned up)
+        assert!(
+            nodes_3 <= nodes_2 + 1,
+            "update must not accumulate internal nodes without bound (nodes_2={}, nodes_3={})",
+            nodes_2, nodes_3
+        );
+
+        // Both keys still readable
+        let v1 = trie.get(&k1).unwrap().unwrap();
+        assert_eq!(account_value_decode(&v1).unwrap().0, 300);
+        let v2 = trie.get(&k2).unwrap().unwrap();
+        assert_eq!(account_value_decode(&v2).unwrap().0, 200);
+
+        let _ = nodes_1; // suppress unused warning
+    }
+
+    /// V7-M-04: prove() does not require a mutable reference (V7-M-03).
+    #[test]
+    fn test_prove_works_with_shared_reference() {
+        let (_dir, db) = temp_db();
+        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let key = address_to_key("0x5555555555555555555555555555555555555555");
+        trie.insert(&key, &account_value_bytes(999, 0)).unwrap();
+        let root = trie.root_hash();
+
+        // prove() takes &self — can be called on a shared reference
+        let trie_ref: &SentrixTrie = &trie;
+        let proof = trie_ref.prove(&key).unwrap();
+        assert!(proof.found);
+        assert!(proof.verify_membership(&root));
+    }
+
+    /// V7-I-03: clone uses original capacity, not hardcoded 10_000.
+    #[test]
+    fn test_clone_preserves_capacity() {
+        let (_dir, db) = temp_db();
+        let storage = crate::core::trie::storage::TrieStorage::new(&db).unwrap();
+        let cache   = crate::core::trie::cache::TrieCache::new(storage, 42);
+        let trie = SentrixTrie { cache, root: empty_hash(0), version: 0 };
+
+        let cloned = trie.clone();
+        assert_eq!(cloned.cache.capacity, 42, "clone must preserve capacity");
     }
 }

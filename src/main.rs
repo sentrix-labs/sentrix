@@ -513,12 +513,20 @@ async fn cmd_start(
 
         // Event handler — libp2p mode: skip raw-TCP ChainSync on SyncNeeded
         // (libp2p sync via GetBlocks is handled inside the swarm task in Step 3d)
+        let storage_for_p2p = storage.clone();
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 match event {
                     NodeEvent::PeerConnected(addr) => tracing::info!("libp2p peer connected: {}", addr),
                     NodeEvent::PeerDisconnected(addr) => tracing::info!("libp2p peer disconnected: {}", addr),
-                    NodeEvent::NewBlock(block) => tracing::info!("libp2p received block {}", block.index),
+                    NodeEvent::NewBlock(block) => {
+                        tracing::info!("libp2p received block {}", block.index);
+                        // V7-M-05: persist P2P-received block immediately so state_root
+                        // survives a crash before the next produce cycle's save_blockchain().
+                        if let Err(e) = storage_for_p2p.save_block(&block) {
+                            tracing::warn!("failed to persist P2P block {}: {}", block.index, e);
+                        }
+                    }
                     NodeEvent::NewTransaction(_) => {}
                     NodeEvent::SyncNeeded { peer_addr, peer_height } => {
                         // In libp2p mode, sync is handled by the swarm task via GetBlocks.
@@ -597,12 +605,19 @@ async fn cmd_start(
 
         // Event handler — legacy mode: use raw-TCP ChainSync
         let shared_for_events = shared.clone();
+        let storage_for_legacy_p2p = storage.clone();
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 match event {
                     NodeEvent::PeerConnected(addr) => tracing::info!("Peer connected: {}", addr),
                     NodeEvent::PeerDisconnected(addr) => tracing::info!("Peer disconnected: {}", addr),
-                    NodeEvent::NewBlock(block) => tracing::info!("Received block {} from peer", block.index),
+                    NodeEvent::NewBlock(block) => {
+                        tracing::info!("Received block {} from peer", block.index);
+                        // V7-M-05: persist P2P-received block with state_root immediately.
+                        if let Err(e) = storage_for_legacy_p2p.save_block(&block) {
+                            tracing::warn!("failed to persist P2P block {}: {}", block.index, e);
+                        }
+                    }
                     NodeEvent::NewTransaction(_) => {}
                     NodeEvent::SyncNeeded { peer_addr, peer_height } => {
                         tracing::info!("Sync needed from {} (height: {})", peer_addr, peer_height);

@@ -787,10 +787,26 @@ async fn get_address_proof(
     State(state): State<SharedState>,
     Path(address): Path<String>,
 ) -> impl IntoResponse {
-    // prove() mutates LRU cache → write lock required
-    let mut bc = state.write().await;
+    // V7-L-02: validate address format BEFORE acquiring any lock.
+    // Rejects obviously-invalid inputs early (no lock overhead, no trie traversal).
+    if !crate::core::blockchain::is_valid_sentrix_address(&address) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid address format: expected 0x + 40 hex chars",
+                "received": address,
+            })),
+        )
+            .into_response();
+    }
+
+    // V7-M-03: downgrade from WRITE to READ lock.
+    // prove() previously took &mut self due to LRU mutation; TrieCache now uses an
+    // internal Mutex<LruCache>, so prove() takes &self — a read lock is sufficient.
+    // This prevents proof requests from blocking block production (which needs a write lock).
+    let bc = state.read().await;
     let key = address_to_key(&address);
-    match bc.state_trie.as_mut() {
+    match bc.state_trie.as_ref() {
         None => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
@@ -823,6 +839,9 @@ async fn get_address_proof(
                     "terminal_hash_hex": hex::encode(proof.terminal_hash),
                     "siblings_hex": proof.siblings.iter().map(hex::encode).collect::<Vec<_>>(),
                     "root_hex": hex::encode(trie.root_hash()),
+                    // V7-I-01: document proof scope — only native SRX is committed.
+                    "scope": "native_srx_only",
+                    "scope_note": "Proof covers native SRX balance and nonce only. SRX-20 token balances are not committed to the state root.",
                 }))
                 .into_response()
             }
