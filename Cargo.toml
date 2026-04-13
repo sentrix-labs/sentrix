@@ -66,3 +66,6 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 zeroize = "1.7"
 subtle = "2.5"
+
+[dev-dependencies]
+tempfile = "3"
