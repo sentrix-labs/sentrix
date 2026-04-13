@@ -699,7 +699,7 @@ fn cmd_token_deploy(name: &str, symbol: &str, decimals: u8, supply: u64, deploye
     let mut bc = storage.load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
     let wallet = Wallet::from_private_key(deployer_key)?;
-    let token_op = TokenOp::Deploy { name: name.to_string(), symbol: symbol.to_string(), decimals, supply };
+    let token_op = TokenOp::Deploy { name: name.to_string(), symbol: symbol.to_string(), decimals, supply, max_supply: 0 };
     let txid = cli_create_token_tx(&mut bc, &wallet, token_op, fee)?;
     storage.save_blockchain(&bc)?;
     println!("Token deploy transaction submitted to mempool!");

@@ -95,6 +95,8 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
+      # V5-09: Rotate VPS_SSH_KEY secrets periodically (recommended: every 90 days).
+      # Go to repo Settings → Secrets → VPS1_SSH_KEY / VPS2_SSH_KEY to update.
       - name: Deploy to VPS1
         run: |
           mkdir -p ~/.ssh

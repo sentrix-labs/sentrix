@@ -5,6 +5,11 @@ use std::collections::HashMap;
 use secp256k1::PublicKey;
 use crate::types::error::{SentrixError, SentrixResult};
 
+// V5-01: Minimum active validators for collusion resistance (PoA N/2+1 design)
+pub const MIN_ACTIVE_VALIDATORS: usize = 3;
+// V5-11: Admin log bounded to prevent unbounded memory growth
+pub const MAX_ADMIN_LOG_SIZE: usize = 10_000;
+
 // I-03: Admin audit trail — every privileged operation produces an immutable log entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminEvent {
@@ -123,6 +128,13 @@ impl AuthorityManager {
             ));
         }
 
+        // V5-05: Validate address format before expensive crypto check
+        if !crate::core::blockchain::is_valid_sentrix_address(&address) {
+            return Err(SentrixError::InvalidTransaction(
+                format!("invalid validator address format: {}", address)
+            ));
+        }
+
         // H-02 FIX: Validate public_key is a valid secp256k1 point AND derives to address
         let pk_bytes = hex::decode(&public_key)
             .map_err(|_| SentrixError::InvalidTransaction(
@@ -154,6 +166,7 @@ impl AuthorityManager {
                 .unwrap_or_default().as_secs()
         );
         self.admin_log.push(AdminEvent::now("add_validator", caller, &address, &name));
+        self.trim_admin_log();
         Ok(())
     }
 
@@ -168,13 +181,13 @@ impl AuthorityManager {
                 "admin cannot remove itself".to_string()
             ));
         }
-        // Ensure at least 1 active validator remains
+        // V5-01: Ensure at least MIN_ACTIVE_VALIDATORS remain after removal
         let active_after = self.active_validators().iter()
             .filter(|v| v.address != address)
             .count();
-        if active_after < 1 {
+        if active_after < MIN_ACTIVE_VALIDATORS {
             return Err(SentrixError::InvalidBlock(
-                "cannot remove: at least 1 active validator required".to_string()
+                format!("cannot remove: at least {} active validators required", MIN_ACTIVE_VALIDATORS)
             ));
         }
         let name = self.validators.get(address)
@@ -190,6 +203,7 @@ impl AuthorityManager {
                 .unwrap_or_default().as_secs()
         );
         self.admin_log.push(AdminEvent::now("remove_validator", caller, address, &name));
+        self.trim_admin_log();
         Ok(())
     }
 
@@ -202,14 +216,14 @@ impl AuthorityManager {
         let validator = self.validators.get(address)
             .ok_or_else(|| SentrixError::NotFound(format!("validator {}", address)))?;
 
-        // H-03 FIX: prevent deactivating the last active validator
+        // H-03/V5-01: prevent deactivating below MIN_ACTIVE_VALIDATORS
         if validator.is_active {
             let active_after = self.active_validators().iter()
                 .filter(|v| v.address != address)
                 .count();
-            if active_after < 1 {
+            if active_after < MIN_ACTIVE_VALIDATORS {
                 return Err(SentrixError::InvalidBlock(
-                    "cannot deactivate: at least 1 active validator required".to_string()
+                    format!("cannot deactivate: at least {} active validators required", MIN_ACTIVE_VALIDATORS)
                 ));
             }
         }
@@ -227,6 +241,7 @@ impl AuthorityManager {
                 .unwrap_or_default().as_secs()
         );
         self.admin_log.push(AdminEvent::now(op, caller, address, &name));
+        self.trim_admin_log();
         Ok(new_state)
     }
 
@@ -249,7 +264,22 @@ impl AuthorityManager {
                 .unwrap_or_default().as_secs()
         );
         self.admin_log.push(AdminEvent::now("rename_validator", caller, address, &log_name));
+        self.trim_admin_log();
         Ok(())
+    }
+
+    // V5-01: Minimum colluding validators needed to control the chain (N/2+1)
+    pub fn collusion_risk(&self) -> usize {
+        let n = self.active_count();
+        if n == 0 { return 0; }
+        n / 2 + 1
+    }
+
+    // V5-11: Trim oldest entries when admin_log exceeds MAX_ADMIN_LOG_SIZE
+    fn trim_admin_log(&mut self) {
+        if self.admin_log.len() > MAX_ADMIN_LOG_SIZE {
+            self.admin_log.drain(..self.admin_log.len() - MAX_ADMIN_LOG_SIZE);
+        }
     }
 
     pub fn record_block_produced(&mut self, address: &str, timestamp: u64) {
@@ -301,6 +331,20 @@ mod tests {
         mgr
     }
 
+    // V5-01: 4-validator setup for tests that need to go below 3 active
+    fn setup_4() -> AuthorityManager {
+        let mut mgr = AuthorityManager::new("admin".to_string());
+        let (addr1, pk1) = gen_validator_keypair();
+        let (addr2, pk2) = gen_validator_keypair();
+        let (addr3, pk3) = gen_validator_keypair();
+        let (addr4, pk4) = gen_validator_keypair();
+        mgr.add_validator("admin", addr1, "Validator 1".to_string(), pk1).unwrap();
+        mgr.add_validator("admin", addr2, "Validator 2".to_string(), pk2).unwrap();
+        mgr.add_validator("admin", addr3, "Validator 3".to_string(), pk3).unwrap();
+        mgr.add_validator("admin", addr4, "Validator 4".to_string(), pk4).unwrap();
+        mgr
+    }
+
     #[test]
     fn test_add_validator() {
         let mgr = setup();
@@ -343,14 +387,14 @@ mod tests {
 
     #[test]
     fn test_toggle_validator() {
-        let mut mgr = setup();
+        let mut mgr = setup_4(); // 4 validators: toggling one leaves 3 ≥ MIN_ACTIVE_VALIDATORS
         let addr = mgr.active_validators()[0].address.clone();
 
         mgr.toggle_validator("admin", &addr).unwrap();
-        assert_eq!(mgr.active_count(), 2);
+        assert_eq!(mgr.active_count(), 3);
 
         mgr.toggle_validator("admin", &addr).unwrap();
-        assert_eq!(mgr.active_count(), 3);
+        assert_eq!(mgr.active_count(), 4);
     }
 
     #[test]
@@ -374,11 +418,11 @@ mod tests {
         mgr.add_validator("admin", addr1.clone(), "V1".to_string(), pk1).unwrap();
         assert_eq!(mgr.active_count(), 1);
 
-        // Trying to deactivate the only active validator should fail
+        // Trying to deactivate below MIN_ACTIVE_VALIDATORS should fail
         let result = mgr.toggle_validator("admin", &addr1);
         assert!(result.is_err());
         let err_str = result.unwrap_err().to_string();
-        assert!(err_str.contains("at least 1 active validator"), "Expected min validator error, got: {}", err_str);
+        assert!(err_str.contains("at least 3"), "Expected min validator error, got: {}", err_str);
 
         // Validator should still be active
         assert_eq!(mgr.active_count(), 1);
@@ -424,7 +468,7 @@ mod tests {
 
     #[test]
     fn test_i03_remove_validator_logs_event() {
-        let mut mgr = setup();
+        let mut mgr = setup_4(); // need 4 so removing one leaves 3 ≥ MIN_ACTIVE_VALIDATORS
         let addr = mgr.active_validators()[0].address.clone();
         let name = mgr.validators[&addr].name.clone();
         let log_len_before = mgr.admin_log.len();
@@ -442,7 +486,7 @@ mod tests {
 
     #[test]
     fn test_i03_toggle_validator_logs_deactivate_and_activate() {
-        let mut mgr = setup();
+        let mut mgr = setup_4(); // need 4 so toggling one leaves 3 ≥ MIN_ACTIVE_VALIDATORS
         let addr = mgr.active_validators()[0].address.clone();
         let log_len_before = mgr.admin_log.len();
 
@@ -504,22 +548,135 @@ mod tests {
         assert_eq!(loaded.admin_log[0].operation, "add_validator");
     }
 
+    // ── V5-01: Minimum active validator enforcement ────────
+
+    #[test]
+    fn test_v501_remove_enforces_min_active_validators() {
+        let mut mgr = setup(); // exactly 3 validators = MIN_ACTIVE_VALIDATORS
+        let addr = mgr.active_validators()[0].address.clone();
+        // Removing one would leave 2 < MIN_ACTIVE_VALIDATORS
+        let result = mgr.remove_validator("admin", &addr);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("at least 3"), "Expected min 3 error, got: {}", err);
+    }
+
+    #[test]
+    fn test_v501_toggle_enforces_min_active_validators() {
+        let mut mgr = setup(); // exactly 3 validators = MIN_ACTIVE_VALIDATORS
+        let addr = mgr.active_validators()[0].address.clone();
+        // Deactivating one would leave 2 < MIN_ACTIVE_VALIDATORS
+        let result = mgr.toggle_validator("admin", &addr);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("at least 3"), "Expected min 3 error, got: {}", err);
+    }
+
+    #[test]
+    fn test_v501_collusion_risk() {
+        let mgr3 = setup(); // 3 validators
+        assert_eq!(mgr3.collusion_risk(), 2); // floor(3/2)+1 = 2
+        let mgr4 = setup_4(); // 4 validators
+        assert_eq!(mgr4.collusion_risk(), 3); // floor(4/2)+1 = 3
+        let empty = AuthorityManager::new("admin".to_string());
+        assert_eq!(empty.collusion_risk(), 0);
+    }
+
+    // ── V5-05: Validator address format validation ─────────
+
+    #[test]
+    fn test_v505_add_validator_rejects_invalid_address_format() {
+        let mut mgr = AuthorityManager::new("admin".to_string());
+        let (_, pk) = gen_validator_keypair();
+        // Use syntactically invalid address (no 0x prefix)
+        let result = mgr.add_validator("admin", "not_a_valid_address".to_string(), "Bad Val".to_string(), pk);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid") || err.contains("address"),
+            "Expected address format error, got: {}", err
+        );
+    }
+
+    #[test]
+    fn test_v505_add_validator_accepts_valid_address_format() {
+        let mut mgr = AuthorityManager::new("admin".to_string());
+        let (addr, pk) = gen_validator_keypair();
+        // Real derived address should pass both format check and H-02 crypto check
+        assert!(mgr.add_validator("admin", addr, "Valid Val".to_string(), pk).is_ok());
+    }
+
+    // ── V5-11: Bounded admin_log ────────────────────────────
+
+    #[test]
+    fn test_v511_admin_log_bounded_at_max_size() {
+        let mut mgr = AuthorityManager::new("admin".to_string());
+        let (addr, pk) = gen_validator_keypair();
+        mgr.add_validator("admin", addr.clone(), "Val".to_string(), pk).unwrap();
+
+        // Rename MAX_ADMIN_LOG_SIZE + 10 times to overflow
+        for i in 0..MAX_ADMIN_LOG_SIZE + 10 {
+            mgr.rename_validator("admin", &addr, format!("Name {}", i)).unwrap();
+        }
+
+        assert!(
+            mgr.admin_log.len() <= MAX_ADMIN_LOG_SIZE,
+            "admin_log exceeded MAX: {} > {}", mgr.admin_log.len(), MAX_ADMIN_LOG_SIZE
+        );
+    }
+
+    #[test]
+    fn test_v501_remove_succeeds_with_4_validators() {
+        let mut mgr = setup_4(); // 4 validators
+        let addr = mgr.active_validators()[0].address.clone();
+        // Removing one leaves 3 = MIN_ACTIVE_VALIDATORS — should succeed
+        assert!(mgr.remove_validator("admin", &addr).is_ok());
+        assert_eq!(mgr.active_count(), 3);
+    }
+
+    #[test]
+    fn test_v505_add_validator_rejects_short_hex_address() {
+        let mut mgr = AuthorityManager::new("admin".to_string());
+        let (_, pk) = gen_validator_keypair();
+        // Too short — only 20 chars after 0x instead of 40
+        let result = mgr.add_validator("admin", "0xdeadbeef".to_string(), "Short".to_string(), pk);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_v511_oldest_entries_trimmed_not_newest() {
+        let mut mgr = AuthorityManager::new("admin".to_string());
+        let (addr, pk) = gen_validator_keypair();
+        mgr.add_validator("admin", addr.clone(), "Val".to_string(), pk).unwrap();
+
+        // Fill to MAX_ADMIN_LOG_SIZE + 5 renames
+        for i in 0..MAX_ADMIN_LOG_SIZE + 5 {
+            mgr.rename_validator("admin", &addr, format!("Name {}", i)).unwrap();
+        }
+
+        // Newest entry must still be present (oldest were trimmed)
+        let last = mgr.admin_log.last().unwrap();
+        assert_eq!(last.operation, "rename_validator");
+        assert!(mgr.admin_log.len() <= MAX_ADMIN_LOG_SIZE);
+    }
+
     #[test]
     fn test_h03_toggle_allows_deactivate_with_others() {
-        let mut mgr = AuthorityManager::new("admin".to_string());
-        let (addr1, pk1) = gen_validator_keypair();
-        let (addr2, pk2) = gen_validator_keypair();
-        mgr.add_validator("admin", addr1.clone(), "V1".to_string(), pk1).unwrap();
-        mgr.add_validator("admin", addr2.clone(), "V2".to_string(), pk2).unwrap();
-        assert_eq!(mgr.active_count(), 2);
+        // V5-01: need 4 validators so toggling one leaves 3 ≥ MIN_ACTIVE_VALIDATORS
+        let mut mgr = setup_4();
+        let addr1 = mgr.active_validators()[0].address.clone();
+        let addr2 = mgr.active_validators()[1].address.clone();
+        assert_eq!(mgr.active_count(), 4);
 
-        // With 2 validators, deactivating one should succeed
+        // Deactivating one leaves 3 — should succeed
         let result = mgr.toggle_validator("admin", &addr1);
         assert!(result.is_ok());
-        assert_eq!(mgr.active_count(), 1);
+        assert_eq!(mgr.active_count(), 3);
 
-        // But deactivating the last one should fail
+        // Deactivating another would leave 2 < 3 — should fail
         let result = mgr.toggle_validator("admin", &addr2);
         assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("at least 3"), "Expected min 3 error, got: {}", err_str);
     }
 }

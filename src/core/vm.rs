@@ -21,6 +21,9 @@ pub struct SRX20Contract {
     pub decimals: u8,
     pub owner: String,
     pub total_supply: u64,
+    // V5-02: max_supply=0 means unlimited. #[serde(default)] for backward compat with old contracts.
+    #[serde(default)]
+    pub max_supply: u64,
     pub balances: HashMap<String, u64>,
     pub allowances: HashMap<String, HashMap<String, u64>>,
 }
@@ -32,6 +35,7 @@ impl SRX20Contract {
         symbol: String,
         decimals: u8,
         owner: String,
+        max_supply: u64,
     ) -> Self {
         Self {
             contract_address,
@@ -40,6 +44,7 @@ impl SRX20Contract {
             decimals,
             owner,
             total_supply: 0,
+            max_supply,
             balances: HashMap::new(),
             allowances: HashMap::new(),
         }
@@ -58,6 +63,16 @@ impl SRX20Contract {
         }
         if to.is_empty() || amount == 0 {
             return Err(SentrixError::InvalidTransaction("invalid mint params".to_string()));
+        }
+        // V5-02: enforce max_supply cap (0 = unlimited)
+        if self.max_supply > 0 {
+            let new_supply = self.total_supply.checked_add(amount)
+                .ok_or_else(|| SentrixError::Internal("token supply overflow".to_string()))?;
+            if new_supply > self.max_supply {
+                return Err(SentrixError::InvalidTransaction(
+                    format!("mint would exceed max_supply: {} + {} > {}", self.total_supply, amount, self.max_supply)
+                ));
+            }
         }
         let entry = self.balances.entry(to.to_string()).or_insert(0);
         *entry = entry.checked_add(amount)
@@ -208,6 +223,7 @@ impl SRX20Contract {
             "symbol": self.symbol,
             "decimals": self.decimals,
             "total_supply": self.total_supply,
+            "max_supply": self.max_supply, // V5-02: 0 = unlimited
             "owner": self.owner,
             "holders": self.holders(),
         })
@@ -244,6 +260,7 @@ impl ContractRegistry {
         symbol: &str,
         decimals: u8,
         total_supply: u64,
+        max_supply: u64, // V5-02: 0 = unlimited
     ) -> SentrixResult<String> {
         // L-03 FIX: Validate token name and symbol lengths/format
         if name.is_empty() || name.len() > 64 {
@@ -276,6 +293,7 @@ impl ContractRegistry {
             symbol.to_string(),
             decimals,
             deployer.to_string(),
+            max_supply, // V5-02: 0 = unlimited
         );
         // Mint total supply to deployer (deployer is the owner, so caller == owner)
         contract.mint(deployer, deployer, total_supply)?;
@@ -420,7 +438,7 @@ mod tests {
 
     fn setup_registry() -> (ContractRegistry, String) {
         let mut reg = ContractRegistry::new();
-        let addr = reg.deploy("owner", "FastPoint Token", "FPT", 18, 1_000_000_000).unwrap();
+        let addr = reg.deploy("owner", "FastPoint Token", "FPT", 18, 1_000_000_000, 0).unwrap();
         (reg, addr)
     }
 
@@ -675,7 +693,7 @@ mod tests {
         // Verify that ContractRegistry::deploy() still works correctly after M-05 fix:
         // deploy calls mint(deployer, deployer, supply) — deployer is owner so it passes.
         let mut reg = ContractRegistry::new();
-        let addr = reg.deploy("alice", "AliceCoin", "ALC", 18, 500_000).unwrap();
+        let addr = reg.deploy("alice", "AliceCoin", "ALC", 18, 500_000, 0).unwrap();
         let c = reg.get_contract(&addr).unwrap();
         assert_eq!(c.owner, "alice");
         assert_eq!(c.balance_of("alice"), 500_000);
@@ -712,7 +730,7 @@ mod tests {
     fn test_l03_deploy_name_too_long() {
         let mut reg = ContractRegistry::new();
         let long_name = "A".repeat(65); // 65 chars — exceeds 64 limit
-        let result = reg.deploy("deployer", &long_name, "TKN", 8, 1_000_000);
+        let result = reg.deploy("deployer", &long_name, "TKN", 8, 1_000_000, 0);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("name"), "error should mention 'name': {err}");
@@ -722,7 +740,7 @@ mod tests {
     fn test_l03_deploy_symbol_too_long() {
         let mut reg = ContractRegistry::new();
         let long_sym = "ABCDEFGHIJK"; // 11 chars — exceeds 10 limit
-        let result = reg.deploy("deployer", "ValidName", long_sym, 8, 1_000_000);
+        let result = reg.deploy("deployer", "ValidName", long_sym, 8, 1_000_000, 0);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("symbol"), "error should mention 'symbol': {err}");
@@ -732,10 +750,100 @@ mod tests {
     fn test_l03_deploy_symbol_non_alphanumeric_rejected() {
         let mut reg = ContractRegistry::new();
         // Spaces and special chars not allowed
-        assert!(reg.deploy("d", "Name", "T K N", 8, 0).is_err());
-        assert!(reg.deploy("d", "Name", "TK$N", 8, 0).is_err());
-        assert!(reg.deploy("d", "Name", "", 8, 0).is_err());
+        assert!(reg.deploy("d", "Name", "T K N", 8, 0, 0).is_err());
+        assert!(reg.deploy("d", "Name", "TK$N", 8, 0, 0).is_err());
+        assert!(reg.deploy("d", "Name", "", 8, 0, 0).is_err());
         // Valid symbol must succeed
-        assert!(reg.deploy("d", "Name", "TKN", 8, 1_000_000).is_ok());
+        assert!(reg.deploy("d", "Name", "TKN", 8, 1_000_000, 0).is_ok());
+    }
+
+    // ── V5-02: Token max_supply cap tests ────────────────
+
+    #[test]
+    fn test_v502_mint_within_cap_succeeds() {
+        let mut reg = ContractRegistry::new();
+        // Deploy with max_supply=2_000_000 and initial supply=1_000_000
+        let addr = reg.deploy("owner", "CappedToken", "CAP", 18, 1_000_000, 2_000_000).unwrap();
+        let c = reg.get_contract(&addr).unwrap();
+        assert_eq!(c.max_supply, 2_000_000);
+        assert_eq!(c.total_supply, 1_000_000);
+
+        // Minting 500_000 more (→1_500_000 ≤ 2_000_000) must succeed
+        reg.execute_mint(&addr, "owner", "owner", 500_000).unwrap();
+        let c = reg.get_contract(&addr).unwrap();
+        assert_eq!(c.total_supply, 1_500_000);
+    }
+
+    #[test]
+    fn test_v502_mint_exceeds_cap_rejected() {
+        let mut reg = ContractRegistry::new();
+        // max_supply=1_000_000, initial supply=1_000_000 (already at cap)
+        let addr = reg.deploy("owner", "CappedToken", "CAP", 18, 1_000_000, 1_000_000).unwrap();
+
+        // Minting even 1 more must fail
+        let result = reg.execute_mint(&addr, "owner", "owner", 1);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("max_supply"), "error should mention max_supply: {err}");
+    }
+
+    #[test]
+    fn test_v502_unlimited_cap_allows_unbounded_mint() {
+        let mut reg = ContractRegistry::new();
+        // max_supply=0 means unlimited
+        let addr = reg.deploy("owner", "UnlimitedToken", "UNL", 18, 1_000_000, 0).unwrap();
+
+        // Should mint any amount without restriction
+        reg.execute_mint(&addr, "owner", "owner", 1_000_000_000).unwrap();
+        let c = reg.get_contract(&addr).unwrap();
+        assert_eq!(c.total_supply, 1_001_000_000);
+    }
+
+    #[test]
+    fn test_v502_max_supply_in_get_info() {
+        let mut reg = ContractRegistry::new();
+        let addr = reg.deploy("owner", "TestToken", "TST", 8, 500_000, 1_000_000).unwrap();
+        let info = reg.get_contract(&addr).unwrap().get_info();
+        assert_eq!(info["max_supply"], 1_000_000_u64);
+        assert_eq!(info["total_supply"], 500_000_u64);
+    }
+
+    #[test]
+    fn test_v502_deploy_supply_exceeding_max_supply_rejected() {
+        let mut reg = ContractRegistry::new();
+        // initial supply > max_supply should fail
+        let result = reg.deploy("owner", "Invalid", "INV", 18, 2_000_000, 1_000_000);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("supply") || err.contains("max"),
+            "Expected supply cap error, got: {}", err
+        );
+    }
+
+    #[test]
+    fn test_v502_mint_exactly_at_cap_succeeds() {
+        let mut reg = ContractRegistry::new();
+        let addr = reg.deploy("owner", "ExactCap", "EXC", 18, 900_000, 1_000_000).unwrap();
+        // Mint exactly to the cap (900k + 100k = 1M)
+        assert!(reg.execute_mint(&addr, "owner", "owner", 100_000).is_ok());
+        let c = reg.get_contract(&addr).unwrap();
+        assert_eq!(c.total_supply, 1_000_000);
+
+        // One more mint should fail
+        let result = reg.execute_mint(&addr, "owner", "owner", 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_v502_burn_reduces_supply_allowing_more_mint() {
+        let mut reg = ContractRegistry::new();
+        let addr = reg.deploy("owner", "Burnable", "BRN", 18, 1_000_000, 1_000_000).unwrap();
+        // At cap — can't mint more
+        assert!(reg.execute_mint(&addr, "owner", "owner", 1).is_err());
+        // Burn some
+        reg.execute_burn(&addr, "owner", 500_000).unwrap();
+        // Now can mint again
+        assert!(reg.execute_mint(&addr, "owner", "owner", 500_000).is_ok());
     }
 }
