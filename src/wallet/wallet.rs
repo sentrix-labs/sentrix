@@ -67,7 +67,7 @@ impl Wallet {
 
     // Returns the private key as a hex string (use sparingly — creates a heap copy)
     pub fn secret_key_hex(&self) -> String {
-        hex::encode(&*self.secret_key_bytes)
+        hex::encode(*self.secret_key_bytes)
     }
 
     pub fn get_secret_key(&self) -> SentrixResult<SecretKey> {

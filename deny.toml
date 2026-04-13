@@ -1,0 +1,64 @@
+# deny.toml — cargo-deny configuration for Sentrix
+# https://embarkstudios.github.io/cargo-deny/
+
+# ── Advisories ──────────────────────────────────────────────
+# Deny all CVEs in the RustSec advisory database.
+[advisories]
+yanked = "warn"
+# No ignores: all advisories must be resolved or explicitly waived.
+ignore = []
+
+# ── Licenses ────────────────────────────────────────────────
+[licenses]
+version = 2
+confidence-threshold = 0.8
+
+# Allow permissive licenses + BUSL-1.1 (Sentrix itself). Deny GPL, LGPL, AGPL, SSPL, etc.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "BUSL-1.1",
+    "0BSD",
+    "CC0-1.0",
+    "ISC",
+    "Unlicense",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+# ── Bans ────────────────────────────────────────────────────
+[bans]
+# Warn on duplicate crate versions (common in large dep trees)
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+# Hard-ban unsafe/legacy crypto
+deny = []
+
+skip = [
+    # secp256k1 and libp2p bring in different versions of common crates
+    { name = "bitflags" },
+    { name = "hashbrown" },
+    { name = "syn" },
+    { name = "quote" },
+    { name = "proc-macro2" },
+    { name = "bytes" },
+    { name = "indexmap" },
+    { name = "base64" },
+    { name = "regex" },
+    { name = "regex-syntax" },
+    { name = "regex-automata" },
+    { name = "getrandom" },   # libp2p pulls in 0.2, 0.3, 0.4 transitively
+]
+
+# ── Sources ──────────────────────────────────────────────────
+[sources]
+# Only crates.io — no git dependencies allowed
+unknown-registry = "deny"
+unknown-git = "deny"

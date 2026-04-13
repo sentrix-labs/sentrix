@@ -1,0 +1,18 @@
+# .clippy.toml — Sentrix clippy configuration
+# https://rust-lang.github.io/rust-clippy/
+
+# Allow up to 8 function arguments (deploy_token legitimately needs deployer +
+# name + symbol + decimals + total_supply + max_supply + deploy_fee = 7 non-self params)
+too-many-arguments-threshold = 8
+
+# Stack frame size threshold: 512 KB before triggering large_stack_frames warn
+stack-size-threshold = 524288
+
+# Future size threshold: 16 KB before triggering large_futures warn
+future-size-threshold = 16384
+
+# Allow unwrap/expect/panic in test code — production paths are still denied
+# via [lints.clippy] in Cargo.toml
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

@@ -1,4 +1,5 @@
 // main.rs - Sentrix CLI entry point
+#![allow(missing_docs)]
 
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
@@ -33,11 +34,11 @@ fn get_data_dir() -> std::path::PathBuf {
 }
 
 fn get_db_path() -> String {
-    get_data_dir().join("chain.db").to_str().unwrap().to_string()
+    get_data_dir().join("chain.db").to_str().unwrap_or("data/chain.db").to_string()
 }
 
 fn get_wallets_dir() -> String {
-    get_data_dir().join("wallets").to_str().unwrap().to_string()
+    get_data_dir().join("wallets").to_str().unwrap_or("data/wallets").to_string()
 }
 
 #[derive(Parser)]

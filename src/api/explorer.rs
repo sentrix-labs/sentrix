@@ -75,12 +75,12 @@ fn fmt_ts(unix: u64) -> String {
     let mut y = 1970u64;
     let mut d = days_total;
     loop {
-        let dy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366 } else { 365 };
+        let dy = if (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400) { 366 } else { 365 };
         if d < dy { break; }
         d -= dy;
         y += 1;
     }
-    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let leap = (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400);
     let days_in_month = [31u64, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut m = 0usize;
     for &dim in &days_in_month {
@@ -140,12 +140,12 @@ fn fmt_day(day_key: u64) -> String {
     let mut d = day_key;
     let mut y = 1970u64;
     loop {
-        let dy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366 } else { 365 };
+        let dy = if (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400) { 366 } else { 365 };
         if d < dy { break; }
         d -= dy;
         y += 1;
     }
-    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let leap = (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400);
     let dims = [31u64, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut m = 0usize;
     for &dim in &dims {
@@ -287,10 +287,8 @@ pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
     let cache = HOME_CACHE.get_or_init(|| TokioMutex::new(None));
     {
         let guard = cache.lock().await;
-        if let Some(ref c) = *guard {
-            if c.at.elapsed() < HOME_TTL {
-                return Html(c.html.clone());
-            }
+        if let Some(ref c) = *guard && c.at.elapsed() < HOME_TTL {
+            return Html(c.html.clone());
         }
     }
     let bc = state.read().await;
@@ -425,10 +423,8 @@ pub async fn stats_daily(State(state): State<SharedState>) -> Json<Vec<DailyStat
     let cache = DAILY_CACHE.get_or_init(|| TokioMutex::new(None));
     {
         let guard = cache.lock().await;
-        if let Some(ref c) = *guard {
-            if c.at.elapsed() < TTL {
-                return Json(c.data.clone());
-            }
+        if let Some(ref c) = *guard && c.at.elapsed() < TTL {
+            return Json(c.data.clone());
         }
     }
 
@@ -864,10 +860,8 @@ pub async fn explorer_richlist(State(state): State<SharedState>) -> Html<String>
     let cache = RICHLIST_CACHE.get_or_init(|| TokioMutex::new(None));
     {
         let guard = cache.lock().await;
-        if let Some(ref c) = *guard {
-            if c.at.elapsed() < RICHLIST_TTL {
-                return Html(c.html.clone());
-            }
+        if let Some(ref c) = *guard && c.at.elapsed() < RICHLIST_TTL {
+            return Html(c.html.clone());
         }
     }
     let bc = state.read().await;
