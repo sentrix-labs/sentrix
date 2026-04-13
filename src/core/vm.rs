@@ -245,6 +245,18 @@ impl ContractRegistry {
         decimals: u8,
         total_supply: u64,
     ) -> SentrixResult<String> {
+        // L-03 FIX: Validate token name and symbol lengths/format
+        if name.is_empty() || name.len() > 64 {
+            return Err(SentrixError::InvalidTransaction(
+                "token name must be 1–64 characters".to_string(),
+            ));
+        }
+        if symbol.is_empty() || symbol.len() > 10 || !symbol.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(SentrixError::InvalidTransaction(
+                "token symbol must be 1–10 ASCII alphanumeric characters".to_string(),
+            ));
+        }
+
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -692,5 +704,38 @@ mod tests {
         assert!(result.is_err());
         // Allowance unchanged
         assert_eq!(c.allowance("owner", "spender"), 120);
+    }
+
+    // ── L-03: token name/symbol validation tests ──────────
+
+    #[test]
+    fn test_l03_deploy_name_too_long() {
+        let mut reg = ContractRegistry::new();
+        let long_name = "A".repeat(65); // 65 chars — exceeds 64 limit
+        let result = reg.deploy("deployer", &long_name, "TKN", 8, 1_000_000);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("name"), "error should mention 'name': {err}");
+    }
+
+    #[test]
+    fn test_l03_deploy_symbol_too_long() {
+        let mut reg = ContractRegistry::new();
+        let long_sym = "ABCDEFGHIJK"; // 11 chars — exceeds 10 limit
+        let result = reg.deploy("deployer", "ValidName", long_sym, 8, 1_000_000);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("symbol"), "error should mention 'symbol': {err}");
+    }
+
+    #[test]
+    fn test_l03_deploy_symbol_non_alphanumeric_rejected() {
+        let mut reg = ContractRegistry::new();
+        // Spaces and special chars not allowed
+        assert!(reg.deploy("d", "Name", "T K N", 8, 0).is_err());
+        assert!(reg.deploy("d", "Name", "TK$N", 8, 0).is_err());
+        assert!(reg.deploy("d", "Name", "", 8, 0).is_err());
+        // Valid symbol must succeed
+        assert!(reg.deploy("d", "Name", "TKN", 8, 1_000_000).is_ok());
     }
 }
