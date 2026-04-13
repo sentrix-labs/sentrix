@@ -22,6 +22,7 @@ use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{CorsLayer, Any};
 use crate::core::blockchain::Blockchain;
 use crate::core::transaction::{Transaction, TokenOp};
+use crate::core::trie::address::{address_to_key, account_value_decode};
 use crate::api::jsonrpc::rpc_dispatcher;
 use crate::api::explorer;
 
@@ -238,6 +239,9 @@ pub fn create_router(state: SharedState) -> Router {
         // ── Address history ──────────────────────────────────────
         .route("/address/:address/history",       get(get_address_history))
         .route("/address/:address/info",          get(get_address_info))
+        // ── State trie ───────────────────────────────────────────
+        .route("/address/:address/proof",         get(get_address_proof))
+        .route("/chain/state-root/:height",       get(get_state_root))
         // ── RPC ──────────────────────────────────────────────────
         .route("/rpc",                            post(rpc_dispatcher))
         // ── Admin ────────────────────────────────────────────────
@@ -772,6 +776,88 @@ async fn get_address_info(
         "nonce": nonce,
         "tx_count": tx_count_info,
     }))
+}
+
+// ── State-trie endpoints ──────────────────────────────────────
+
+/// GET /address/:address/proof
+/// Returns a Merkle membership/non-membership proof for the address in the current state trie.
+/// Requires the trie to be initialized (init_trie called at node startup).
+async fn get_address_proof(
+    State(state): State<SharedState>,
+    Path(address): Path<String>,
+) -> impl IntoResponse {
+    // prove() mutates LRU cache → write lock required
+    let mut bc = state.write().await;
+    let key = address_to_key(&address);
+    match bc.state_trie.as_mut() {
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "state trie not initialized",
+                "hint": "node must be started with --trie flag"
+            })),
+        )
+            .into_response(),
+        Some(trie) => match trie.prove(&key) {
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response(),
+            Ok(proof) => {
+                let (balance, nonce) = if proof.found {
+                    account_value_decode(&proof.value)
+                        .map(|(b, n)| (Some(b), Some(n)))
+                        .unwrap_or((None, None))
+                } else {
+                    (None, None)
+                };
+                Json(serde_json::json!({
+                    "address": address,
+                    "found": proof.found,
+                    "balance_sentri": balance,
+                    "nonce": nonce,
+                    "key_hex": hex::encode(proof.key),
+                    "depth": proof.depth,
+                    "terminal_hash_hex": hex::encode(proof.terminal_hash),
+                    "siblings_hex": proof.siblings.iter().map(hex::encode).collect::<Vec<_>>(),
+                    "root_hex": hex::encode(trie.root_hash()),
+                }))
+                .into_response()
+            }
+        },
+    }
+}
+
+/// GET /chain/state-root/:height
+/// Returns the committed state root hash for the given block height.
+async fn get_state_root(
+    State(state): State<SharedState>,
+    Path(height): Path<u64>,
+) -> impl IntoResponse {
+    let bc = state.read().await;
+    match bc.state_trie.as_ref() {
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "state trie not initialized"
+            })),
+        )
+            .into_response(),
+        Some(trie) => match trie.root_at_version(height) {
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response(),
+            Ok(opt) => Json(serde_json::json!({
+                "height": height,
+                "state_root_hex": opt.map(hex::encode),
+            }))
+            .into_response(),
+        },
+    }
 }
 
 #[cfg(test)]

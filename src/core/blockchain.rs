@@ -8,6 +8,8 @@ use crate::core::account::AccountDB;
 use crate::core::authority::AuthorityManager;
 use crate::core::merkle::merkle_root;
 use crate::core::vm::ContractRegistry;
+use crate::core::trie::tree::SentrixTrie;
+use crate::core::trie::address::{address_to_key, account_value_bytes};
 use crate::types::error::{SentrixError, SentrixResult};
 
 // ── Chain constants ──────────────────────────────────────
@@ -69,6 +71,10 @@ pub struct Blockchain {
     pub(crate) mempool: VecDeque<Transaction>,
     pub(crate) total_minted: u64,
     pub chain_id: u64,  // kept pub — read-only constant used by external clients
+    /// Binary Sparse Merkle Tree for account state.
+    /// None until init_trie() is called; not persisted in sled "state" blob.
+    #[serde(skip)]
+    pub(crate) state_trie: Option<SentrixTrie>,
 }
 
 impl Blockchain {
@@ -81,6 +87,7 @@ impl Blockchain {
             mempool: VecDeque::new(),
             total_minted: 0,
             chain_id: CHAIN_ID,
+            state_trie: None,
         };
         bc.initialize_genesis();
         bc
@@ -169,12 +176,97 @@ impl Blockchain {
         true
     }
 
+    /// Total SRX minted so far (in sentri, 1 SRX = 100_000_000 sentri).
+    pub fn total_minted(&self) -> u64 {
+        self.total_minted
+    }
+
+    /// State root committed at `version` (block height), or None if the trie is not initialized
+    /// or no root was committed at that version.
+    pub fn trie_root_at(&self, version: u64) -> Option<[u8; 32]> {
+        self.state_trie
+            .as_ref()
+            .and_then(|t| t.root_at_version(version).ok().flatten())
+    }
+
     // I-01 FIX: memory estimate now reflects window (not full chain)
     pub fn get_memory_estimate(&self) -> String {
         let window_blocks = self.chain.len();
         let true_height = self.height();
         let estimate_mb = (window_blocks * 2) / 1024; // ~2KB per block
         format!("~{}MB for {} blocks in window (true height: {})", estimate_mb, window_blocks, true_height)
+    }
+
+    // ── SentrixTrie (Step 5) ─────────────────────────────
+
+    /// Initialize the state trie from a sled database.
+    /// Loads the committed root for the current height, or starts from an empty trie.
+    /// Call once at node startup, after loading blockchain state from storage.
+    pub fn init_trie(&mut self, db: &sled::Db) -> SentrixResult<()> {
+        let trie = SentrixTrie::open(db, self.height())?;
+        self.state_trie = Some(trie);
+        Ok(())
+    }
+
+    /// Update the trie with current account state for every address touched in the last block,
+    /// commit at that block's height, and return the new state root.
+    /// Returns None if the trie has not been initialized.
+    ///
+    /// Split into two phases to satisfy the borrow checker:
+    ///   Phase 1 — immutable borrows of `chain` and `accounts` → collect owned data.
+    ///   Phase 2 — mutable borrow of `state_trie` → insert + commit.
+    pub(crate) fn update_trie_for_block(&mut self) -> Option<[u8; 32]> {
+        self.state_trie.as_ref()?;
+
+        // Phase 1: extract addresses + block index from the last block
+        let (touched_addrs, block_index) = {
+            let block = self.chain.last()?;
+            let mut addrs: Vec<String> = Vec::new();
+            for tx in &block.transactions {
+                if is_valid_sentrix_address(&tx.from_address) {
+                    addrs.push(tx.from_address.clone());
+                }
+                if is_valid_sentrix_address(&tx.to_address) {
+                    addrs.push(tx.to_address.clone());
+                }
+            }
+            if is_valid_sentrix_address(&block.validator) {
+                addrs.push(block.validator.clone());
+            }
+            (addrs, block.index)
+        };
+        // All borrows on `self.chain` released here.
+
+        // Phase 1b: snapshot current balances + nonces (immutable borrow of `accounts`)
+        let unique: std::collections::HashSet<String> = touched_addrs.into_iter().collect();
+        let updates: Vec<(String, u64, u64)> = unique
+            .iter()
+            .map(|a| {
+                (
+                    a.clone(),
+                    self.accounts.get_balance(a),
+                    self.accounts.get_nonce(a),
+                )
+            })
+            .collect();
+        // Borrow of `accounts` ends after collect().
+
+        // Phase 2: mutable borrow of `state_trie`
+        let trie = self.state_trie.as_mut()?;
+        for (addr, balance, nonce) in updates {
+            let key = address_to_key(&addr);
+            let value = account_value_bytes(balance, nonce);
+            if let Err(e) = trie.insert(&key, &value) {
+                tracing::warn!("trie: insert failed for {}: {}", addr, e);
+            }
+        }
+        match trie.commit(block_index) {
+            Ok(root) => Some(root),
+            Err(e) => {
+                tracing::warn!("trie: commit failed at block {}: {}", block_index, e);
+                None
+            }
+        }
     }
 }
 
