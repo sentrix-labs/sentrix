@@ -215,7 +215,7 @@ Add Sentrix as a custom network in MetaMask:
 | RPC URL | `https://sentrix-rpc.sentriscloud.com` |
 | Chain ID | `7119` |
 | Currency symbol | `SRX` |
-| Block explorer URL | `https://sentrix-explorer.sentriscloud.com` |
+| Block explorer URL | `https://sentrixscan.sentriscloud.com` |
 
 ---
 
@@ -477,7 +477,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## Community
 
-- Explorer: [sentrix-explorer.sentriscloud.com](https://sentrix-explorer.sentriscloud.com)
+- Explorer: [sentrixscan.sentriscloud.com](https://sentrixscan.sentriscloud.com)
 - API: [sentrix-api.sentriscloud.com](https://sentrix-api.sentriscloud.com)
 - RPC: [sentrix-rpc.sentriscloud.com](https://sentrix-rpc.sentriscloud.com)
 - GitHub: [github.com/satyakwok/sentrix](https://github.com/satyakwok/sentrix)
