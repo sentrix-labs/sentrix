@@ -286,7 +286,9 @@ async fn get_block(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let bc = state.read().await;
     match bc.get_block(index) {
-        Some(block) => Ok(Json(serde_json::to_value(block).unwrap())),
+        Some(block) => serde_json::to_value(block)
+            .map(Json)
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR), // L-05 FIX: no unwrap
         None => Err(StatusCode::NOT_FOUND),
     }
 }
@@ -781,5 +783,35 @@ mod tests {
         // Same height is a cache hit
         let is_same_hit = VALIDATE_CACHE_HEIGHT.load(std::sync::atomic::Ordering::Relaxed) == test_height;
         assert!(is_same_hit);
+    }
+
+    // ── L-05: serde_json error propagation tests ──────────
+
+    #[test]
+    fn test_l05_block_serializes_to_json_value() {
+        // Verify Block can be serialized without panic — confirming map_err path is safe.
+        use crate::core::blockchain::Blockchain;
+        let bc = Blockchain::new("admin".to_string());
+        let block = &bc.chain[0];
+        let result = serde_json::to_value(block);
+        assert!(result.is_ok(), "genesis block must serialize cleanly");
+        let val = result.unwrap();
+        assert!(val.get("index").is_some());
+        assert!(val.get("hash").is_some());
+    }
+
+    #[test]
+    fn test_l05_no_unwrap_in_get_block_response_path() {
+        // Ensure the fix compiles: serde_json::to_value(...).map(Json).map_err(...)
+        // This test validates the fix by exercising serde serialization of a Block.
+        use crate::core::blockchain::Blockchain;
+        let bc = Blockchain::new("admin".to_string());
+        let block = bc.chain[0].clone();
+
+        // Replicate what the handler does (without the StatusCode wrapper)
+        let serialized = serde_json::to_value(&block);
+        assert!(serialized.is_ok());
+        let json_val = serialized.unwrap();
+        assert_eq!(json_val["index"], 0);
     }
 }

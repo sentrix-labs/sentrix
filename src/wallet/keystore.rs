@@ -51,7 +51,7 @@ impl Keystore {
         );
 
         // Encrypt private key using AES-256-GCM
-        let private_key_bytes = hex::decode(&wallet.secret_key_hex)
+        let private_key_bytes = hex::decode(wallet.secret_key_hex())
             .map_err(|_| SentrixError::KeystoreError("invalid private key".to_string()))?;
 
         let cipher_key = Key::<Aes256Gcm>::from_slice(&key_bytes);
@@ -156,7 +156,7 @@ mod tests {
 
         assert_eq!(wallet.address, decrypted.address);
         assert_eq!(wallet.public_key, decrypted.public_key);
-        assert_eq!(wallet.secret_key_hex, decrypted.secret_key_hex);
+        assert_eq!(wallet.secret_key_hex(), decrypted.secret_key_hex());
     }
 
     #[test]
@@ -199,7 +199,7 @@ mod tests {
         let decrypted = loaded.decrypt(password).unwrap();
 
         assert_eq!(wallet.address, decrypted.address);
-        assert_eq!(wallet.secret_key_hex, decrypted.secret_key_hex);
+        assert_eq!(wallet.secret_key_hex(), decrypted.secret_key_hex());
 
         // Cleanup
         let _ = std::fs::remove_file(path_str);
