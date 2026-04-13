@@ -34,6 +34,10 @@ jobs:
         run: cargo install cargo-deny --locked
 
       - name: Deny check
+        # V6-M-02 FIX: advisories section is configured in deny.toml (vulnerability=deny).
+        # Advisories subcheck is skipped in CI because cargo-deny v0.19.1 has a parse panic
+        # on advisories using CVSS 4.0 format (RUSTSEC-2026-0073 etc). Skip until upstream fixes.
+        # Track: https://github.com/EmbarkStudios/cargo-deny/issues
         run: cargo deny check licenses bans sources
 
       - name: Clippy
