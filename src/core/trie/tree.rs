@@ -403,6 +403,13 @@ impl SentrixTrie {
     pub fn root_at_version(&self, version: u64) -> SentrixResult<Option<NodeHash>> {
         self.cache.storage.load_root(version)
     }
+
+    /// Returns true if the given node hash exists in persistent storage.
+    /// Used by init_trie() to detect stale root hashes whose nodes were
+    /// deleted by V7-L-01 (e.g. after P2P sync with stale height key).
+    pub fn node_exists(&self, hash: &NodeHash) -> SentrixResult<bool> {
+        Ok(self.cache.storage.load_node(hash)?.is_some())
+    }
 }
 
 // ── Trait impls ──────────────────────────────────────────────

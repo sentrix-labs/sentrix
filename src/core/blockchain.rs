@@ -213,7 +213,33 @@ impl Blockchain {
 
         // V7-I-02: first-time trie init on a node that ran before SentrixTrie existed.
         // AccountDB has the correct state but the trie is empty — backfill now.
-        if height > 0 && trie.root_at_version(height)?.is_none() {
+        //
+        // Also handles the stale-height case: root hash committed in trie_roots but
+        // the root NODE was deleted from trie_nodes by V7-L-01 in a prior session
+        // (e.g. after P2P sync where save_block() was not updating the height key).
+        let needs_backfill = if height > 0 {
+            match trie.root_at_version(height)? {
+                None => true,
+                Some(root_hash) => {
+                    // Root recorded in trie_roots, but verify the node still exists.
+                    // V7-L-01 deletes old internal nodes (including the old root) on
+                    // every insert; if stale height caused us to point at such a deleted
+                    // root, we must re-backfill rather than loading a phantom node.
+                    let node_missing = !trie.node_exists(&root_hash)?;
+                    if node_missing {
+                        tracing::warn!(
+                            "trie: root {} for height {} is recorded but node is missing (stale-height or V7-L-01 deletion); forcing backfill",
+                            hex::encode(root_hash), height
+                        );
+                    }
+                    node_missing
+                }
+            }
+        } else {
+            false
+        };
+
+        if needs_backfill {
             let accounts: Vec<(String, u64, u64)> = self.accounts.accounts
                 .values()
                 .filter(|a| a.balance > 0)

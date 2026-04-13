@@ -148,6 +148,9 @@ impl Storage {
         self.put(&key, block)?;
         let hash_key = format!("hash:{}", block.hash);
         self.put(&hash_key, &block.index)?;
+        // Keep height key current so init_trie() loads the correct trie root on restart.
+        // Critical for P2P sync path: save_blockchain() is NOT called per-block there.
+        self.save_height(block.index)?;
         self.flush()?;
         Ok(())
     }
