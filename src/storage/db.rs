@@ -199,6 +199,22 @@ impl Storage {
         Ok(())
     }
 
+    /// Drop and re-create the three trie named trees, clearing all trie state.
+    /// On next startup init_trie() will detect no committed root and backfill from AccountDB.
+    pub fn reset_trie(&self) -> SentrixResult<()> {
+        for tree_name in &["trie_nodes", "trie_values", "trie_roots"] {
+            self.db
+                .drop_tree(tree_name)
+                .map_err(|e| SentrixError::StorageError(
+                    format!("failed to drop {}: {}", tree_name, e)
+                ))?;
+        }
+        self.db
+            .flush()
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn db_size_bytes(&self) -> u64 {
         self.db.size_on_disk().unwrap_or(0)
     }

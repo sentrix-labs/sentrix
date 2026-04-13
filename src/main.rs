@@ -212,6 +212,10 @@ enum ChainCommands {
     Validate,
     /// Show block details
     Block { index: u64 },
+    /// Drop all trie state (trie_nodes, trie_values, trie_roots) so the next startup
+    /// rebuilds the trie from scratch via V7-I-02 backfill.  Run this command while
+    /// the node is STOPPED, then restart normally.
+    ResetTrie,
 }
 
 #[tokio::main]
@@ -261,6 +265,7 @@ async fn main() -> anyhow::Result<()> {
             ChainCommands::Info => cmd_chain_info()?,
             ChainCommands::Validate => cmd_chain_validate()?,
             ChainCommands::Block { index } => cmd_chain_block(index)?,
+            ChainCommands::ResetTrie => cmd_chain_reset_trie()?,
         },
 
         Commands::Token { action } => match action {
@@ -692,6 +697,16 @@ fn cmd_chain_block(index: u64) -> anyhow::Result<()> {
         Some(block) => println!("{}", serde_json::to_string_pretty(block)?),
         None => println!("Block {} not found", index),
     }
+    Ok(())
+}
+
+fn cmd_chain_reset_trie() -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    if !storage.has_blockchain() {
+        anyhow::bail!("Chain not initialized.");
+    }
+    storage.reset_trie()?;
+    println!("Trie state cleared. Start the node normally — it will rebuild the trie from AccountDB.");
     Ok(())
 }
 
