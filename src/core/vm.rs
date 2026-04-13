@@ -47,7 +47,15 @@ impl SRX20Contract {
 
     // ── Core methods ─────────────────────────────────────
 
-    pub fn mint(&mut self, to: &str, amount: u64) -> SentrixResult<()> {
+    /// M-05 FIX: mint() now enforces owner check directly.
+    /// Previously only callers (execute_mint, call dispatcher) checked ownership —
+    /// any future code path calling mint() directly would silently bypass the guard.
+    pub fn mint(&mut self, caller: &str, to: &str, amount: u64) -> SentrixResult<()> {
+        if caller != self.owner {
+            return Err(SentrixError::UnauthorizedValidator(
+                "only the contract owner can mint tokens".to_string()
+            ));
+        }
         if to.is_empty() || amount == 0 {
             return Err(SentrixError::InvalidTransaction("invalid mint params".to_string()));
         }
@@ -257,8 +265,8 @@ impl ContractRegistry {
             decimals,
             deployer.to_string(),
         );
-        // Mint total supply to deployer
-        contract.mint(deployer, total_supply)?;
+        // Mint total supply to deployer (deployer is the owner, so caller == owner)
+        contract.mint(deployer, deployer, total_supply)?;
         self.contracts.insert(addr.clone(), contract);
         Ok(addr)
     }
@@ -310,10 +318,8 @@ impl ContractRegistry {
     pub fn execute_mint(&mut self, contract: &str, caller: &str, to: &str, amount: u64) -> SentrixResult<()> {
         let c = self.contracts.get_mut(contract)
             .ok_or_else(|| SentrixError::NotFound(format!("contract {}", contract)))?;
-        if caller != c.owner {
-            return Err(SentrixError::UnauthorizedValidator("only owner can mint".to_string()));
-        }
-        c.mint(to, amount)
+        // mint() now enforces owner check internally (M-05), caller passed through
+        c.mint(caller, to, amount)
     }
 
     pub fn execute_approve(&mut self, contract: &str, owner: &str, spender: &str, amount: u64) -> SentrixResult<()> {
@@ -337,12 +343,10 @@ impl ContractRegistry {
 
         match method {
             "mint" => {
-                if caller != contract.owner {
-                    return Err(SentrixError::UnauthorizedValidator("only owner can mint".to_string()));
-                }
                 let to = params["to"].as_str().unwrap_or("");
                 let amount = params["amount"].as_u64().unwrap_or(0);
-                contract.mint(to, amount)?;
+                // mint() enforces owner check internally (M-05 fix)
+                contract.mint(caller, to, amount)?;
                 Ok(serde_json::json!({"status": "ok"}))
             }
             "burn" => {
@@ -611,6 +615,59 @@ mod tests {
         assert_eq!(c.allowance("owner", "spender"), 0);
         c.approve("owner", "spender", 200).unwrap();
         assert_eq!(c.allowance("owner", "spender"), 200);
+    }
+
+    // ── M-05: mint() Owner Check ────────────────────────
+
+    #[test]
+    fn test_m05_mint_direct_non_owner_fails() {
+        let (mut reg, addr) = setup_registry();
+        let c = reg.get_contract_mut(&addr).unwrap();
+
+        // Direct call to SRX20Contract::mint() with non-owner must be rejected
+        let result = c.mint("not_owner", "alice", 1_000);
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("owner"), "Expected owner error, got: {}", err_str);
+        // Balance unchanged
+        assert_eq!(c.balance_of("alice"), 0);
+    }
+
+    #[test]
+    fn test_m05_mint_direct_owner_succeeds() {
+        let (mut reg, addr) = setup_registry();
+        let c = reg.get_contract_mut(&addr).unwrap();
+        let supply_before = c.total_supply;
+
+        // Direct call with the actual owner must succeed
+        c.mint("owner", "alice", 5_000).unwrap();
+        assert_eq!(c.balance_of("alice"), 5_000);
+        assert_eq!(c.total_supply, supply_before + 5_000);
+    }
+
+    #[test]
+    fn test_m05_execute_mint_validates_owner() {
+        let (mut reg, addr) = setup_registry();
+
+        // execute_mint with non-owner should fail (enforced by mint() itself)
+        let result = reg.execute_mint(&addr, "not_owner", "alice", 100);
+        assert!(result.is_err());
+
+        // execute_mint with owner should succeed
+        reg.execute_mint(&addr, "owner", "alice", 100).unwrap();
+        assert_eq!(reg.get_token_balance(&addr, "alice"), 100);
+    }
+
+    #[test]
+    fn test_m05_deploy_mints_to_deployer_as_owner() {
+        // Verify that ContractRegistry::deploy() still works correctly after M-05 fix:
+        // deploy calls mint(deployer, deployer, supply) — deployer is owner so it passes.
+        let mut reg = ContractRegistry::new();
+        let addr = reg.deploy("alice", "AliceCoin", "ALC", 18, 500_000).unwrap();
+        let c = reg.get_contract(&addr).unwrap();
+        assert_eq!(c.owner, "alice");
+        assert_eq!(c.balance_of("alice"), 500_000);
+        assert_eq!(c.total_supply, 500_000);
     }
 
     #[test]

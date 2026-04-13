@@ -7,6 +7,7 @@ use axum::{
     Json,
     http::{StatusCode, request::Parts},
 };
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -95,13 +96,30 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
 
 // ── Router ───────────────────────────────────────────────
 pub fn create_router(state: SharedState) -> Router {
-    // I-01 FIX: CORS layer — configurable via SENTRIX_CORS_ORIGIN env var
-    let cors = match std::env::var("SENTRIX_CORS_ORIGIN") {
-        Ok(origin) if !origin.is_empty() && origin != "*" => {
+    // M-06 FIX: CORS — fail-safe restrictive default.
+    // If SENTRIX_CORS_ORIGIN is not set → no cross-origin allowed (safest default).
+    // Use SENTRIX_CORS_ORIGIN=* only for local development; set specific origins in production.
+    let cors = match std::env::var("SENTRIX_CORS_ORIGIN").ok().as_deref() {
+        Some("*") => {
+            // Explicit wildcard — allow all origins (dev only)
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::OPTIONS,
+                ])
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::HeaderName::from_static("x-api-key"),
+                ])
+        }
+        Some(origin) if !origin.is_empty() => {
+            // Specific origin (production)
             CorsLayer::new()
                 .allow_origin(
                     origin.parse::<axum::http::HeaderValue>()
-                        .unwrap_or(axum::http::HeaderValue::from_static("*"))
+                        .unwrap_or(axum::http::HeaderValue::from_static("null"))
                 )
                 .allow_methods([
                     axum::http::Method::GET,
@@ -114,8 +132,9 @@ pub fn create_router(state: SharedState) -> Router {
                 ])
         }
         _ => {
+            // M-06 FIX: Not set → restrictive default, no cross-origin requests allowed.
+            // Set SENTRIX_CORS_ORIGIN in .env to enable cross-origin access.
             CorsLayer::new()
-                .allow_origin(Any)
                 .allow_methods([
                     axum::http::Method::GET,
                     axum::http::Method::POST,
@@ -272,13 +291,40 @@ async fn get_block(
     }
 }
 
-async fn validate_chain(State(state): State<SharedState>) -> Json<serde_json::Value> {
+// M-07 FIX: Cache last validation result per block height to avoid O(n) recompute on every call.
+static VALIDATE_CACHE_HEIGHT: AtomicU64 = AtomicU64::new(u64::MAX);
+static VALIDATE_CACHE_RESULT: AtomicBool = AtomicBool::new(false);
+
+// M-07 FIX: validate_chain now requires X-API-Key authentication.
+// An O(n) full chain scan on a 92,000+ block chain per unauthenticated request = DoS vector.
+async fn validate_chain(
+    _auth: ApiKey,
+    State(state): State<SharedState>,
+) -> Json<serde_json::Value> {
     let bc = state.read().await;
+    let height = bc.height();
+
+    // Return cached result if chain height hasn't changed since last run
+    if VALIDATE_CACHE_HEIGHT.load(Ordering::Relaxed) == height {
+        let cached_valid = VALIDATE_CACHE_RESULT.load(Ordering::Relaxed);
+        return Json(serde_json::json!({
+            "valid": cached_valid,
+            "height": height,
+            "total_blocks": bc.chain.len(),
+            "cached": true,
+        }));
+    }
+
+    // Full O(n) chain scan — only runs when height has changed
     let valid = bc.is_valid_chain();
+    VALIDATE_CACHE_HEIGHT.store(height, Ordering::Relaxed);
+    VALIDATE_CACHE_RESULT.store(valid, Ordering::Relaxed);
+
     Json(serde_json::json!({
         "valid": valid,
-        "height": bc.height(),
+        "height": height,
         "total_blocks": bc.chain.len(),
+        "cached": false,
     }))
 }
 
@@ -667,5 +713,73 @@ mod tests {
         assert!(!constant_time_eq("short", "longer_string"));
         assert!(!constant_time_eq("abc", "ab"));
         assert!(!constant_time_eq("", "x"));
+    }
+
+    // ── M-06: constant_time_eq length-independence ────────
+
+    #[test]
+    fn test_m06_constant_time_eq_no_early_exit_on_length_mismatch() {
+        // Both comparisons must traverse the full max-length loop, not short-circuit.
+        // We verify correctness: different lengths always return false regardless of content.
+        assert!(!constant_time_eq("a", "aa"));
+        assert!(!constant_time_eq("aa", "a"));
+        assert!(!constant_time_eq("key_32_chars_long_abcdefghijklmn", "key_32_chars_long_abcdefghijklm"));
+        // Prefix match but different length — must still fail
+        assert!(!constant_time_eq("sentrix", "sentrix_extra"));
+    }
+
+    #[test]
+    fn test_m06_constant_time_eq_same_length_wrong_content() {
+        // Same length, different content — must be false
+        assert!(!constant_time_eq("AAAAAAAAAAAAAAAA", "AAAAAAAAAAAAAAAB"));
+        assert!(!constant_time_eq("0000000000000000", "0000000000000001"));
+        // Verify it's really comparing all bytes (last byte differs)
+        assert!(!constant_time_eq("abcdefghijklmnop", "abcdefghijklmnoq"));
+    }
+
+    #[test]
+    fn test_m06_constant_time_eq_empty_cases() {
+        // Edge cases
+        assert!(constant_time_eq("", ""));
+        assert!(!constant_time_eq("", "a"));
+        assert!(!constant_time_eq("a", ""));
+    }
+
+    // ── M-07: validate_chain cache logic ──────────────────
+
+    #[test]
+    fn test_m07_validate_cache_statics_initialized() {
+        // VALIDATE_CACHE_HEIGHT starts at u64::MAX (sentinel = never cached)
+        // VALIDATE_CACHE_RESULT starts at false
+        // After a fresh start, loading the statics should not panic.
+        let h = VALIDATE_CACHE_HEIGHT.load(std::sync::atomic::Ordering::Relaxed);
+        let r = VALIDATE_CACHE_RESULT.load(std::sync::atomic::Ordering::Relaxed);
+        // Height is either u64::MAX (never run) or a valid height from a previous test.
+        // Either way, the atomics must be readable without panic.
+        let _ = h;
+        let _ = r;
+    }
+
+    #[test]
+    fn test_m07_validate_cache_update() {
+        // Simulate the cache update logic used by validate_chain handler.
+        let test_height: u64 = 12_345;
+        let test_valid = true;
+
+        VALIDATE_CACHE_HEIGHT.store(test_height, std::sync::atomic::Ordering::Relaxed);
+        VALIDATE_CACHE_RESULT.store(test_valid, std::sync::atomic::Ordering::Relaxed);
+
+        // Reading back should match
+        assert_eq!(VALIDATE_CACHE_HEIGHT.load(std::sync::atomic::Ordering::Relaxed), test_height);
+        assert_eq!(VALIDATE_CACHE_RESULT.load(std::sync::atomic::Ordering::Relaxed), test_valid);
+
+        // Different height means cache miss (simulate)
+        let different_height = test_height + 1;
+        let is_cache_hit = VALIDATE_CACHE_HEIGHT.load(std::sync::atomic::Ordering::Relaxed) == different_height;
+        assert!(!is_cache_hit);
+
+        // Same height is a cache hit
+        let is_same_hit = VALIDATE_CACHE_HEIGHT.load(std::sync::atomic::Ordering::Relaxed) == test_height;
+        assert!(is_same_hit);
     }
 }

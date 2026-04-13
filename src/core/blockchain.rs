@@ -21,6 +21,8 @@ pub const CHAIN_ID: u64           = 7119;
 // C-03 FIX: Mempool size limits to prevent RAM exhaustion
 pub const MAX_MEMPOOL_SIZE: usize        = 10_000;
 pub const MAX_MEMPOOL_PER_SENDER: usize  = 100;
+// M-04 FIX: Mempool TTL — transactions older than this are pruned
+pub const MEMPOOL_MAX_AGE_SECS: u64      = 3_600; // 1 hour
 
 // H-04 FIX: Address validation helper
 pub fn is_valid_sentrix_address(addr: &str) -> bool {
@@ -151,6 +153,24 @@ impl Blockchain {
             ));
         }
 
+        // M-03/M-04 FIX: Validate transaction timestamp
+        // Reject timestamps too far in the future (clock skew / pre-signed attack)
+        // Reject timestamps too old (replay of stale transactions / mempool poisoning)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if tx.timestamp > now + 300 {
+            return Err(SentrixError::InvalidTransaction(
+                "transaction timestamp too far in the future (max +5 min)".to_string()
+            ));
+        }
+        if now > tx.timestamp.saturating_add(MEMPOOL_MAX_AGE_SECS) {
+            return Err(SentrixError::InvalidTransaction(
+                format!("transaction too old — max age {} seconds", MEMPOOL_MAX_AGE_SECS)
+            ));
+        }
+
         // Basic validation
         let expected_nonce = self.accounts.get_nonce(&tx.from_address)
             + self.mempool_pending_count(&tx.from_address);
@@ -196,6 +216,16 @@ impl Blockchain {
 
     pub fn mempool_size(&self) -> usize {
         self.mempool.len()
+    }
+
+    /// M-04 FIX: Remove transactions older than MEMPOOL_MAX_AGE_SECS.
+    /// Called automatically after each block is added; also callable manually.
+    pub fn prune_mempool(&mut self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.mempool.retain(|tx| now <= tx.timestamp.saturating_add(MEMPOOL_MAX_AGE_SECS));
     }
 
     // ── Chain validation ─────────────────────────────────
@@ -443,6 +473,9 @@ impl Blockchain {
             .map(|tx| tx.txid.clone())
             .collect();
         self.mempool.retain(|tx| !mined_txids.contains(&tx.txid));
+
+        // M-04 FIX: Prune stale transactions after each block
+        self.prune_mempool();
 
         // Append block to chain
         self.chain.push(block);
@@ -1257,5 +1290,160 @@ mod tests {
         let block = bc.create_block("validator1").unwrap();
         let result = bc.add_block(block);
         assert!(result.is_err());
+    }
+
+    // ── H-04: Address validation helper ─────────────────
+
+    #[test]
+    fn test_h04_is_valid_sentrix_address() {
+        // Valid: 0x + exactly 40 hex chars
+        assert!(is_valid_sentrix_address("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"));
+        assert!(is_valid_sentrix_address("0x0000000000000000000000000000000000000000"));
+        assert!(is_valid_sentrix_address("0xabcdef0123456789abcdef0123456789abcdef01"));
+
+        // Invalid: no prefix
+        assert!(!is_valid_sentrix_address("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"));
+        // Invalid: too short
+        assert!(!is_valid_sentrix_address("0xdeadbeef"));
+        // Invalid: non-hex chars
+        assert!(!is_valid_sentrix_address("0xGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG"));
+        // Invalid: empty
+        assert!(!is_valid_sentrix_address(""));
+        // Invalid: 0x prefix but too long
+        assert!(!is_valid_sentrix_address("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefff"));
+    }
+
+    // ── M-03: Transaction Timestamp Validation ──────────
+
+    #[test]
+    fn test_m03_rejects_future_timestamp() {
+        let mut bc = setup_chain();
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+        bc.accounts.credit(&sender, 10_000_000).unwrap();
+
+        let mut tx = Transaction::new(
+            sender, TEST_RECV.to_string(),
+            1_000_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
+        ).unwrap();
+
+        // Tamper timestamp to +10 min in future (beyond +5 min tolerance)
+        tx.timestamp += 601;
+
+        let result = bc.add_to_mempool(tx);
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("future"), "Expected 'future' error, got: {}", err_str);
+    }
+
+    #[test]
+    fn test_m03_rejects_expired_timestamp() {
+        let mut bc = setup_chain();
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+        bc.accounts.credit(&sender, 10_000_000).unwrap();
+
+        let mut tx = Transaction::new(
+            sender, TEST_RECV.to_string(),
+            1_000_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
+        ).unwrap();
+
+        // Tamper timestamp to 2 hours ago (beyond 1h TTL)
+        tx.timestamp = tx.timestamp.saturating_sub(7_200);
+
+        let result = bc.add_to_mempool(tx);
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("old") || err_str.contains("age"),
+            "Expected 'old'/'age' error, got: {}", err_str
+        );
+    }
+
+    #[test]
+    fn test_m03_accepts_valid_timestamp() {
+        let mut bc = setup_chain();
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+        bc.accounts.credit(&sender, 10_000_000).unwrap();
+
+        // Normal transaction with current timestamp — should be accepted
+        let tx = Transaction::new(
+            sender, TEST_RECV.to_string(),
+            1_000_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
+        ).unwrap();
+
+        assert!(bc.add_to_mempool(tx).is_ok());
+        assert_eq!(bc.mempool_size(), 1);
+    }
+
+    // ── M-04: Mempool TTL + prune_mempool() ─────────────
+
+    #[test]
+    fn test_m04_prune_removes_expired_txs() {
+        let mut bc = setup_chain();
+
+        // Directly inject a transaction with an ancient timestamp (bypassing add_to_mempool)
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+        bc.accounts.credit(&sender, 10_000_000).unwrap();
+
+        let mut stale_tx = Transaction::new(
+            sender.clone(), TEST_RECV.to_string(),
+            1_000_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
+        ).unwrap();
+        stale_tx.timestamp = 1; // 1970 — long expired
+        stale_tx.txid = "stale_txid_expired".to_string();
+        bc.mempool.push_back(stale_tx);
+        assert_eq!(bc.mempool_size(), 1);
+
+        // prune_mempool should remove it
+        bc.prune_mempool();
+        assert_eq!(bc.mempool_size(), 0);
+    }
+
+    #[test]
+    fn test_m04_prune_keeps_fresh_txs() {
+        let mut bc = setup_chain();
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+        bc.accounts.credit(&sender, 10_000_000).unwrap();
+
+        // Add a fresh transaction via normal path
+        let tx = Transaction::new(
+            sender, TEST_RECV.to_string(),
+            1_000_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
+        ).unwrap();
+        bc.add_to_mempool(tx).unwrap();
+        assert_eq!(bc.mempool_size(), 1);
+
+        // prune_mempool should keep the fresh tx
+        bc.prune_mempool();
+        assert_eq!(bc.mempool_size(), 1);
+    }
+
+    #[test]
+    fn test_m04_add_block_prunes_stale_mempool() {
+        let mut bc = setup_chain();
+
+        // Create the block first (mempool is empty, block only has coinbase)
+        let block = bc.create_block("validator1").unwrap();
+
+        // NOW inject a stale tx into the mempool (after block creation, so it won't
+        // be included in this block — but add_block must prune it via prune_mempool())
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+        let mut stale_tx = Transaction::new(
+            sender, TEST_RECV.to_string(),
+            1_000_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
+        ).unwrap();
+        stale_tx.timestamp = 42; // ancient — definitely expired
+        stale_tx.txid = "stale_injected_after_create".to_string();
+        bc.mempool.push_back(stale_tx);
+        assert_eq!(bc.mempool_size(), 1);
+
+        // add_block calls prune_mempool() internally → must remove the stale tx
+        bc.add_block(block).unwrap();
+        assert_eq!(bc.mempool_size(), 0);
     }
 }
