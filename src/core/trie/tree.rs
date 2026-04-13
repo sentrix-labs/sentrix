@@ -178,6 +178,82 @@ impl SentrixTrie {
         }
     }
 
+    /// Delete `key` from the trie.  Returns the new root hash.
+    ///
+    /// If the key is absent the trie is unchanged and the current root is returned — no error.
+    /// Sibling-collapse: when both children of a node become empty after deletion, the parent
+    /// also collapses to an empty hash (short-circuit property maintained).
+    ///
+    /// Fully iterative — O(1) stack depth.
+    pub fn delete(&mut self, key: &[u8; 32]) -> SentrixResult<NodeHash> {
+        let mut path: Vec<(NodeHash, bool)> = Vec::with_capacity(256);
+        let mut current = self.root;
+        let mut depth = 0usize;
+
+        // Phase 1: walk down to find the leaf
+        let found_depth = loop {
+            if depth > 256 {
+                return Ok(self.root); // exhausted — key absent
+            }
+            if current == empty_hash(depth) {
+                return Ok(self.root); // empty subtree — key absent
+            }
+
+            let node = self
+                .cache
+                .get_node(&current)?
+                .ok_or_else(|| {
+                    SentrixError::Internal(format!(
+                        "trie: missing node {}",
+                        hex::encode(current)
+                    ))
+                })?;
+
+            match node {
+                TrieNode::Leaf { key: leaf_key, .. } => {
+                    if leaf_key != *key {
+                        return Ok(self.root); // different leaf — key absent
+                    }
+                    break depth; // found — leaf is at `depth`
+                }
+                TrieNode::Internal { left, right, .. } => {
+                    let bit = get_bit(key, depth);
+                    let (child, sibling) = if bit { (right, left) } else { (left, right) };
+                    path.push((sibling, bit));
+                    current = child;
+                    depth += 1;
+                }
+            }
+        };
+
+        // Phase 2: walk up replacing the deleted leaf with empty, collapsing when both
+        //          children are empty.
+        let mut up_hash = empty_hash(found_depth);
+        let mut up_depth = found_depth; // depth of the node represented by up_hash
+
+        for (sibling, is_right) in path.iter().rev() {
+            // Moving one level toward root
+            up_depth -= 1;
+            let (left, right) = if *is_right {
+                (*sibling, up_hash)
+            } else {
+                (up_hash, *sibling)
+            };
+            // Collapse: both children are empty subtrees → parent is empty too
+            let child_empty = empty_hash(up_depth + 1);
+            if left == child_empty && right == child_empty {
+                up_hash = empty_hash(up_depth);
+            } else {
+                up_hash = hash_internal(&left, &right);
+                self.cache
+                    .put_node(up_hash, TrieNode::Internal { left, right, hash: up_hash })?;
+            }
+        }
+
+        self.root = up_hash;
+        Ok(up_hash)
+    }
+
     /// Generate a Merkle proof (membership or non-membership) for `key`.
     pub fn prove(&mut self, key: &[u8; 32]) -> SentrixResult<MerkleProof> {
         let mut siblings: Vec<NodeHash> = Vec::with_capacity(64);

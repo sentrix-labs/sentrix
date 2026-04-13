@@ -114,6 +114,10 @@ impl Storage {
                 }
             }
             bc.chain = blocks;
+            // Step 5: Restore state trie from the same sled DB
+            if let Err(e) = bc.init_trie(&self.db) {
+                tracing::warn!("trie init failed after blockchain load: {}", e);
+            }
             return Ok(Some(bc));
         }
 
@@ -126,6 +130,10 @@ impl Storage {
             if bc.chain.len() > CHAIN_WINDOW_SIZE {
                 let excess = bc.chain.len() - CHAIN_WINDOW_SIZE;
                 bc.chain.drain(..excess);
+            }
+            // Step 5: Restore state trie (migration path)
+            if let Err(e) = bc.init_trie(&self.db) {
+                tracing::warn!("trie init failed after blockchain migration: {}", e);
             }
             return Ok(Some(bc));
         }
