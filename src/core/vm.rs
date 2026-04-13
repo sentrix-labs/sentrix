@@ -6,8 +6,10 @@ use sha2::{Sha256, Digest};
 use crate::types::error::{SentrixError, SentrixResult};
 
 // ── Contract address generation ──────────────────────────
-fn compute_contract_address(deployer: &str, name: &str, symbol: &str, timestamp: u64) -> String {
-    let payload = format!("{}|{}|{}|{}", deployer, name, symbol, timestamp);
+// V6-C-01 FIX: Use deterministic seed (txid or deployer+nonce) instead of SystemTime::now().
+// Every node must produce the same contract address when applying the same block.
+fn compute_contract_address(deployer: &str, seed: &str) -> String {
+    let payload = format!("{}|{}", deployer, seed);
     let hash = Sha256::digest(payload.as_bytes());
     format!("SRX20_{}", hex::encode(&hash[..20]))
 }
@@ -253,6 +255,9 @@ impl ContractRegistry {
         Self::default()
     }
 
+    // V6-C-01 FIX: `seed` must be deterministic on-chain data.
+    // For blocks: pass `tx.txid`. For internal/testing: pass deployer+nonce combo.
+    // Never pass SystemTime::now() — it causes consensus divergence across nodes.
     pub fn deploy(
         &mut self,
         deployer: &str,
@@ -261,6 +266,7 @@ impl ContractRegistry {
         decimals: u8,
         total_supply: u64,
         max_supply: u64, // V5-02: 0 = unlimited
+        seed: &str,      // V6-C-01: deterministic seed (txid for on-chain deploys)
     ) -> SentrixResult<String> {
         // L-03 FIX: Validate token name and symbol lengths/format
         if name.is_empty() || name.len() > 64 {
@@ -274,17 +280,13 @@ impl ContractRegistry {
             ));
         }
 
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let mut addr = compute_contract_address(deployer, name, symbol, timestamp);
-        // Handle collision (extremely unlikely)
-        let mut ts = timestamp;
+        // V6-C-01 FIX: address derived from deterministic seed — no SystemTime::now()
+        let mut addr = compute_contract_address(deployer, seed);
+        // Handle collision by appending a counter (same seed + same state = same collision resolution)
+        let mut counter = 0u64;
         while self.contracts.contains_key(&addr) {
-            ts += 1;
-            addr = compute_contract_address(deployer, name, symbol, ts);
+            counter += 1;
+            addr = compute_contract_address(deployer, &format!("{}|{}", seed, counter));
         }
 
         let mut contract = SRX20Contract::new(
@@ -438,7 +440,7 @@ mod tests {
 
     fn setup_registry() -> (ContractRegistry, String) {
         let mut reg = ContractRegistry::new();
-        let addr = reg.deploy("owner", "FastPoint Token", "FPT", 18, 1_000_000_000, 0).unwrap();
+        let addr = reg.deploy("owner", "FastPoint Token", "FPT", 18, 1_000_000_000, 0, "seed_fpt").unwrap();
         (reg, addr)
     }
 
@@ -693,7 +695,7 @@ mod tests {
         // Verify that ContractRegistry::deploy() still works correctly after M-05 fix:
         // deploy calls mint(deployer, deployer, supply) — deployer is owner so it passes.
         let mut reg = ContractRegistry::new();
-        let addr = reg.deploy("alice", "AliceCoin", "ALC", 18, 500_000, 0).unwrap();
+        let addr = reg.deploy("alice", "AliceCoin", "ALC", 18, 500_000, 0, "seed_alc").unwrap();
         let c = reg.get_contract(&addr).unwrap();
         assert_eq!(c.owner, "alice");
         assert_eq!(c.balance_of("alice"), 500_000);
@@ -730,7 +732,7 @@ mod tests {
     fn test_l03_deploy_name_too_long() {
         let mut reg = ContractRegistry::new();
         let long_name = "A".repeat(65); // 65 chars — exceeds 64 limit
-        let result = reg.deploy("deployer", &long_name, "TKN", 8, 1_000_000, 0);
+        let result = reg.deploy("deployer", &long_name, "TKN", 8, 1_000_000, 0, "seed_long_name");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("name"), "error should mention 'name': {err}");
@@ -740,7 +742,7 @@ mod tests {
     fn test_l03_deploy_symbol_too_long() {
         let mut reg = ContractRegistry::new();
         let long_sym = "ABCDEFGHIJK"; // 11 chars — exceeds 10 limit
-        let result = reg.deploy("deployer", "ValidName", long_sym, 8, 1_000_000, 0);
+        let result = reg.deploy("deployer", "ValidName", long_sym, 8, 1_000_000, 0, "seed_long_sym");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("symbol"), "error should mention 'symbol': {err}");
@@ -750,11 +752,11 @@ mod tests {
     fn test_l03_deploy_symbol_non_alphanumeric_rejected() {
         let mut reg = ContractRegistry::new();
         // Spaces and special chars not allowed
-        assert!(reg.deploy("d", "Name", "T K N", 8, 0, 0).is_err());
-        assert!(reg.deploy("d", "Name", "TK$N", 8, 0, 0).is_err());
-        assert!(reg.deploy("d", "Name", "", 8, 0, 0).is_err());
+        assert!(reg.deploy("d", "Name", "T K N", 8, 0, 0, "seed1").is_err());
+        assert!(reg.deploy("d", "Name", "TK$N", 8, 0, 0, "seed2").is_err());
+        assert!(reg.deploy("d", "Name", "", 8, 0, 0, "seed3").is_err());
         // Valid symbol must succeed
-        assert!(reg.deploy("d", "Name", "TKN", 8, 1_000_000, 0).is_ok());
+        assert!(reg.deploy("d", "Name", "TKN", 8, 1_000_000, 0, "seed4").is_ok());
     }
 
     // ── V5-02: Token max_supply cap tests ────────────────
@@ -763,7 +765,7 @@ mod tests {
     fn test_v502_mint_within_cap_succeeds() {
         let mut reg = ContractRegistry::new();
         // Deploy with max_supply=2_000_000 and initial supply=1_000_000
-        let addr = reg.deploy("owner", "CappedToken", "CAP", 18, 1_000_000, 2_000_000).unwrap();
+        let addr = reg.deploy("owner", "CappedToken", "CAP", 18, 1_000_000, 2_000_000, "seed_cap1").unwrap();
         let c = reg.get_contract(&addr).unwrap();
         assert_eq!(c.max_supply, 2_000_000);
         assert_eq!(c.total_supply, 1_000_000);
@@ -778,7 +780,7 @@ mod tests {
     fn test_v502_mint_exceeds_cap_rejected() {
         let mut reg = ContractRegistry::new();
         // max_supply=1_000_000, initial supply=1_000_000 (already at cap)
-        let addr = reg.deploy("owner", "CappedToken", "CAP", 18, 1_000_000, 1_000_000).unwrap();
+        let addr = reg.deploy("owner", "CappedToken", "CAP", 18, 1_000_000, 1_000_000, "seed_cap2").unwrap();
 
         // Minting even 1 more must fail
         let result = reg.execute_mint(&addr, "owner", "owner", 1);
@@ -791,7 +793,7 @@ mod tests {
     fn test_v502_unlimited_cap_allows_unbounded_mint() {
         let mut reg = ContractRegistry::new();
         // max_supply=0 means unlimited
-        let addr = reg.deploy("owner", "UnlimitedToken", "UNL", 18, 1_000_000, 0).unwrap();
+        let addr = reg.deploy("owner", "UnlimitedToken", "UNL", 18, 1_000_000, 0, "seed_unl").unwrap();
 
         // Should mint any amount without restriction
         reg.execute_mint(&addr, "owner", "owner", 1_000_000_000).unwrap();
@@ -802,7 +804,7 @@ mod tests {
     #[test]
     fn test_v502_max_supply_in_get_info() {
         let mut reg = ContractRegistry::new();
-        let addr = reg.deploy("owner", "TestToken", "TST", 8, 500_000, 1_000_000).unwrap();
+        let addr = reg.deploy("owner", "TestToken", "TST", 8, 500_000, 1_000_000, "seed_tst").unwrap();
         let info = reg.get_contract(&addr).unwrap().get_info();
         assert_eq!(info["max_supply"], 1_000_000_u64);
         assert_eq!(info["total_supply"], 500_000_u64);
@@ -812,7 +814,7 @@ mod tests {
     fn test_v502_deploy_supply_exceeding_max_supply_rejected() {
         let mut reg = ContractRegistry::new();
         // initial supply > max_supply should fail
-        let result = reg.deploy("owner", "Invalid", "INV", 18, 2_000_000, 1_000_000);
+        let result = reg.deploy("owner", "Invalid", "INV", 18, 2_000_000, 1_000_000, "seed_inv");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -824,7 +826,7 @@ mod tests {
     #[test]
     fn test_v502_mint_exactly_at_cap_succeeds() {
         let mut reg = ContractRegistry::new();
-        let addr = reg.deploy("owner", "ExactCap", "EXC", 18, 900_000, 1_000_000).unwrap();
+        let addr = reg.deploy("owner", "ExactCap", "EXC", 18, 900_000, 1_000_000, "seed_exc").unwrap();
         // Mint exactly to the cap (900k + 100k = 1M)
         assert!(reg.execute_mint(&addr, "owner", "owner", 100_000).is_ok());
         let c = reg.get_contract(&addr).unwrap();
@@ -838,7 +840,7 @@ mod tests {
     #[test]
     fn test_v502_burn_reduces_supply_allowing_more_mint() {
         let mut reg = ContractRegistry::new();
-        let addr = reg.deploy("owner", "Burnable", "BRN", 18, 1_000_000, 1_000_000).unwrap();
+        let addr = reg.deploy("owner", "Burnable", "BRN", 18, 1_000_000, 1_000_000, "seed_brn").unwrap();
         // At cap — can't mint more
         assert!(reg.execute_mint(&addr, "owner", "owner", 1).is_err());
         // Burn some

@@ -54,14 +54,21 @@ pub const TOTAL_PREMINE: u64 = 63_000_000 * 100_000_000;
 // M-04 FIX: skip chain in serialization — blocks saved individually in storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Blockchain {
+    // V6-H-02 FIX: Critical chain-state fields use pub(crate) to prevent the binary crate (main.rs)
+    // or future external consumers from directly bypassing validated methods:
+    //   bc.chain.push(unvalidated_block) → use add_block() instead
+    //   bc.total_minted += n             → only block execution should change this
+    //   bc.mempool.push_back(invalid_tx) → use add_to_mempool() instead
+    // authority / accounts / contracts stay pub — they have their own validation in their methods
+    // and main.rs legitimately calls them for CLI operations.
     #[serde(skip, default)]
-    pub chain: Vec<Block>,
-    pub accounts: AccountDB,
-    pub authority: AuthorityManager,
-    pub contracts: ContractRegistry,
-    pub mempool: VecDeque<Transaction>,
-    pub total_minted: u64,
-    pub chain_id: u64,
+    pub(crate) chain: Vec<Block>,
+    pub accounts: AccountDB,          // pub: main.rs uses accounts.get_balance() for CLI display
+    pub authority: AuthorityManager,  // pub: main.rs uses authority.* for validator management
+    pub(crate) contracts: ContractRegistry,
+    pub(crate) mempool: VecDeque<Transaction>,
+    pub(crate) total_minted: u64,
+    pub chain_id: u64,  // kept pub — read-only constant used by external clients
 }
 
 impl Blockchain {
