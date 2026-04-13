@@ -194,9 +194,9 @@ mod tests {
         let storage = Storage::open(&path).unwrap();
 
         let mut bc = Blockchain::new("admin".to_string());
-        bc.authority.add_validator(
-            "admin", "val1".to_string(), "Validator 1".to_string(), "pk1".to_string(),
-        ).unwrap();
+        bc.authority.add_validator_unchecked(
+            "val1".to_string(), "Validator 1".to_string(), "pk1".to_string(),
+        );
 
         storage.save_blockchain(&bc).unwrap();
         assert!(storage.has_blockchain());
@@ -216,9 +216,9 @@ mod tests {
         let storage = Storage::open(&path).unwrap();
 
         let mut bc = Blockchain::new("admin".to_string());
-        bc.authority.add_validator(
-            "admin", "val1".to_string(), "V1".to_string(), "pk1".to_string(),
-        ).unwrap();
+        bc.authority.add_validator_unchecked(
+            "val1".to_string(), "V1".to_string(), "pk1".to_string(),
+        );
 
         // Produce a block
         let block = bc.create_block("val1").unwrap();
@@ -263,9 +263,9 @@ mod tests {
         let storage = Storage::open(&path).unwrap();
 
         let mut bc = Blockchain::new("admin".to_string());
-        bc.authority.add_validator(
-            "admin", "val1".to_string(), "V1".to_string(), "pk1".to_string(),
-        ).unwrap();
+        bc.authority.add_validator_unchecked(
+            "val1".to_string(), "V1".to_string(), "pk1".to_string(),
+        );
 
         for _ in 0..3 {
             let block = bc.create_block("val1").unwrap();

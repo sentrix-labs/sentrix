@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use crate::api::routes::{SharedState, ApiKey};
 use crate::core::transaction::Transaction;
-use crate::wallet::wallet::Wallet;
 
 // ── JSON-RPC types ───────────────────────────────────────
 #[derive(Debug, Deserialize)]
@@ -171,46 +170,19 @@ pub async fn jsonrpc_handler(
             }
         }
         "sentrix_sendTransaction" => {
-            // params[0] = { "from": "0x...", "to": "0x...", "amount": N, "private_key": "hex" }
-            let p = &params[0];
-            let to = p["to"].as_str().unwrap_or("").to_lowercase();
-            let amount = p["amount"].as_u64().unwrap_or(0);
-            let private_key = p["private_key"].as_str().unwrap_or("");
-            let fee = p["fee"].as_u64().unwrap_or(0);
-
-            if to.is_empty() || private_key.is_empty() || amount == 0 {
-                Err((-32602, "sentrix_sendTransaction requires: to, amount, private_key"))
-            } else {
-                let wallet = match Wallet::from_private_key(private_key) {
-                    Ok(w) => w,
-                    Err(_) => return Json(JsonRpcResponse::err(id, -32602, "invalid private_key")),
-                };
-                let sk = match wallet.get_secret_key() {
-                    Ok(k) => k,
-                    Err(_) => return Json(JsonRpcResponse::err(id, -32602, "invalid private_key")),
-                };
-                let pk = match wallet.get_public_key() {
-                    Ok(k) => k,
-                    Err(_) => return Json(JsonRpcResponse::err(id, -32602, "invalid private_key")),
-                };
-
-                let mut bc = state.write().await;
-                let nonce = bc.accounts.get_nonce(&wallet.address);
-                let chain_id = bc.chain_id;
-
-                let tx = match Transaction::new(
-                    wallet.address.clone(), to.clone(),
-                    amount, fee, nonce, String::new(), chain_id, &sk, &pk,
-                ) {
-                    Ok(t) => t,
-                    Err(e) => return Json(JsonRpcResponse::err(id, -32603, &e.to_string())),
-                };
-
-                let txid = tx.txid.clone();
-                match bc.add_to_mempool(tx) {
-                    Ok(()) => Ok(json!({ "txid": txid, "status": "pending_in_mempool" })),
-                    Err(e) => return Json(JsonRpcResponse::err(id, -32603, &e.to_string())),
-                }
+            // C-01 FIX: No longer accepts private_key in params.
+            // params[0] must be a pre-signed Transaction object (same fields as POST /transactions).
+            // Client is responsible for signing the transaction locally before sending.
+            let tx: Transaction = match serde_json::from_value(params[0].clone()) {
+                Ok(t) => t,
+                Err(e) => return Json(JsonRpcResponse::err(id, -32602,
+                    &format!("invalid transaction object: {}", e))),
+            };
+            let txid = tx.txid.clone();
+            let mut bc = state.write().await;
+            match bc.add_to_mempool(tx) {
+                Ok(()) => Ok(json!({ "txid": txid, "status": "pending_in_mempool" })),
+                Err(e) => return Json(JsonRpcResponse::err(id, -32603, &e.to_string())),
             }
         }
         "sentrix_getBalance" => {
