@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use secp256k1::PublicKey;
 use crate::types::error::{SentrixError, SentrixResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +92,26 @@ impl AuthorityManager {
                 format!("validator {} already exists", address)
             ));
         }
+
+        // H-02 FIX: Validate public_key is a valid secp256k1 point AND derives to address
+        let pk_bytes = hex::decode(&public_key)
+            .map_err(|_| SentrixError::InvalidTransaction(
+                "public_key: invalid hex encoding".to_string()
+            ))?;
+        let pk = PublicKey::from_slice(&pk_bytes)
+            .map_err(|_| SentrixError::InvalidTransaction(
+                "public_key: not a valid secp256k1 public key".to_string()
+            ))?;
+        let derived = crate::wallet::wallet::Wallet::derive_address(&pk);
+        if derived != address {
+            return Err(SentrixError::InvalidTransaction(
+                format!(
+                    "public_key does not correspond to address — derived {}, expected {}",
+                    derived, address
+                )
+            ));
+        }
+
         self.validators.insert(
             address.clone(),
             Validator::new(address, name, public_key),
@@ -175,17 +196,38 @@ impl AuthorityManager {
     pub fn active_count(&self) -> usize {
         self.active_validators().len()
     }
+
+    /// Test-only helper: add a validator without public key crypto validation.
+    /// Use this in unit tests where you want to control the address string directly.
+    #[cfg(test)]
+    pub fn add_validator_unchecked(&mut self, address: String, name: String, public_key: String) {
+        self.validators.insert(address.clone(), Validator::new(address, name, public_key));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Generate a (address, public_key_hex) pair for testing using a real secp256k1 wallet.
+    fn gen_validator_keypair() -> (String, String) {
+        let wallet = crate::wallet::wallet::Wallet::generate(); // returns Wallet, not Result
+        let pk = wallet.get_public_key().unwrap();
+        let pk_hex = hex::encode(pk.serialize_uncompressed());
+        (wallet.address.clone(), pk_hex) // clone address since Wallet implements Drop (zeroize)
+    }
+
     fn setup() -> AuthorityManager {
         let mut mgr = AuthorityManager::new("admin".to_string());
-        mgr.add_validator("admin", "val1".to_string(), "Validator 1".to_string(), "pk1".to_string()).unwrap();
-        mgr.add_validator("admin", "val2".to_string(), "Validator 2".to_string(), "pk2".to_string()).unwrap();
-        mgr.add_validator("admin", "val3".to_string(), "Validator 3".to_string(), "pk3".to_string()).unwrap();
+        let (addr1, pk1) = gen_validator_keypair();
+        let (addr2, pk2) = gen_validator_keypair();
+        let (addr3, pk3) = gen_validator_keypair();
+        mgr.add_validator("admin", addr1, "Validator 1".to_string(), pk1)
+            .expect("add_validator with valid keys should succeed");
+        mgr.add_validator("admin", addr2, "Validator 2".to_string(), pk2)
+            .expect("add_validator with valid keys should succeed");
+        mgr.add_validator("admin", addr3, "Validator 3".to_string(), pk3)
+            .expect("add_validator with valid keys should succeed");
         mgr
     }
 
@@ -224,12 +266,8 @@ mod tests {
     #[test]
     fn test_non_admin_cannot_add() {
         let mut mgr = setup();
-        let result = mgr.add_validator(
-            "not_admin",
-            "val4".to_string(),
-            "Val 4".to_string(),
-            "pk4".to_string(),
-        );
+        let (addr, pk) = gen_validator_keypair();
+        let result = mgr.add_validator("not_admin", addr, "Val 4".to_string(), pk);
         assert!(result.is_err());
     }
 
@@ -262,11 +300,12 @@ mod tests {
     #[test]
     fn test_h03_toggle_cannot_deactivate_last_validator() {
         let mut mgr = AuthorityManager::new("admin".to_string());
-        mgr.add_validator("admin", "val1".to_string(), "V1".to_string(), "pk1".to_string()).unwrap();
+        let (addr1, pk1) = gen_validator_keypair();
+        mgr.add_validator("admin", addr1.clone(), "V1".to_string(), pk1).unwrap();
         assert_eq!(mgr.active_count(), 1);
 
         // Trying to deactivate the only active validator should fail
-        let result = mgr.toggle_validator("admin", "val1");
+        let result = mgr.toggle_validator("admin", &addr1);
         assert!(result.is_err());
         let err_str = result.unwrap_err().to_string();
         assert!(err_str.contains("at least 1 active validator"), "Expected min validator error, got: {}", err_str);
@@ -297,17 +336,19 @@ mod tests {
     #[test]
     fn test_h03_toggle_allows_deactivate_with_others() {
         let mut mgr = AuthorityManager::new("admin".to_string());
-        mgr.add_validator("admin", "val1".to_string(), "V1".to_string(), "pk1".to_string()).unwrap();
-        mgr.add_validator("admin", "val2".to_string(), "V2".to_string(), "pk2".to_string()).unwrap();
+        let (addr1, pk1) = gen_validator_keypair();
+        let (addr2, pk2) = gen_validator_keypair();
+        mgr.add_validator("admin", addr1.clone(), "V1".to_string(), pk1).unwrap();
+        mgr.add_validator("admin", addr2.clone(), "V2".to_string(), pk2).unwrap();
         assert_eq!(mgr.active_count(), 2);
 
         // With 2 validators, deactivating one should succeed
-        let result = mgr.toggle_validator("admin", "val1");
+        let result = mgr.toggle_validator("admin", &addr1);
         assert!(result.is_ok());
         assert_eq!(mgr.active_count(), 1);
 
         // But deactivating the last one should fail
-        let result = mgr.toggle_validator("admin", "val2");
+        let result = mgr.toggle_validator("admin", &addr2);
         assert!(result.is_err());
     }
 }

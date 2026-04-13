@@ -10,10 +10,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{CorsLayer, Any};
 use crate::core::blockchain::Blockchain;
-use crate::core::transaction::{Transaction, TokenOp, TOKEN_OP_ADDRESS};
-use crate::wallet::wallet::Wallet;
+use crate::core::transaction::{Transaction, TokenOp};
 use crate::api::jsonrpc::rpc_dispatcher;
 use crate::api::explorer;
 
@@ -68,38 +68,28 @@ pub struct SendTxRequest {
     pub transaction: Transaction,
 }
 
+// C-01 FIX: Token endpoints now accept pre-signed transactions.
+// Private keys MUST be kept client-side — server never receives them.
+// Client: build TokenOp JSON → put in tx.data → sign tx → POST here.
 #[derive(Deserialize)]
-pub struct DeployTokenRequest {
-    pub from_key: String,  // C-03 FIX: private key hex (proves ownership)
-    pub name: String,
-    pub symbol: String,
-    pub decimals: u8,
-    pub total_supply: u64,
-    pub deploy_fee: u64,
+pub struct SignedTxRequest {
+    pub transaction: Transaction,
 }
 
-#[derive(Deserialize)]
-pub struct TokenTransferRequest {
-    pub from_key: String,  // C-03 FIX: private key hex (proves ownership)
-    pub to: String,
-    pub amount: u64,
-    pub gas_fee: u64,
-}
-
-#[derive(Deserialize)]
-pub struct TokenBurnRequest {
-    pub from_key: String,  // C-03 FIX: private key hex (proves ownership)
-    pub amount: u64,
-    pub gas_fee: u64,
-}
-
-// H-05 FIX: Constant-time string comparison to prevent timing attacks
+// H-05 FIX: Constant-time string comparison — no early return on length mismatch
+// (early return leaks key length via timing oracle)
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
-    use subtle::ConstantTimeEq;
-    if a.len() != b.len() {
-        return false;
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let max_len = a_bytes.len().max(b_bytes.len());
+    // Include length difference in result so mismatched lengths always return false
+    let mut result: u8 = (a_bytes.len() ^ b_bytes.len()) as u8;
+    for i in 0..max_len {
+        let ab = if i < a_bytes.len() { a_bytes[i] } else { 0 };
+        let bb = if i < b_bytes.len() { b_bytes[i] } else { 0 };
+        result |= ab ^ bb;
     }
-    a.as_bytes().ct_eq(b.as_bytes()).into()
+    result == 0
 }
 
 
@@ -179,6 +169,9 @@ pub fn create_router(state: SharedState) -> Router {
         // ── Explorer ─────────────────────────────────────────────
         .nest("/explorer", explorer_router(state.clone()))
         .layer(cors)
+        // C-02 FIX: Global HTTP concurrency limit — prevent CPU saturation from concurrent heavy
+        // requests (e.g. /chain/validate). Full per-IP rate limiting is enforced by nginx upstream.
+        .layer(ConcurrencyLimitLayer::new(500))
         .with_state(state)
 }
 
@@ -293,6 +286,8 @@ async fn get_balance(
     State(state): State<SharedState>,
     Path(address): Path<String>,
 ) -> Json<serde_json::Value> {
+    // H-05 FIX: Normalize address to lowercase (REST vs RPC consistency)
+    let address = address.to_lowercase();
     let bc = state.read().await;
     let balance = bc.accounts.get_balance(&address);
     Json(serde_json::json!({
@@ -306,6 +301,8 @@ async fn get_nonce(
     State(state): State<SharedState>,
     Path(address): Path<String>,
 ) -> Json<serde_json::Value> {
+    // H-05 FIX: Normalize address to lowercase
+    let address = address.to_lowercase();
     let bc = state.read().await;
     let nonce = bc.accounts.get_nonce(&address);
     Json(serde_json::json!({ "address": address, "nonce": nonce }))
@@ -409,43 +406,39 @@ async fn get_token_balance(
     }))
 }
 
+// C-01 FIX: Token endpoints no longer accept private keys.
+// Client must sign the transaction locally:
+//   1. Build TokenOp JSON → put in tx.data
+//   2. Set tx.to_address = TOKEN_OP_ADDRESS ("0x0000000000000000000000000000000000000000")
+//   3. Sign with local private key
+//   4. POST { "transaction": <signed_tx> } to this endpoint
+
 async fn deploy_token(
     _auth: ApiKey,
     State(state): State<SharedState>,
-    Json(req): Json<DeployTokenRequest>,
+    Json(req): Json<SignedTxRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let wallet = Wallet::from_private_key(&req.from_key)
-        .map_err(|_| api_err("invalid private key"))?;
-    let sk = wallet.get_secret_key().map_err(|_| api_err("invalid key"))?;
-    let pk = wallet.get_public_key().map_err(|_| api_err("invalid key"))?;
-
-    let token_op = TokenOp::Deploy {
-        name: req.name.clone(),
-        symbol: req.symbol.clone(),
-        decimals: req.decimals,
-        supply: req.total_supply,
+    let tx = req.transaction;
+    // Validate data contains a Deploy token op
+    let op = TokenOp::decode(&tx.data)
+        .ok_or_else(|| api_err("data must contain a valid TokenOp JSON"))?;
+    let (name, symbol, total_supply) = match &op {
+        TokenOp::Deploy { name, symbol, supply, .. } => {
+            (name.clone(), symbol.clone(), *supply)
+        }
+        _ => return Err(api_err("expected Deploy operation in tx.data")),
     };
-
-    let mut bc = state.write().await;
-    let nonce = bc.accounts.get_nonce(&wallet.address);
-    let chain_id = bc.chain_id;
-    let data = token_op.encode().map_err(|e| api_err(&e.to_string()))?;
-
-    let tx = Transaction::new(
-        wallet.address.clone(), TOKEN_OP_ADDRESS.to_string(),
-        0, req.deploy_fee, nonce, data, chain_id, &sk, &pk,
-    ).map_err(|e| api_err(&e.to_string()))?;
-
+    let deployer = tx.from_address.clone();
     let txid = tx.txid.clone();
+    let mut bc = state.write().await;
     bc.add_to_mempool(tx).map_err(|e| api_err(&e.to_string()))?;
-
     Ok(Json(serde_json::json!({
         "success": true,
         "txid": txid,
-        "deployer": wallet.address,
-        "name": req.name,
-        "symbol": req.symbol,
-        "total_supply": req.total_supply,
+        "deployer": deployer,
+        "name": name,
+        "symbol": symbol,
+        "total_supply": total_supply,
         "status": "pending_in_mempool",
     })))
 }
@@ -454,39 +447,31 @@ async fn token_transfer(
     _auth: ApiKey,
     State(state): State<SharedState>,
     Path(contract): Path<String>,
-    Json(req): Json<TokenTransferRequest>,
+    Json(req): Json<SignedTxRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let wallet = Wallet::from_private_key(&req.from_key)
-        .map_err(|_| api_err("invalid private key"))?;
-    let sk = wallet.get_secret_key().map_err(|_| api_err("invalid key"))?;
-    let pk = wallet.get_public_key().map_err(|_| api_err("invalid key"))?;
-
-    let token_op = TokenOp::Transfer {
-        contract: contract.clone(),
-        to: req.to.clone(),
-        amount: req.amount,
+    let tx = req.transaction;
+    let op = TokenOp::decode(&tx.data)
+        .ok_or_else(|| api_err("data must contain a valid TokenOp JSON"))?;
+    let (to_addr, amount) = match &op {
+        TokenOp::Transfer { contract: c, to, amount } => {
+            if *c != contract {
+                return Err(api_err("contract in data does not match URL"));
+            }
+            (to.clone(), *amount)
+        }
+        _ => return Err(api_err("expected Transfer operation in tx.data")),
     };
-
-    let mut bc = state.write().await;
-    let nonce = bc.accounts.get_nonce(&wallet.address);
-    let chain_id = bc.chain_id;
-    let data = token_op.encode().map_err(|e| api_err(&e.to_string()))?;
-
-    let tx = Transaction::new(
-        wallet.address.clone(), TOKEN_OP_ADDRESS.to_string(),
-        0, req.gas_fee, nonce, data, chain_id, &sk, &pk,
-    ).map_err(|e| api_err(&e.to_string()))?;
-
+    let from_addr = tx.from_address.clone();
     let txid = tx.txid.clone();
+    let mut bc = state.write().await;
     bc.add_to_mempool(tx).map_err(|e| api_err(&e.to_string()))?;
-
     Ok(Json(serde_json::json!({
         "success": true,
         "txid": txid,
         "contract": contract,
-        "from": wallet.address,
-        "to": req.to,
-        "amount": req.amount,
+        "from": from_addr,
+        "to": to_addr,
+        "amount": amount,
         "status": "pending_in_mempool",
     })))
 }
@@ -495,37 +480,30 @@ async fn token_burn(
     _auth: ApiKey,
     State(state): State<SharedState>,
     Path(contract): Path<String>,
-    Json(req): Json<TokenBurnRequest>,
+    Json(req): Json<SignedTxRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let wallet = Wallet::from_private_key(&req.from_key)
-        .map_err(|_| api_err("invalid private key"))?;
-    let sk = wallet.get_secret_key().map_err(|_| api_err("invalid key"))?;
-    let pk = wallet.get_public_key().map_err(|_| api_err("invalid key"))?;
-
-    let token_op = TokenOp::Burn {
-        contract: contract.clone(),
-        amount: req.amount,
+    let tx = req.transaction;
+    let op = TokenOp::decode(&tx.data)
+        .ok_or_else(|| api_err("data must contain a valid TokenOp JSON"))?;
+    let amount = match &op {
+        TokenOp::Burn { contract: c, amount } => {
+            if *c != contract {
+                return Err(api_err("contract in data does not match URL"));
+            }
+            *amount
+        }
+        _ => return Err(api_err("expected Burn operation in tx.data")),
     };
-
-    let mut bc = state.write().await;
-    let nonce = bc.accounts.get_nonce(&wallet.address);
-    let chain_id = bc.chain_id;
-    let data = token_op.encode().map_err(|e| api_err(&e.to_string()))?;
-
-    let tx = Transaction::new(
-        wallet.address.clone(), TOKEN_OP_ADDRESS.to_string(),
-        0, req.gas_fee, nonce, data, chain_id, &sk, &pk,
-    ).map_err(|e| api_err(&e.to_string()))?;
-
+    let burned_by = tx.from_address.clone();
     let txid = tx.txid.clone();
+    let mut bc = state.write().await;
     bc.add_to_mempool(tx).map_err(|e| api_err(&e.to_string()))?;
-
     Ok(Json(serde_json::json!({
         "success": true,
         "txid": txid,
         "contract": contract,
-        "burned_by": wallet.address,
-        "amount": req.amount,
+        "burned_by": burned_by,
+        "amount": amount,
         "status": "pending_in_mempool",
     })))
 }

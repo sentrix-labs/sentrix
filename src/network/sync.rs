@@ -29,10 +29,18 @@ impl ChainSync {
 
         Node::send_message(&mut stream, &handshake).await?;
 
-        let peer_height = match Node::read_message(&mut stream).await? {
-            Message::Handshake { height, .. } => height,
+        // H-01 FIX: Validate chain_id in peer handshake response
+        let (peer_height, peer_chain_id) = match Node::read_message(&mut stream).await? {
+            Message::Handshake { height, chain_id, .. } => (height, chain_id),
             _ => return Err(SentrixError::NetworkError("expected handshake".to_string())),
         };
+        let our_chain_id = blockchain.read().await.chain_id;
+        if peer_chain_id != our_chain_id {
+            return Err(SentrixError::NetworkError(
+                format!("sync: chain_id mismatch — peer {} vs ours {}", peer_chain_id, our_chain_id)
+            ));
+        }
+        let peer_height = peer_height;
 
         if peer_height <= our_height {
             return Ok(0);

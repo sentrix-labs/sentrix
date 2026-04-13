@@ -134,7 +134,8 @@ impl Transaction {
         map.insert("nonce", serde_json::Value::from(self.nonce));
         map.insert("timestamp", serde_json::Value::from(self.timestamp));
         map.insert("to", serde_json::Value::from(self.to_address.as_str()));
-        serde_json::to_string(&map).unwrap()
+        // M-01 FIX: unwrap → unwrap_or_else to avoid panic in production path
+        serde_json::to_string(&map).unwrap_or_else(|_| String::from("{}"))
     }
 
     pub fn compute_txid(&self) -> String {
@@ -154,6 +155,12 @@ impl Transaction {
 
     pub fn verify(&self) -> SentrixResult<()> {
         if self.is_coinbase() {
+            // H-03 FIX: Coinbase must have empty signature and public_key
+            if !self.signature.is_empty() || !self.public_key.is_empty() {
+                return Err(SentrixError::InvalidTransaction(
+                    "coinbase transaction must not have signature or public_key".to_string()
+                ));
+            }
             return Ok(());
         }
 

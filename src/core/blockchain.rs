@@ -18,6 +18,17 @@ pub const BLOCK_TIME_SECS: u64    = 3;
 pub const MAX_TX_PER_BLOCK: usize = 100;
 pub const CHAIN_ID: u64           = 7119;
 
+// C-03 FIX: Mempool size limits to prevent RAM exhaustion
+pub const MAX_MEMPOOL_SIZE: usize        = 10_000;
+pub const MAX_MEMPOOL_PER_SENDER: usize  = 100;
+
+// H-04 FIX: Address validation helper
+pub fn is_valid_sentrix_address(addr: &str) -> bool {
+    addr.len() == 42
+        && addr.starts_with("0x")
+        && addr[2..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
 // ── Genesis addresses (from genesis_wallets.json — private keys secured) ──
 pub const FOUNDER_ADDRESS:         &str = "0x4f3319a747fd564136209cd5d9e7d1a1e4d142be";
 pub const ECOSYSTEM_FUND_ADDRESS:  &str = "0xeb70fdefd00fdb768dec06c478f450c351499f14";
@@ -115,6 +126,28 @@ impl Blockchain {
         if tx.is_coinbase() {
             return Err(SentrixError::InvalidTransaction(
                 "cannot manually add coinbase to mempool".to_string()
+            ));
+        }
+
+        // C-03 FIX: Global mempool size limit
+        if self.mempool.len() >= MAX_MEMPOOL_SIZE {
+            return Err(SentrixError::InvalidTransaction(
+                "mempool full — try again later".to_string()
+            ));
+        }
+
+        // C-03 FIX: Per-sender pending tx limit
+        let sender_pending = self.mempool_pending_count(&tx.from_address) as usize;
+        if sender_pending >= MAX_MEMPOOL_PER_SENDER {
+            return Err(SentrixError::InvalidTransaction(
+                "too many pending transactions from this sender".to_string()
+            ));
+        }
+
+        // H-04 FIX: Validate to_address is a well-formed Sentrix address
+        if !is_valid_sentrix_address(&tx.to_address) {
+            return Err(SentrixError::InvalidTransaction(
+                format!("invalid to_address: '{}'", tx.to_address)
             ));
         }
 
@@ -731,14 +764,18 @@ mod tests {
         crate::wallet::wallet::Wallet::derive_address(pk)
     }
 
+    // Valid-format test address for use as to_address in tests
+    const TEST_RECV: &str = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
     fn setup_chain() -> Blockchain {
         let mut bc = Blockchain::new("admin".to_string());
-        bc.authority.add_validator(
-            "admin",
+        // Use unchecked helper so tests can control the address string ("validator1").
+        // H-02 crypto validation is tested separately via add_validator.
+        bc.authority.add_validator_unchecked(
             "validator1".to_string(),
             "Validator 1".to_string(),
             "pk1".to_string(),
-        ).unwrap();
+        );
         bc
     }
 
@@ -784,7 +821,7 @@ mod tests {
 
         let tx = Transaction::new(
             sender,
-            "receiver".to_string(),
+            TEST_RECV.to_string(),
             1_000_000,
             MIN_TX_FEE,
             0,
@@ -933,15 +970,15 @@ mod tests {
 
         // Add 3 txs with different fees: low, high, medium
         let tx_low = Transaction::new(
-            sender.clone(), "recv".to_string(),
+            sender.clone(), TEST_RECV.to_string(),
             100_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
         ).unwrap();
         let tx_high = Transaction::new(
-            sender.clone(), "recv".to_string(),
+            sender.clone(), TEST_RECV.to_string(),
             100_000, MIN_TX_FEE * 100, 1, String::new(), CHAIN_ID, &sk, &pk,
         ).unwrap();
         let tx_mid = Transaction::new(
-            sender.clone(), "recv".to_string(),
+            sender.clone(), TEST_RECV.to_string(),
             100_000, MIN_TX_FEE * 10, 2, String::new(), CHAIN_ID, &sk, &pk,
         ).unwrap();
 
@@ -957,10 +994,10 @@ mod tests {
     #[test]
     fn test_c02_add_block_rejects_unauthorized_validator() {
         let mut bc = setup_chain();
-        // Add a second validator
-        bc.authority.add_validator(
-            "admin", "validator2".to_string(), "Validator 2".to_string(), "pk2".to_string(),
-        ).unwrap();
+        // Add a second validator (unchecked for test control over address string)
+        bc.authority.add_validator_unchecked(
+            "validator2".to_string(), "Validator 2".to_string(), "pk2".to_string(),
+        );
 
         // Determine who is authorized for block 1
         let expected = bc.authority.expected_validator(1).unwrap().address.clone();
@@ -991,7 +1028,7 @@ mod tests {
 
         // Create tx with amount = u64::MAX and fee = 1 — would overflow
         let tx = Transaction::new(
-            sender, "recv".to_string(),
+            sender, TEST_RECV.to_string(),
             u64::MAX, 1, 0, String::new(), CHAIN_ID, &sk, &pk,
         ).unwrap();
 
