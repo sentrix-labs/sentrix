@@ -249,11 +249,11 @@ async fn get_blocks(
         .unwrap_or(20)
         .min(100); // hard cap at 100
 
-    let total = bc.chain.len() as u64;
+    let total = bc.height() + 1; // I-01 FIX: use true height, not window size
     let start_skip = (page * limit) as usize;
 
     let blocks: Vec<serde_json::Value> = bc.chain.iter()
-        .rev() // newest first
+        .rev() // newest first (window only — last CHAIN_WINDOW_SIZE blocks)
         .skip(start_skip)
         .take(limit as usize)
         .map(|b| serde_json::json!({
@@ -312,7 +312,7 @@ async fn validate_chain(
         return Json(serde_json::json!({
             "valid": cached_valid,
             "height": height,
-            "total_blocks": bc.chain.len(),
+            "total_blocks": bc.height() + 1, // I-01 FIX: true total, not window size
             "cached": true,
         }));
     }

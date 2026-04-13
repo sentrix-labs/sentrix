@@ -3,7 +3,7 @@
 use sled::Db;
 use serde::{Serialize, de::DeserializeOwned};
 use crate::core::block::Block;
-use crate::core::blockchain::Blockchain;
+use crate::core::blockchain::{Blockchain, CHAIN_WINDOW_SIZE};
 use crate::types::error::{SentrixError, SentrixResult};
 
 pub struct Storage {
@@ -87,10 +87,12 @@ impl Storage {
     pub fn load_blockchain(&self) -> SentrixResult<Option<Blockchain>> {
         // Try new format (state + per-block)
         if let Some(mut bc) = self.get::<Blockchain>("state")? {
-            // Reconstruct chain from per-block storage (chain is empty after deserialize)
+            // I-01 FIX: only load the sliding window (last CHAIN_WINDOW_SIZE blocks) into RAM.
+            // Older blocks remain in sled and are accessible on-demand via load_block().
             let height = self.load_height()?;
-            let mut blocks = Vec::with_capacity((height + 1) as usize);
-            for i in 0..=height {
+            let window_start = height.saturating_sub(CHAIN_WINDOW_SIZE as u64 - 1);
+            let mut blocks = Vec::with_capacity((height - window_start + 1) as usize);
+            for i in window_start..=height {
                 let key = format!("block:{}", i);
                 match self.get::<Block>(&key)? {
                     Some(block) => blocks.push(block),
@@ -106,10 +108,15 @@ impl Storage {
         }
 
         // Fallback: old single-blob format (pre-M-04 migration)
-        if let Some(bc) = self.get::<Blockchain>("blockchain")? {
+        if let Some(mut bc) = self.get::<Blockchain>("blockchain")? {
             // Migrate: save in new format
             self.save_blockchain(&bc)?;
             let _ = self.db.remove("blockchain");
+            // Trim to window after migration
+            if bc.chain.len() > CHAIN_WINDOW_SIZE {
+                let excess = bc.chain.len() - CHAIN_WINDOW_SIZE;
+                bc.chain.drain(..excess);
+            }
             return Ok(Some(bc));
         }
 
