@@ -14,6 +14,11 @@ pub struct Block {
     pub merkle_root: String,
     pub validator: String,
     pub hash: String,
+    /// State root after this block's transactions are applied.
+    /// None for genesis and blocks produced before SentrixTrie was initialized.
+    /// Not included in calculate_hash() — backward-compatible with all existing blocks.
+    #[serde(default)]
+    pub state_root: Option<[u8; 32]>,
 }
 
 impl Block {
@@ -39,6 +44,7 @@ impl Block {
             merkle_root: merkle,
             validator,
             hash: String::new(),
+            state_root: None,
         };
         block.hash = block.calculate_hash();
         block
