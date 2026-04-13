@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 // tests/integration_trie.rs - Sentrix — SentrixTrie integration tests
 
 use secp256k1::{Secp256k1, rand::rngs::OsRng};

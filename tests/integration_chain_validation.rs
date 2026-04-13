@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 // integration_chain_validation.rs — Chain validation and block rejection tests
 //
 // Tests:
@@ -11,7 +12,7 @@
 mod common;
 
 use sentrix::core::block::Block;
-use sentrix::core::blockchain::{Blockchain, BLOCK_REWARD, CHAIN_ID};
+use sentrix::core::blockchain::BLOCK_REWARD;
 use sentrix::core::transaction::{Transaction, MIN_TX_FEE};
 use sentrix::wallet::wallet::Wallet;
 
@@ -104,7 +105,7 @@ fn test_block_with_timestamp_before_previous_rejected() {
 /// A TX with an incorrect chain_id inside a block must cause add_block to fail.
 #[test]
 fn test_block_with_wrong_chain_id_tx_rejected() {
-    let (mut bc, val) = common::setup_single_validator();
+    let (mut bc, _val) = common::setup_single_validator();
 
     // Create a TX signed for a different chain (chain_id = 1)
     let sender = common::funded_wallet(&mut bc, 500_000_000);
