@@ -12,7 +12,7 @@
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![Rust](https://img.shields.io/badge/rust-1.94-orange)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-247%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-325%20passing-brightgreen)]()
 [![Consensus](https://img.shields.io/badge/consensus-PoA-blue)]()
 [![License](https://img.shields.io/badge/license-BUSL--1.1-purple)](LICENSE)
 [![Chain ID](https://img.shields.io/badge/chain%20ID-7119-yellow)]()
@@ -302,29 +302,45 @@ sentrix token list
 
 ```
 src/
-├── main.rs              # CLI entry point (16 commands)
+├── main.rs              # CLI entry point (17 commands)
 ├── lib.rs               # Library root
 ├── types/error.rs       # SentrixError enum (14 variants)
 ├── core/
-│   ├── blockchain.rs    # Chain engine, mempool, block production
+│   ├── blockchain.rs    # Chain engine, genesis, constants, Blockchain struct
+│   ├── mempool.rs       # add_to_mempool(), prune_mempool(), mempool queries
+│   ├── block_producer.rs# create_block() — coinbase + priority-fee mempool
+│   ├── block_executor.rs# add_block() — two-pass atomic validation + commit
+│   ├── token_ops.rs     # deploy_token(), token_transfer(), token_burn()
+│   ├── chain_queries.rs # get_transaction(), get_address_history(), richlist()
 │   ├── block.rs         # Block struct, hashing, validation
-│   ├── transaction.rs   # ECDSA transactions, signing, verification
-│   ├── account.rs       # Account state database (balance + nonce)
-│   ├── authority.rs     # PoA validator management, round-robin
-│   ├── merkle.rs        # SHA-256 Merkle tree
-│   └── vm.rs            # SRX-20 token engine
+│   ├── transaction.rs   # ECDSA transactions, signing, verification, chain_id
+│   ├── account.rs       # AccountDB (balance + nonce, checked arithmetic)
+│   ├── authority.rs     # PoA validators, round-robin, min validator count
+│   ├── merkle.rs        # SHA-256 Merkle tree for TX root
+│   ├── vm.rs            # SRX-20 token engine (mint, burn, transfer, approve)
+│   └── trie/
+│       ├── mod.rs       # Public re-exports
+│       ├── node.rs      # TrieNode (Empty/Leaf/Branch), BLAKE3+SHA-256 hashing
+│       ├── tree.rs      # SentrixTrie — 256-level Binary Sparse Merkle Tree
+│       ├── storage.rs   # TrieStorage — sled-backed node+value persistence
+│       ├── cache.rs     # TrieCache — configurable LRU in front of storage
+│       ├── proof.rs     # MerkleProof — inclusion proof generation + verify()
+│       └── address.rs   # address_to_key(), account encode/decode
 ├── wallet/
 │   ├── wallet.rs        # Key generation, Keccak-256 address derivation
-│   └── keystore.rs      # AES-256-GCM encrypted wallet storage
+│   └── keystore.rs      # AES-256-GCM encrypted wallet storage (Argon2id v2)
 ├── storage/
-│   └── db.rs            # sled per-block persistent storage
+│   └── db.rs            # sled per-block persistent storage + hash index
 ├── network/
-│   ├── node.rs          # TCP P2P node, message protocol
-│   └── sync.rs          # Safe chain synchronization
+│   ├── node.rs          # TCP P2P node, message protocol, chain_id validation
+│   ├── sync.rs          # Safe incremental chain synchronization
+│   ├── transport.rs     # libp2p: TCP + Noise XX + Yamux boxed transport
+│   ├── behaviour.rs     # libp2p: SentrixBehaviour (Identify + RequestResponse)
+│   └── libp2p_node.rs   # libp2p: LibP2pNode, command channel, broadcast
 └── api/
-    ├── routes.rs        # REST API (axum)
-    ├── jsonrpc.rs       # JSON-RPC 2.0 server
-    └── explorer.rs      # Block explorer web UI
+    ├── routes.rs        # REST API (axum) + API key auth
+    ├── jsonrpc.rs       # JSON-RPC 2.0 server (20 methods)
+    └── explorer.rs      # Block explorer web UI (12 pages)
 ```
 
 ---
@@ -379,24 +395,71 @@ This creates **deflationary pressure**: as network activity increases, more SRX 
 cargo test
 ```
 
-**105 tests** across 13 test suites:
+**325 tests** — 274 unit tests across all modules + 51 integration tests across 9 suites:
+
+**Integration test suites (`tests/`):**
 
 | Suite | Tests | Coverage |
 |---|---|---|
-| `core::merkle` | 5 | Merkle tree, SHA-256 |
-| `core::account` | 5 | AccountDB, transfers, burn tracking |
-| `core::transaction` | 8 | ECDSA sign/verify, nonce, chain_id, address↔pubkey binding, canonical payload |
-| `core::authority` | 9 | Validator management, round-robin, min validator, toggle guard |
-| `core::block` | 8 | Block creation, validation, chain links |
-| `core::blockchain` | 19 | Full engine: mempool, blocks, tokens, priority fee, overflow, timestamp, pagination |
-| `core::vm` | 21 | SRX-20: deploy, transfer, approve race condition, burn, increase/decrease allowance |
-| `storage::db` | 8 | Persistence, per-block, hash index, migration |
-| `wallet::wallet` | 6 | Keygen, address derivation, import |
-| `wallet::keystore` | 6 | AES-256-GCM encrypt/decrypt, PBKDF2 600K |
-| `api::routes` | 1 | Constant-time API key comparison |
-| `api::jsonrpc` | 2 | RPC batch size limit |
-| `api::explorer` | 1 | HTML escape XSS prevention |
-| `network::node` | 3 | Rate limiting, max peers, chain_id handshake |
+| `integration_restart` | 3 | Save/reload state, height integrity, mempool persistence |
+| `integration_sync` | 4 | Two-node sync, duplicate block rejection, out-of-order rejection |
+| `integration_tx` | 6 | TX lifecycle, double-spend, nonce checks, balance, validator reward |
+| `integration_token` | 6 | Deploy, transfer, burn, mint, cap enforcement, balance check |
+| `integration_mempool` | 7 | Per-sender limit, global limit, TTL, future TS, fee priority, pending spend |
+| `integration_supply` | 6 | Supply invariant genesis/empty/TX/high-fee, BLOCK_REWARD increment |
+| `integration_chain_validation` | 9 | Valid chain, wrong prev_hash, unauthorized validator, coinbase overflow, chain_id, tampering |
+| `integration_sliding_window` | 4 | Eviction, window_start formula, stats metadata, restart preservation |
+| `integration_trie` | 6 | TX recipient in trie, zero-balance removal, validator balance match, proof verification, state root changes, root history per block |
+
+---
+
+## SentrixTrie — State Root
+
+Sentrix ships a **Binary Sparse Merkle Tree (256-level)** state trie that produces a cryptographic state root per block — proving account balances without replaying history.
+
+### Design
+
+| Property | Detail |
+|---|---|
+| **Tree type** | Binary Sparse Merkle Tree, 256-level depth |
+| **Key** | SHA-256 of normalized address bytes (32 bytes) |
+| **Node hashing** | BLAKE3 + SHA-256 domain separation |
+| **Leaf value** | `[balance: 8 bytes BE][nonce: 8 bytes BE]` |
+| **LRU cache** | Configurable capacity (default 10,000 nodes ≈ 1 MB) |
+| **Persistence** | sled embedded DB (separate `trie_nodes` + `trie_values` trees) |
+| **State root** | Stamped on every `Block.state_root` after commit |
+
+### State root per block
+
+```
+Block N committed → update_trie_for_block() →
+  for each touched address:
+    balance == 0 → trie.delete(key)       ← zero-balance accounts removed
+    balance  > 0 → trie.insert(key, value) ← upsert with orphan cleanup
+  state_root = trie.root_hash() → Block.state_root
+```
+
+### Merkle inclusion proofs
+
+```bash
+GET /trie/proof/{address}
+→ { "key": "0x...", "value": "...", "proof": [...32 siblings...], "root": "0x..." }
+```
+
+Proofs are self-verifiable: given `(key, value, proof, root)`, any client can recompute the root from the leaf up and confirm inclusion without trusting the node.
+
+### Audit status (T-A ~ T-H)
+
+| Finding | Fix | Status |
+|---|---|---|
+| T-A: case-sensitive address lookup | `address_to_key()` lowercases before hashing | ✅ Fixed PR #54 |
+| T-B: orphaned leaf on update | Track `old_leaf_hash`, delete after write | ✅ Fixed PR #54 |
+| T-C: 0x prefix inconsistency | `trim_start_matches("0x")` before processing | ✅ Fixed PR #54 |
+| T-D: hardcoded LRU capacity | `TrieCache::new(storage, capacity)` | ✅ Fixed PR #54 |
+| T-E: missing inclusion proofs | `proof.rs` + `prove()` + `verify()` | ✅ Fixed PR #50 |
+| T-F: no GC for orphaned nodes | `gc_orphaned_nodes(live_hashes)` | ✅ Fixed PR #54 |
+| T-G: missing deny.toml for trie deps | `blake3`, `lru` added to Cargo.toml | ✅ Satisfied |
+| T-H: missing integration tests | `tests/integration_trie.rs` (6 tests) | ✅ Fixed PR #55 |
 
 ---
 
@@ -461,9 +524,15 @@ See [SECURITY.md](SECURITY.md) for responsible disclosure policy.
 - [x] **Phase 2a** — SRX-20 tokens, block explorer, JSON-RPC, per-block storage
 - [x] **Phase 2b** — Full P2P networking (listener, handler, sync, broadcast)
 - [x] **Phase 2c** — Security audit v1 + all fixes (checked arithmetic, chain_id, zeroize, API auth)
-- [x] **Phase 2d** — Security audit v2: 24 issues found, 21 fixed (4C+7H+6M+4L), 105 tests
-- [ ] **Phase 3** — DPoS/PoS transition, staking, governance, wallet web UI
-- [ ] **Phase 4** — Smart contract VM, SDKs, cross-chain bridge, mobile wallet
+- [x] **Phase 2d** — Security audit v2-v6: 47+ findings, all fixed (PR #36-#44)
+- [x] **Step 1** — cargo-deny + clippy -D warnings enforcement (PR #42)
+- [x] **Step 2** — blockchain.rs split → 6 focused modules (PR #43)
+- [x] **Step 3** — libp2p + Noise XX encryption (PR #45)
+- [x] **Step 4** — 9 integration test suites, 325 tests total (PR #46 + #55)
+- [x] **Step 5** — SentrixTrie Binary Sparse Merkle Tree state root (PR #48-#55)
+- [ ] **Phase 2** — DPoS + BFT Finality + EVM compatibility
+- [ ] **Phase 3** — Sharding, cross-chain bridge, governance
+- [ ] **Phase 4** — SDK, mobile wallet, DEX, NFT platform
 
 ---
 

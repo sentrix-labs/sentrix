@@ -78,9 +78,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
-- Step 5: SentrixTrie (Merkle Patricia Trie state root)
 - VPS3 setup (genesis_node_3)
 - Phase 2: DPoS + BFT Finality design implementation
+
+---
+
+## [Post-0.1.0 Incremental] — 2026-04-14
+
+### PR #55 — SentrixTrie: Blockchain Integration
+- `update_trie_for_block()` in `blockchain.rs`: apply all balance changes to state trie per block
+- Zero-balance deletion: accounts with balance == 0 call `trie.delete()` instead of insert
+- State root stamped onto each `Block.state_root: Option<[u8;32]>` after commit
+- `GET /trie/proof/{address}` endpoint: returns Merkle inclusion proof as JSON
+- `get_state_root_at(height)` accessor for historical root lookup
+- Add `temp_db()` helper in blockchain unit tests
+- **6 new unit tests** in `blockchain.rs`: trie init, root per block, multiple blocks, state root stamp, uncommitted version, trie disabled
+- **6 new integration tests** in `tests/integration_trie.rs`: TX recipient in trie, zero-balance removal, validator balance match, proof verification, state root changes on deletion, root history per block
+- **325 tests total**
+
+### PR #54 — SentrixTrie Audit Fixes (T-A / T-B / T-C / T-D / T-F)
+- **T-A + T-C** (`address.rs`): `address_to_key()` rewritten — strips `0x`, lowercases, hex-decodes to raw bytes, SHA-256 → case-insensitive and prefix-independent
+- **T-B** (`tree.rs`): track `old_leaf_hash` during insert; delete old leaf node + value from storage on in-place key update (fixes storage leak)
+- **T-B** (`storage.rs`): add `delete_node()` + `delete_value()` methods
+- **T-B** (`cache.rs`): add `delete_node()` (evict LRU + delete storage) + `delete_value()`
+- **T-D** (`cache.rs`): `TrieCache::new(storage, capacity: usize)` — configurable LRU size (replaces hardcoded 10_000)
+- **T-F** (`storage.rs`): `gc_orphaned_nodes(live_hashes: &HashSet<NodeHash>) -> SentrixResult<usize>` — two-pass sled scan, bulk-delete unlisted nodes
+- **11 new tests** across `address.rs` (2), `storage.rs` (4), `cache.rs` (2), `tree.rs` (3)
+
+### PR #53 — CI: Remove 0BSD + Upgrade to Node.js 24
+- Remove `"0BSD"` from `deny.toml` license allowlist (not present in dependency tree)
+- Add `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true` to CI workflow env — silences Node.js 20 deprecation warnings
+
+### PR #52 — deny.toml: Skip libp2p Transitive Duplicates
+- Add 16 `[[bans.skip]]` entries for crates duplicated by libp2p transitive dependencies: `multistream-select`, `quick-protobuf-codec`, `asynchronous-codec`, `unsigned-varint`, `hickory-proto`, `futures-rustls`, `rustls`, `rustls-native-certs`, `rustls-pemfile`, `rustls-pki-types`, `webpki-roots`, `ring`, `tokio-rustls`, `yamux` (×2 versions), and others
+- Resolves `cargo deny check bans` duplicate warnings on CI
+
+### PR #51 — Fix All Compiler Warnings (0 warnings)
+- `tests/integration_chain_validation.rs`: add `#![allow(missing_docs)]`, remove unused `Blockchain`/`CHAIN_ID` imports, rename `val` → `_val`
+- `tests/integration_*.rs` (8 files): add `#![allow(missing_docs)]` to suppress lint in integration test files
+- `src/core/block_executor.rs`: remove unused `const RECV` dead code
+- `tests/common/mod.rs`: remove unused `MIN_TX_FEE` import
+- Result: **0 warnings** on `cargo clippy -D warnings`
+
+### PR #50 — SentrixTrie: Merkle Inclusion Proof
+- Add `src/core/trie/proof.rs`: `MerkleProof` struct — sibling hashes along 256-bit path
+- `SentrixTrie::prove(key)` → `Option<MerkleProof>` traversal
+- `MerkleProof::verify(key, value, root)` — recompute root from leaf up; constant-time path
+- Integration with `GET /trie/proof/{address}` endpoint
+
+### PR #49 — SentrixTrie: Binary Sparse Merkle Tree Core
+- Add `src/core/trie/node.rs`: `TrieNode` enum (Empty / Leaf / Branch), `NodeHash = [u8; 32]`, BLAKE3+SHA-256 domain-separated hashing
+- Add `src/core/trie/tree.rs`: `SentrixTrie` — 256-level Binary Sparse Merkle Tree, iterative insert/delete/get, short-circuit leaf optimization
+- Add `src/core/trie/mod.rs`: public re-exports
+- Add `tests/integration_trie.rs`: initial integration test suite
+- Add `blake3 = "1"` to Cargo.toml
+
+### PR #48 — SentrixTrie: Storage Layer
+- Add `src/core/trie/storage.rs`: `TrieStorage` — sled-backed persistence with separate `trie_nodes` and `trie_values` trees
+- Add `src/core/trie/cache.rs`: `TrieCache` — LRU cache wrapping `TrieStorage`
+- Add `src/core/trie/address.rs`: `address_to_key()`, `account_value_bytes()`, `account_value_decode()`
+- Add `lru = "0.12"` to Cargo.toml
+
+### PR #47 — Docs Update
+- Update all `4. Founder Private/` docs for session 2026-04-13: SESSION_HANDOFF, TODO, BIBLE, CLAUDE, PROMPT
+- Reflect Step 1-4 DONE, 247 tests, PR #8-#46, audit v4+v5+v6 all fixed
 
 ---
 
