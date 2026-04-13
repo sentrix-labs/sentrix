@@ -10,7 +10,10 @@ use axum::{
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::collections::HashMap;
-use std::sync::Mutex;
+// V6-M-03 FIX: tokio::sync::Mutex is async-safe — does not block Tokio worker threads.
+// std::sync::Mutex::lock() is a blocking syscall; holding it in async context
+// starves other tasks on the same thread under high load.
+use tokio::sync::Mutex;
 use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -117,7 +120,7 @@ async fn ip_rate_limit_middleware(
         .unwrap_or_else(|| "unknown".to_string());
 
     let allowed = if let Some(limiter) = request.extensions().get::<IpRateLimiter>().cloned() {
-        let mut map = limiter.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = limiter.lock().await;  // V6-M-03: async lock — yields instead of blocking thread
         let now = Instant::now();
         let entry = map.entry(ip).or_insert((0, now));
         if entry.1.elapsed().as_secs() >= RATE_LIMIT_WINDOW_SECS {
@@ -626,13 +629,14 @@ async fn get_wallet_info(
     let bc = state.read().await;
     let balance = bc.accounts.get_balance(&address);
     let nonce = bc.accounts.get_nonce(&address);
-    let tx_count = bc.get_address_tx_count(&address);
+    // V6-M-04: get_address_tx_count returns window-aware metadata (see chain_queries.rs)
+    let tx_count_info = bc.get_address_tx_count(&address);
     Json(serde_json::json!({
         "address": address,
         "balance_sentri": balance,
         "balance_srx": balance as f64 / 100_000_000.0,
         "nonce": nonce,
-        "tx_count": tx_count,
+        "tx_count": tx_count_info,
     }))
 }
 
@@ -759,13 +763,14 @@ async fn get_address_info(
     let bc = state.read().await;
     let balance = bc.accounts.get_balance(&address);
     let nonce = bc.accounts.get_nonce(&address);
-    let tx_count = bc.get_address_tx_count(&address);
+    // V6-M-04: get_address_tx_count returns window-aware metadata (see chain_queries.rs)
+    let tx_count_info = bc.get_address_tx_count(&address);
     Json(serde_json::json!({
         "address": address,
         "balance_sentri": balance,
         "balance_srx": balance as f64 / 100_000_000.0,
         "nonce": nonce,
-        "tx_count": tx_count,
+        "tx_count": tx_count_info,
     }))
 }
 

@@ -31,10 +31,13 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        # V6-M-02 FIX: Pin to 0.18.2 — v0.19.1 has a parse panic on RUSTSEC-2020-0105.md
+        # that occurs before the ignore list is applied. Upgrade once upstream fixes the bug.
+        run: cargo install cargo-deny --version "0.18.2" --locked
 
       - name: Deny check
-        run: cargo deny check licenses bans sources
+        # V6-M-02 FIX: run all subchecks including advisories (CVE/RUSTSEC scanning)
+        run: cargo deny check
 
       - name: Clippy
         run: cargo clippy -- -D warnings
