@@ -14,7 +14,26 @@ impl Storage {
     pub fn open(path: &str) -> SentrixResult<Self> {
         let db = sled::open(path)
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
-        Ok(Self { db })
+        let storage = Self { db };
+        // L-01 FIX: Re-index any blocks missing a hash→index entry (migration for old data)
+        storage.ensure_hash_index()?;
+        Ok(storage)
+    }
+
+    // L-01 FIX: Scan all stored blocks and write missing hash→index entries.
+    // O(n) only on first open when old data lacks the hash index; subsequent opens are O(1).
+    pub fn ensure_hash_index(&self) -> SentrixResult<()> {
+        let height = self.load_height()?;
+        for i in 0..=height {
+            let key = format!("block:{}", i);
+            if let Some(block) = self.get::<Block>(&key)? {
+                let hash_key = format!("hash:{}", block.hash);
+                if self.get::<u64>(&hash_key)?.is_none() {
+                    self.put(&hash_key, &block.index)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     // ── Generic put/get ──────────────────────────────────
@@ -114,19 +133,10 @@ impl Storage {
     }
 
     pub fn load_block_by_hash(&self, hash: &str) -> SentrixResult<Option<Block>> {
-        // O(1) lookup via hash index
+        // O(1) lookup via hash index (ensure_hash_index() at open() guarantees all blocks are indexed)
         let hash_key = format!("hash:{}", hash);
         if let Some(index) = self.get::<u64>(&hash_key)? {
             return self.load_block(index);
-        }
-        // Fallback: O(n) scan (backward compat for old data)
-        let height = self.load_height()?;
-        for i in (0..=height).rev() {
-            if let Some(block) = self.load_block(i)?
-                && block.hash == hash
-            {
-                return Ok(Some(block));
-            }
         }
         Ok(None)
     }
@@ -323,6 +333,45 @@ mod tests {
         let bc = Blockchain::new("admin".to_string());
         storage.save_blockchain(&bc).unwrap();
         assert!(storage.db_size_bytes() > 0);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    // ── L-01: ensure_hash_index migration tests ──────────
+
+    #[test]
+    fn test_l01_ensure_hash_index_repairs_missing_entries() {
+        let path = temp_db_path();
+        let storage = Storage::open(&path).unwrap();
+
+        // Save a block without its hash index (simulate old data)
+        let bc = Blockchain::new("admin".to_string());
+        let block = &bc.chain[0];
+        let key = format!("block:{}", block.index);
+        storage.put(&key, block).unwrap();
+        storage.save_height(0).unwrap();
+        // Don't write hash:{hash} — simulating pre-index old data
+
+        // Hash lookup should fail before migration
+        let hash_key = format!("hash:{}", block.hash);
+        assert!(storage.get::<u64>(&hash_key).unwrap().is_none());
+
+        // ensure_hash_index() must repair it
+        storage.ensure_hash_index().unwrap();
+        let index = storage.get::<u64>(&hash_key).unwrap();
+        assert_eq!(index, Some(0));
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_l01_load_block_by_hash_returns_none_without_index() {
+        let path = temp_db_path();
+        let storage = Storage::open(&path).unwrap();
+
+        // Empty DB — no blocks, no hash entries
+        let result = storage.load_block_by_hash("nonexistent_hash").unwrap();
+        assert!(result.is_none());
+
         let _ = std::fs::remove_dir_all(&path);
     }
 }

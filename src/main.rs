@@ -330,7 +330,7 @@ fn cmd_wallet_generate(password: Option<String>) -> anyhow::Result<()> {
         println!("  Keystore:    {}", filename);
         println!("\nWARNING: Back up your keystore file and password securely.");
     } else {
-        println!("  Private key: {}", wallet.secret_key_hex);
+        println!("  Private key: {}", wallet.secret_key_hex());
         println!("\nWARNING: Save your private key securely. It will not be shown again.");
     }
     Ok(())
@@ -628,13 +628,13 @@ fn cmd_genesis_wallets() -> anyhow::Result<()> {
         println!("[{}]", role.to_uppercase());
         println!("  Address:     {}", wallet.address);
         println!("  Public key:  {}", wallet.public_key);
-        println!("  Private key: {}", wallet.secret_key_hex);
+        println!("  Private key: {}", wallet.secret_key_hex());
         println!();
 
         wallets_json[*role] = serde_json::json!({
             "address": wallet.address,
             "public_key": wallet.public_key,
-            "private_key": wallet.secret_key_hex,
+            "private_key": wallet.secret_key_hex(),
         });
     }
 

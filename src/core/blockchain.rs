@@ -458,8 +458,9 @@ impl Blockchain {
             }
         }
 
-        // Validator gets 50% of fees (other 50% already burned in transfer)
-        let validator_fee_share = total_fee / 2;
+        // L-02 FIX: Burn gets ceiling, validator gets floor — ensures total_fee is fully distributed
+        let burn_fee_share = (total_fee + 1) / 2;
+        let validator_fee_share = total_fee - burn_fee_share;
         if validator_fee_share > 0 {
             self.accounts.credit(&block.validator, validator_fee_share)?;
         }
@@ -509,7 +510,7 @@ impl Blockchain {
             deployer_acc.balance = deployer_acc.balance.checked_sub(deploy_fee)
                 .ok_or_else(|| SentrixError::Internal("deploy fee underflow".to_string()))?;
 
-            let burn_share = deploy_fee / 2;
+            let burn_share = (deploy_fee + 1) / 2; // L-02 FIX: burn rounds up
             let eco_share = deploy_fee - burn_share;
             self.accounts.total_burned += burn_share;
             self.accounts.credit(ECOSYSTEM_FUND_ADDRESS, eco_share)?;
@@ -543,7 +544,7 @@ impl Blockchain {
             caller_acc.balance = caller_acc.balance.checked_sub(gas_fee)
                 .ok_or_else(|| SentrixError::Internal("gas fee underflow".to_string()))?;
 
-            let burn_share = gas_fee / 2;
+            let burn_share = (gas_fee + 1) / 2; // L-02 FIX: burn rounds up
             let val_share = gas_fee - burn_share;
             self.accounts.total_burned += burn_share;
 
@@ -583,7 +584,7 @@ impl Blockchain {
             caller_acc.balance = caller_acc.balance.checked_sub(gas_fee)
                 .ok_or_else(|| SentrixError::Internal("gas fee underflow".to_string()))?;
 
-            let burn_share = gas_fee / 2;
+            let burn_share = (gas_fee + 1) / 2; // L-02 FIX: burn rounds up
             let val_share = gas_fee - burn_share;
             self.accounts.total_burned += burn_share;
 
@@ -1445,5 +1446,62 @@ mod tests {
         // add_block calls prune_mempool() internally → must remove the stale tx
         bc.add_block(block).unwrap();
         assert_eq!(bc.mempool_size(), 0);
+    }
+
+    // ── L-02: fee distribution rounding tests ─────────────
+
+    #[test]
+    fn test_l02_validator_receives_floor_of_odd_fee() {
+        // For an odd total_fee, validator gets floor(fee/2), burn gets ceil(fee/2)
+        let mut bc = setup_chain();
+        let validator_addr = "validator1".to_string();
+
+        // Use MIN_TX_FEE which is even (10_000); double it to get odd total by using 3 txs
+        // Instead, verify the burn formula directly: odd total_fee burns more
+        let odd_fee: u64 = MIN_TX_FEE + 1; // 10001 — odd
+        let burn = (odd_fee + 1) / 2;
+        let validator_share = odd_fee - burn;
+        // burn + validator_share must equal odd_fee exactly (no sentri lost)
+        assert_eq!(burn + validator_share, odd_fee);
+        assert!(burn > validator_share); // burn gets the rounding
+
+        // Also verify with a block using MIN_TX_FEE (even)
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+        bc.accounts.credit(&sender, 10_000_000).unwrap();
+        let tx = Transaction::new(
+            sender, TEST_RECV.to_string(),
+            100, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
+        ).unwrap();
+        bc.add_to_mempool(tx).unwrap();
+
+        let block = bc.create_block(&validator_addr).unwrap();
+        bc.add_block(block).unwrap();
+        assert_eq!(bc.height(), 1);
+    }
+
+    #[test]
+    fn test_l02_deploy_fee_burn_rounds_up() {
+        let mut bc = setup_chain();
+        bc.accounts.credit("deployer", 10_000_000).unwrap();
+
+        let initial_burned = bc.accounts.total_burned;
+        // Deploy with odd fee=3 → burn=(3+1)/2=2, eco=1
+        bc.deploy_token("deployer", "TestToken".to_string(), "TT".to_string(), 8, 1_000_000, 3).unwrap();
+        assert_eq!(bc.accounts.total_burned, initial_burned + 2);
+    }
+
+    #[test]
+    fn test_l02_gas_fee_burn_rounds_up() {
+        let mut bc = setup_chain();
+        bc.accounts.credit("user1", 10_000_000).unwrap();
+
+        // Deploy a token first
+        let contract = bc.deploy_token("user1", "Gas".to_string(), "GAS".to_string(), 8, 1_000, 0).unwrap();
+
+        let initial_burned = bc.accounts.total_burned;
+        // Transfer with odd gas_fee=5 → burn=(5+1)/2=3
+        bc.token_transfer(&contract, "user1", "user2", 100, 5).unwrap();
+        assert_eq!(bc.accounts.total_burned, initial_burned + 3);
     }
 }

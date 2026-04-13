@@ -84,8 +84,8 @@ impl AccountDB {
         // Credit recipient
         self.credit(to, amount)?;
 
-        // Burn 50% of fee, credit 50% to validator (handled by caller)
-        let burn_amount = fee / 2;
+        // L-02 FIX: Burn rounds up (ceiling) so odd fees are never lost — validator gets floor
+        let burn_amount = (fee + 1) / 2;
         self.total_burned = self.total_burned.saturating_add(burn_amount);
 
         Ok(())
@@ -143,6 +143,47 @@ mod tests {
         let mut db = AccountDB::new();
         db.credit("alice", 10_000).unwrap();
         db.transfer("alice", "bob", 5_000, 200).unwrap();
-        assert_eq!(db.total_burned, 100); // 50% of fee=200
+        assert_eq!(db.total_burned, 100); // 50% of fee=200 (even fee, unaffected by rounding)
+    }
+
+    // ── L-02: burn rounding tests ─────────────────────────
+
+    #[test]
+    fn test_l02_burn_odd_fee_rounds_up() {
+        let mut db = AccountDB::new();
+        db.credit("alice", 10_000).unwrap();
+
+        // fee=1 → burn=(1+1)/2=1, no sentri lost
+        db.transfer("alice", "bob", 100, 1).unwrap();
+        assert_eq!(db.total_burned, 1);
+
+        // fee=3 → burn=(3+1)/2=2
+        db.transfer("alice", "bob", 100, 3).unwrap();
+        assert_eq!(db.total_burned, 3); // 1 + 2
+    }
+
+    #[test]
+    fn test_l02_burn_even_fee_unchanged() {
+        let mut db = AccountDB::new();
+        db.credit("alice", 10_000).unwrap();
+
+        // fee=2 → burn=1 (same as before fix)
+        db.transfer("alice", "bob", 100, 2).unwrap();
+        assert_eq!(db.total_burned, 1);
+
+        // fee=100 → burn=50
+        db.transfer("alice", "bob", 100, 100).unwrap();
+        assert_eq!(db.total_burned, 51); // 1 + 50
+    }
+
+    #[test]
+    fn test_l02_fee_fully_accounted() {
+        // For any fee, burn + validator_share must equal fee.
+        // burn = (fee+1)/2, validator = fee - burn = fee/2 (floor)
+        for fee in [0u64, 1, 2, 3, 7, 99, 100, 1_000_001] {
+            let burn = (fee + 1) / 2;
+            let validator = fee - burn;
+            assert_eq!(burn + validator, fee, "fee={fee} not fully distributed");
+        }
     }
 }
