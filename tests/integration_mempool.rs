@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 // integration_mempool.rs — Mempool stress tests
 // Covers: per-sender limit, global size limit, TTL rejection, fee ordering,
 // mempool clearance after block production.

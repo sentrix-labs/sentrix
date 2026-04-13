@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 // integration_sync.rs — Two-node block synchronisation tests
 // Verifies that Node B can reconstruct identical chain state by applying
 // blocks received from Node A one by one.
