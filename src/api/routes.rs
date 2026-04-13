@@ -183,6 +183,8 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/address/:address/info",          get(get_address_info))
         // ── RPC ──────────────────────────────────────────────────
         .route("/rpc",                            post(rpc_dispatcher))
+        // ── Admin ────────────────────────────────────────────────
+        .route("/admin/log",                      get(get_admin_log))
         // ── Stats ────────────────────────────────────────────────
         .route("/stats/daily",                    get(explorer::stats_daily))
         // ── Explorer ─────────────────────────────────────────────
@@ -653,6 +655,18 @@ async fn get_richlist(State(state): State<SharedState>) -> Json<serde_json::Valu
     Json(serde_json::json!({ "holders": holders, "total": total }))
 }
 
+// I-03: Admin audit log — requires X-API-Key authentication
+async fn get_admin_log(
+    _auth: ApiKey,
+    State(state): State<SharedState>,
+) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    Json(serde_json::json!({
+        "log": bc.authority.admin_log,
+        "count": bc.authority.admin_log.len(),
+    }))
+}
+
 // Helper for API error responses
 fn api_err(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success": false, "error": msg})))
@@ -813,5 +827,38 @@ mod tests {
         assert!(serialized.is_ok());
         let json_val = serialized.unwrap();
         assert_eq!(json_val["index"], 0);
+    }
+
+    // ── I-03: admin log serialization tests ──────────────
+
+    #[test]
+    fn test_i03_admin_log_serializes_to_json() {
+        // AdminEvent must serialize cleanly for the /admin/log endpoint
+        use crate::core::authority::AdminEvent;
+        let event = AdminEvent {
+            operation: "add_validator".to_string(),
+            caller: "admin".to_string(),
+            target_address: "0xabc123".to_string(),
+            target_name: "Validator 1".to_string(),
+            timestamp: 1_700_000_000,
+        };
+        let val = serde_json::to_value(&event).unwrap();
+        assert_eq!(val["operation"], "add_validator");
+        assert_eq!(val["caller"], "admin");
+        assert_eq!(val["target_address"], "0xabc123");
+        assert_eq!(val["target_name"], "Validator 1");
+        assert_eq!(val["timestamp"], 1_700_000_000_u64);
+    }
+
+    #[test]
+    fn test_i03_admin_log_in_blockchain_context() {
+        // Verify admin_log is accessible on the blockchain state (used by /admin/log handler)
+        use crate::core::blockchain::Blockchain;
+        let bc = Blockchain::new("admin".to_string());
+        // Fresh blockchain has an empty admin log
+        assert_eq!(bc.authority.admin_log.len(), 0);
+        // The log serializes correctly
+        let log_json = serde_json::to_value(&bc.authority.admin_log).unwrap();
+        assert!(log_json.is_array());
     }
 }

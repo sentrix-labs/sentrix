@@ -5,6 +5,32 @@ use std::collections::HashMap;
 use secp256k1::PublicKey;
 use crate::types::error::{SentrixError, SentrixResult};
 
+// I-03: Admin audit trail — every privileged operation produces an immutable log entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminEvent {
+    pub operation: String,
+    pub caller: String,
+    pub target_address: String,
+    pub target_name: String,
+    pub timestamp: u64,
+}
+
+impl AdminEvent {
+    fn now(operation: &str, caller: &str, target_address: &str, target_name: &str) -> Self {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        Self {
+            operation: operation.to_string(),
+            caller: caller.to_string(),
+            target_address: target_address.to_string(),
+            target_name: target_name.to_string(),
+            timestamp,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Validator {
     pub address: String,
@@ -38,6 +64,9 @@ impl Validator {
 pub struct AuthorityManager {
     pub validators: HashMap<String, Validator>,
     pub admin_address: String,
+    // I-03: append-only admin audit log
+    #[serde(default)]
+    pub admin_log: Vec<AdminEvent>,
 }
 
 impl AuthorityManager {
@@ -45,6 +74,7 @@ impl AuthorityManager {
         Self {
             validators: HashMap::new(),
             admin_address,
+            admin_log: Vec::new(),
         }
     }
 
@@ -114,8 +144,16 @@ impl AuthorityManager {
 
         self.validators.insert(
             address.clone(),
-            Validator::new(address, name, public_key),
+            Validator::new(address.clone(), name.clone(), public_key),
         );
+        // I-03: audit log
+        tracing::warn!("ADMIN_OP: {} called add_validator for {} ('{}') at {}",
+            caller, address, name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_secs()
+        );
+        self.admin_log.push(AdminEvent::now("add_validator", caller, &address, &name));
         Ok(())
     }
 
@@ -139,8 +177,19 @@ impl AuthorityManager {
                 "cannot remove: at least 1 active validator required".to_string()
             ));
         }
+        let name = self.validators.get(address)
+            .map(|v| v.name.clone())
+            .unwrap_or_default();
         self.validators.remove(address)
             .ok_or_else(|| SentrixError::NotFound(format!("validator {}", address)))?;
+        // I-03: audit log
+        tracing::warn!("ADMIN_OP: {} called remove_validator for {} ('{}') at {}",
+            caller, address, name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_secs()
+        );
+        self.admin_log.push(AdminEvent::now("remove_validator", caller, address, &name));
         Ok(())
     }
 
@@ -167,7 +216,18 @@ impl AuthorityManager {
 
         let validator = self.validators.get_mut(address).unwrap();
         validator.is_active = !validator.is_active;
-        Ok(validator.is_active)
+        let new_state = validator.is_active;
+        let name = validator.name.clone();
+        let op = if new_state { "activate_validator" } else { "deactivate_validator" };
+        // I-03: audit log
+        tracing::warn!("ADMIN_OP: {} called {} for {} ('{}') at {}",
+            caller, op, address, name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_secs()
+        );
+        self.admin_log.push(AdminEvent::now(op, caller, address, &name));
+        Ok(new_state)
     }
 
     pub fn rename_validator(&mut self, caller: &str, address: &str, new_name: String) -> SentrixResult<()> {
@@ -178,7 +238,17 @@ impl AuthorityManager {
         }
         let validator = self.validators.get_mut(address)
             .ok_or_else(|| SentrixError::NotFound(format!("validator {}", address)))?;
-        validator.name = new_name;
+        let old_name = validator.name.clone();
+        validator.name = new_name.clone();
+        // I-03: audit log (log old_name → new_name in target_name field)
+        let log_name = format!("{} -> {}", old_name, new_name);
+        tracing::warn!("ADMIN_OP: {} called rename_validator for {} ('{}') at {}",
+            caller, address, log_name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default().as_secs()
+        );
+        self.admin_log.push(AdminEvent::now("rename_validator", caller, address, &log_name));
         Ok(())
     }
 
@@ -331,6 +401,107 @@ mod tests {
         let addr = mgr.active_validators()[0].address.clone();
         let result = mgr.rename_validator("not_admin", &addr, "X".to_string());
         assert!(result.is_err());
+    }
+
+    // ── I-03: Admin audit log tests ──────────────────────
+
+    #[test]
+    fn test_i03_add_validator_logs_event() {
+        let mut mgr = AuthorityManager::new("admin".to_string());
+        assert_eq!(mgr.admin_log.len(), 0);
+
+        let (addr, pk) = gen_validator_keypair();
+        mgr.add_validator("admin", addr.clone(), "Test Val".to_string(), pk).unwrap();
+
+        assert_eq!(mgr.admin_log.len(), 1);
+        let event = &mgr.admin_log[0];
+        assert_eq!(event.operation, "add_validator");
+        assert_eq!(event.caller, "admin");
+        assert_eq!(event.target_address, addr);
+        assert_eq!(event.target_name, "Test Val");
+        assert!(event.timestamp > 0);
+    }
+
+    #[test]
+    fn test_i03_remove_validator_logs_event() {
+        let mut mgr = setup();
+        let addr = mgr.active_validators()[0].address.clone();
+        let name = mgr.validators[&addr].name.clone();
+        let log_len_before = mgr.admin_log.len();
+
+        // Need 2 validators to remove one
+        mgr.remove_validator("admin", &addr).unwrap();
+
+        assert_eq!(mgr.admin_log.len(), log_len_before + 1);
+        let event = mgr.admin_log.last().unwrap();
+        assert_eq!(event.operation, "remove_validator");
+        assert_eq!(event.caller, "admin");
+        assert_eq!(event.target_address, addr);
+        assert_eq!(event.target_name, name);
+    }
+
+    #[test]
+    fn test_i03_toggle_validator_logs_deactivate_and_activate() {
+        let mut mgr = setup();
+        let addr = mgr.active_validators()[0].address.clone();
+        let log_len_before = mgr.admin_log.len();
+
+        // Toggle off
+        mgr.toggle_validator("admin", &addr).unwrap();
+        let deact_event = mgr.admin_log.last().unwrap();
+        assert_eq!(deact_event.operation, "deactivate_validator");
+        assert_eq!(deact_event.caller, "admin");
+        assert_eq!(deact_event.target_address, addr);
+
+        // Toggle on
+        mgr.toggle_validator("admin", &addr).unwrap();
+        let act_event = mgr.admin_log.last().unwrap();
+        assert_eq!(act_event.operation, "activate_validator");
+        assert_eq!(mgr.admin_log.len(), log_len_before + 2);
+    }
+
+    #[test]
+    fn test_i03_rename_validator_logs_event() {
+        let mut mgr = setup();
+        let addr = mgr.active_validators()[0].address.clone();
+        let old_name = mgr.validators[&addr].name.clone();
+        let log_len_before = mgr.admin_log.len();
+
+        mgr.rename_validator("admin", &addr, "Brand New Name".to_string()).unwrap();
+
+        assert_eq!(mgr.admin_log.len(), log_len_before + 1);
+        let event = mgr.admin_log.last().unwrap();
+        assert_eq!(event.operation, "rename_validator");
+        assert_eq!(event.caller, "admin");
+        assert_eq!(event.target_address, addr);
+        // target_name records old → new
+        assert!(event.target_name.contains(&old_name));
+        assert!(event.target_name.contains("Brand New Name"));
+    }
+
+    #[test]
+    fn test_i03_failed_admin_ops_not_logged() {
+        let mut mgr = setup();
+        let log_len_before = mgr.admin_log.len();
+
+        // Non-admin attempting to add a validator — must fail and not log
+        let (addr, pk) = gen_validator_keypair();
+        let result = mgr.add_validator("hacker", addr, "Evil".to_string(), pk);
+        assert!(result.is_err());
+        assert_eq!(mgr.admin_log.len(), log_len_before, "failed op must not log");
+    }
+
+    #[test]
+    fn test_i03_admin_log_serde_roundtrip() {
+        // admin_log must survive serialize/deserialize (used in blockchain state persistence)
+        let mut mgr = AuthorityManager::new("admin".to_string());
+        let (addr, pk) = gen_validator_keypair();
+        mgr.add_validator("admin", addr, "Val".to_string(), pk).unwrap();
+
+        let json = serde_json::to_string(&mgr).unwrap();
+        let loaded: AuthorityManager = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.admin_log.len(), 1);
+        assert_eq!(loaded.admin_log[0].operation, "add_validator");
     }
 
     #[test]

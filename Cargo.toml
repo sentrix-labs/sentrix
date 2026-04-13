@@ -12,6 +12,7 @@ ripemd = "0.1"
 aes-gcm = "0.10"
 pbkdf2 = { version = "0.12", features = ["hmac"] }
 hmac = "0.12"
+argon2 = "0.5"
 rand = "0.8"
 hex = "0.4"
 
