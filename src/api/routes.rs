@@ -174,6 +174,8 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/address/:address/info",          get(get_address_info))
         // ── RPC ──────────────────────────────────────────────────
         .route("/rpc",                            post(rpc_dispatcher))
+        // ── Stats ────────────────────────────────────────────────
+        .route("/stats/daily",                    get(explorer::stats_daily))
         // ── Explorer ─────────────────────────────────────────────
         .nest("/explorer", explorer_router(state.clone()))
         .layer(cors)
