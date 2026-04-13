@@ -210,6 +210,13 @@ impl Blockchain {
             self.chain.drain(..excess);
         }
 
+        // Step 5: Update state trie and stamp state_root onto the block (no-op if not initialized)
+        if let Some(root) = self.update_trie_for_block()
+            && let Some(last) = self.chain.last_mut()
+        {
+            last.state_root = Some(root);
+        }
+
         Ok(())
     }
 }

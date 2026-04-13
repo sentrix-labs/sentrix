@@ -56,9 +56,9 @@ docker-compose.override.yml
 *.log
 logs/
 
-# Crash dumps / core dumps
-core
-core.*
+# Crash dumps / core dumps (root-level only — avoids matching src/core/)
+/core
+/core.*
 *.dmp
 
 # Rust-specific

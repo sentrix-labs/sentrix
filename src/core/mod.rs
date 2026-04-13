@@ -11,3 +11,4 @@ pub mod chain_queries;
 pub mod authority;
 pub mod merkle;
 pub mod vm;
+pub mod trie;
