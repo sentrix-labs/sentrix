@@ -6,7 +6,11 @@ use crate::types::error::{SentrixError, SentrixResult};
 impl Blockchain {
     // ── SRX-20 Token Operations ────────────────────────────
 
-    pub fn deploy_token(
+    // V6-M-01 FIX: pub(crate) — not called from routes.rs (which uses the mempool/add_block path).
+    // Direct state mutation bypasses transaction lifecycle; restrict to internal/testing use only.
+    // #[allow(dead_code)] — kept for potential future internal use (migration, genesis tooling)
+    #[allow(dead_code)]
+    pub(crate) fn deploy_token(
         &mut self,
         deployer: &str,
         name: String,
@@ -37,12 +41,17 @@ impl Blockchain {
             self.accounts.credit(ECOSYSTEM_FUND_ADDRESS, eco_share)?;
         }
 
-        // Deploy contract
-        let contract_address = self.contracts.deploy(deployer, &name, &symbol, decimals, total_supply, max_supply)?;
+        // Deploy contract — use deployer+nonce as seed (internal path; no txid available here)
+        // V6-C-01: this is pub(crate) internal only; canonical on-chain path uses tx.txid in add_block
+        let nonce = self.accounts.get_nonce(deployer);
+        let seed = format!("{}|{}|{}", deployer, nonce, name);
+        let contract_address = self.contracts.deploy(deployer, &name, &symbol, decimals, total_supply, max_supply, &seed)?;
         Ok(contract_address)
     }
 
-    pub fn token_transfer(
+    // V6-M-01 FIX: pub(crate) — internal/testing use only; routes use mempool path
+    #[allow(dead_code)]
+    pub(crate) fn token_transfer(
         &mut self,
         contract_address: &str,
         caller: &str,
@@ -83,7 +92,9 @@ impl Blockchain {
         Ok(())
     }
 
-    pub fn token_burn(
+    // V6-M-01 FIX: pub(crate) — internal/testing use only; routes use mempool path
+    #[allow(dead_code)]
+    pub(crate) fn token_burn(
         &mut self,
         contract_address: &str,
         caller: &str,
@@ -137,5 +148,56 @@ impl Blockchain {
 
     pub fn list_tokens(&self) -> Vec<serde_json::Value> {
         self.contracts.list_contracts()
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use crate::core::blockchain::Blockchain;
+
+    fn setup() -> Blockchain {
+        let mut bc = Blockchain::new("admin".to_string());
+        bc.authority.add_validator_unchecked("v1".to_string(), "V1".to_string(), "pk1".to_string());
+        bc
+    }
+
+    // deploy_token fee correctly split 50/50 burn vs ecosystem fund
+    #[test]
+    fn test_deploy_token_fee_split() {
+        let mut bc = setup();
+        let deployer = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let deploy_fee = 1_000_000u64;
+        bc.accounts.credit(deployer, deploy_fee).unwrap();
+
+        let burned_before = bc.accounts.total_burned;
+        let eco_before = bc.accounts.get_balance(crate::core::blockchain::ECOSYSTEM_FUND_ADDRESS);
+
+        bc.deploy_token(deployer, "Foo".to_string(), "FOO".to_string(), 8, 1_000, 0, deploy_fee).unwrap();
+
+        let burned_after = bc.accounts.total_burned;
+        let eco_after = bc.accounts.get_balance(crate::core::blockchain::ECOSYSTEM_FUND_ADDRESS);
+
+        // burn_share = ceil(fee/2), eco_share = fee - burn_share
+        let expected_burn = deploy_fee.div_ceil(2);
+        let expected_eco = deploy_fee - expected_burn;
+        assert_eq!(burned_after - burned_before, expected_burn);
+        assert_eq!(eco_after - eco_before, expected_eco);
+    }
+
+    // token_info returns error for unknown contract
+    #[test]
+    fn test_token_info_unknown_contract() {
+        let bc = setup();
+        let result = bc.token_info("SRX20_nonexistent_contract");
+        assert!(result.is_err());
+    }
+
+    // token_balance returns 0 for unknown contract (not an error)
+    #[test]
+    fn test_token_balance_unknown_contract_returns_zero() {
+        let bc = setup();
+        let balance = bc.token_balance("SRX20_nonexistent", "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+        assert_eq!(balance, 0);
     }
 }

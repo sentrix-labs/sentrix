@@ -584,7 +584,7 @@ fn cmd_chain_validate() -> anyhow::Result<()> {
     let valid = bc.is_valid_chain();
     println!("Chain valid: {}", valid);
     println!("Height: {}", bc.height());
-    println!("Total blocks: {}", bc.chain.len());
+    println!("Total blocks: {}", bc.height() + 1);
     Ok(())
 }
 

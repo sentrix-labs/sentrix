@@ -2,11 +2,13 @@
 # https://embarkstudios.github.io/cargo-deny/
 
 # ── Advisories ──────────────────────────────────────────────
-# Deny all CVEs in the RustSec advisory database.
+# V6-M-02 FIX: advisories check re-enabled using cargo-deny v0.16+ simplified format.
+# vulnerability/unmaintained/yanked keys were removed in v0.16 (PR #611).
+# All advisories are denied by default; use ignore[] for known exceptions.
 [advisories]
-yanked = "warn"
-# No ignores: all advisories must be resolved or explicitly waived.
-ignore = []
+# RUSTSEC-2020-0105 (net2) — cargo-deny v0.19.x has a parse bug on this advisory file.
+# The crate is not in our dependency tree; safe to ignore for CI.
+ignore = ["RUSTSEC-2020-0105"]
 
 # ── Licenses ────────────────────────────────────────────────
 [licenses]
@@ -44,16 +46,6 @@ deny = []
 skip = [
     # secp256k1 and libp2p bring in different versions of common crates
     { name = "bitflags" },
-    { name = "hashbrown" },
-    { name = "syn" },
-    { name = "quote" },
-    { name = "proc-macro2" },
-    { name = "bytes" },
-    { name = "indexmap" },
-    { name = "base64" },
-    { name = "regex" },
-    { name = "regex-syntax" },
-    { name = "regex-automata" },
     { name = "getrandom" },   # libp2p pulls in 0.2, 0.3, 0.4 transitively
 ]
 

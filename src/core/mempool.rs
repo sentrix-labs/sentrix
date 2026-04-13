@@ -4,7 +4,7 @@ use crate::core::blockchain::{
     Blockchain, is_valid_sentrix_address,
     MAX_MEMPOOL_SIZE, MAX_MEMPOOL_PER_SENDER, MEMPOOL_MAX_AGE_SECS,
 };
-use crate::core::transaction::Transaction;
+use crate::core::transaction::{Transaction, TOKEN_OP_ADDRESS, TokenOp};
 use crate::types::error::{SentrixError, SentrixResult};
 
 impl Blockchain {
@@ -34,6 +34,15 @@ impl Blockchain {
         if !is_valid_sentrix_address(&tx.to_address) {
             return Err(SentrixError::InvalidTransaction(
                 format!("invalid to_address: '{}'", tx.to_address)
+            ));
+        }
+
+        // V6-L-04 FIX: Reject native SRX transfer to zero address (silent coin destruction).
+        // TOKEN_OP_ADDRESS (0x000...0) is allowed ONLY when tx.data contains a valid TokenOp.
+        // Regular transfers to zero address would permanently destroy coins with no record.
+        if tx.to_address == TOKEN_OP_ADDRESS && !TokenOp::is_token_op(&tx.data) {
+            return Err(SentrixError::InvalidTransaction(
+                "cannot send SRX to zero address — use TokenOp::Burn to explicitly burn tokens".to_string()
             ));
         }
 
@@ -78,9 +87,10 @@ impl Blockchain {
         }
 
         // Insert sorted by fee descending (highest fee = front of queue)
-        // V5-07 TODO: RBF (Replace-By-Fee) not yet implemented — a sender cannot replace
-        // a pending tx with a higher-fee version. Adding RBF requires nonce-keyed lookup
-        // and per-sender replacement logic. Track in BIBLE.md under "Future Work".
+        // V5-07 TODO: RBF (Replace-By-Fee) not yet implemented.
+        // V6-L-01 TODO: This linear scan + VecDeque::insert is O(n) per insertion.
+        // At MAX_MEMPOOL_SIZE=10,000 this is ~50M ops/min under heavy load.
+        // Future: replace with BinaryHeap<Transaction> (impl Ord by fee desc) for O(log n).
         let pos = self.mempool.iter()
             .position(|existing| existing.fee < tx.fee)
             .unwrap_or(self.mempool.len());
@@ -113,5 +123,114 @@ impl Blockchain {
             .unwrap_or_default()
             .as_secs();
         self.mempool.retain(|tx| now <= tx.timestamp.saturating_add(MEMPOOL_MAX_AGE_SECS));
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secp256k1::{Secp256k1, SecretKey, PublicKey};
+    use secp256k1::rand::rngs::OsRng;
+    use crate::core::transaction::{Transaction, MIN_TX_FEE};
+    use crate::core::blockchain::{Blockchain, CHAIN_ID};
+
+    fn make_keypair() -> (SecretKey, PublicKey) {
+        let secp = Secp256k1::new();
+        secp.generate_keypair(&mut OsRng)
+    }
+
+    fn derive_addr(pk: &PublicKey) -> String {
+        crate::wallet::wallet::Wallet::derive_address(pk)
+    }
+
+    fn setup() -> Blockchain {
+        let mut bc = Blockchain::new("admin".to_string());
+        bc.authority.add_validator_unchecked("v1".to_string(), "V1".to_string(), "pk1".to_string());
+        bc
+    }
+
+    const RECV: &str = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+    // V6-L-04 test: reject SRX transfer to zero address
+    #[test]
+    fn test_zero_address_srx_transfer_rejected() {
+        let mut bc = setup();
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+        bc.accounts.credit(&sender, 1_000_000_000).unwrap();
+        let tx = Transaction::new(
+            sender, TOKEN_OP_ADDRESS.to_string(),
+            100_000_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
+        ).unwrap();
+        let result = bc.add_to_mempool(tx);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("zero address") || err.contains("TokenOp"));
+    }
+
+    // V6-L-04 test: allow token op tx to TOKEN_OP_ADDRESS (has valid op in data)
+    #[test]
+    fn test_zero_address_token_op_allowed() {
+        let mut bc = setup();
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+        bc.accounts.credit(&sender, 1_000_000_000).unwrap();
+        // Deploy a dummy token first so the contract exists for transfer
+        let token_op = TokenOp::Deploy {
+            name: "TestToken".to_string(), symbol: "TTK".to_string(),
+            decimals: 8, supply: 1_000_000, max_supply: 0,
+        };
+        let data = token_op.encode().unwrap();
+        let tx = Transaction::new(
+            sender, TOKEN_OP_ADDRESS.to_string(),
+            0, MIN_TX_FEE, 0, data, CHAIN_ID, &sk, &pk,
+        ).unwrap();
+        // This should succeed — to_address is zero address but data is a valid TokenOp
+        assert!(bc.add_to_mempool(tx).is_ok());
+    }
+
+    // Timestamp validation: future timestamp rejected
+    #[test]
+    fn test_future_timestamp_rejected() {
+        let mut bc = setup();
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+        bc.accounts.credit(&sender, 1_000_000_000).unwrap();
+        let mut tx = Transaction::new(
+            sender, RECV.to_string(),
+            100_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
+        ).unwrap();
+        // Manually set timestamp 10 minutes into the future
+        tx.timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() + 600;
+        assert!(bc.add_to_mempool(tx).is_err());
+    }
+
+    // Fee-priority ordering: higher fee tx should be inserted before lower fee tx
+    #[test]
+    fn test_fee_priority_ordering() {
+        let mut bc = setup();
+        let (sk1, pk1) = make_keypair();
+        let (sk2, pk2) = make_keypair();
+        let sender1 = derive_addr(&pk1);
+        let sender2 = derive_addr(&pk2);
+        bc.accounts.credit(&sender1, 1_000_000_000).unwrap();
+        bc.accounts.credit(&sender2, 1_000_000_000).unwrap();
+
+        let low_fee = Transaction::new(
+            sender1, RECV.to_string(), 100_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk1, &pk1,
+        ).unwrap();
+        let high_fee = Transaction::new(
+            sender2, RECV.to_string(), 100_000, MIN_TX_FEE * 10, 0, String::new(), CHAIN_ID, &sk2, &pk2,
+        ).unwrap();
+
+        bc.add_to_mempool(low_fee).unwrap();
+        bc.add_to_mempool(high_fee).unwrap();
+
+        // Highest fee should be first in mempool
+        assert!(bc.mempool[0].fee > bc.mempool[1].fee);
     }
 }

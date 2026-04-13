@@ -120,7 +120,19 @@ impl Blockchain {
                             ));
                         }
                     }
-                    TokenOp::Deploy { .. } => {} // deploy creates new contract, no pre-check needed
+                    TokenOp::Deploy { name, symbol, .. } => {
+                        // V6-C-01: validate name/symbol lengths now so Pass 2 won't fail mid-commit
+                        if name.is_empty() || name.len() > 64 {
+                            return Err(SentrixError::InvalidTransaction(
+                                "token name must be 1–64 characters".to_string(),
+                            ));
+                        }
+                        if symbol.is_empty() || symbol.len() > 10 || !symbol.chars().all(|c| c.is_ascii_alphanumeric()) {
+                            return Err(SentrixError::InvalidTransaction(
+                                "token symbol must be 1–10 ASCII alphanumeric characters".to_string(),
+                            ));
+                        }
+                    }
                 }
             }
 
@@ -149,7 +161,8 @@ impl Blockchain {
             if let Some(token_op) = TokenOp::decode(&tx.data) {
                 match token_op {
                     TokenOp::Deploy { name, symbol, decimals, supply, max_supply } => {
-                        self.contracts.deploy(&tx.from_address, &name, &symbol, decimals, supply, max_supply)?;
+                        // V6-C-01 FIX: use tx.txid as deterministic seed — same txid on every node
+                        self.contracts.deploy(&tx.from_address, &name, &symbol, decimals, supply, max_supply, &tx.txid)?;
                     }
                     TokenOp::Transfer { contract, to, amount } => {
                         self.contracts.execute_transfer(&contract, &tx.from_address, &to, amount)?;
@@ -198,5 +211,104 @@ impl Blockchain {
         }
 
         Ok(())
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use secp256k1::{Secp256k1, SecretKey, PublicKey};
+    use secp256k1::rand::rngs::OsRng;
+    use crate::core::transaction::{Transaction, MIN_TX_FEE, TOKEN_OP_ADDRESS, TokenOp};
+    use crate::core::blockchain::{Blockchain, CHAIN_ID};
+
+    fn make_keypair() -> (SecretKey, PublicKey) {
+        let secp = Secp256k1::new();
+        secp.generate_keypair(&mut OsRng)
+    }
+
+    fn derive_addr(pk: &PublicKey) -> String {
+        crate::wallet::wallet::Wallet::derive_address(pk)
+    }
+
+    fn setup() -> Blockchain {
+        let mut bc = Blockchain::new("admin".to_string());
+        bc.authority.add_validator_unchecked("v1".to_string(), "V1".to_string(), "pk1".to_string());
+        bc
+    }
+
+    const RECV: &str = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+
+    // Pass 1 rejection must not mutate state
+    #[test]
+    fn test_add_block_invalid_validator_leaves_state_clean() {
+        let mut bc = setup();
+        let height_before = bc.height();
+        let balance_before = bc.accounts.get_balance("v1");
+
+        // Create block for v1 then try to submit it as a different (unauthorized) validator
+        let mut block = bc.create_block("v1").unwrap();
+        block.validator = "not_authorized".to_string();
+
+        let result = bc.add_block(block);
+        assert!(result.is_err());
+        // State must not change
+        assert_eq!(bc.height(), height_before);
+        assert_eq!(bc.accounts.get_balance("v1"), balance_before);
+    }
+
+    // V6-C-01 test: contract address is deterministic — same seed produces same address
+    #[test]
+    fn test_contract_address_deterministic() {
+        let mut bc1 = setup();
+        let mut bc2 = setup();
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+
+        let fund = 10_000_000_000u64;
+        bc1.accounts.credit(&sender, fund).unwrap();
+        bc2.accounts.credit(&sender, fund).unwrap();
+
+        let token_op = TokenOp::Deploy {
+            name: "TestToken".to_string(), symbol: "TTK".to_string(),
+            decimals: 8, supply: 1_000_000, max_supply: 0,
+        };
+        let data = token_op.encode().unwrap();
+        let tx = Transaction::new(
+            sender.clone(), TOKEN_OP_ADDRESS.to_string(),
+            0, MIN_TX_FEE, 0, data, CHAIN_ID, &sk, &pk,
+        ).unwrap();
+
+        // Add the SAME tx to both chains and produce blocks
+        bc1.add_to_mempool(tx.clone()).unwrap();
+        bc2.add_to_mempool(tx.clone()).unwrap();
+
+        let block1 = bc1.create_block("v1").unwrap();
+        let block2 = bc2.create_block("v1").unwrap();
+
+        // Apply to both chains
+        bc1.add_block(block1).unwrap();
+        bc2.add_block(block2).unwrap();
+
+        // Contract registry should have identical addresses
+        let tokens1 = bc1.list_tokens();
+        let tokens2 = bc2.list_tokens();
+        assert_eq!(tokens1.len(), tokens2.len(), "both chains should have same number of tokens");
+        assert_eq!(
+            tokens1[0]["contract_address"],
+            tokens2[0]["contract_address"],
+            "V6-C-01: contract address must be deterministic across nodes"
+        );
+    }
+
+    // Block with timestamp before previous block is rejected
+    #[test]
+    fn test_block_with_old_timestamp_rejected() {
+        let mut bc = setup();
+        let mut block = bc.create_block("v1").unwrap();
+        // Set timestamp to before genesis (timestamp=0)
+        block.timestamp = 0;
+        let result = bc.add_block(block);
+        assert!(result.is_err());
     }
 }
