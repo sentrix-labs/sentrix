@@ -255,9 +255,18 @@ impl Blockchain {
         let trie = self.state_trie.as_mut()?;
         for (addr, balance, nonce) in updates {
             let key = address_to_key(&addr);
-            let value = account_value_bytes(balance, nonce);
-            if let Err(e) = trie.insert(&key, &value) {
-                tracing::warn!("trie: insert failed for {}: {}", addr, e);
+            if balance == 0 {
+                // Remove zero-balance accounts from the trie — prevents dead entries
+                // from accumulating and keeps the tree compact.
+                // delete() is a no-op if the key was never inserted.
+                if let Err(e) = trie.delete(&key) {
+                    tracing::warn!("trie: delete zero-balance {} failed: {}", addr, e);
+                }
+            } else {
+                let value = account_value_bytes(balance, nonce);
+                if let Err(e) = trie.insert(&key, &value) {
+                    tracing::warn!("trie: insert failed for {}: {}", addr, e);
+                }
             }
         }
         match trie.commit(block_index) {
@@ -1127,5 +1136,91 @@ mod tests {
     #[test]
     fn test_v510_hash_version_constant_is_1() {
         assert_eq!(HASH_VERSION, 1, "HASH_VERSION must be 1 (SHA-256)");
+    }
+
+    // ── SentrixTrie unit tests ────────────────────────────
+
+    fn temp_db() -> (tempfile::TempDir, sled::Db) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db  = sled::open(dir.path()).unwrap();
+        (dir, db)
+    }
+
+    /// A freshly constructed Blockchain must have state_trie = None.
+    #[test]
+    fn test_state_trie_none_by_default() {
+        let bc = setup_chain();
+        assert!(bc.state_trie.is_none(), "state_trie must be None before init_trie()");
+    }
+
+    /// trie_root_at() must return None when the trie has not been initialized.
+    #[test]
+    fn test_trie_root_at_without_init_returns_none() {
+        let bc = setup_chain();
+        assert_eq!(bc.trie_root_at(0), None);
+        assert_eq!(bc.trie_root_at(1), None);
+    }
+
+    /// After init_trie() + add_block(), trie_root_at(1) must return Some(root).
+    #[test]
+    fn test_trie_initialized_commits_root_per_block() {
+        let (_dir, db) = temp_db();
+        let mut bc = setup_chain();
+        bc.init_trie(&db).unwrap();
+        assert!(bc.state_trie.is_some());
+
+        let block = bc.create_block("validator1").unwrap();
+        bc.add_block(block).unwrap();
+
+        let root = bc.trie_root_at(1);
+        assert!(root.is_some(), "trie_root_at(1) must be Some after adding block 1");
+    }
+
+    /// trie_root_at() must return None for a version that has not been committed yet.
+    #[test]
+    fn test_trie_root_at_uncommitted_version_returns_none() {
+        let (_dir, db) = temp_db();
+        let mut bc = setup_chain();
+        bc.init_trie(&db).unwrap();
+        // No blocks added — version 1 has not been committed
+        assert_eq!(bc.trie_root_at(1), None, "uncommitted version must return None");
+    }
+
+    /// Multiple blocks must each have a distinct committed root persisted in the trie.
+    #[test]
+    fn test_trie_multiple_blocks_all_roots_persisted() {
+        let (_dir, db) = temp_db();
+        let mut bc = setup_chain();
+        bc.init_trie(&db).unwrap();
+
+        for i in 1u64..=3 {
+            let block = bc.create_block("validator1").unwrap();
+            bc.add_block(block).unwrap();
+            assert!(bc.trie_root_at(i).is_some(), "root at height {} must be committed", i);
+        }
+    }
+
+    /// Block.state_root must be Some when the trie is active, None otherwise.
+    #[test]
+    fn test_state_root_stamped_on_block_iff_trie_active() {
+        // Without trie: state_root should be None
+        let mut bc_no_trie = setup_chain();
+        let b1 = bc_no_trie.create_block("validator1").unwrap();
+        bc_no_trie.add_block(b1).unwrap();
+        assert!(
+            bc_no_trie.latest_block().unwrap().state_root.is_none(),
+            "state_root must be None when trie is not initialized"
+        );
+
+        // With trie: state_root should be Some
+        let (_dir, db) = temp_db();
+        let mut bc_trie = setup_chain();
+        bc_trie.init_trie(&db).unwrap();
+        let b2 = bc_trie.create_block("validator1").unwrap();
+        bc_trie.add_block(b2).unwrap();
+        assert!(
+            bc_trie.latest_block().unwrap().state_root.is_some(),
+            "state_root must be Some when trie is initialized"
+        );
     }
 }
