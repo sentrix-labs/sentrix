@@ -203,3 +203,103 @@ fn test_account_state_in_trie_matches_blockchain() {
     let (bal, _nonce) = account_value_decode(&proof.value).unwrap();
     assert_eq!(bal, expected_balance, "trie balance must match AccountDB");
 }
+
+// ── Delete tests ──────────────────────────────────────────────
+
+/// Deleting an existing key must make it unreachable and change the root.
+#[test]
+fn test_delete_existing_key() {
+    let (_dir, db) = temp_db();
+    let mut trie = SentrixTrie::open(&db, 0).unwrap();
+    let key = address_to_key("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+    let val = account_value_bytes(1_000_000, 5);
+
+    trie.insert(&key, &val).unwrap();
+    let root_after_insert = trie.root_hash();
+
+    let root_after_delete = trie.delete(&key).unwrap();
+
+    // Key must be gone
+    assert!(trie.get(&key).unwrap().is_none(), "key must be absent after delete");
+    // Root must differ from inserted root
+    assert_ne!(root_after_delete, root_after_insert);
+    // Root must equal empty trie (single item deleted)
+    assert_eq!(root_after_delete, empty_hash(0), "single-item delete must restore empty root");
+}
+
+/// Deleting a key that was never inserted must be a no-op (same root, no error).
+#[test]
+fn test_delete_nonexistent_noop() {
+    let (_dir, db) = temp_db();
+    let mut trie = SentrixTrie::open(&db, 0).unwrap();
+    let present = address_to_key("0xaaaa");
+    let absent  = address_to_key("0xbbbb");
+    trie.insert(&present, &account_value_bytes(100, 0)).unwrap();
+    let root_before = trie.root_hash();
+
+    let root_after = trie.delete(&absent).unwrap();
+
+    assert_eq!(root_before, root_after, "delete of absent key must not change root");
+    // Present key must still be there
+    assert!(trie.get(&present).unwrap().is_some());
+}
+
+/// Deleting one of two keys must leave the other intact.
+#[test]
+fn test_delete_one_of_two_keys() {
+    let (_dir, db) = temp_db();
+    let mut trie = SentrixTrie::open(&db, 0).unwrap();
+    let k1 = address_to_key("0x1111111111111111111111111111111111111111");
+    let k2 = address_to_key("0x2222222222222222222222222222222222222222");
+    trie.insert(&k1, &account_value_bytes(111, 0)).unwrap();
+    trie.insert(&k2, &account_value_bytes(222, 0)).unwrap();
+
+    trie.delete(&k1).unwrap();
+
+    assert!(trie.get(&k1).unwrap().is_none(), "k1 must be deleted");
+    let v2 = trie.get(&k2).unwrap().unwrap();
+    assert_eq!(account_value_decode(&v2).unwrap().0, 222, "k2 must survive");
+}
+
+/// Re-inserting a deleted key must work and produce a fresh valid root.
+#[test]
+fn test_reinsert_after_delete() {
+    let (_dir, db) = temp_db();
+    let mut trie = SentrixTrie::open(&db, 0).unwrap();
+    let key = address_to_key("0xaaaa");
+
+    trie.insert(&key, &account_value_bytes(100, 0)).unwrap();
+    trie.delete(&key).unwrap();
+    trie.insert(&key, &account_value_bytes(200, 1)).unwrap();
+
+    let val = trie.get(&key).unwrap().unwrap();
+    let (bal, nonce) = account_value_decode(&val).unwrap();
+    assert_eq!(bal, 200);
+    assert_eq!(nonce, 1);
+}
+
+/// Inserting data, committing, reopening the DB, and reading must work (persistence test).
+#[test]
+fn test_trie_persists_after_restart() {
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let key = address_to_key("0xcafecafecafecafecafecafecafecafecafecafe");
+    let val = account_value_bytes(999_999, 42);
+
+    // Session 1: insert + commit
+    {
+        let db = sled::open(dir.path()).unwrap();
+        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        trie.insert(&key, &val).unwrap();
+        trie.commit(1).unwrap();
+        // db drops here — sled flushes on Drop
+    }
+
+    // Session 2: reopen and read
+    {
+        let db = sled::open(dir.path()).unwrap();
+        let mut trie = SentrixTrie::open(&db, 1).unwrap();
+        let got = trie.get(&key).unwrap();
+        assert_eq!(got.as_deref(), Some(val.as_slice()), "data must survive DB reopen");
+    }
+}
