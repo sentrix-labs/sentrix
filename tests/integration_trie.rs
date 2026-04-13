@@ -2,7 +2,8 @@
 // tests/integration_trie.rs - Sentrix — SentrixTrie integration tests
 
 use secp256k1::{Secp256k1, rand::rngs::OsRng};
-use sentrix::core::blockchain::Blockchain;
+use sentrix::core::blockchain::{Blockchain, CHAIN_ID, BLOCK_REWARD};
+use sentrix::core::transaction::{Transaction, MIN_TX_FEE};
 use sentrix::core::trie::{
     SentrixTrie, address_to_key, account_value_bytes, account_value_decode, empty_hash,
 };
@@ -24,6 +25,21 @@ fn make_validator() -> (secp256k1::SecretKey, String, String) {
     let pk_hex  = hex::encode(pk.serialize());
     (sk, addr, pk_hex)
 }
+
+/// Generate a funded sender keypair. Returns (sk, pk, address).
+fn make_sender(
+    bc: &mut Blockchain,
+    balance: u64,
+) -> (secp256k1::SecretKey, secp256k1::PublicKey, String) {
+    let secp = Secp256k1::new();
+    let (sk, pk) = secp.generate_keypair(&mut OsRng);
+    let addr = Wallet::derive_address(&pk);
+    bc.accounts.credit(&addr, balance).unwrap();
+    (sk, pk, addr)
+}
+
+/// A well-formed recipient address used as TX destination.
+const RECV_ADDR: &str = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
 /// Build a Blockchain with one real validator + trie initialized.
 /// Returns (bc, validator_address).
@@ -302,5 +318,185 @@ fn test_trie_persists_after_restart() {
         let mut trie = SentrixTrie::open(&db, 1).unwrap();
         let got = trie.get(&key).unwrap();
         assert_eq!(got.as_deref(), Some(val.as_slice()), "data must survive DB reopen");
+    }
+}
+
+// ── Transaction-based trie tests ──────────────────────────────
+
+/// TX recipient (with positive balance) must appear in the trie after the block.
+#[test]
+fn test_tx_recipient_appears_in_trie() {
+    let (_dir, db) = temp_db();
+    let (mut bc, vaddr) = setup(&db);
+
+    let (sk, pk, _sender) = make_sender(&mut bc, 50_000_000 + MIN_TX_FEE);
+
+    let tx = Transaction::new(
+        Wallet::derive_address(&pk),
+        RECV_ADDR.to_string(),
+        50_000_000,
+        MIN_TX_FEE,
+        0,
+        String::new(),
+        CHAIN_ID,
+        &sk,
+        &pk,
+    ).unwrap();
+    bc.add_to_mempool(tx).unwrap();
+
+    let block = bc.create_block(&vaddr).unwrap();
+    bc.add_block(block).unwrap();
+
+    let recv_key = address_to_key(RECV_ADDR);
+    let root = bc.latest_block().unwrap().state_root.unwrap();
+    let trie_height = bc.height();
+    let mut trie = SentrixTrie::open(&db, trie_height).unwrap();
+    let proof = trie.prove(&recv_key).unwrap();
+
+    assert!(proof.found, "recipient must be in trie after receiving funds");
+    assert!(proof.verify_membership(&root), "membership proof must verify against block state_root");
+    let (bal, _) = account_value_decode(&proof.value).unwrap();
+    assert_eq!(bal, 50_000_000, "trie balance must equal received amount");
+}
+
+/// A sender whose balance reaches zero after a TX must be removed from the trie.
+#[test]
+fn test_zero_balance_sender_removed_from_trie() {
+    let (_dir, db) = temp_db();
+    let (mut bc, vaddr) = setup(&db);
+
+    // Block 1: partially spend — sender stays in trie with residual balance
+    let residual    = 500_000u64;
+    let total_funds = 10_000_000 + MIN_TX_FEE + residual + MIN_TX_FEE;
+    let (sk, pk, sender) = make_sender(&mut bc, total_funds);
+
+    let tx1 = Transaction::new(
+        sender.clone(), RECV_ADDR.to_string(),
+        10_000_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
+    ).unwrap();
+    bc.add_to_mempool(tx1).unwrap();
+    let b1 = bc.create_block(&vaddr).unwrap();
+    bc.add_block(b1).unwrap();
+
+    // Sender should be in trie with residual balance
+    let sender_key = address_to_key(&sender);
+    let mut trie = SentrixTrie::open(&db, bc.height()).unwrap();
+    assert!(trie.get(&sender_key).unwrap().is_some(), "sender must be in trie after block 1");
+
+    // Block 2: drain remaining balance to zero
+    let tx2 = Transaction::new(
+        sender.clone(), RECV_ADDR.to_string(),
+        residual, MIN_TX_FEE, 1, String::new(), CHAIN_ID, &sk, &pk,
+    ).unwrap();
+    bc.add_to_mempool(tx2).unwrap();
+    let b2 = bc.create_block(&vaddr).unwrap();
+    bc.add_block(b2).unwrap();
+
+    // Sender balance is now 0 — must be deleted from trie
+    let mut trie2 = SentrixTrie::open(&db, bc.height()).unwrap();
+    let got = trie2.get(&sender_key).unwrap();
+    assert!(got.is_none(), "zero-balance sender must be removed from trie");
+}
+
+/// Validator balance in trie must match the AccountDB balance after a block.
+#[test]
+fn test_trie_validator_balance_matches_after_block() {
+    let (_dir, db) = temp_db();
+    let (mut bc, vaddr) = setup(&db);
+
+    let block = bc.create_block(&vaddr).unwrap();
+    bc.add_block(block).unwrap();
+
+    let expected = bc.accounts.get_balance(&vaddr);
+    let key = address_to_key(&vaddr);
+    let mut trie = SentrixTrie::open(&db, bc.height()).unwrap();
+    let proof = trie.prove(&key).unwrap();
+
+    assert!(proof.found, "validator must be in trie");
+    let (bal, _) = account_value_decode(&proof.value).unwrap();
+    assert_eq!(bal, expected, "trie balance must equal AccountDB balance");
+    assert_eq!(bal, BLOCK_REWARD, "validator earned exactly one block reward");
+}
+
+/// Merkle proof for a TX recipient verifies against the block's state_root.
+#[test]
+fn test_proof_verified_after_block_with_tx() {
+    let (_dir, db) = temp_db();
+    let (mut bc, vaddr) = setup(&db);
+
+    let (sk, pk, _) = make_sender(&mut bc, 5_000_000 + MIN_TX_FEE);
+    let tx = Transaction::new(
+        Wallet::derive_address(&pk),
+        RECV_ADDR.to_string(),
+        5_000_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
+    ).unwrap();
+    bc.add_to_mempool(tx).unwrap();
+
+    let block = bc.create_block(&vaddr).unwrap();
+    bc.add_block(block).unwrap();
+
+    let root = bc.latest_block().unwrap().state_root.unwrap();
+    let key  = address_to_key(RECV_ADDR);
+    let mut trie = SentrixTrie::open(&db, bc.height()).unwrap();
+    let proof = trie.prove(&key).unwrap();
+
+    assert!(proof.found);
+    assert!(proof.verify_membership(&root), "proof must verify against block state_root");
+    // Non-membership proof for a deleted account also verifies against the same root
+    let absent_key = address_to_key("0x0000000000000000000000000000000000000001");
+    let np = trie.prove(&absent_key).unwrap();
+    assert!(!np.found);
+    assert!(np.verify_nonmembership(&root));
+}
+
+/// After zero-balance deletion the state root must differ from the previous block.
+#[test]
+fn test_state_root_changes_on_zero_balance_deletion() {
+    let (_dir, db) = temp_db();
+    let (mut bc, vaddr) = setup(&db);
+
+    // Block 1: give sender some balance (lands in trie)
+    // Initial: 2_000_000 + 2×fee → after tx1: 1_000_000 + fee → after tx2: 0
+    let (sk, pk, sender) = make_sender(&mut bc, 2_000_000 + 2 * MIN_TX_FEE);
+    let tx1 = Transaction::new(
+        sender.clone(), RECV_ADDR.to_string(),
+        1_000_000, MIN_TX_FEE, 0, String::new(), CHAIN_ID, &sk, &pk,
+    ).unwrap();
+    bc.add_to_mempool(tx1).unwrap();
+    let b1 = bc.create_block(&vaddr).unwrap();
+    bc.add_block(b1).unwrap();
+    let root1 = bc.latest_block().unwrap().state_root.unwrap();
+
+    // Block 2: drain sender to zero → deletion path (spends exact residual)
+    let tx2 = Transaction::new(
+        sender.clone(), RECV_ADDR.to_string(),
+        1_000_000, MIN_TX_FEE, 1, String::new(), CHAIN_ID, &sk, &pk,
+    ).unwrap();
+    bc.add_to_mempool(tx2).unwrap();
+    let b2 = bc.create_block(&vaddr).unwrap();
+    bc.add_block(b2).unwrap();
+    let root2 = bc.latest_block().unwrap().state_root.unwrap();
+
+    assert_ne!(root1, root2, "deleting an account must change the state root");
+}
+
+/// Every block must have a recoverable state root via trie_root_at().
+#[test]
+fn test_state_root_history_per_block() {
+    let (_dir, db) = temp_db();
+    let (mut bc, vaddr) = setup(&db);
+
+    let n = 5u64;
+    let mut roots = Vec::new();
+    for _ in 0..n {
+        let block = bc.create_block(&vaddr).unwrap();
+        bc.add_block(block).unwrap();
+        roots.push(bc.latest_block().unwrap().state_root.unwrap());
+    }
+
+    for (i, &expected) in roots.iter().enumerate() {
+        let version = (i + 1) as u64;
+        let stored = bc.trie_root_at(version);
+        assert_eq!(stored, Some(expected), "state root at version {} must be recoverable", version);
     }
 }
