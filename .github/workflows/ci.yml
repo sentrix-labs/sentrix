@@ -30,6 +30,15 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Deny check
+        run: cargo deny check licenses bans sources
+
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+
       - name: Build
         run: cargo build --release
 

@@ -40,8 +40,6 @@ impl ChainSync {
                 format!("sync: chain_id mismatch — peer {} vs ours {}", peer_chain_id, our_chain_id)
             ));
         }
-        let peer_height = peer_height;
-
         if peer_height <= our_height {
             return Ok(0);
         }

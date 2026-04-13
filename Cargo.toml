@@ -2,6 +2,26 @@
 name = "sentrix"
 version = "0.1.0"
 edition = "2024"
+license = "BUSL-1.1"
+
+# ── Lint configuration ────────────────────────────────────────────────────────
+# Enforced via CI: `cargo clippy -- -D warnings`
+# See also .clippy.toml for configurable thresholds (arg count, stack size, etc.)
+[lints.clippy]
+# Panic-family: production paths must not silently panic
+unwrap_used    = "deny"
+expect_used    = "deny"
+panic          = "deny"
+# Performance / safety
+large_futures       = "warn"
+large_stack_frames  = "warn"
+# Code quality
+todo = "warn"
+
+[lints.rust]
+# missing_docs: tracked but suppressed at crate level until documentation sprint.
+# Enable per-module by removing #![allow(missing_docs)] from lib.rs when ready.
+missing_docs = "warn"
 
 [dependencies]
 # Crypto

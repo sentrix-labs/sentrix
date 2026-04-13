@@ -210,13 +210,11 @@ impl Node {
             };
 
             // V5-03: drop messages from peers that haven't completed the handshake yet
-            if !handshake_done {
-                if !matches!(msg, Message::Handshake { .. }) {
-                    tracing::warn!("Rejected pre-handshake message from {}: handshake not complete", peer_ip);
-                    return Err(SentrixError::NetworkError(
-                        "message received before handshake".to_string()
-                    ));
-                }
+            if !handshake_done && !matches!(msg, Message::Handshake { .. }) {
+                tracing::warn!("Rejected pre-handshake message from {}: handshake not complete", peer_ip);
+                return Err(SentrixError::NetworkError(
+                    "message received before handshake".to_string()
+                ));
             }
 
             match msg {

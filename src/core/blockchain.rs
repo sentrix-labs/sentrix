@@ -473,7 +473,7 @@ impl Blockchain {
         }
 
         // L-02 FIX: Burn gets ceiling, validator gets floor — ensures total_fee is fully distributed
-        let burn_fee_share = (total_fee + 1) / 2;
+        let burn_fee_share = total_fee.div_ceil(2);
         let validator_fee_share = total_fee - burn_fee_share;
         if validator_fee_share > 0 {
             self.accounts.credit(&block.validator, validator_fee_share)?;
@@ -532,7 +532,7 @@ impl Blockchain {
             deployer_acc.balance = deployer_acc.balance.checked_sub(deploy_fee)
                 .ok_or_else(|| SentrixError::Internal("deploy fee underflow".to_string()))?;
 
-            let burn_share = (deploy_fee + 1) / 2; // L-02 FIX: burn rounds up
+            let burn_share = deploy_fee.div_ceil(2); // L-02 FIX: burn rounds up
             let eco_share = deploy_fee - burn_share;
             self.accounts.total_burned += burn_share;
             self.accounts.credit(ECOSYSTEM_FUND_ADDRESS, eco_share)?;
@@ -566,7 +566,7 @@ impl Blockchain {
             caller_acc.balance = caller_acc.balance.checked_sub(gas_fee)
                 .ok_or_else(|| SentrixError::Internal("gas fee underflow".to_string()))?;
 
-            let burn_share = (gas_fee + 1) / 2; // L-02 FIX: burn rounds up
+            let burn_share = gas_fee.div_ceil(2); // L-02 FIX: burn rounds up
             let val_share = gas_fee - burn_share;
             self.accounts.total_burned += burn_share;
 
@@ -606,7 +606,7 @@ impl Blockchain {
             caller_acc.balance = caller_acc.balance.checked_sub(gas_fee)
                 .ok_or_else(|| SentrixError::Internal("gas fee underflow".to_string()))?;
 
-            let burn_share = (gas_fee + 1) / 2; // L-02 FIX: burn rounds up
+            let burn_share = gas_fee.div_ceil(2); // L-02 FIX: burn rounds up
             let val_share = gas_fee - burn_share;
             self.accounts.total_burned += burn_share;
 

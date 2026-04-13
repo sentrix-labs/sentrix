@@ -15,8 +15,8 @@ pub fn merkle_root(txids: &[String]) -> String {
 
     while level.len() > 1 {
         // Duplicate last element if odd count
-        if !level.len().is_multiple_of(2) {
-            let last = level.last().unwrap().clone();
+        if !level.len().is_multiple_of(2)
+            && let Some(last) = level.last().cloned() {
             level.push(last);
         }
 

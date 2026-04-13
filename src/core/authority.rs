@@ -228,7 +228,8 @@ impl AuthorityManager {
             }
         }
 
-        let validator = self.validators.get_mut(address).unwrap();
+        let validator = self.validators.get_mut(address)
+            .ok_or_else(|| SentrixError::NotFound(format!("validator {}", address)))?;
         validator.is_active = !validator.is_active;
         let new_state = validator.is_active;
         let name = validator.name.clone();
