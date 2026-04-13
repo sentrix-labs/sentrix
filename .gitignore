@@ -67,3 +67,12 @@ core.*
 
 # Duplicate env template (keep .env.example only)
 env.example
+
+# Test artifacts
+/test-ledger/
+
+# Rust editor backup files
+**/*.rs.bk
+
+# Log files
+log-*.txt
