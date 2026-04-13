@@ -200,11 +200,24 @@ impl Node {
         event_tx: mpsc::Sender<NodeEvent>,
         peer_ip: String,
     ) -> SentrixResult<()> {
+        // V5-03: reject non-Handshake messages until handshake completes
+        let mut handshake_done = false;
+
         loop {
             let msg = match Self::read_message(&mut stream).await {
                 Ok(m) => m,
                 Err(_) => return Ok(()), // connection closed
             };
+
+            // V5-03: drop messages from peers that haven't completed the handshake yet
+            if !handshake_done {
+                if !matches!(msg, Message::Handshake { .. }) {
+                    tracing::warn!("Rejected pre-handshake message from {}: handshake not complete", peer_ip);
+                    return Err(SentrixError::NetworkError(
+                        "message received before handshake".to_string()
+                    ));
+                }
+            }
 
             match msg {
                 Message::Handshake { host: _, port, height, chain_id } => {
@@ -233,6 +246,7 @@ impl Node {
                         chain_id: our_chain_id,
                     };
                     Self::send_message(&mut stream, &response).await?;
+                    handshake_done = true;
 
                     // If peer has more blocks, trigger proactive sync via a dedicated connection.
                     // Do NOT send GetBlocks inline here — connect_peer callers only read one

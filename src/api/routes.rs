@@ -6,8 +6,12 @@ use axum::{
     extract::{State, Path, FromRequestParts},
     Json,
     http::{StatusCode, request::Parts},
+    response::IntoResponse,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -94,6 +98,53 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
 }
 
 
+// ── Per-IP Rate Limiter (V5-06) ──────────────────────────
+pub type IpRateLimiter = Arc<Mutex<HashMap<String, (u32, Instant)>>>;
+const RATE_LIMIT_WINDOW_SECS: u64 = 60;
+const RATE_LIMIT_MAX_REQUESTS: u32 = 60;
+
+async fn ip_rate_limit_middleware(
+    request: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    // Extract client IP from proxy headers (set by nginx) or fall back to "unknown"
+    let ip = request.headers()
+        .get("x-forwarded-for")
+        .or_else(|| request.headers().get("x-real-ip"))
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let allowed = if let Some(limiter) = request.extensions().get::<IpRateLimiter>().cloned() {
+        let mut map = limiter.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let entry = map.entry(ip).or_insert((0, now));
+        if entry.1.elapsed().as_secs() >= RATE_LIMIT_WINDOW_SECS {
+            *entry = (1, now);
+            true
+        } else {
+            entry.0 += 1;
+            entry.0 <= RATE_LIMIT_MAX_REQUESTS
+        }
+    } else {
+        true // limiter not configured — allow
+    };
+
+    if allowed {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": "rate limit exceeded",
+                "limit": RATE_LIMIT_MAX_REQUESTS,
+                "window_secs": RATE_LIMIT_WINDOW_SECS,
+            }))
+        ).into_response()
+    }
+}
+
 // ── Router ───────────────────────────────────────────────
 pub fn create_router(state: SharedState) -> Router {
     // M-06 FIX: CORS — fail-safe restrictive default.
@@ -147,6 +198,9 @@ pub fn create_router(state: SharedState) -> Router {
         }
     };
 
+    // V5-06: Per-IP rate limiter shared across all requests
+    let rate_limiter: IpRateLimiter = Arc::new(Mutex::new(HashMap::new()));
+
     // Single router — auth is enforced via the ApiKey extractor embedded
     // in each protected handler's parameter list, not via route layers.
     Router::new()
@@ -191,8 +245,12 @@ pub fn create_router(state: SharedState) -> Router {
         .nest("/explorer", explorer_router(state.clone()))
         .layer(cors)
         // C-02 FIX: Global HTTP concurrency limit — prevent CPU saturation from concurrent heavy
-        // requests (e.g. /chain/validate). Full per-IP rate limiting is enforced by nginx upstream.
+        // requests (e.g. /chain/validate).
         .layer(ConcurrencyLimitLayer::new(500))
+        // V5-06: Per-IP rate limit (60 req/min, defense-in-depth behind nginx)
+        // Layer order: Extension (outer) → rate_limit middleware → concurrency → cors → handler
+        .layer(axum::middleware::from_fn(ip_rate_limit_middleware))
+        .layer(axum::Extension(rate_limiter))
         .with_state(state)
 }
 
@@ -472,9 +530,9 @@ async fn deploy_token(
     // Validate data contains a Deploy token op
     let op = TokenOp::decode(&tx.data)
         .ok_or_else(|| api_err("data must contain a valid TokenOp JSON"))?;
-    let (name, symbol, total_supply) = match &op {
-        TokenOp::Deploy { name, symbol, supply, .. } => {
-            (name.clone(), symbol.clone(), *supply)
+    let (name, symbol, total_supply, max_supply) = match &op {
+        TokenOp::Deploy { name, symbol, supply, max_supply, .. } => {
+            (name.clone(), symbol.clone(), *supply, *max_supply)
         }
         _ => return Err(api_err("expected Deploy operation in tx.data")),
     };
@@ -489,6 +547,7 @@ async fn deploy_token(
         "name": name,
         "symbol": symbol,
         "total_supply": total_supply,
+        "max_supply": max_supply,
         "status": "pending_in_mempool",
     })))
 }

@@ -1,4 +1,7 @@
 # Stage 1 — Build
+# V5-08: Pin base image digests in production to prevent supply-chain image substitution.
+# Run: docker pull rust:1.94-slim && docker inspect --format='{{index .RepoDigests 0}}' rust:1.94-slim
+# Then replace the tag with the full digest: FROM rust@sha256:<digest>
 FROM rust:1.94-slim AS builder
 
 WORKDIR /app
@@ -14,6 +17,7 @@ COPY src ./src
 RUN touch src/main.rs src/lib.rs && cargo build --release
 
 # Stage 2 — Runtime (minimal)
+# V5-08: Pin runtime image digest the same way (see builder stage comment above).
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

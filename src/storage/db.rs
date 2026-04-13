@@ -12,6 +12,16 @@ pub struct Storage {
 
 impl Storage {
     pub fn open(path: &str) -> SentrixResult<Self> {
+        // V5-04: Warn if node operator has not confirmed disk encryption is active
+        if std::env::var("SENTRIX_ENCRYPTED_DISK").as_deref() != Ok("true") {
+            tracing::warn!(
+                "SECURITY WARNING: SENTRIX_ENCRYPTED_DISK is not set to 'true'. \
+                 The chain database at '{}' may be stored on an unencrypted volume. \
+                 Set SENTRIX_ENCRYPTED_DISK=true in your environment to suppress this warning.",
+                path
+            );
+        }
+
         let db = sled::open(path)
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         let storage = Self { db };

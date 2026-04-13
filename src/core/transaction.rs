@@ -14,7 +14,8 @@ pub const TOKEN_OP_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum TokenOp {
-    Deploy { name: String, symbol: String, decimals: u8, supply: u64 },
+    // V5-02: max_supply=0 means unlimited; #[serde(default)] for backward compat with old txs
+    Deploy { name: String, symbol: String, decimals: u8, supply: u64, #[serde(default)] max_supply: u64 },
     Transfer { contract: String, to: String, amount: u64 },
     Burn { contract: String, amount: u64 },
     Mint { contract: String, to: String, amount: u64 },

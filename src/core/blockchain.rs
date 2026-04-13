@@ -17,6 +17,8 @@ pub const HALVING_INTERVAL: u64   = 42_000_000;                 // blocks
 pub const BLOCK_TIME_SECS: u64    = 3;
 pub const MAX_TX_PER_BLOCK: usize = 100;
 pub const CHAIN_ID: u64           = 7119;
+// V5-10: Hash algorithm version — reserved for future SHA-3/BLAKE3 migration
+pub const HASH_VERSION: u8        = 1; // 1 = SHA-256 (current)
 
 // C-03 FIX: Mempool size limits to prevent RAM exhaustion
 pub const MAX_MEMPOOL_SIZE: usize        = 10_000;
@@ -210,6 +212,9 @@ impl Blockchain {
         }
 
         // Insert sorted by fee descending (highest fee = front of queue)
+        // V5-07 TODO: RBF (Replace-By-Fee) not yet implemented — a sender cannot replace
+        // a pending tx with a higher-fee version. Adding RBF requires nonce-keyed lookup
+        // and per-sender replacement logic. Track in BIBLE.md under "Future Work".
         let pos = self.mempool.iter()
             .position(|existing| existing.fee < tx.fee)
             .unwrap_or(self.mempool.len());
@@ -448,8 +453,8 @@ impl Blockchain {
             // Execute token operation if present in data field
             if let Some(token_op) = TokenOp::decode(&tx.data) {
                 match token_op {
-                    TokenOp::Deploy { name, symbol, decimals, supply } => {
-                        self.contracts.deploy(&tx.from_address, &name, &symbol, decimals, supply)?;
+                    TokenOp::Deploy { name, symbol, decimals, supply, max_supply } => {
+                        self.contracts.deploy(&tx.from_address, &name, &symbol, decimals, supply, max_supply)?;
                     }
                     TokenOp::Transfer { contract, to, amount } => {
                         self.contracts.execute_transfer(&contract, &tx.from_address, &to, amount)?;
@@ -509,6 +514,7 @@ impl Blockchain {
         symbol: String,
         decimals: u8,
         total_supply: u64,
+        max_supply: u64,
         deploy_fee: u64,
     ) -> SentrixResult<String> {
         // Check deployer has enough for fee
@@ -533,7 +539,7 @@ impl Blockchain {
         }
 
         // Deploy contract
-        let contract_address = self.contracts.deploy(deployer, &name, &symbol, decimals, total_supply)?;
+        let contract_address = self.contracts.deploy(deployer, &name, &symbol, decimals, total_supply, max_supply)?;
         Ok(contract_address)
     }
 
@@ -931,7 +937,7 @@ mod tests {
 
         let addr = bc.deploy_token(
             "deployer", "TestToken".to_string(), "TT".to_string(),
-            18, 1_000_000, 100_000,
+            18, 1_000_000, 0, 100_000,
         ).unwrap();
 
         assert!(addr.starts_with("SRX20_"));
@@ -947,7 +953,7 @@ mod tests {
         bc.accounts.credit("deployer", 100).unwrap(); // not enough for fee
         let result = bc.deploy_token(
             "deployer", "Token".to_string(), "TK".to_string(),
-            18, 1_000, 1_000,
+            18, 1_000, 0, 1_000,
         );
         assert!(result.is_err());
     }
@@ -959,7 +965,7 @@ mod tests {
 
         let addr = bc.deploy_token(
             "alice", "Coin".to_string(), "CN".to_string(),
-            18, 500_000, 10_000,
+            18, 500_000, 0, 10_000,
         ).unwrap();
 
         bc.token_transfer(&addr, "alice", "bob", 100_000, 1_000).unwrap();
@@ -974,7 +980,7 @@ mod tests {
 
         let addr = bc.deploy_token(
             "alice", "Coin".to_string(), "CN".to_string(),
-            18, 500_000, 0,
+            18, 500_000, 0, 0,
         ).unwrap();
 
         let burned_before = bc.accounts.total_burned;
@@ -990,7 +996,7 @@ mod tests {
 
         let addr = bc.deploy_token(
             "deployer", "MyToken".to_string(), "MT".to_string(),
-            8, 21_000_000, 0,
+            8, 21_000_000, 0, 0,
         ).unwrap();
 
         let info = bc.token_info(&addr).unwrap();
@@ -1004,8 +1010,8 @@ mod tests {
     fn test_chain_stats_includes_tokens() {
         let mut bc = setup_chain();
         bc.accounts.credit("d", 1_000_000).unwrap();
-        bc.deploy_token("d", "A".to_string(), "A".to_string(), 18, 100, 0).unwrap();
-        bc.deploy_token("d", "B".to_string(), "B".to_string(), 18, 200, 0).unwrap();
+        bc.deploy_token("d", "A".to_string(), "A".to_string(), 18, 100, 0, 0).unwrap();
+        bc.deploy_token("d", "B".to_string(), "B".to_string(), 18, 200, 0, 0).unwrap();
         let stats = bc.chain_stats();
         assert_eq!(stats["deployed_tokens"], 2);
     }
@@ -1184,6 +1190,7 @@ mod tests {
             symbol: "TT".to_string(),
             decimals: 8,
             supply: 1_000_000,
+            max_supply: 0,
         };
 
         let tx = Transaction::new(
@@ -1216,7 +1223,7 @@ mod tests {
 
         // Deploy token first (old method for setup)
         let contract = bc.deploy_token(
-            &alice, "Coin".to_string(), "CN".to_string(), 8, 500_000, 0,
+            &alice, "Coin".to_string(), "CN".to_string(), 8, 500_000, 0, 0,
         ).unwrap();
 
         // Create transfer transaction
@@ -1255,6 +1262,7 @@ mod tests {
             symbol: "OC".to_string(),
             decimals: 8,
             supply: 999,
+            max_supply: 0,
         };
         let tx = Transaction::new(
             deployer.clone(), TOKEN_OP_ADDRESS.to_string(),
@@ -1286,7 +1294,7 @@ mod tests {
         bc.accounts.credit(&alice, 10_000_000).unwrap();
 
         let contract = bc.deploy_token(
-            &alice, "Coin".to_string(), "CN".to_string(), 8, 100, 0,
+            &alice, "Coin".to_string(), "CN".to_string(), 8, 100, 0, 0,
         ).unwrap();
 
         // Try to transfer more than token balance
@@ -1503,7 +1511,7 @@ mod tests {
 
         let initial_burned = bc.accounts.total_burned;
         // Deploy with odd fee=3 → burn=(3+1)/2=2, eco=1
-        bc.deploy_token("deployer", "TestToken".to_string(), "TT".to_string(), 8, 1_000_000, 3).unwrap();
+        bc.deploy_token("deployer", "TestToken".to_string(), "TT".to_string(), 8, 1_000_000, 0, 3).unwrap();
         assert_eq!(bc.accounts.total_burned, initial_burned + 2);
     }
 
@@ -1513,7 +1521,7 @@ mod tests {
         bc.accounts.credit("user1", 10_000_000).unwrap();
 
         // Deploy a token first
-        let contract = bc.deploy_token("user1", "Gas".to_string(), "GAS".to_string(), 8, 1_000, 0).unwrap();
+        let contract = bc.deploy_token("user1", "Gas".to_string(), "GAS".to_string(), 8, 1_000, 0, 0).unwrap();
 
         let initial_burned = bc.accounts.total_burned;
         // Transfer with odd gas_fee=5 → burn=(5+1)/2=3
@@ -1619,5 +1627,39 @@ mod tests {
             bc.add_block(b).unwrap();
         }
         assert_eq!(bc.chain_window_start(), 11);
+    }
+
+    // ── V5-02: deploy_token max_supply parameter ──────────
+
+    #[test]
+    fn test_v502_deploy_with_max_supply_stores_cap() {
+        let mut bc = setup_chain();
+        bc.accounts.credit("deployer", 1_000_000).unwrap();
+        let addr = bc.deploy_token(
+            "deployer", "Capped".to_string(), "CAP".to_string(),
+            18, 500_000, 1_000_000, 0,
+        ).unwrap();
+        let info = bc.token_info(&addr).unwrap();
+        assert_eq!(info["max_supply"], 1_000_000);
+        assert_eq!(info["total_supply"], 500_000);
+    }
+
+    #[test]
+    fn test_v502_deploy_with_zero_max_supply_is_unlimited() {
+        let mut bc = setup_chain();
+        bc.accounts.credit("deployer", 1_000_000).unwrap();
+        let addr = bc.deploy_token(
+            "deployer", "Unlimited".to_string(), "UNL".to_string(),
+            18, 100_000, 0, 0,
+        ).unwrap();
+        let info = bc.token_info(&addr).unwrap();
+        assert_eq!(info["max_supply"], 0); // 0 = unlimited
+    }
+
+    // ── V5-10: HASH_VERSION constant ──────────────────────
+
+    #[test]
+    fn test_v510_hash_version_constant_is_1() {
+        assert_eq!(HASH_VERSION, 1, "HASH_VERSION must be 1 (SHA-256)");
     }
 }
