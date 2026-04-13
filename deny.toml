@@ -47,6 +47,22 @@ skip = [
     # secp256k1 and libp2p bring in different versions of common crates
     { name = "bitflags" },
     { name = "getrandom" },   # libp2p pulls in 0.2, 0.3, 0.4 transitively
+    # libp2p transitive duplicates
+    { name = "cpufeatures" },
+    { name = "parking_lot" },
+    { name = "parking_lot_core" },
+    { name = "r-efi" },
+    { name = "rand" },
+    { name = "rand_chacha" },
+    { name = "rand_core" },
+    { name = "redox_syscall" },
+    { name = "socket2" },
+    { name = "thiserror" },
+    { name = "thiserror-impl" },
+    { name = "tower" },
+    { name = "unsigned-varint" },
+    { name = "windows-sys" },
+    { name = "yamux" },
 ]
 
 # ── Sources ──────────────────────────────────────────────────
