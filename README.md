@@ -12,7 +12,7 @@
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![Rust](https://img.shields.io/badge/rust-1.94-orange)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-105%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-247%20passing-brightgreen)]()
 [![Consensus](https://img.shields.io/badge/consensus-PoA-blue)]()
 [![License](https://img.shields.io/badge/license-BUSL--1.1-purple)](LICENSE)
 [![Chain ID](https://img.shields.io/badge/chain%20ID-7119-yellow)]()
@@ -50,7 +50,7 @@ Sentrix is **Ethereum-tooling compatible** — MetaMask, ethers.js, and web3.js 
 | **Signatures** | ECDSA secp256k1 |
 | **Token standard** | SRX-20 (ERC-20 compatible) |
 | **Fee split** | 50% validator / 50% burned |
-| **Wallet encryption** | AES-256-GCM + PBKDF2-SHA256 (600k iterations) |
+| **Wallet encryption** | AES-256-GCM + Argon2id (m=65536, t=3, p=4) / PBKDF2 v1 backward compat |
 | **Storage** | sled embedded database (per-block) |
 | **Language** | Rust (zero unsafe, pure implementation) |
 | **Binary size** | ~4.4 MB (single static binary) |
@@ -195,12 +195,17 @@ Supports single requests and batch requests.
 ### Block Explorer
 
 ```
-/explorer                        Dashboard (stats + recent blocks)
+/explorer                        Dashboard (stats + recent blocks + analytics charts)
 /explorer/block/{index}          Block detail with transactions
 /explorer/address/{address}      Address balance + transaction history
 /explorer/tx/{txid}              Transaction detail
 /explorer/validators             Validator list and stats
+/explorer/validator/{address}    Validator detail
 /explorer/tokens                 Deployed SRX-20 tokens
+/explorer/token/{contract}       Token detail
+/explorer/richlist               Top addresses by balance
+/explorer/mempool                Pending transactions
+/explorer/search                 Search by block/tx/address
 ```
 
 ---
@@ -260,7 +265,7 @@ sentrix token list
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     sentrix (CLI)                            │
-│                  16 commands via clap                        │
+│                  17 commands via clap                        │
 └──────────┬──────────────────────┬───────────────────────────┘
            │                      │
   ┌────────▼────────┐   ┌────────▼────────┐
