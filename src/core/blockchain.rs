@@ -23,6 +23,8 @@ pub const MAX_MEMPOOL_SIZE: usize        = 10_000;
 pub const MAX_MEMPOOL_PER_SENDER: usize  = 100;
 // M-04 FIX: Mempool TTL — transactions older than this are pruned
 pub const MEMPOOL_MAX_AGE_SECS: u64      = 3_600; // 1 hour
+// I-01 FIX: Sliding window — only keep last N blocks in RAM; older blocks stay in sled
+pub const CHAIN_WINDOW_SIZE: usize       = 1_000;
 
 // H-04 FIX: Address validation helper
 pub fn is_valid_sentrix_address(addr: &str) -> bool {
@@ -88,8 +90,17 @@ impl Blockchain {
     }
 
     // ── Chain state queries ──────────────────────────────
+
+    // I-01 FIX: height derived from last block's index, not chain.len()-1.
+    // chain is now a sliding window so chain.len() <= CHAIN_WINDOW_SIZE.
     pub fn height(&self) -> u64 {
-        self.chain.len() as u64 - 1
+        self.chain.last().map(|b| b.index).unwrap_or(0)
+    }
+
+    /// First block index currently held in the in-memory window.
+    /// Blocks with index < chain_window_start() are only in sled storage.
+    pub fn chain_window_start(&self) -> u64 {
+        self.chain.first().map(|b| b.index).unwrap_or(0)
     }
 
     // L-02 FIX: return Result instead of panicking on empty chain
@@ -98,8 +109,13 @@ impl Blockchain {
             .ok_or_else(|| SentrixError::NotFound("chain is empty".to_string()))
     }
 
+    // I-01 FIX: returns None for blocks outside the sliding window (index < chain_window_start)
     pub fn get_block(&self, index: u64) -> Option<&Block> {
-        self.chain.get(index as usize)
+        let window_start = self.chain_window_start();
+        if index < window_start {
+            return None; // evicted from window — use storage for historical access
+        }
+        self.chain.get((index - window_start) as usize)
     }
 
     pub fn get_block_by_hash(&self, hash: &str) -> Option<&Block> {
@@ -283,23 +299,16 @@ impl Blockchain {
         Ok(block)
     }
 
-    // L-04: Memory estimate for chain in RAM
+    // I-01 FIX: memory estimate now reflects window (not full chain)
     pub fn get_memory_estimate(&self) -> String {
-        let block_count = self.chain.len();
-        let estimate_mb = (block_count * 2) / 1024; // ~2KB per block estimate
-        format!("~{}MB for {} blocks", estimate_mb, block_count)
+        let window_blocks = self.chain.len();
+        let true_height = self.height();
+        let estimate_mb = (window_blocks * 2) / 1024; // ~2KB per block
+        format!("~{}MB for {} blocks in window (true height: {})", estimate_mb, window_blocks, true_height)
     }
 
     // ── Block application (two-pass atomic) ─────────────
     pub fn add_block(&mut self, block: Block) -> SentrixResult<()> {
-        // L-04 FIX: warn on large chain
-        if !self.chain.is_empty() && self.chain.len().is_multiple_of(10_000) {
-            tracing::warn!(
-                "chain length is {} blocks ({}) — consider archival strategy",
-                self.chain.len(), self.get_memory_estimate()
-            );
-        }
-
         let expected_index = self.height() + 1;
         let expected_prev = self.latest_block()?.hash.clone();
 
@@ -480,6 +489,13 @@ impl Blockchain {
 
         // Append block to chain
         self.chain.push(block);
+
+        // I-01 FIX: sliding window — evict oldest blocks that exceed CHAIN_WINDOW_SIZE
+        // Evicted blocks remain in sled storage; only the in-memory window shrinks
+        if self.chain.len() > CHAIN_WINDOW_SIZE {
+            let excess = self.chain.len() - CHAIN_WINDOW_SIZE;
+            self.chain.drain(..excess);
+        }
 
         Ok(())
     }
@@ -769,7 +785,7 @@ impl Blockchain {
     pub fn chain_stats(&self) -> serde_json::Value {
         serde_json::json!({
             "height": self.height(),
-            "total_blocks": self.chain.len(),
+            "total_blocks": self.height() + 1, // I-01 FIX: chain window may be < total blocks
             "total_minted_srx": self.total_minted as f64 / 100_000_000.0,
             "max_supply_srx": MAX_SUPPLY as f64 / 100_000_000.0,
             "total_burned_srx": self.accounts.total_burned as f64 / 100_000_000.0,
@@ -1503,5 +1519,105 @@ mod tests {
         // Transfer with odd gas_fee=5 → burn=(5+1)/2=3
         bc.token_transfer(&contract, "user1", "user2", 100, 5).unwrap();
         assert_eq!(bc.accounts.total_burned, initial_burned + 3);
+    }
+
+    // ── I-01: sliding window chain cache tests ────────────
+
+    #[test]
+    fn test_i01_chain_window_size_constant() {
+        assert_eq!(CHAIN_WINDOW_SIZE, 1_000);
+    }
+
+    #[test]
+    fn test_i01_small_chain_fits_in_window() {
+        // Chains smaller than CHAIN_WINDOW_SIZE keep all blocks in memory
+        let mut bc = setup_chain();
+        for _ in 0..5 {
+            let b = bc.create_block("validator1").unwrap();
+            bc.add_block(b).unwrap();
+        }
+        // 1 genesis + 5 blocks = 6 total, all in window
+        assert_eq!(bc.chain.len(), 6);
+        assert_eq!(bc.height(), 5);
+        assert_eq!(bc.chain_window_start(), 0);
+    }
+
+    #[test]
+    fn test_i01_chain_does_not_grow_beyond_window() {
+        // Add CHAIN_WINDOW_SIZE + 10 blocks; window must stay at CHAIN_WINDOW_SIZE
+        let mut bc = setup_chain();
+        for _ in 0..CHAIN_WINDOW_SIZE + 9 {
+            let b = bc.create_block("validator1").unwrap();
+            bc.add_block(b).unwrap();
+        }
+        // Height = CHAIN_WINDOW_SIZE + 9, but chain Vec holds only last CHAIN_WINDOW_SIZE blocks
+        assert_eq!(bc.chain.len(), CHAIN_WINDOW_SIZE);
+        assert_eq!(bc.height(), CHAIN_WINDOW_SIZE as u64 + 9);
+    }
+
+    #[test]
+    fn test_i01_height_is_true_height_not_window_len() {
+        let mut bc = setup_chain();
+        for _ in 0..CHAIN_WINDOW_SIZE + 50 {
+            let b = bc.create_block("validator1").unwrap();
+            bc.add_block(b).unwrap();
+        }
+        let expected_height = CHAIN_WINDOW_SIZE as u64 + 50;
+        assert_eq!(bc.height(), expected_height);
+        // chain.len() should be CHAIN_WINDOW_SIZE, NOT height+1
+        assert_eq!(bc.chain.len(), CHAIN_WINDOW_SIZE);
+        assert_ne!(bc.chain.len() as u64, bc.height() + 1);
+    }
+
+    #[test]
+    fn test_i01_get_block_returns_none_for_evicted() {
+        let mut bc = setup_chain();
+        for _ in 0..CHAIN_WINDOW_SIZE + 1 {
+            let b = bc.create_block("validator1").unwrap();
+            bc.add_block(b).unwrap();
+        }
+        // Block 0 (genesis) must have been evicted from the window
+        assert!(bc.get_block(0).is_none(), "evicted block should return None");
+        // Latest block must still be accessible
+        assert!(bc.get_block(bc.height()).is_some());
+    }
+
+    #[test]
+    fn test_i01_get_block_within_window() {
+        let mut bc = setup_chain();
+        for _ in 0..CHAIN_WINDOW_SIZE + 5 {
+            let b = bc.create_block("validator1").unwrap();
+            bc.add_block(b).unwrap();
+        }
+        let window_start = bc.chain_window_start();
+        // First block in window is accessible
+        assert!(bc.get_block(window_start).is_some());
+        // Last block in window is accessible
+        assert!(bc.get_block(bc.height()).is_some());
+        // Block just before window is NOT accessible
+        if window_start > 0 {
+            assert!(bc.get_block(window_start - 1).is_none());
+        }
+    }
+
+    #[test]
+    fn test_i01_window_start_advances_as_chain_grows() {
+        let mut bc = setup_chain();
+        assert_eq!(bc.chain_window_start(), 0);
+
+        for _ in 0..CHAIN_WINDOW_SIZE {
+            let b = bc.create_block("validator1").unwrap();
+            bc.add_block(b).unwrap();
+        }
+        // At exactly CHAIN_WINDOW_SIZE blocks added: chain has genesis + CHAIN_WINDOW_SIZE = CHAIN_WINDOW_SIZE+1 > CHAIN_WINDOW_SIZE
+        // So window_start should have advanced by 1
+        assert_eq!(bc.chain_window_start(), 1);
+
+        // Add 10 more
+        for _ in 0..10 {
+            let b = bc.create_block("validator1").unwrap();
+            bc.add_block(b).unwrap();
+        }
+        assert_eq!(bc.chain_window_start(), 11);
     }
 }
