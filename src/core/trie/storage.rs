@@ -60,6 +60,14 @@ impl TrieStorage {
         }
     }
 
+    /// T-B: Remove a node entry from persistent storage (called when a leaf is replaced).
+    pub fn delete_node(&self, hash: &NodeHash) -> SentrixResult<()> {
+        self.nodes
+            .remove(hash)
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        Ok(())
+    }
+
     // ── Values ────────────────────────────────────────────
 
     pub fn store_value(&self, hash: &NodeHash, value: &[u8]) -> SentrixResult<()> {
@@ -74,6 +82,14 @@ impl TrieStorage {
             .get(hash)
             .map_err(|e| SentrixError::StorageError(e.to_string()))
             .map(|opt| opt.map(|iv| iv.to_vec()))
+    }
+
+    /// T-B: Remove a value blob from persistent storage (called when a leaf is replaced).
+    pub fn delete_value(&self, hash: &NodeHash) -> SentrixResult<()> {
+        self.values
+            .remove(hash)
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        Ok(())
     }
 
     // ── Roots ─────────────────────────────────────────────
@@ -105,5 +121,113 @@ impl TrieStorage {
             )),
             None => Ok(None),
         }
+    }
+
+    /// T-F: Garbage-collect node entries not present in `live_hashes`.
+    ///
+    /// Scans `trie_nodes`, collects every hash not in the live set, then deletes them.
+    /// Returns the count of entries removed.
+    ///
+    /// Callers must supply a complete set of hashes reachable from all committed roots
+    /// they wish to preserve.  Nodes referenced only by un-committed (in-flight) mutations
+    /// are safe to include — but omitting them will cause those nodes to be deleted.
+    pub fn gc_orphaned_nodes(
+        &self,
+        live_hashes: &std::collections::HashSet<NodeHash>,
+    ) -> SentrixResult<usize> {
+        let mut to_delete: Vec<NodeHash> = Vec::new();
+        for entry in self.nodes.iter() {
+            let (k, _) = entry.map_err(|e| SentrixError::StorageError(e.to_string()))?;
+            if k.len() == 32 {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&k);
+                if !live_hashes.contains(&arr) {
+                    to_delete.push(arr);
+                }
+            }
+        }
+        let count = to_delete.len();
+        for hash in &to_delete {
+            self.nodes
+                .remove(hash)
+                .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        }
+        Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::trie::node::{TrieNode, empty_hash};
+    use std::collections::HashSet;
+
+    fn temp_storage() -> (tempfile::TempDir, TrieStorage) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db  = sled::open(dir.path()).unwrap();
+        let storage = TrieStorage::new(&db).unwrap();
+        (dir, storage)
+    }
+
+    fn dummy_hash(byte: u8) -> NodeHash {
+        let mut h = [0u8; 32];
+        h[0] = byte;
+        h
+    }
+
+    #[test]
+    fn test_delete_node_removes_entry() {
+        let (_dir, storage) = temp_storage();
+        let hash = dummy_hash(0xAB);
+        let node = TrieNode::Leaf { key: [1u8; 32], value_hash: [2u8; 32] };
+
+        storage.store_node(&hash, &node).unwrap();
+        assert!(storage.load_node(&hash).unwrap().is_some(), "node must exist after store");
+
+        storage.delete_node(&hash).unwrap();
+        assert!(storage.load_node(&hash).unwrap().is_none(), "node must be absent after delete");
+    }
+
+    #[test]
+    fn test_delete_value_removes_entry() {
+        let (_dir, storage) = temp_storage();
+        let hash = dummy_hash(0xCD);
+        let val  = b"balance_data";
+
+        storage.store_value(&hash, val).unwrap();
+        assert!(storage.load_value(&hash).unwrap().is_some(), "value must exist after store");
+
+        storage.delete_value(&hash).unwrap();
+        assert!(storage.load_value(&hash).unwrap().is_none(), "value must be absent after delete");
+    }
+
+    #[test]
+    fn test_gc_orphaned_nodes_removes_unlisted() {
+        let (_dir, storage) = temp_storage();
+        let live_hash   = dummy_hash(0x01);
+        let orphan_hash = dummy_hash(0x02);
+
+        let node = TrieNode::Leaf { key: [0u8; 32], value_hash: empty_hash(0) };
+        storage.store_node(&live_hash,   &node).unwrap();
+        storage.store_node(&orphan_hash, &node).unwrap();
+
+        let mut live: HashSet<NodeHash> = HashSet::new();
+        live.insert(live_hash);
+
+        let removed = storage.gc_orphaned_nodes(&live).unwrap();
+        assert_eq!(removed, 1, "exactly one orphan must be removed");
+        assert!(storage.load_node(&live_hash).unwrap().is_some(),   "live node must survive GC");
+        assert!(storage.load_node(&orphan_hash).unwrap().is_none(), "orphan must be removed by GC");
+    }
+
+    #[test]
+    fn test_gc_empty_live_set_removes_all() {
+        let (_dir, storage) = temp_storage();
+        let node = TrieNode::Leaf { key: [0u8; 32], value_hash: empty_hash(0) };
+        for i in 0u8..5 {
+            storage.store_node(&dummy_hash(i), &node).unwrap();
+        }
+        let removed = storage.gc_orphaned_nodes(&HashSet::new()).unwrap();
+        assert_eq!(removed, 5, "all 5 nodes must be removed when live set is empty");
     }
 }
