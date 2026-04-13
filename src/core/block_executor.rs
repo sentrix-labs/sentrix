@@ -244,8 +244,6 @@ mod tests {
         bc
     }
 
-    const RECV: &str = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
-
     // Pass 1 rejection must not mutate state
     #[test]
     fn test_add_block_invalid_validator_leaves_state_clean() {

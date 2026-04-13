@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use sentrix::core::blockchain::{Blockchain, CHAIN_ID, TOTAL_PREMINE, BLOCK_REWARD};
-use sentrix::core::transaction::{Transaction, MIN_TX_FEE};
+use sentrix::core::transaction::Transaction;
 use sentrix::wallet::wallet::Wallet;
 
 /// Admin address used in all tests (matches FOUNDER_ADDRESS — receives genesis premine).

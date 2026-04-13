@@ -1,3 +1,4 @@
+#![allow(missing_docs)]
 // integration_token.rs — SRX-20 token deploy + transfer + burn + mint tests
 // All token operations go through the standard mempool → add_block path (no shortcuts).
 
