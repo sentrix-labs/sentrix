@@ -10,8 +10,7 @@ use sentrix::wallet::wallet::Wallet;
 use sentrix::wallet::keystore::Keystore;
 use sentrix::storage::db::Storage;
 use sentrix::api::routes::{create_router, SharedState};
-use sentrix::network::node::{DEFAULT_PORT, Node, NodeEvent};
-use sentrix::network::sync::ChainSync;
+use sentrix::network::node::{DEFAULT_PORT, NodeEvent};
 use sentrix::network::libp2p_node::{LibP2pNode, make_multiaddr};
 
 const DEFAULT_API_PORT: u16 = 8545;
@@ -80,9 +79,6 @@ enum Commands {
         /// Bootstrap peers (comma-separated host:port)
         #[arg(long, default_value = "")]
         peers: String,
-        /// Use libp2p transport with Noise encryption (experimental; default: legacy TCP)
-        #[arg(long, default_value_t = false)]
-        use_libp2p: bool,
     },
     /// Chain information
     Chain {
@@ -255,10 +251,10 @@ async fn main() -> anyhow::Result<()> {
             ValidatorCommands::List => cmd_validator_list()?,
         },
 
-        Commands::Start { validator_key, port, peers, use_libp2p } => {
+        Commands::Start { validator_key, port, peers } => {
             // H-04: validator_key can also come from env var
             let resolved_key = validator_key.or_else(|| std::env::var("SENTRIX_VALIDATOR_KEY").ok());
-            cmd_start(resolved_key, port, peers, use_libp2p).await?;
+            cmd_start(resolved_key, port, peers).await?;
         }
 
         Commands::Chain { action } => match action {
@@ -442,7 +438,6 @@ async fn cmd_start(
     validator_key: Option<String>,
     port: u16,
     peers_str: String,
-    use_libp2p: bool,
 ) -> anyhow::Result<()> {
     let storage = Arc::new(Storage::open(&get_db_path())?);
     let bc = storage.load_blockchain()?
@@ -450,215 +445,90 @@ async fn cmd_start(
 
     let shared: SharedState = Arc::new(RwLock::new(bc));
 
-    // Shared P2P event channel — works with both legacy and libp2p transport.
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<NodeEvent>(256);
 
-    // ── P2P transport selection ──────────────────────────
-    if use_libp2p {
-        // ── libp2p path: TCP + Noise + Yamux ────────────
-        println!("P2P transport: libp2p (Noise encrypted)");
-        let keypair = libp2p::identity::Keypair::generate_ed25519();
-        let lp2p = Arc::new(
-            LibP2pNode::new(keypair, shared.clone(), event_tx.clone())
-                .map_err(|e| anyhow::anyhow!("libp2p init: {}", e))?,
-        );
+    // ── P2P: libp2p TCP + Noise + Yamux ─────────────────
+    println!("P2P transport: libp2p (Noise encrypted)");
+    let keypair = libp2p::identity::Keypair::generate_ed25519();
+    let lp2p = Arc::new(
+        LibP2pNode::new(keypair, shared.clone(), event_tx.clone())
+            .map_err(|e| anyhow::anyhow!("libp2p init: {}", e))?,
+    );
 
-        let listen_addr = make_multiaddr("0.0.0.0", port)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-        lp2p.listen_on(listen_addr).await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-        println!("libp2p listening on /ip4/0.0.0.0/tcp/{}", port);
+    let listen_addr = make_multiaddr("0.0.0.0", port)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    lp2p.listen_on(listen_addr).await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("libp2p listening on /ip4/0.0.0.0/tcp/{}", port);
 
-        // Connect to bootstrap peers
-        for peer_str in peers_str.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-            let parts: Vec<&str> = peer_str.splitn(2, ':').collect();
-            if let [host, port_part] = parts.as_slice()
-                && let Ok(p) = port_part.parse::<u16>()
-                && let Ok(addr) = make_multiaddr(host, p)
-            {
-                let lp = lp2p.clone();
-                let addr_str = addr.to_string();
-                tokio::spawn(async move {
-                    match lp.connect_peer(addr).await {
-                        Ok(()) => println!("Dialing libp2p peer {}", addr_str),
-                        Err(e) => println!("Failed to dial {}: {}", addr_str, e),
-                    }
-                });
-            }
-        }
-
-        // Validator loop (libp2p broadcast)
-        if let Some(key_hex) = validator_key {
-            let wallet = Wallet::from_private_key(&key_hex)?;
-            println!("Validator mode (libp2p): {}", wallet.address);
-            let shared_clone = shared.clone();
-            let storage_clone = storage.clone();
-            let lp2p_clone = lp2p.clone();
+    // Connect to bootstrap peers
+    for peer_str in peers_str.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let parts: Vec<&str> = peer_str.splitn(2, ':').collect();
+        if let [host, port_part] = parts.as_slice()
+            && let Ok(p) = port_part.parse::<u16>()
+            && let Ok(addr) = make_multiaddr(host, p)
+        {
+            let lp = lp2p.clone();
+            let addr_str = addr.to_string();
             tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                    let mut bc = shared_clone.write().await;
-                    if let Ok(block) = bc.create_block(&wallet.address) {
-                        let height = block.index;
-                        let block_clone = block.clone();
-                        match bc.add_block(block) {
-                            Ok(()) => {
-                                println!("Block {} produced by {}", height, wallet.address);
-                                let _ = storage_clone.save_blockchain(&bc);
-                                let _ = storage_clone.save_height(height);
-                                drop(bc);
-                                lp2p_clone.broadcast_block(&block_clone).await;
-                            }
-                            Err(e) => tracing::warn!("add_block failed: {}", e),
-                        }
-                    }
+                match lp.connect_peer(addr).await {
+                    Ok(()) => println!("Dialing peer {}", addr_str),
+                    Err(e) => println!("Failed to dial {}: {}", addr_str, e),
                 }
             });
         }
+    }
 
-        // Event handler — libp2p mode: skip raw-TCP ChainSync on SyncNeeded
-        // (libp2p sync via GetBlocks is handled inside the swarm task in Step 3d)
-        let storage_for_p2p = storage.clone();
-        tokio::spawn(async move {
-            while let Some(event) = event_rx.recv().await {
-                match event {
-                    NodeEvent::PeerConnected(addr) => tracing::info!("libp2p peer connected: {}", addr),
-                    NodeEvent::PeerDisconnected(addr) => tracing::info!("libp2p peer disconnected: {}", addr),
-                    NodeEvent::NewBlock(block) => {
-                        tracing::info!("libp2p received block {}", block.index);
-                        // V7-M-05: persist P2P-received block immediately so state_root
-                        // survives a crash before the next produce cycle's save_blockchain().
-                        if let Err(e) = storage_for_p2p.save_block(&block) {
-                            tracing::warn!("failed to persist P2P block {}: {}", block.index, e);
-                        }
-                    }
-                    NodeEvent::NewTransaction(_) => {}
-                    NodeEvent::SyncNeeded { peer_addr, peer_height } => {
-                        // In libp2p mode, sync is handled by the swarm task via GetBlocks.
-                        tracing::info!("libp2p: sync needed from {} (height: {})", peer_addr, peer_height);
-                    }
-                }
-            }
-        });
-    } else {
-        // ── Legacy TCP path (existing behaviour) ────────
-        println!("P2P transport: legacy TCP");
-        let node = Arc::new(Node::new(
-            "0.0.0.0".to_string(),
-            port,
-            shared.clone(),
-            event_tx.clone(),
-        ));
-
-        // Start P2P listener
-        let p2p_bc = shared.clone();
-        let p2p_peers = node.peers.clone();
-        let p2p_etx = event_tx.clone();
-        tokio::spawn(async move {
-            if let Err(e) = Node::start_listener(port, p2p_bc, p2p_peers, p2p_etx).await {
-                tracing::error!("P2P listener failed: {}", e);
-            }
-        });
-        println!("P2P listening on port {}", port);
-
-        // Connect to bootstrap peers
-        if !peers_str.is_empty() {
-            for peer_str in peers_str.split(',') {
-                let peer = peer_str.trim().to_string();
-                if peer.is_empty() { continue; }
-                let node_clone = node.clone();
-                tokio::spawn(async move {
-                    match node_clone.connect_peer(
-                        peer.split(':').next().unwrap_or(""),
-                        peer.split(':').nth(1).and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT),
-                    ).await {
-                        Ok(()) => println!("Connected to peer: {}", peer),
-                        Err(e) => println!("Failed to connect to {}: {}", peer, e),
-                    }
-                });
-            }
-        }
-
-        // Validator loop (legacy TCP broadcast)
-        if let Some(key_hex) = validator_key {
-            let wallet = Wallet::from_private_key(&key_hex)?;
-            println!("Validator mode: {}", wallet.address);
-            let shared_clone = shared.clone();
-            let storage_clone = storage.clone();
-            let node_clone = node.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                    let mut bc = shared_clone.write().await;
-                    if let Ok(block) = bc.create_block(&wallet.address) {
-                        let height = block.index;
-                        let block_clone = block.clone();
-                        match bc.add_block(block) {
-                            Ok(()) => {
-                                println!("Block {} produced by {}", height, wallet.address);
-                                let _ = storage_clone.save_blockchain(&bc);
-                                let _ = storage_clone.save_height(height);
-                                drop(bc);
-                                node_clone.broadcast_block(&block_clone).await;
-                            }
-                            Err(e) => tracing::warn!("add_block failed: {}", e),
-                        }
-                    }
-                }
-            });
-        }
-
-        // Event handler — legacy mode: use raw-TCP ChainSync
-        let shared_for_events = shared.clone();
-        let storage_for_legacy_p2p = storage.clone();
-        tokio::spawn(async move {
-            while let Some(event) = event_rx.recv().await {
-                match event {
-                    NodeEvent::PeerConnected(addr) => tracing::info!("Peer connected: {}", addr),
-                    NodeEvent::PeerDisconnected(addr) => tracing::info!("Peer disconnected: {}", addr),
-                    NodeEvent::NewBlock(block) => {
-                        tracing::info!("Received block {} from peer", block.index);
-                        // V7-M-05: persist P2P-received block with state_root immediately.
-                        if let Err(e) = storage_for_legacy_p2p.save_block(&block) {
-                            tracing::warn!("failed to persist P2P block {}: {}", block.index, e);
-                        }
-                    }
-                    NodeEvent::NewTransaction(_) => {}
-                    NodeEvent::SyncNeeded { peer_addr, peer_height } => {
-                        tracing::info!("Sync needed from {} (height: {})", peer_addr, peer_height);
-                        let shared_sync = shared_for_events.clone();
-                        let storage_sync = storage_for_legacy_p2p.clone();
-                        tokio::spawn(async move {
-                            match ChainSync::sync_from_peer(&peer_addr, &shared_sync, storage_sync).await {
-                                Ok(n) if n > 0 => tracing::info!("Synced {} blocks from {}", n, peer_addr),
-                                Ok(_) => {}
-                                Err(e) => tracing::warn!("Sync from {} failed: {}", peer_addr, e),
-                            }
-                        });
-                    }
-                }
-            }
-        });
-
-        // Periodic sync: every 30s — legacy TCP path only
-        let shared_ps = shared.clone();
-        let node_ps = node.clone();
-        let storage_ps = storage.clone();
+    // Validator loop
+    if let Some(key_hex) = validator_key {
+        let wallet = Wallet::from_private_key(&key_hex)?;
+        println!("Validator mode: {}", wallet.address);
+        let shared_clone = shared.clone();
+        let storage_clone = storage.clone();
+        let lp2p_clone = lp2p.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-                let peer_addrs: Vec<String> = node_ps.peers.read().await
-                    .keys().cloned().collect();
-                for addr in peer_addrs {
-                    match ChainSync::sync_from_peer(&addr, &shared_ps, storage_ps.clone()).await {
-                        Ok(n) if n > 0 => tracing::info!("Periodic sync: {} blocks from {}", n, addr),
-                        Ok(_) => {}
-                        Err(_) => {}
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                let mut bc = shared_clone.write().await;
+                if let Ok(block) = bc.create_block(&wallet.address) {
+                    let height = block.index;
+                    let block_clone = block.clone();
+                    match bc.add_block(block) {
+                        Ok(()) => {
+                            println!("Block {} produced by {}", height, wallet.address);
+                            let _ = storage_clone.save_blockchain(&bc);
+                            let _ = storage_clone.save_height(height);
+                            drop(bc);
+                            lp2p_clone.broadcast_block(&block_clone).await;
+                        }
+                        Err(e) => tracing::warn!("add_block failed: {}", e),
                     }
                 }
             }
         });
     }
+
+    // Event handler — persist P2P blocks to sled
+    // Sync is handled inside the libp2p swarm task (Step 3d).
+    let storage_for_p2p = storage.clone();
+    tokio::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                NodeEvent::PeerConnected(addr) => tracing::info!("Peer connected: {}", addr),
+                NodeEvent::PeerDisconnected(addr) => tracing::info!("Peer disconnected: {}", addr),
+                NodeEvent::NewBlock(block) => {
+                    tracing::info!("Block {} received from peer", block.index);
+                    if let Err(e) = storage_for_p2p.save_block(&block) {
+                        tracing::warn!("failed to persist P2P block {}: {}", block.index, e);
+                    }
+                }
+                NodeEvent::NewTransaction(_) => {}
+                NodeEvent::SyncNeeded { peer_addr, peer_height } => {
+                    tracing::info!("Sync needed from {} (height: {})", peer_addr, peer_height);
+                }
+            }
+        }
+    });
 
     // ── Shared: REST API (always started) ───────────────
     let app = create_router(shared.clone());
