@@ -111,6 +111,10 @@ jobs:
 
       # V5-09: Rotate VPS_SSH_KEY secrets periodically (recommended: every 90 days).
       # Go to repo Settings → Secrets → VPS1_SSH_KEY / VPS2_SSH_KEY to update.
+      #
+      # PR #63: Graceful deploy — stop FIRST, then replace binary, then start.
+      # Previous approach (mv + systemctl restart) killed processes mid-trie-write,
+      # causing state corruption and the chain fork incident 2026-04-14.
       - name: Deploy to VPS1
         run: |
           mkdir -p ~/.ssh
@@ -120,10 +124,19 @@ jobs:
           scp target/release/sentrix \
             ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }}:/tmp/sentrix_new
           ssh ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }} "
+            echo '--- Stopping sentrix-node (graceful, max 30s) ---'
+            sudo systemctl stop sentrix-node || true
+            sleep 2
+
+            echo '--- Replacing binary ---'
             sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
             sudo chmod +x /opt/sentrix/sentrix
-            sudo systemctl restart sentrix-node
-            sleep 2
+
+            echo '--- Starting sentrix-node ---'
+            sudo systemctl start sentrix-node
+            sleep 5
+
+            echo '--- Verifying ---'
             systemctl is-active sentrix-node
           "
 
@@ -140,17 +153,33 @@ jobs:
           scp -i ~/.ssh/id_rsa_vps2 target/release/sentrix \
             "$VPS2_USER@$VPS2_HOST:/tmp/sentrix_new"
           ssh -i ~/.ssh/id_rsa_vps2 "$VPS2_USER@$VPS2_HOST" "
+            SERVICES=\$(systemctl list-units --type=service --no-legend 2>/dev/null | grep -i 'sentrix-val' | awk '{print \$1}')
+            if [ -z \"\$SERVICES\" ]; then
+              echo 'No sentrix-val services found, skipping'
+              exit 0
+            fi
+
+            echo '--- Stopping all validators (graceful, max 30s each) ---'
+            for svc in \$SERVICES; do
+              echo \"Stopping \$svc...\"
+              sudo systemctl stop \"\$svc\" || true
+            done
+            sleep 2
+
+            echo '--- Replacing binary ---'
             sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
             sudo chmod +x /opt/sentrix/sentrix
-            SERVICES=\$(systemctl list-units --type=service --no-legend 2>/dev/null | grep -i 'sentrix-val' | awk '{print \$1}')
-            if [ -n \"\$SERVICES\" ]; then
-              for svc in \$SERVICES; do
-                echo \"Restarting \$svc...\"
-                sudo systemctl restart \"\$svc\"
-                sleep 1
-                systemctl is-active \"\$svc\"
-              done
-            else
-              echo 'No sentrix-val services found, skipping restart'
-            fi
+
+            echo '--- Starting all validators ---'
+            for svc in \$SERVICES; do
+              echo \"Starting \$svc...\"
+              sudo systemctl start \"\$svc\"
+              sleep 1
+            done
+            sleep 5
+
+            echo '--- Verifying ---'
+            for svc in \$SERVICES; do
+              systemctl is-active \"\$svc\"
+            done
           "
