@@ -30,7 +30,7 @@ pub fn build_transport(keypair: &Keypair) -> SentrixResult<SentrixTransport> {
     let noise_config = noise::Config::new(keypair)
         .map_err(|e| SentrixError::NetworkError(format!("noise init failed: {e}")))?;
 
-    let transport = tcp::tokio::Transport::new(tcp::Config::default())
+    let transport = tcp::tokio::Transport::new(tcp::Config::default().nodelay(true))
         .upgrade(upgrade::Version::V1)
         .authenticate(noise_config)
         .multiplex(yamux::Config::default())

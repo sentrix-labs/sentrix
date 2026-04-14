@@ -446,36 +446,46 @@ async fn on_inbound_request(
             }
         }
 
-        // ── NewBlock — apply to chain ─────────────────────
+        // ── NewBlock — apply to chain (spawned to avoid blocking swarm) ──
         SentrixRequest::NewBlock { block } => {
-            let mut bc = blockchain.write().await;
-            match bc.add_block(*block.clone()) {
-                Ok(()) => {
-                    tracing::info!("libp2p: applied block {} from {}", block.index, peer);
-                    drop(bc);
-                    let _ = event_tx.send(NodeEvent::NewBlock(*block)).await;
-                }
-                Err(e) => {
-                    tracing::warn!("libp2p: rejected block from {}: {}", peer, e);
-                }
-            }
+            // ACK immediately so peer doesn't timeout waiting for response
             let _ = swarm.behaviour_mut().rr.send_response(channel, SentrixResponse::Ack);
+            // Process block in background — never hold write lock in swarm loop
+            let bc = blockchain.clone();
+            let etx = event_tx.clone();
+            tokio::spawn(async move {
+                let mut chain = bc.write().await;
+                match chain.add_block(*block.clone()) {
+                    Ok(()) => {
+                        tracing::info!("libp2p: applied block {} from {}", block.index, peer);
+                        drop(chain);
+                        let _ = etx.send(NodeEvent::NewBlock(*block)).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("libp2p: rejected block from {}: {}", peer, e);
+                    }
+                }
+            });
         }
 
-        // ── NewTransaction — add to mempool ──────────────
+        // ── NewTransaction — add to mempool (spawned) ────
         SentrixRequest::NewTransaction { transaction } => {
-            let mut bc = blockchain.write().await;
-            if bc.add_to_mempool(transaction.clone()).is_ok() {
-                drop(bc);
-                let _ = event_tx.send(NodeEvent::NewTransaction(transaction)).await;
-            }
             let _ = swarm.behaviour_mut().rr.send_response(channel, SentrixResponse::Ack);
+            let bc = blockchain.clone();
+            let etx = event_tx.clone();
+            tokio::spawn(async move {
+                let mut chain = bc.write().await;
+                if chain.add_to_mempool(transaction.clone()).is_ok() {
+                    drop(chain);
+                    let _ = etx.send(NodeEvent::NewTransaction(transaction)).await;
+                }
+            });
         }
 
-        // ── GetBlocks — respond with up to 100 blocks ────
+        // ── GetBlocks — respond with up to 50 blocks (reduced from 100 to stay under 10MB) ──
         SentrixRequest::GetBlocks { from_height } => {
             let bc = blockchain.read().await;
-            let to = bc.height().min(from_height.saturating_add(99));
+            let to = bc.height().min(from_height.saturating_add(49));
             let blocks: Vec<Block> = (from_height..=to)
                 .filter_map(|i| bc.get_block(i).cloned())
                 .collect();
@@ -521,33 +531,41 @@ async fn on_inbound_response(
     our_chain_id: u64,
 ) -> Option<(PeerId, u64)> {
     // ── Step 3d: handle BlocksResponse from GetBlocks sync ──
+    // Block processing is spawned to a background task so the swarm loop
+    // stays responsive. Without this, the write lock blocks all event processing,
+    // causing cascade peer disconnects (root cause of VPS1 isolation 2026-04-14).
     if let SentrixResponse::BlocksResponse { blocks } = &response
         && let Some(sync_peer) = pending_syncs.remove(&request_id)
     {
         if blocks.is_empty() {
             return None;
         }
-        let mut synced = 0u64;
-        let mut bc = blockchain.write().await;
-        for block in blocks {
-            match bc.add_block(block.clone()) {
-                Ok(()) => {
-                    // Emit NewBlock so main.rs event handler persists to sled
-                    let _ = event_tx.send(NodeEvent::NewBlock(block.clone())).await;
-                    synced += 1;
-                }
-                Err(e) => {
-                    tracing::warn!("libp2p sync: block {} failed: {}", block.index, e);
-                    break;
+        let block_count = blocks.len();
+        let bc = blockchain.clone();
+        let etx = event_tx.clone();
+        let blocks_owned = blocks.clone();
+        let peer_str = sync_peer.to_string();
+        tokio::spawn(async move {
+            let mut chain = bc.write().await;
+            let mut synced = 0u64;
+            for block in &blocks_owned {
+                match chain.add_block(block.clone()) {
+                    Ok(()) => {
+                        let _ = etx.send(NodeEvent::NewBlock(block.clone())).await;
+                        synced += 1;
+                    }
+                    Err(e) => {
+                        tracing::warn!("libp2p sync: block {} failed: {}", block.index, e);
+                        break;
+                    }
                 }
             }
-        }
-        drop(bc);
-        if synced > 0 {
-            tracing::info!("libp2p: synced {} blocks from {}", synced, sync_peer);
-        }
-        // If we got a full batch (100 blocks), request more
-        if blocks.len() >= 100 {
+            if synced > 0 {
+                tracing::info!("libp2p: synced {} blocks from {}", synced, peer_str);
+            }
+        });
+        // If we got a full batch (50 blocks), request more
+        if block_count >= 50 {
             let next_height = blocks.last().map(|b| b.index + 1).unwrap_or(0);
             return Some((sync_peer, next_height));
         }
