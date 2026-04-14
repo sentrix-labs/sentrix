@@ -20,7 +20,7 @@ pub struct DailyStat { pub date: String, pub blocks: u64, pub transactions: u64 
 struct DailyCache { data: Vec<DailyStat>, at: Instant }
 static DAILY_CACHE: OnceLock<TokioMutex<Option<DailyCache>>> = OnceLock::new();
 
-// C-04 FIX: HTML escape to prevent XSS
+// HTML-escape all user-facing values to prevent XSS injection in explorer pages
 pub fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
      .replace('<', "&lt;")

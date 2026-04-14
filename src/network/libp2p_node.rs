@@ -169,7 +169,7 @@ async fn run_swarm(
     let mut verified_peers: HashSet<PeerId> = HashSet::new();
     // Outbound handshake requests we sent — waiting for the matching response.
     let mut pending_handshakes: HashMap<OutboundRequestId, PeerId> = HashMap::new();
-    // PR #66 (Step 3d): track outbound GetBlocks sync requests.
+    // Track outbound GetBlocks requests by ID so responses can be matched to the originating peer.
     let mut pending_syncs: HashMap<OutboundRequestId, PeerId> = HashMap::new();
 
     // Periodic sync: every 30s, request missing blocks from verified peers.
@@ -360,7 +360,7 @@ async fn on_rr_event(
             peer,
             message: RrMessage::Response { request_id, response },
         } => {
-            // Step 3d: check if this is a sync response
+            // Check if this response matches a pending GetBlocks sync request
             let followup = on_inbound_response(
                 peer,
                 request_id,

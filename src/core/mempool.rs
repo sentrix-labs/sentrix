@@ -15,14 +15,14 @@ impl Blockchain {
             ));
         }
 
-        // C-03 FIX: Global mempool size limit
+        // Global mempool size limit prevents RAM exhaustion under high transaction load
         if self.mempool.len() >= MAX_MEMPOOL_SIZE {
             return Err(SentrixError::InvalidTransaction(
                 "mempool full — try again later".to_string()
             ));
         }
 
-        // C-03 FIX: Per-sender pending tx limit
+        // Per-sender pending limit prevents one account from monopolizing the mempool
         let sender_pending = self.mempool_pending_count(&tx.from_address) as usize;
         if sender_pending >= MAX_MEMPOOL_PER_SENDER {
             return Err(SentrixError::InvalidTransaction(
@@ -30,25 +30,24 @@ impl Blockchain {
             ));
         }
 
-        // H-04 FIX: Validate to_address is a well-formed Sentrix address
+        // Reject malformed to_address before any state is touched
         if !is_valid_sentrix_address(&tx.to_address) {
             return Err(SentrixError::InvalidTransaction(
                 format!("invalid to_address: '{}'", tx.to_address)
             ));
         }
 
-        // V6-L-04 FIX: Reject native SRX transfer to zero address (silent coin destruction).
-        // TOKEN_OP_ADDRESS (0x000...0) is allowed ONLY when tx.data contains a valid TokenOp.
-        // Regular transfers to zero address would permanently destroy coins with no record.
+        // Reject native SRX transfers to zero address — would silently destroy coins with no on-chain record.
+        // TOKEN_OP_ADDRESS (0x000...0) is allowed ONLY when tx.data contains a valid TokenOp;
+        // use TokenOp::Burn for explicit, recorded burns.
         if tx.to_address == TOKEN_OP_ADDRESS && !TokenOp::is_token_op(&tx.data) {
             return Err(SentrixError::InvalidTransaction(
                 "cannot send SRX to zero address — use TokenOp::Burn to explicitly burn tokens".to_string()
             ));
         }
 
-        // M-03/M-04 FIX: Validate transaction timestamp
-        // Reject timestamps too far in the future (clock skew / pre-signed attack)
-        // Reject timestamps too old (replay of stale transactions / mempool poisoning)
+        // Validate transaction timestamp: reject future-dated (clock skew attack)
+        // and expired transactions (stale replay / mempool poisoning)
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -64,7 +63,7 @@ impl Blockchain {
             ));
         }
 
-        // V8-H-03: Reject duplicate txid (same transaction submitted twice)
+        // Reject duplicate txid — same transaction must not enter the mempool twice
         if self.mempool.iter().any(|existing| existing.txid == tx.txid) {
             return Err(SentrixError::InvalidTransaction(
                 format!("duplicate txid in mempool: {}", tx.txid)
@@ -80,7 +79,7 @@ impl Blockchain {
         let pending_spend = self.mempool_pending_spend(&tx.from_address);
         let available = self.accounts.get_balance(&tx.from_address)
             .saturating_sub(pending_spend);
-        // H-02 FIX: checked addition to prevent overflow
+        // Checked addition prevents integer overflow on amount + fee
         let needed = tx.amount.checked_add(tx.fee)
             .ok_or_else(|| SentrixError::InvalidTransaction(
                 "amount + fee overflow".to_string()
@@ -94,8 +93,8 @@ impl Blockchain {
         }
 
         // Insert sorted by fee descending (highest fee = front of queue)
-        // V5-07 TODO: RBF (Replace-By-Fee) not yet implemented.
-        // V6-L-01 TODO: This linear scan + VecDeque::insert is O(n) per insertion.
+        // TODO: RBF (Replace-By-Fee) not yet implemented.
+        // TODO: This linear scan + VecDeque::insert is O(n) per insertion.
         // At MAX_MEMPOOL_SIZE=10,000 this is ~50M ops/min under heavy load.
         // Future: replace with BinaryHeap<Transaction> (impl Ord by fee desc) for O(log n).
         let pos = self.mempool.iter()
@@ -122,7 +121,7 @@ impl Blockchain {
         self.mempool.len()
     }
 
-    /// M-04 FIX: Remove transactions older than MEMPOOL_MAX_AGE_SECS.
+    /// Removes transactions older than MEMPOOL_MAX_AGE_SECS.
     /// Called automatically after each block is added; also callable manually.
     pub fn prune_mempool(&mut self) {
         let now = std::time::SystemTime::now()
@@ -159,7 +158,7 @@ mod tests {
 
     const RECV: &str = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
-    // V6-L-04 test: reject SRX transfer to zero address
+    // SRX transfers to zero address must be rejected (silent coin destruction)
     #[test]
     fn test_zero_address_srx_transfer_rejected() {
         let mut bc = setup();
@@ -176,7 +175,7 @@ mod tests {
         assert!(err.contains("zero address") || err.contains("TokenOp"));
     }
 
-    // V6-L-04 test: allow token op tx to TOKEN_OP_ADDRESS (has valid op in data)
+    // Token op transactions to TOKEN_OP_ADDRESS are allowed when tx.data contains a valid TokenOp
     #[test]
     fn test_zero_address_token_op_allowed() {
         let mut bc = setup();

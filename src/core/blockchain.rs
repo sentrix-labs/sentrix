@@ -21,18 +21,18 @@ pub const HALVING_INTERVAL: u64   = 42_000_000;                 // blocks
 pub const BLOCK_TIME_SECS: u64    = 3;
 pub const MAX_TX_PER_BLOCK: usize = 100;
 pub const CHAIN_ID: u64           = 7119;
-// V5-10: Hash algorithm version — reserved for future SHA-3/BLAKE3 migration
+// Hash algorithm version — reserved for future hash algorithm migration
 pub const HASH_VERSION: u8        = 1; // 1 = SHA-256 (current)
 
-// C-03 FIX: Mempool size limits to prevent RAM exhaustion
+// Mempool size limits to prevent RAM exhaustion under high load
 pub const MAX_MEMPOOL_SIZE: usize        = 10_000;
 pub const MAX_MEMPOOL_PER_SENDER: usize  = 100;
-// M-04 FIX: Mempool TTL — transactions older than this are pruned
+// Mempool TTL — transactions older than this are automatically pruned
 pub const MEMPOOL_MAX_AGE_SECS: u64      = 3_600; // 1 hour
-// I-01 FIX: Sliding window — only keep last N blocks in RAM; older blocks stay in sled
+// Sliding window size — only last N blocks kept in RAM; older blocks stay in sled storage
 pub const CHAIN_WINDOW_SIZE: usize       = 1_000;
 
-// H-04 FIX: Address validation helper
+// Sentrix addresses are 42-char hex strings (0x + 40 hex digits)
 pub fn is_valid_sentrix_address(addr: &str) -> bool {
     addr.len() == 42
         && addr.starts_with("0x")
@@ -55,11 +55,10 @@ pub const GENESIS_ALLOCATIONS: &[(&str, u64)] = &[
 pub const TOTAL_PREMINE: u64 = 63_000_000 * 100_000_000;
 
 // ── Blockchain struct ────────────────────────────────────
-// M-04 FIX: skip chain in serialization — blocks saved individually in storage
+// Chain field excluded from serde — blocks are saved individually in sled storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Blockchain {
-    // V6-H-02 FIX: Critical chain-state fields use pub(crate) to prevent the binary crate (main.rs)
-    // or future external consumers from directly bypassing validated methods:
+    // Critical chain-state fields use pub(crate) to enforce validated access:
     //   bc.chain.push(unvalidated_block) → use add_block() instead
     //   bc.total_minted += n             → only block execution should change this
     //   bc.mempool.push_back(invalid_tx) → use add_to_mempool() instead
@@ -109,8 +108,8 @@ impl Blockchain {
 
     // ── Chain state queries ──────────────────────────────
 
-    // I-01 FIX: height derived from last block's index, not chain.len()-1.
-    // chain is now a sliding window so chain.len() <= CHAIN_WINDOW_SIZE.
+    // Height is derived from the last block's index, not chain.len()-1.
+    // The chain is a sliding window so chain.len() ≤ CHAIN_WINDOW_SIZE.
     pub fn height(&self) -> u64 {
         self.chain.last().map(|b| b.index).unwrap_or(0)
     }
@@ -121,13 +120,13 @@ impl Blockchain {
         self.chain.first().map(|b| b.index).unwrap_or(0)
     }
 
-    // L-02 FIX: return Result instead of panicking on empty chain
+    // Returns Err instead of panicking when chain is empty
     pub fn latest_block(&self) -> SentrixResult<&Block> {
         self.chain.last()
             .ok_or_else(|| SentrixError::NotFound("chain is empty".to_string()))
     }
 
-    // I-01 FIX: returns None for blocks outside the sliding window (index < chain_window_start)
+    // Returns None for blocks outside the in-memory window — use storage for historical access
     pub fn get_block(&self, index: u64) -> Option<&Block> {
         let window_start = self.chain_window_start();
         if index < window_start {
@@ -158,7 +157,7 @@ impl Blockchain {
     }
 
     // ── Chain validation ─────────────────────────────────
-    // V8-M-03: renamed from is_valid_chain → is_valid_chain_window to clarify scope
+    // Validates the in-memory window only — not a full historical chain scan
     pub fn is_valid_chain_window(&self) -> bool {
         for i in 1..self.chain.len() {
             let block = &self.chain[i];
@@ -192,7 +191,7 @@ impl Blockchain {
             .and_then(|t| t.root_at_version(version).ok().flatten())
     }
 
-    // I-01 FIX: memory estimate now reflects window (not full chain)
+    // Memory estimate reflects the in-memory window, not the full historical chain
     pub fn get_memory_estimate(&self) -> String {
         let window_blocks = self.chain.len();
         let true_height = self.height();
@@ -206,26 +205,25 @@ impl Blockchain {
     /// Loads the committed root for the current height, or starts from an empty trie.
     /// Call once at node startup, after loading blockchain state from storage.
     ///
-    /// V7-I-02: if no root exists for current height AND chain has history, backfills
-    /// all non-zero accounts from AccountDB into the trie (one-time migration).
+    /// If no trie root exists for the current height but the chain has history,
+    /// backfills all non-zero accounts from AccountDB (one-time migration on trie introduction).
     pub fn init_trie(&mut self, db: &sled::Db) -> SentrixResult<()> {
         let height = self.height();
         let mut trie = SentrixTrie::open(db, height)?;
 
-        // V7-I-02: first-time trie init on a node that ran before SentrixTrie existed.
-        // AccountDB has the correct state but the trie is empty — backfill now.
+        // First-time trie init on a node whose AccountDB predates SentrixTrie:
+        // AccountDB has correct state but the trie is empty — backfill now.
         //
-        // Also handles the stale-height case: root hash committed in trie_roots but
-        // the root NODE was deleted from trie_nodes by V7-L-01 in a prior session
-        // (e.g. after P2P sync where save_block() was not updating the height key).
+        // Also handles the stale-height case: root hash recorded in trie_roots but
+        // the root NODE was removed from trie_nodes during a prior structural cleanup
+        // (insert removes replaced internal nodes, including old roots).
         let needs_backfill = if height > 0 {
             match trie.root_at_version(height)? {
                 None => true,
                 Some(root_hash) => {
                     // Root recorded in trie_roots, but verify the node still exists.
-                    // V7-L-01 deletes old internal nodes (including the old root) on
-                    // every insert; if stale height caused us to point at such a deleted
-                    // root, we must re-backfill rather than loading a phantom node.
+                    // Structural cleanup on insert removes old internal nodes (including old roots);
+                    // if a stale height points to a deleted root, re-backfill from scratch.
                     let node_missing = !trie.node_exists(&root_hash)?;
                     if node_missing {
                         tracing::warn!(
@@ -282,7 +280,7 @@ impl Blockchain {
     /// commit at that block's height, and return the new state root.
     /// Returns Ok(None) if the trie has not been initialized.
     ///
-    /// V7-H-01: trie errors are now propagated (no longer silently swallowed).
+    /// Trie errors are propagated — callers must handle state root failures explicitly.
     ///
     /// Split into two phases to satisfy the borrow checker:
     ///   Phase 1 — immutable borrows of `chain` and `accounts` → collect owned data.
@@ -303,8 +301,8 @@ impl Blockchain {
                 if is_valid_sentrix_address(&tx.from_address) {
                     addrs.push(tx.from_address.clone());
                 }
-                // V7-I-04: skip TOKEN_OP_ADDRESS — its SRX balance is always 0,
-                // causing a no-op delete() traversal on every token-op block.
+                // Skip TOKEN_OP_ADDRESS — its SRX balance is always 0 and would trigger
+                // a no-op delete() traversal on every token-op block.
                 if is_valid_sentrix_address(&tx.to_address) && tx.to_address != TOKEN_OP_ADDRESS {
                     addrs.push(tx.to_address.clone());
                 }
@@ -344,15 +342,15 @@ impl Blockchain {
             if balance == 0 {
                 // Remove zero-balance accounts from the trie.
                 // delete() is a no-op if the key was never inserted.
-                // V7-H-01: propagate errors instead of swallowing them.
+                // Propagate delete errors — zero-balance removal must not silently fail
                 trie.delete(&key)?;
             } else {
                 let value = account_value_bytes(balance, nonce);
-                // V7-H-01: propagate insert errors.
+                // Propagate insert errors — trie divergence must be surfaced immediately
                 trie.insert(&key, &value)?;
             }
         }
-        // V7-H-01: propagate commit errors.
+        // Propagate commit errors — a failed commit leaves the block root uncommitted
         let root = trie.commit(block_index)?;
         Ok(Some(root))
     }
@@ -380,7 +378,7 @@ mod tests {
     fn setup_chain() -> Blockchain {
         let mut bc = Blockchain::new("admin".to_string());
         // Use unchecked helper so tests can control the address string ("validator1").
-        // H-02 crypto validation is tested separately via add_validator.
+        // Crypto validation is tested separately via add_validator; skip here for simpler test setup.
         bc.authority.add_validator_unchecked(
             "validator1".to_string(),
             "Validator 1".to_string(),

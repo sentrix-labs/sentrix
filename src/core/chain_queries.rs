@@ -22,9 +22,8 @@ impl Blockchain {
         None
     }
 
-    // L-03 FIX: paginated address history (limit + offset)
-    // V6-L-02 FIX: standardized to newest-first (most recent at offset=0),
-    // consistent with get_latest_transactions.
+    // Paginated address history (limit + offset)
+    // Returns transactions newest-first (most recent at offset=0), consistent across all endpoints.
     pub fn get_address_history(&self, address: &str, limit: usize, offset: usize) -> Vec<serde_json::Value> {
         let mut history = Vec::new();
         let mut skipped = 0usize;
@@ -60,7 +59,7 @@ impl Blockchain {
         history
     }
 
-    // V6-M-04 FIX: returns window-aware count with metadata indicating partial coverage.
+    // Returns window-aware count with metadata indicating whether the window covers the full history.
     // After CHAIN_WINDOW_SIZE blocks, historical blocks are evicted from memory.
     // Use the returned `is_partial` flag to warn users the count may be incomplete.
     pub fn get_address_tx_count(&self, address: &str) -> serde_json::Value {
@@ -167,7 +166,7 @@ impl Blockchain {
     pub fn chain_stats(&self) -> serde_json::Value {
         serde_json::json!({
             "height": self.height(),
-            "total_blocks": self.height() + 1, // I-01 FIX: chain window may be < total blocks
+            "total_blocks": self.height() + 1, // true height from block index, not window length
             "total_minted_srx": self.total_minted as f64 / 100_000_000.0,
             "max_supply_srx": MAX_SUPPLY as f64 / 100_000_000.0,
             "total_burned_srx": self.accounts.total_burned as f64 / 100_000_000.0,
@@ -176,7 +175,7 @@ impl Blockchain {
             "deployed_tokens": self.contracts.contract_count(),
             "chain_id": self.chain_id,
             "next_block_reward_srx": self.get_block_reward() as f64 / 100_000_000.0,
-            // V6-I-01: expose window metadata so callers know query coverage
+            // Expose window metadata so callers know whether the result covers the full chain history
             "window_start_block": self.chain_window_start(),
             "window_is_partial": self.chain_window_start() > 0,
         })
@@ -208,7 +207,7 @@ mod tests {
 
     const RECV: &str = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
-    // V6-M-04 test: get_address_tx_count returns window-aware metadata
+    // get_address_tx_count returns window-aware metadata with partial-coverage flag
     #[test]
     fn test_get_address_tx_count_returns_metadata() {
         let bc = setup();
@@ -219,7 +218,7 @@ mod tests {
         assert!(result["window_start_block"].is_number());
     }
 
-    // V6-L-02 test: get_address_history returns newest first (consistent with get_latest_transactions)
+    // get_address_history returns newest first, consistent with get_latest_transactions
     #[test]
     fn test_address_history_newest_first() {
         let mut bc = setup();

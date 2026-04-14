@@ -6,7 +6,7 @@ use sha2::{Sha256, Digest};
 use crate::types::error::{SentrixError, SentrixResult};
 
 // ── Contract address generation ──────────────────────────
-// V6-C-01 FIX: Use deterministic seed (txid or deployer+nonce) instead of SystemTime::now().
+// Contract addresses are derived from a deterministic seed (txid or deployer+nonce) — never from wall time.
 // Every node must produce the same contract address when applying the same block.
 fn compute_contract_address(deployer: &str, seed: &str) -> String {
     let payload = format!("{}|{}", deployer, seed);
@@ -23,7 +23,7 @@ pub struct SRX20Contract {
     pub decimals: u8,
     pub owner: String,
     pub total_supply: u64,
-    // V5-02: max_supply=0 means unlimited. #[serde(default)] for backward compat with old contracts.
+    // max_supply=0 means unlimited. #[serde(default)] for backward compatibility with legacy contracts.
     #[serde(default)]
     pub max_supply: u64,
     pub balances: HashMap<String, u64>,
@@ -54,7 +54,7 @@ impl SRX20Contract {
 
     // ── Core methods ─────────────────────────────────────
 
-    /// M-05 FIX: mint() now enforces owner check directly.
+    /// Only the token owner can mint; check is enforced inside mint() rather than at the call site.
     /// Previously only callers (execute_mint, call dispatcher) checked ownership —
     /// any future code path calling mint() directly would silently bypass the guard.
     pub fn mint(&mut self, caller: &str, to: &str, amount: u64) -> SentrixResult<()> {
@@ -66,7 +66,7 @@ impl SRX20Contract {
         if to.is_empty() || amount == 0 {
             return Err(SentrixError::InvalidTransaction("invalid mint params".to_string()));
         }
-        // V5-02: enforce max_supply cap (0 = unlimited)
+        // Enforce max_supply cap when minting; 0 means unlimited
         if self.max_supply > 0 {
             let new_supply = self.total_supply.checked_add(amount)
                 .ok_or_else(|| SentrixError::Internal("token supply overflow".to_string()))?;
@@ -121,7 +121,7 @@ impl SRX20Contract {
         Ok(())
     }
 
-    // M-01 FIX: require allowance reset to 0 before setting new non-zero value
+    // Require allowance to be reset to 0 before setting a new non-zero value (ERC-20 double-spend mitigation)
     pub fn approve(&mut self, owner: &str, spender: &str, amount: u64) -> SentrixResult<()> {
         if owner.is_empty() || spender.is_empty() {
             return Err(SentrixError::InvalidTransaction("invalid approve params".to_string()));
@@ -225,7 +225,7 @@ impl SRX20Contract {
             "symbol": self.symbol,
             "decimals": self.decimals,
             "total_supply": self.total_supply,
-            "max_supply": self.max_supply, // V5-02: 0 = unlimited
+            "max_supply": self.max_supply, // 0 = unlimited
             "owner": self.owner,
             "holders": self.holders(),
         })
@@ -255,7 +255,7 @@ impl ContractRegistry {
         Self::default()
     }
 
-    // V6-C-01 FIX: `seed` must be deterministic on-chain data.
+    // `seed` must be deterministic on-chain data — same input always produces the same contract address.
     // For blocks: pass `tx.txid`. For internal/testing: pass deployer+nonce combo.
     // Never pass SystemTime::now() — it causes consensus divergence across nodes.
     pub fn deploy(
@@ -265,10 +265,10 @@ impl ContractRegistry {
         symbol: &str,
         decimals: u8,
         total_supply: u64,
-        max_supply: u64, // V5-02: 0 = unlimited
-        seed: &str,      // V6-C-01: deterministic seed (txid for on-chain deploys)
+        max_supply: u64, // 0 = unlimited
+        seed: &str,      // deterministic seed (txid for on-chain deploys)
     ) -> SentrixResult<String> {
-        // L-03 FIX: Validate token name and symbol lengths/format
+        // Validate token name and symbol lengths and character set before deploying
         if name.is_empty() || name.len() > 64 {
             return Err(SentrixError::InvalidTransaction(
                 "token name must be 1–64 characters".to_string(),
@@ -280,7 +280,7 @@ impl ContractRegistry {
             ));
         }
 
-        // V6-C-01 FIX: address derived from deterministic seed — no SystemTime::now()
+        // Contract address derived from deterministic seed — independent of wall clock time
         let mut addr = compute_contract_address(deployer, seed);
         // Handle collision by appending a counter (same seed + same state = same collision resolution)
         let mut counter = 0u64;
@@ -295,7 +295,7 @@ impl ContractRegistry {
             symbol.to_string(),
             decimals,
             deployer.to_string(),
-            max_supply, // V5-02: 0 = unlimited
+            max_supply, // 0 = unlimited
         );
         // Mint total supply to deployer (deployer is the owner, so caller == owner)
         contract.mint(deployer, deployer, total_supply)?;

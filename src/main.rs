@@ -253,7 +253,7 @@ async fn main() -> anyhow::Result<()> {
         },
 
         Commands::Start { validator_key, port, peers } => {
-            // H-04: validator_key can also come from env var
+            // validator_key can also come from SENTRIX_VALIDATOR_KEY env var
             let resolved_key = validator_key.or_else(|| std::env::var("SENTRIX_VALIDATOR_KEY").ok());
             cmd_start(resolved_key, port, peers).await?;
         }
@@ -297,7 +297,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// H-04 FIX: Resolve private key from CLI arg or env var, warn if CLI
+// Resolve private key from CLI arg or env var; warn if passed via CLI (shell history risk)
 fn resolve_key(cli_arg: Option<String>, env_var: &str, label: &str) -> anyhow::Result<String> {
     if let Some(ref key) = cli_arg {
         eprintln!("WARNING: passing {} as CLI argument is insecure. Prefer {} env var.", label, env_var);
@@ -450,7 +450,23 @@ async fn cmd_start(
 
     // ── P2P: libp2p TCP + Noise + Yamux ─────────────────
     println!("P2P transport: libp2p (Noise encrypted)");
-    let keypair = libp2p::identity::Keypair::generate_ed25519();
+    // Persist node identity keypair so PeerId stays stable across restarts.
+    // A new PeerId on every restart breaks peer routing and libp2p's security model.
+    let keypair_path = get_data_dir().join("node_keypair");
+    let keypair = if keypair_path.exists() {
+        let bytes = std::fs::read(&keypair_path)
+            .map_err(|e| anyhow::anyhow!("read node keypair: {}", e))?;
+        libp2p::identity::Keypair::from_protobuf_encoding(&bytes)
+            .map_err(|e| anyhow::anyhow!("decode node keypair: {}", e))?
+    } else {
+        let kp = libp2p::identity::Keypair::generate_ed25519();
+        let bytes = kp.to_protobuf_encoding()
+            .map_err(|e| anyhow::anyhow!("encode node keypair: {}", e))?;
+        std::fs::write(&keypair_path, bytes)
+            .map_err(|e| anyhow::anyhow!("write node keypair: {}", e))?;
+        tracing::info!("Generated new node identity, saved to {:?}", keypair_path);
+        kp
+    };
     let lp2p = Arc::new(
         LibP2pNode::new(keypair, shared.clone(), event_tx.clone())
             .map_err(|e| anyhow::anyhow!("libp2p init: {}", e))?,
@@ -490,20 +506,34 @@ async fn cmd_start(
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                let mut bc = shared_clone.write().await;
-                if let Ok(block) = bc.create_block(&wallet.address) {
-                    let height = block.index;
-                    let block_clone = block.clone();
-                    match bc.add_block(block) {
-                        Ok(()) => {
-                            println!("Block {} produced by {}", height, wallet.address);
-                            let _ = storage_clone.save_blockchain(&bc);
-                            let _ = storage_clone.save_height(height);
-                            drop(bc);
-                            lp2p_clone.broadcast_block(&block_clone).await;
+
+                // Release write lock before disk I/O so API reads are not
+                // blocked for the full duration of save_blockchain() (~3s stall fixed).
+                let result = {
+                    let mut bc = shared_clone.write().await;
+                    match bc.create_block(&wallet.address) {
+                        Ok(block) => {
+                            let height = block.index;
+                            let block_clone = block.clone();
+                            match bc.add_block(block) {
+                                Ok(()) => Some((height, block_clone)),
+                                Err(e) => { tracing::warn!("add_block failed: {}", e); None }
+                            }
                         }
-                        Err(e) => tracing::warn!("add_block failed: {}", e),
+                        Err(_) => None,
                     }
+                }; // write lock released here — API reads no longer stalled
+
+                if let Some((height, block_clone)) = result {
+                    println!("Block {} produced by {}", height, wallet.address);
+                    // save_block (fast — only block data + height) every block.
+                    // Full state (accounts, validators, tokens) via read lock — API still serves.
+                    let _ = storage_clone.save_block(&block_clone);
+                    {
+                        let bc = shared_clone.read().await;
+                        let _ = storage_clone.save_blockchain(&bc);
+                    }
+                    lp2p_clone.broadcast_block(&block_clone).await;
                 }
             }
         });
@@ -568,7 +598,46 @@ async fn cmd_start(
     let listener = tokio::net::TcpListener::bind(&api_addr).await?;
 
     println!("Node started. Press Ctrl+C to stop.");
-    axum::serve(listener, app).await?;
+
+    // Graceful shutdown on SIGTERM/SIGINT — saves state before exit.
+    // Without this, kill/systemctl stop corrupts in-flight state and causes chain forks.
+    let shutdown_storage = storage.clone();
+    let shutdown_shared = shared.clone();
+    let shutdown_signal = async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm = match signal(SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("Failed to install SIGTERM handler: {} — shutdown via Ctrl+C only", e);
+                    let _ = tokio::signal::ctrl_c().await;
+                    tracing::info!("SIGINT received — shutting down");
+                    return;
+                }
+            };
+            tokio::select! {
+                _ = sigterm.recv() => tracing::info!("SIGTERM received — shutting down"),
+                _ = tokio::signal::ctrl_c() => tracing::info!("SIGINT received — shutting down"),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("Ctrl+C received — shutting down");
+        }
+        tracing::info!("Graceful shutdown: saving state to disk...");
+        let bc = shutdown_shared.read().await;
+        if let Err(e) = shutdown_storage.save_blockchain(&bc) {
+            tracing::error!("Failed to save state on shutdown: {}", e);
+        } else {
+            tracing::info!("State saved. Node exiting cleanly.");
+        }
+    };
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal)
+        .await?;
     Ok(())
 }
 

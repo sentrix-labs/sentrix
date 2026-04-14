@@ -16,7 +16,7 @@ use crate::types::error::{SentrixError, SentrixResult};
 pub const DEFAULT_PORT: u16 = 30303;
 pub const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024; // 10MB
 
-// M-02 FIX: rate limiting and peer cap constants
+// Rate limiting and peer cap constants for network protection
 pub const MAX_CONNECTIONS_PER_IP: u32 = 100;
 pub const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 pub const MAX_PEERS: usize = 50;
@@ -132,7 +132,7 @@ impl Node {
 
     // ── Listener (accept incoming connections) ───────────
 
-    // M-02 FIX: rate limiting per IP + max peers cap
+    // Per-IP rate limiting and max peer cap to prevent resource exhaustion
     pub async fn start_listener(
         port: u16,
         blockchain: SharedBlockchain,
@@ -150,19 +150,19 @@ impl Node {
         loop {
             match listener.accept().await {
                 Ok((stream, peer_addr)) => {
-                    // Fix 3: Max peers limit
+                    // Maximum simultaneous peer connections
                     let peer_count = peers.read().await.len();
                     if peer_count >= MAX_PEERS {
                         tracing::warn!("max peers reached ({}), rejecting {}", MAX_PEERS, peer_addr);
                         continue;
                     }
 
-                    // Fix 1: Rate limiting per IP
+                    // Rate limit per IP (message rate over a sliding window)
                     let peer_ip = peer_addr.ip();
                     {
                         let mut counts = connection_counts.lock().await;
 
-                        // V8-M-06: prevent unbounded HashMap growth — evict stale entries
+                        // Evict stale entries to prevent unbounded HashMap growth
                         if counts.len() > 10_000 {
                             counts.retain(|_, (_, ts)| ts.elapsed() <= RATE_LIMIT_WINDOW);
                         }
@@ -206,7 +206,7 @@ impl Node {
         event_tx: mpsc::Sender<NodeEvent>,
         peer_ip: String,
     ) -> SentrixResult<()> {
-        // V5-03: reject non-Handshake messages until handshake completes
+        // Reject non-Handshake messages until the peer has completed the handshake
         let mut handshake_done = false;
 
         loop {
@@ -215,7 +215,7 @@ impl Node {
                 Err(_) => return Ok(()), // connection closed
             };
 
-            // V5-03: drop messages from peers that haven't completed the handshake yet
+            // Drop messages from peers that haven't completed the handshake yet
             if !handshake_done && !matches!(msg, Message::Handshake { .. }) {
                 tracing::warn!("Rejected pre-handshake message from {}: handshake not complete", peer_ip);
                 return Err(SentrixError::NetworkError(
@@ -269,9 +269,7 @@ impl Node {
                     match bc.add_block(block.clone()) {
                         Ok(()) => {
                             tracing::info!("Received block {} from peer", block.index);
-                            // V7-M-05: send the block FROM THE CHAIN (which has state_root set
-                            // by add_block) rather than the received block (state_root unset).
-                            // The event consumer can then persist the block with state_root.
+                            // Send the canonically committed block (with state_root set) rather than the pre-commit version
                             let chain_block = bc.chain.last().cloned().unwrap_or(block);
                             let _ = event_tx.send(NodeEvent::NewBlock(chain_block)).await;
                         }
@@ -360,7 +358,7 @@ impl Node {
         // Read handshake response + verify chain_id
         match Self::read_message(&mut stream).await? {
             Message::Handshake { host: _, port: _, height, chain_id } => {
-                // M-02 FIX: verify chain_id on outbound connections too
+                // Verify chain_id on outbound connections to prevent cross-network peer pollution
                 let our_chain_id = self.blockchain.read().await.chain_id;
                 if chain_id != our_chain_id {
                     return Err(SentrixError::NetworkError(
@@ -407,7 +405,7 @@ impl Node {
 
     // ── Broadcast to all peers ───────────────────────────
 
-    // M-06 FIX: non-blocking broadcast with 5s timeout per peer
+    // Non-blocking broadcast with per-peer timeout to prevent slow peers from stalling propagation
     pub async fn broadcast(&self, msg: &Message) {
         let peers = self.peers.read().await;
         let encoded = match Self::encode_message(msg) {
@@ -457,7 +455,7 @@ impl Node {
             .collect()
     }
 
-    /// M-02: Check if IP is rate limited (for testing)
+    /// Check if IP is rate limited (for testing rate limit behavior)
     pub fn check_rate_limit(
         counts: &mut HashMap<IpAddr, (u32, Instant)>,
         ip: IpAddr,

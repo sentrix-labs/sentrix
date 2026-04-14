@@ -135,7 +135,7 @@ mod tests {
         assert!(cache.get_node(&hash).unwrap().is_none());
     }
 
-    /// V7-I-03: clone uses original capacity, not hardcoded 10_000.
+    /// Clone preserves the original capacity rather than using a hardcoded default.
     #[test]
     fn test_cache_capacity_stored() {
         let (_dir, cache) = temp_cache(42);
