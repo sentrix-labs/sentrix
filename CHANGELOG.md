@@ -85,6 +85,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Post-0.1.0 Incremental] — 2026-04-14
 
+### PR #69 — fix(p2p): set idle_connection_timeout to prevent KeepAliveTimeout disconnects
+- **ROOT CAUSE FIX**: libp2p's default behavior closes connections after ~30s of inactivity (`KeepAliveTimeout`), causing periodic disconnects and chain stalls
+- Set `with_idle_connection_timeout(Duration::MAX)` on the swarm builder — connections stay open indefinitely
+- **Impact**: all 6 nodes stable, height ~101,961+ and advancing, no more periodic disconnects
+
+### PR #68 — test: disable sync to isolate connection issue
+- Diagnostic PR: temporarily disabled chain sync to narrow down the KeepAliveTimeout root cause
+- Confirmed that connection drops were caused by idle timeout, not sync logic
+
+### PR #67 — fix(p2p): move block processing out of swarm loop
+- `add_block()` and chain sync now run in `tokio::spawn()` tasks
+- Swarm event loop stays responsive — no longer blocked by block validation/storage
+- **Why**: heavy block processing was blocking the swarm event loop, delaying Ping/Pong and other protocol messages
+
+### PR #66 — fix(p2p): handle duplicate connections + auto-reconnect
+- Detect and gracefully close duplicate connections (both inbound and outbound)
+- Auto-reconnect to bootstrap peers every 30s with backoff
+- **Why**: bidirectional dialing (VPS1 ↔ VPS2) was causing duplicate connections that libp2p closed, isolating VPS1
+
+### PR #65 — feat(p2p): make libp2p default transport, remove legacy TCP
+- **libp2p is now the ONLY transport** — `--use-libp2p` flag removed
+- Legacy TCP code removed (`node.rs` TCP listener, `sync.rs` TCP sync)
+- Implement Step 3d: full chain sync via libp2p request-response
+- All P2P encrypted via **Noise XX** handshake (mutual authentication)
+- Transport stack: TCP + Noise XX + Yamux multiplexing
+
+### PR #64 — docs: session 16 recap
+- Update `4. Founder Private/` docs for session 16: SESSION_HANDOFF, TODO
+
 ### PR #63 — fix(ci): graceful deploy — stop before binary replace
 - `.github/workflows/ci.yml`: replace `systemctl restart` with graceful flow:
   1. `systemctl stop` — wait for current block to finish (default 90s timeout)

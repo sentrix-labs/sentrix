@@ -293,8 +293,8 @@ sentrix token list
      │                     │                     │
 ┌────▼─────┐        ┌──────▼──────┐       ┌─────▼──────┐
 │  Wallet  │        │   Storage   │       │  P2P Node  │
-│  ECDSA + │        │   sled DB   │       │  TCP       │
-│  AES-GCM │        │  per-block  │       │  broadcast │
+│  ECDSA + │        │   sled DB   │       │  libp2p    │
+│  AES-GCM │        │  per-block  │       │  Noise XX  │
 └──────────┘        └─────────────┘       └────────────┘
 ```
 
@@ -332,11 +332,9 @@ src/
 ├── storage/
 │   └── db.rs            # sled per-block persistent storage + hash index
 ├── network/
-│   ├── node.rs          # TCP P2P node, message protocol, chain_id validation
-│   ├── sync.rs          # Safe incremental chain synchronization
 │   ├── transport.rs     # libp2p: TCP + Noise XX + Yamux boxed transport
 │   ├── behaviour.rs     # libp2p: SentrixBehaviour (Identify + RequestResponse)
-│   └── libp2p_node.rs   # libp2p: LibP2pNode, command channel, broadcast
+│   └── libp2p_node.rs   # libp2p: LibP2pNode, command channel, broadcast, auto-reconnect
 └── api/
     ├── routes.rs        # REST API (axum) + API key auth
     ├── jsonrpc.rs       # JSON-RPC 2.0 server (20 methods)
@@ -522,8 +520,10 @@ No partial state changes. No race conditions. All or nothing.
 - **Constant-time API key comparison**: prevents timing-based key extraction attacks
 - **CORS**: configurable via `SENTRIX_CORS_ORIGIN` env var (default: allow all)
 - **Private key zeroization**: wallet secret keys are zeroed from memory on drop (no Clone)
-- **P2P rate limiting**: max 5 connections per IP per 60 seconds, max 50 peers total
+- **P2P encryption**: all connections encrypted via Noise XX handshake (mutual authentication)
+- **P2P transport**: libp2p with TCP + Noise XX + Yamux multiplexing
 - **P2P chain ID validation**: peers with mismatched chain IDs are rejected on handshake
+- **P2P auto-reconnect**: bootstrap peers reconnected every 30s; idle connection timeout set to MAX
 - **Block timestamp validation**: rejects blocks with timestamps before previous block or >15s in future
 - **Minimum validator count**: cannot remove or deactivate the last active validator
 - **RPC batch limit**: max 100 requests per JSON-RPC batch
@@ -559,6 +559,7 @@ See [SECURITY.md](SECURITY.md) for responsible disclosure policy.
 - [x] **ChainSync Persistence** — P2P-synced blocks persisted to sled immediately; prevents state divergence on restart (PR #61)
 - [x] **Graceful Recovery** — load_blockchain handles missing blocks gracefully; adjusts height and re-syncs from peers (PR #62)
 - [x] **CI/CD Graceful Deploy** — stop services before binary replace; prevents mid-trie-write kills (PR #63)
+- [x] **libp2p Default Transport** — libp2p Noise XX is the ONLY transport; legacy TCP removed; auto-reconnect + idle timeout fix (PR #65-#69)
 - [ ] **Phase 2** — DPoS + BFT Finality + EVM compatibility
 - [ ] **Phase 3** — Sharding, cross-chain bridge, governance
 - [ ] **Phase 4** — SDK, mobile wallet, DEX, NFT platform
