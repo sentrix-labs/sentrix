@@ -150,13 +150,17 @@ async fn run_swarm(
     let mut swarm = SwarmBuilder::with_existing_identity(keypair)
         .with_tokio()
         .with_tcp(
-            tcp::Config::default(),
+            tcp::Config::default().nodelay(true),
             noise::Config::new,
             yamux::Config::default,
         )
         .map_err(|e| SentrixError::NetworkError(format!("transport init: {e}")))?
         .with_behaviour(|key| Ok(SentrixBehaviour::new(key.public())))
         .map_err(|e| SentrixError::NetworkError(format!("behaviour init: {e}")))?
+        // Keep connections alive indefinitely — don't close idle connections.
+        // Without this, RequestResponse's KeepAliveTimeout fires when no
+        // requests are in-flight, killing all peer connections.
+        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(std::time::Duration::from_secs(u64::MAX)))
         .build();
 
     let our_chain_id = blockchain.read().await.chain_id;
@@ -224,10 +228,18 @@ async fn run_swarm(
                 .await;
             }
 
-            // ── Periodic sync (Step 3d) — DISABLED for connection stability test ──
+            // ── Periodic sync (Step 3d) ──────────────────
             _ = sync_interval.tick() => {
-                if !verified_peers.is_empty() {
-                    tracing::info!("libp2p: {} verified peers alive (sync disabled for test)", verified_peers.len());
+                if verified_peers.is_empty() {
+                    continue;
+                }
+                let our_height = blockchain.read().await.height();
+                if let Some(&peer_id) = verified_peers.iter().next() {
+                    let req_id = swarm.behaviour_mut().rr.send_request(
+                        &peer_id,
+                        SentrixRequest::GetBlocks { from_height: our_height + 1 },
+                    );
+                    pending_syncs.insert(req_id, peer_id);
                 }
             }
         }
@@ -586,8 +598,8 @@ async fn on_inbound_response(
                 peer_addr: peer.to_string(),
                 peer_height: height,
             }).await;
-            // DON'T initiate sync immediately — test if connection survives
-            // Periodic sync (30s timer) will handle it instead
+            // Initiate sync from this peer
+            return Some((peer, our_height + 1));
         }
     }
 
