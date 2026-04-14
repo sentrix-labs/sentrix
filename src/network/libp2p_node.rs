@@ -158,6 +158,11 @@ async fn run_swarm(
     let mut verified_peers: HashSet<PeerId> = HashSet::new();
     // Outbound handshake requests we sent — waiting for the matching response.
     let mut pending_handshakes: HashMap<OutboundRequestId, PeerId> = HashMap::new();
+    // PR #66 (Step 3d): track outbound GetBlocks sync requests.
+    let mut pending_syncs: HashMap<OutboundRequestId, PeerId> = HashMap::new();
+
+    // Periodic sync: every 30s, request missing blocks from verified peers.
+    let mut sync_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
 
     loop {
         tokio::select! {
@@ -199,9 +204,27 @@ async fn run_swarm(
                     &event_tx,
                     &mut verified_peers,
                     &mut pending_handshakes,
+                    &mut pending_syncs,
                     our_chain_id,
                 )
                 .await;
+            }
+
+            // ── Periodic sync (Step 3d) ──────────────────
+            _ = sync_interval.tick() => {
+                if verified_peers.is_empty() {
+                    continue;
+                }
+                let our_height = blockchain.read().await.height();
+                // Pick first verified peer and request blocks.
+                // If more peers have blocks, handshake/broadcast will cover them.
+                if let Some(&peer_id) = verified_peers.iter().next() {
+                    let req_id = swarm.behaviour_mut().rr.send_request(
+                        &peer_id,
+                        SentrixRequest::GetBlocks { from_height: our_height + 1 },
+                    );
+                    pending_syncs.insert(req_id, peer_id);
+                }
             }
         }
     }
@@ -211,6 +234,7 @@ async fn run_swarm(
 
 // ── Swarm event dispatch ─────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn on_swarm_event(
     event: SwarmEvent<SentrixBehaviourEvent>,
     swarm: &mut Swarm<SentrixBehaviour>,
@@ -218,6 +242,7 @@ async fn on_swarm_event(
     event_tx: &mpsc::Sender<NodeEvent>,
     verified_peers: &mut HashSet<PeerId>,
     pending_handshakes: &mut HashMap<OutboundRequestId, PeerId>,
+    pending_syncs: &mut HashMap<OutboundRequestId, PeerId>,
     our_chain_id: u64,
 ) {
     match event {
@@ -253,6 +278,7 @@ async fn on_swarm_event(
                 event_tx,
                 verified_peers,
                 pending_handshakes,
+                pending_syncs,
                 our_chain_id,
             )
             .await;
@@ -276,6 +302,7 @@ async fn on_swarm_event(
 
 // ── Request-response event handler ──────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn on_rr_event(
     event: request_response::Event<SentrixRequest, SentrixResponse>,
     swarm: &mut Swarm<SentrixBehaviour>,
@@ -283,6 +310,7 @@ async fn on_rr_event(
     event_tx: &mpsc::Sender<NodeEvent>,
     verified_peers: &mut HashSet<PeerId>,
     pending_handshakes: &mut HashMap<OutboundRequestId, PeerId>,
+    pending_syncs: &mut HashMap<OutboundRequestId, PeerId>,
     our_chain_id: u64,
 ) {
     use request_response::{Event as RrEvent, Message as RrMessage};
@@ -311,7 +339,8 @@ async fn on_rr_event(
             peer,
             message: RrMessage::Response { request_id, response },
         } => {
-            on_inbound_response(
+            // Step 3d: check if this is a sync response
+            let followup = on_inbound_response(
                 peer,
                 request_id,
                 response,
@@ -319,13 +348,23 @@ async fn on_rr_event(
                 event_tx,
                 verified_peers,
                 pending_handshakes,
+                pending_syncs,
                 our_chain_id,
             )
             .await;
+            // If sync returned more blocks to fetch, send another GetBlocks
+            if let Some((next_peer, from_height)) = followup {
+                let req_id = swarm.behaviour_mut().rr.send_request(
+                    &next_peer,
+                    SentrixRequest::GetBlocks { from_height },
+                );
+                pending_syncs.insert(req_id, next_peer);
+            }
         }
 
         RrEvent::OutboundFailure { peer, request_id, error } => {
             pending_handshakes.remove(&request_id);
+            pending_syncs.remove(&request_id);
             tracing::warn!("libp2p: outbound failure to {}: {}", peer, error);
         }
 
@@ -459,24 +498,57 @@ async fn on_inbound_response(
     event_tx: &mpsc::Sender<NodeEvent>,
     verified_peers: &mut HashSet<PeerId>,
     pending_handshakes: &mut HashMap<OutboundRequestId, PeerId>,
+    pending_syncs: &mut HashMap<OutboundRequestId, PeerId>,
     our_chain_id: u64,
-) {
-    // Only care about Handshake responses for now.
-    // Other responses (BlocksResponse, Pong, etc.) are handled by
-    // whoever sent the request — future Step 3d will wire GetBlocks.
+) -> Option<(PeerId, u64)> {
+    // ── Step 3d: handle BlocksResponse from GetBlocks sync ──
+    if let SentrixResponse::BlocksResponse { blocks } = &response
+        && let Some(sync_peer) = pending_syncs.remove(&request_id)
+    {
+        if blocks.is_empty() {
+            return None;
+        }
+        let mut synced = 0u64;
+        let mut bc = blockchain.write().await;
+        for block in blocks {
+            match bc.add_block(block.clone()) {
+                Ok(()) => {
+                    // Emit NewBlock so main.rs event handler persists to sled
+                    let _ = event_tx.send(NodeEvent::NewBlock(block.clone())).await;
+                    synced += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("libp2p sync: block {} failed: {}", block.index, e);
+                    break;
+                }
+            }
+        }
+        drop(bc);
+        if synced > 0 {
+            tracing::info!("libp2p: synced {} blocks from {}", synced, sync_peer);
+        }
+        // If we got a full batch (100 blocks), request more
+        if blocks.len() >= 100 {
+            let next_height = blocks.last().map(|b| b.index + 1).unwrap_or(0);
+            return Some((sync_peer, next_height));
+        }
+        return None;
+    }
+
+    // ── Handshake response ──────────────────────────────────
     if let SentrixResponse::Handshake { chain_id, height, .. } = response
         && let Some(expected_peer) = pending_handshakes.remove(&request_id)
     {
         if expected_peer != peer {
             tracing::warn!("libp2p: handshake response peer mismatch");
-            return;
+            return None;
         }
         if chain_id != our_chain_id {
             tracing::warn!(
                 "libp2p: handshake response from {} has wrong chain_id ({} vs {})",
                 peer, chain_id, our_chain_id
             );
-            return;
+            return None;
         }
         let our_height = blockchain.read().await.height();
         verified_peers.insert(peer);
@@ -487,8 +559,12 @@ async fn on_inbound_response(
                 peer_addr: peer.to_string(),
                 peer_height: height,
             }).await;
+            // Immediately initiate sync from this peer
+            return Some((peer, our_height + 1));
         }
     }
+
+    None
 }
 
 // ── Tests ────────────────────────────────────────────────
