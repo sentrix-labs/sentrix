@@ -246,11 +246,15 @@ impl Blockchain {
         };
 
         if needs_backfill {
-            let accounts: Vec<(String, u64, u64)> = self.accounts.accounts
+            // CRITICAL: Sort accounts by address for deterministic backfill.
+            // HashMap::values() iterates in random order per-process, causing different
+            // trie roots on different nodes — the root cause of chain forks after ~17h.
+            let mut accounts: Vec<(String, u64, u64)> = self.accounts.accounts
                 .values()
                 .filter(|a| a.balance > 0)
                 .map(|a| (a.address.clone(), a.balance, a.nonce))
                 .collect();
+            accounts.sort_by(|a, b| a.0.cmp(&b.0));
             if !accounts.is_empty() {
                 tracing::info!(
                     "trie: backfilling {} accounts at height {} (first trie init on existing chain)",
@@ -312,7 +316,11 @@ impl Blockchain {
         // All borrows on `self.chain` released here.
 
         // Phase 1b: snapshot current balances + nonces (immutable borrow of `accounts`)
-        let unique: std::collections::HashSet<String> = touched_addrs.into_iter().collect();
+        // CRITICAL: Use BTreeSet (sorted, deterministic) — NOT HashSet (random per-process).
+        // HashSet iteration order differs across nodes, causing different trie insert order.
+        // Even though the Binary SMT root should be order-independent in theory, using
+        // deterministic order eliminates any possibility of implementation-level divergence.
+        let unique: std::collections::BTreeSet<String> = touched_addrs.into_iter().collect();
         let updates: Vec<(String, u64, u64)> = unique
             .iter()
             .map(|a| {
