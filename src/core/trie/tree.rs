@@ -410,6 +410,14 @@ impl SentrixTrie {
     pub fn node_exists(&self, hash: &NodeHash) -> SentrixResult<bool> {
         Ok(self.cache.storage.load_node(hash)?.is_some())
     }
+
+    /// Reset the working root to the empty tree.
+    /// Call this before a fresh backfill when the committed root's nodes are
+    /// stale (deleted by V7-L-01); without this, insert() would try to
+    /// traverse the deleted root and fail with "missing node".
+    pub fn reset_to_empty(&mut self) {
+        self.root = empty_hash(0);
+    }
 }
 
 // ── Trait impls ──────────────────────────────────────────────

@@ -228,9 +228,15 @@ impl Blockchain {
                     let node_missing = !trie.node_exists(&root_hash)?;
                     if node_missing {
                         tracing::warn!(
-                            "trie: root {} for height {} is recorded but node is missing (stale-height or V7-L-01 deletion); forcing backfill",
+                            "trie: root {} for height {} is recorded but node is missing \
+                             (stale-height or V7-L-01 deletion); resetting to empty and forcing backfill",
                             hex::encode(root_hash), height
                         );
+                        // CRITICAL: reset working root to empty_hash so that the
+                        // backfill inserts start from a clean slate instead of trying
+                        // to traverse the already-deleted stale root (which would cause
+                        // a "missing node" panic inside insert()).
+                        trie.reset_to_empty();
                     }
                     node_missing
                 }
