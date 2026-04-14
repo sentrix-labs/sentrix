@@ -3,7 +3,7 @@
 use axum::{
     Router,
     routing::{get, post},
-    extract::{State, Path, FromRequestParts},
+    extract::{State, Path, FromRequestParts, DefaultBodyLimit},
     Json,
     http::{StatusCode, request::Parts},
     response::IntoResponse,
@@ -262,6 +262,10 @@ pub fn create_router(state: SharedState) -> Router {
         // Layer order: Extension (outer) → rate_limit middleware → concurrency → cors → handler
         .layer(axum::middleware::from_fn(ip_rate_limit_middleware))
         .layer(axum::Extension(rate_limiter))
+        // Reject request bodies larger than 1 MiB — prevents memory exhaustion from unbounded payloads.
+        // Single transactions and JSON-RPC batches are well under this limit; legitimate clients
+        // are never affected.  Without this, an attacker can stream arbitrary bytes until the node OOMs.
+        .layer(DefaultBodyLimit::max(1_048_576))
         .with_state(state)
 }
 
@@ -753,6 +757,8 @@ async fn get_address_history(
     Path(address): Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
+    // Normalize address to lowercase — consistent with get_balance, get_nonce, get_address_info
+    let address = address.to_lowercase();
     let bc = state.read().await;
     let limit: usize = params.get("limit").and_then(|l| l.parse().ok()).unwrap_or(20).min(100);
     let offset: usize = params.get("offset").and_then(|o| o.parse().ok()).unwrap_or(0);

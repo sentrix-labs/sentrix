@@ -6,10 +6,11 @@ use crate::types::error::{SentrixError, SentrixResult};
 
 /// Low-level persistent storage for trie nodes, values, and version→root mappings.
 ///
-/// Three named sled trees:
-/// - `trie_nodes`  : NodeHash → bincode(TrieNode)
-/// - `trie_values` : NodeHash → raw account-state bytes
-/// - `trie_roots`  : version u64 BE → NodeHash
+/// Four named sled trees:
+/// - `trie_nodes`           : NodeHash → bincode(TrieNode)
+/// - `trie_values`          : NodeHash → raw account-state bytes
+/// - `trie_roots`           : version u64 BE → NodeHash
+/// - `trie_committed_roots` : NodeHash → version u64 BE (reverse index for O(1) is_committed_root)
 ///
 /// `Clone` is cheap — sled::Tree is an Arc internally (shared underlying tree).
 #[derive(Clone)]
@@ -17,10 +18,14 @@ pub struct TrieStorage {
     nodes: Tree,
     values: Tree,
     roots: Tree,
+    /// Reverse index: NodeHash → version.
+    /// Maintained in sync with `roots` so `is_committed_root()` is O(1) instead of O(n_blocks).
+    committed_root_hashes: Tree,
 }
 
 impl TrieStorage {
-    /// Open (or create) the three named trees from an existing sled Db.
+    /// Open (or create) the four named trees from an existing sled Db.
+    /// On first open (migration), backfills `trie_committed_roots` from `trie_roots`.
     pub fn new(db: &Db) -> SentrixResult<Self> {
         let nodes = db
             .open_tree("trie_nodes")
@@ -31,7 +36,50 @@ impl TrieStorage {
         let roots = db
             .open_tree("trie_roots")
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
-        Ok(Self { nodes, values, roots })
+        let committed_root_hashes = db
+            .open_tree("trie_committed_roots")
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+
+        let storage = Self { nodes, values, roots, committed_root_hashes };
+
+        // One-time migration: backfill reverse index from trie_roots on first open.
+        // Subsequent opens skip this via the sentinel "trie_committed_roots_ready" key.
+        storage.ensure_committed_roots_index()?;
+
+        Ok(storage)
+    }
+
+    /// Backfill `trie_committed_roots` from `trie_roots` if the reverse index is absent.
+    /// O(n_blocks) one-time cost on migration; O(1) fast-path on all subsequent opens.
+    fn ensure_committed_roots_index(&self) -> SentrixResult<()> {
+        // Fast path: sentinel present means the index is already complete.
+        if self.committed_root_hashes.contains_key(b"__ready__")
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?
+        {
+            return Ok(());
+        }
+
+        // Slow path: scan trie_roots and populate the reverse index.
+        let mut any = false;
+        for entry in self.roots.iter() {
+            let (k, v) = entry.map_err(|e| SentrixError::StorageError(e.to_string()))?;
+            if v.len() == 32 {
+                // key = version u64 BE (8 bytes), value = NodeHash (32 bytes)
+                self.committed_root_hashes
+                    .insert(&v[..], &k[..])
+                    .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+                any = true;
+            }
+        }
+
+        // Write sentinel once we know the index is in sync.
+        // Only on non-empty roots so an empty-DB first-open doesn't mark it prematurely.
+        if any {
+            self.committed_root_hashes
+                .insert(b"__ready__", b"1")
+                .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        }
+        Ok(())
     }
 
     // ── Nodes ─────────────────────────────────────────────
@@ -101,6 +149,18 @@ impl TrieStorage {
         self.roots
             .insert(version.to_be_bytes(), root.as_slice())
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+
+        // Maintain reverse index: NodeHash → version (O(1) is_committed_root lookups).
+        self.committed_root_hashes
+            .insert(root.as_slice(), &version.to_be_bytes())
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        // Mark reverse index as complete once at least one root is written
+        // (covers the case where ensure_committed_roots_index() ran on an empty DB).
+        if !self.committed_root_hashes.contains_key(b"__ready__")
+            .unwrap_or(false)
+        {
+            let _ = self.committed_root_hashes.insert(b"__ready__", b"1");
+        }
         Ok(())
     }
 
@@ -128,14 +188,14 @@ impl TrieStorage {
     /// the root hash of a previously committed version is never removed — which would
     /// cause a "root missing" error on restart and trigger a non-deterministic backfill
     /// that permanently forks the chain (ROOT CAUSE #3 fix).
+    ///
+    /// O(1) via `trie_committed_roots` reverse index (previously O(n_blocks) full scan).
+    /// The reverse index is maintained by `store_root()` and backfilled from `trie_roots`
+    /// on first open by `ensure_committed_roots_index()`.
     pub fn is_committed_root(&self, hash: &NodeHash) -> SentrixResult<bool> {
-        for entry in self.roots.iter() {
-            let (_, v) = entry.map_err(|e| SentrixError::StorageError(e.to_string()))?;
-            if v.len() == 32 && &v[..] == hash.as_slice() {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        self.committed_root_hashes
+            .contains_key(hash.as_slice())
+            .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
     /// T-F: Garbage-collect node and value entries not present in `live_hashes`.
@@ -319,5 +379,57 @@ mod tests {
         assert_eq!(removed, 2, "GC must remove both orphan node and orphan value");
         assert!(storage.load_value(&live_hash).unwrap().is_some(),   "live value must survive GC");
         assert!(storage.load_value(&orphan_hash).unwrap().is_none(), "orphan value must be removed");
+    }
+
+    // ── V10-C-02: is_committed_root O(1) reverse-index tests ─
+
+    #[test]
+    fn test_v10_c02_committed_root_reverse_index_populated_by_store_root() {
+        let (_dir, storage) = temp_storage();
+        let root = dummy_hash(0x42);
+        storage.store_root(7, &root).unwrap();
+        // Reverse index must contain the root hash immediately after store_root()
+        assert!(
+            storage.committed_root_hashes.contains_key(root.as_slice()).unwrap(),
+            "trie_committed_roots must contain the hash after store_root()"
+        );
+    }
+
+    #[test]
+    fn test_v10_c02_is_committed_root_o1_lookup() {
+        let (_dir, storage) = temp_storage();
+        let r1 = dummy_hash(0x11);
+        let r2 = dummy_hash(0x22);
+        let r3 = dummy_hash(0x33);
+        storage.store_root(1, &r1).unwrap();
+        storage.store_root(2, &r2).unwrap();
+        assert!(storage.is_committed_root(&r1).unwrap(), "r1 must be found");
+        assert!(storage.is_committed_root(&r2).unwrap(), "r2 must be found");
+        assert!(!storage.is_committed_root(&r3).unwrap(), "r3 was never stored");
+    }
+
+    #[test]
+    fn test_v10_c02_migration_backfills_existing_roots() {
+        // Simulate a pre-migration DB: write directly to trie_roots tree, bypassing store_root().
+        // Then re-open via TrieStorage::new() and verify ensure_committed_roots_index() backfills.
+        let dir = tempfile::TempDir::new().unwrap();
+        let db  = sled::open(dir.path()).unwrap();
+
+        let root = dummy_hash(0xAA);
+        // Write directly to trie_roots without using TrieStorage (simulates old data)
+        let old_roots = db.open_tree("trie_roots").unwrap();
+        old_roots.insert(&1u64.to_be_bytes(), &root[..]).unwrap();
+        drop(old_roots);
+        drop(db);
+
+        // Now open via TrieStorage::new() — this triggers ensure_committed_roots_index()
+        let db2 = sled::open(dir.path()).unwrap();
+        let storage2 = TrieStorage::new(&db2).unwrap();
+
+        // Backfill must have populated the reverse index
+        assert!(
+            storage2.is_committed_root(&root).unwrap(),
+            "ensure_committed_roots_index() must backfill pre-migration roots"
+        );
     }
 }

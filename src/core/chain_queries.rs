@@ -164,12 +164,15 @@ impl Blockchain {
 
     // ── Stats + window info ──────────────────────────────
     pub fn chain_stats(&self) -> serde_json::Value {
+        // circulating_supply = total_minted − total_burned (in sentri units)
+        let circulating_sentri = self.total_minted.saturating_sub(self.accounts.total_burned);
         serde_json::json!({
             "height": self.height(),
             "total_blocks": self.height() + 1, // true height from block index, not window length
             "total_minted_srx": self.total_minted as f64 / 100_000_000.0,
             "max_supply_srx": MAX_SUPPLY as f64 / 100_000_000.0,
             "total_burned_srx": self.accounts.total_burned as f64 / 100_000_000.0,
+            "circulating_supply_srx": circulating_sentri as f64 / 100_000_000.0,
             "mempool_size": self.mempool.len(),
             "active_validators": self.authority.active_count(),
             "deployed_tokens": self.contracts.contract_count(),
