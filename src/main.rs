@@ -452,7 +452,13 @@ async fn cmd_start(
     println!("P2P transport: libp2p (Noise encrypted)");
     // Persist node identity keypair so PeerId stays stable across restarts.
     // A new PeerId on every restart breaks peer routing and libp2p's security model.
-    let keypair_path = get_data_dir().join("node_keypair");
+    // Store the node identity keypair in a dedicated sub-directory so that a naive
+    // `cp -r data/` or `tar` of chain state between nodes does not inadvertently copy
+    // the keypair — which would cause a PeerId collision and block peer connections.
+    let identity_dir = get_data_dir().join("identity");
+    std::fs::create_dir_all(&identity_dir)
+        .map_err(|e| anyhow::anyhow!("create identity dir: {}", e))?;
+    let keypair_path = identity_dir.join("node_keypair");
     let keypair = if keypair_path.exists() {
         let bytes = std::fs::read(&keypair_path)
             .map_err(|e| anyhow::anyhow!("read node keypair: {}", e))?;
@@ -467,6 +473,7 @@ async fn cmd_start(
         tracing::info!("Generated new node identity, saved to {:?}", keypair_path);
         kp
     };
+    tracing::info!("Node PeerId: {}", keypair.public().to_peer_id());
     let lp2p = Arc::new(
         LibP2pNode::new(keypair, shared.clone(), event_tx.clone())
             .map_err(|e| anyhow::anyhow!("libp2p init: {}", e))?,

@@ -164,8 +164,14 @@ impl SentrixTrie {
 
         // Delete old internal nodes that were structurally replaced during this insert.
         // These became orphaned because new internal nodes were written with different hashes.
+        //
+        // ROOT CAUSE #3 fix: skip any hash that is recorded as a committed root in trie_roots.
+        // Deleting it would cause "root missing" on restart, forcing a non-deterministic
+        // backfill from AccountDB that permanently forks the chain.
         for old_hash in old_internal_hashes {
-            let _ = self.cache.delete_node(&old_hash);
+            if !self.cache.storage.is_committed_root(&old_hash)? {
+                let _ = self.cache.delete_node(&old_hash);
+            }
         }
 
         Ok(up_hash)
@@ -725,6 +731,41 @@ mod tests {
         assert_eq!(account_value_decode(&v2).unwrap().0, 200);
 
         let _ = nodes_1; // suppress unused warning
+    }
+
+    /// ROOT CAUSE #3 regression guard: insert() must not delete the root node of a
+    /// previously committed version, even when that root hash appears in old_internal_hashes.
+    #[test]
+    fn test_insert_does_not_delete_committed_root() {
+        let (_dir, db) = temp_db();
+        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+
+        let k1 = address_to_key("0xaaaa");
+        let k2 = address_to_key("0xbbbb");
+
+        // Version 1: insert k1 and commit.
+        trie.insert(&k1, &account_value_bytes(100, 0)).unwrap();
+        let root_v1 = trie.commit(1).unwrap();
+
+        // Version 2: insert k2 (structural change — root hash changes, old root may end
+        // up in old_internal_hashes).  Must NOT delete the v1 root node.
+        trie.insert(&k2, &account_value_bytes(200, 0)).unwrap();
+        let _ = trie.commit(2).unwrap();
+
+        // The v1 root node must still exist in storage.
+        assert!(
+            trie.node_exists(&root_v1).unwrap(),
+            "committed root v1 ({}) must survive subsequent insert()",
+            hex::encode(root_v1)
+        );
+
+        // And we must still be able to load root_at_version(1) successfully.
+        let loaded = trie.root_at_version(1).unwrap();
+        assert_eq!(
+            loaded,
+            Some(root_v1),
+            "root_at_version(1) must return the original committed root"
+        );
     }
 
     /// prove() only reads the trie — no mutable reference required.

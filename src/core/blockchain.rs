@@ -219,22 +219,37 @@ impl Blockchain {
         // (insert removes replaced internal nodes, including old roots).
         let needs_backfill = if height > 0 {
             match trie.root_at_version(height)? {
-                None => true,
+                None => {
+                    // No trie root entry exists for this height at all.
+                    // Expected only on first-time trie init on a chain that predates
+                    // SentrixTrie.  After fix/trie-permanent-fix this path should only
+                    // be reached once per node lifetime.
+                    tracing::warn!(
+                        "trie: no root recorded for height {} — first-time backfill from AccountDB",
+                        height
+                    );
+                    true
+                }
                 Some(root_hash) => {
-                    // Root recorded in trie_roots, but verify the node still exists.
-                    // Structural cleanup on insert removes old internal nodes (including old roots);
-                    // if a stale height points to a deleted root, re-backfill from scratch.
+                    // Root IS recorded in trie_roots but the node is gone from trie_nodes.
+                    //
+                    // ROOT CAUSE #1 / ROOT CAUSE #3 guard: after fix/trie-permanent-fix,
+                    // is_committed_root() prevents insert() from deleting committed roots,
+                    // so this branch should NEVER be reached on a healthy node.  If it
+                    // is, something has gone seriously wrong (manual data corruption,
+                    // storage bug, regression).  Log at ERROR so ops are alerted; the
+                    // backfill below may produce a state root that differs from peers.
                     let node_missing = !trie.node_exists(&root_hash)?;
                     if node_missing {
-                        tracing::warn!(
-                            "trie: root {} for height {} is recorded but node is missing \
-                             (stale-height or V7-L-01 deletion); resetting to empty and forcing backfill",
+                        tracing::error!(
+                            "trie: CRITICAL — root {} for height {} is recorded in trie_roots \
+                             but the node is missing from trie_nodes.  This should not happen \
+                             after fix/trie-permanent-fix.  Forcing backfill from AccountDB; \
+                             the resulting state root may differ from other peers and cause a fork.",
                             hex::encode(root_hash), height
                         );
-                        // CRITICAL: reset working root to empty_hash so that the
-                        // backfill inserts start from a clean slate instead of trying
-                        // to traverse the already-deleted stale root (which would cause
-                        // a "missing node" panic inside insert()).
+                        // CRITICAL: reset working root to empty_hash so backfill inserts
+                        // start from a clean slate rather than a stale/deleted root.
                         trie.reset_to_empty();
                     }
                     node_missing
