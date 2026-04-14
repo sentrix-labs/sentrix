@@ -85,6 +85,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Post-0.1.0 Incremental] — 2026-04-14
 
+### PR #61 — fix(sync): persist P2P-synced blocks to sled
+- `src/network/sync.rs`: add `storage: Arc<Storage>` parameter to `sync_from_peer()`; call `storage.save_block()` after each successful `add_block()` in the sync loop
+- `src/main.rs`: update both call sites (NodeEvent::SyncNeeded + periodic 30s sync) to pass `Arc<Storage>` to `sync_from_peer()`
+- **Root cause**: `sync_from_peer()` only updated in-memory state; on restart, nodes loaded stale sled height and diverged from the network — this was one of the root causes of the chain fork incident 2026-04-14
+- **335 tests** (no new tests — fix is infrastructure plumbing, exercised by existing integration_sync + integration_restart suites)
+
+### PR #60 — fix: trie reset-to-empty before backfill
+- `src/core/trie/tree.rs`: add `reset_to_empty()` — resets `self.root = empty_hash(0)`
+- `src/core/blockchain.rs` (`init_trie()`): call `trie.reset_to_empty()` before backfill when committed root node is missing (deleted by V7-L-01 insert restructuring)
+- **Root cause**: `SentrixTrie::open(db, version)` sets `self.root` from `trie_roots[version]`; if that node was deleted, first `insert()` in backfill traversed stale root → "missing node" error; `reset_to_empty()` ensures backfill starts clean
+- **Result**: backfill now deterministic; same root across all nodes (`d0f8516f...`) after chain recovery
+
+### PR #59 — fix: trie stale-height on restart + node_exists check
+- `src/storage/db.rs` (`save_block()`): now calls `save_height(block.index)?` after each P2P-received block, keeping sled height in sync with in-memory state
+- `src/core/trie/tree.rs`: add `node_exists(hash) -> SentrixResult<bool>` — checks if a node hash exists in sled storage
+- `src/core/blockchain.rs` (`init_trie()`): before backfill, check if committed root node actually exists via `node_exists()`; if missing (stale-height or V7-L-01 deletion), trigger backfill with warning log
+- **Critical fix**: prevents "missing node" panic on restart when `trie_roots[height]` points to a node deleted by subsequent inserts
+- 10 new tests → **335 tests total**
+
+### PR #58 — feat: sentrix chain reset-trie command
+- `src/storage/db.rs`: add `reset_trie()` — drops `trie_nodes`, `trie_values`, `trie_roots` sled trees + flushes; on next startup `init_trie()` detects no committed root and backfills from AccountDB
+- `src/main.rs`: add `sentrix chain reset-trie` CLI subcommand; prints confirmation + path; requires `SENTRIX_DATA_DIR`
+- **Use case**: chain recovery when trie state is corrupted or diverged across nodes; run before restart after a forced migration
+
+### PR #57 — fix(security): Security Audit V7 — ALL 15 FINDINGS FIXED
+- **V7-C-01 [CRITICAL]**: `state_root` included in `calculate_hash()` starting at `STATE_ROOT_FORK_HEIGHT = 100_000`; add_block() logs CRITICAL on state_root mismatch (received vs computed); hard fork mechanism with graceful handling for pre-100K blocks
+- **V7-H-01 [HIGH]**: `update_trie_for_block()` now returns `SentrixResult<Option<[u8;32]>>`; trie insert/delete/commit errors propagate to `add_block()` instead of being swallowed; trie failure = block commit failure
+- **V7-H-02 [HIGH]**: `store_root()` now flushes all three trees (`trie_nodes`, `trie_values`, `trie_roots`) before returning; crash-safe trie state guaranteed
+- **V7-M-01 [MEDIUM]**: `delete()` captures `found_leaf_hash` + `found_value_hash` in Phase 1; deletes them after Phase 2 walk-up; no more storage leak per zero-balance deletion
+- **V7-M-02 [MEDIUM]**: `gc_orphaned_nodes()` extended to also GC `trie_values` tree with same live_hashes set
+- **V7-M-03 [MEDIUM]**: `TrieCache.lru` wrapped in `Mutex<LruCache>`; `prove()` now takes `&self`; proof endpoint (`GET /trie/proof/{address}`) uses read lock instead of write lock — no more block production stall under concurrent proof requests
+- **V7-M-04 [MEDIUM]**: all three traversal loops changed from `depth > 256` to `depth >= 256`; returns `SentrixError::Internal` on violation; `delete()` walk-up guarded against usize underflow
+- **V7-M-05 [MEDIUM]**: `save_block()` in P2P `NewBlock` handler now persists `state_root` immediately; `ChainSync::sync_from_peer()` flow: save_block called per synced block (architectural fix)
+- **V7-L-01 [LOW]**: `insert()` Phase 1 records old internal node hashes along path; Phase 3 deletes them after writing new path nodes; eliminates long-term orphan accumulation
+- **V7-L-02 [LOW]**: `/trie/proof/{address}` validates address with `is_valid_sentrix_address()` before acquiring blockchain lock; returns 400 immediately on invalid format
+- **V7-L-03 [LOW]**: `store_root()` refactored to async; uses `flush_async().await` for all three trees; no more blocking I/O on Tokio worker thread
+- **V7-I-01 [INFO]**: proof API response includes `scope: "native_srx_only"` field and documentation note
+- **V7-I-02 [INFO]**: `init_trie()` backfills all non-zero AccountDB entries on first init when no committed root exists
+- **V7-I-03 [INFO]**: `TrieCache` stores `capacity: usize`; `SentrixTrie::clone()` uses `self.cache.capacity` instead of hardcoded 10_000
+- **V7-I-04 [INFO]**: `update_trie_for_block()` skips `TOKEN_OP_ADDRESS` from touched addresses set
+- **10 new tests** across trie + blockchain modules → **335 tests total**
+
 ### PR #55 — SentrixTrie: Blockchain Integration
 - `update_trie_for_block()` in `blockchain.rs`: apply all balance changes to state trie per block
 - Zero-balance deletion: accounts with balance == 0 call `trie.delete()` instead of insert

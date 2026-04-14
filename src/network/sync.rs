@@ -2,16 +2,22 @@
 
 use crate::core::block::Block;
 use crate::network::node::{Node, Message, SharedBlockchain};
+use crate::storage::db::Storage;
 use crate::types::error::{SentrixError, SentrixResult};
+use std::sync::Arc;
 use tokio::net::TcpStream;
 
 pub struct ChainSync;
 
 impl ChainSync {
     /// Incremental sync: download only blocks we don't have.
+    /// `storage` is required so that each synced block is persisted to sled immediately.
+    /// Without this, in-memory height advances but sled stays stale; on restart the node
+    /// reloads from the stale sled state and diverges from the rest of the network.
     pub async fn sync_from_peer(
         peer_addr: &str,
         blockchain: &SharedBlockchain,
+        storage: Arc<Storage>,
     ) -> SentrixResult<u64> {
         let mut stream = TcpStream::connect(peer_addr).await
             .map_err(|e| SentrixError::NetworkError(e.to_string()))?;
@@ -61,6 +67,13 @@ impl ChainSync {
                     for block in &blocks {
                         match bc.add_block(block.clone()) {
                             Ok(()) => {
+                                // PR #61: persist each synced block to sled immediately.
+                                // Previously, sync only updated in-memory state; on restart
+                                // the node loaded stale sled state and diverged.
+                                if let Err(e) = storage.save_block(block) {
+                                    tracing::warn!("Sync: failed to persist block {}: {}", block.index, e);
+                                    return Ok(total_synced);
+                                }
                                 total_synced += 1;
                                 current = block.index + 1;
                             }
