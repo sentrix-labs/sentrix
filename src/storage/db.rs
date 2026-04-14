@@ -103,13 +103,36 @@ impl Storage {
             let window_start = height.saturating_sub(CHAIN_WINDOW_SIZE as u64 - 1);
             let mut blocks = Vec::with_capacity((height - window_start + 1) as usize);
             for i in window_start..=height {
-                let key = format!("block:{}", i);
-                match self.get::<Block>(&key)? {
+                match self.load_block(i)? {
                     Some(block) => blocks.push(block),
                     None => {
-                        return Err(SentrixError::StorageError(
-                            format!("missing block {} during chain reconstruction", i)
-                        ));
+                        // PR #62: Missing block — caused by pre-PR#61 sync_from_peer()
+                        // not persisting blocks. Adjust height to last available block
+                        // so the node can start and re-sync from peers.
+                        let effective = if let Some(last) = blocks.last() {
+                            last.index
+                        } else {
+                            // First block in window missing — scan backwards
+                            let mut h = window_start.saturating_sub(1);
+                            while h > 0 && self.load_block(h)?.is_none() {
+                                h = h.saturating_sub(1);
+                            }
+                            // Reload window from found height
+                            let new_start = h.saturating_sub(CHAIN_WINDOW_SIZE as u64 - 1);
+                            for j in new_start..=h {
+                                if let Some(b) = self.load_block(j)? {
+                                    blocks.push(b);
+                                }
+                            }
+                            h
+                        };
+                        tracing::warn!(
+                            "Block {} missing in sled (stored height = {}). \
+                             Adjusting height to {}. Node will re-sync from peers.",
+                            i, height, effective
+                        );
+                        self.save_height(effective)?;
+                        break;
                     }
                 }
             }
