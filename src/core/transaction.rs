@@ -33,7 +33,8 @@ impl TokenOp {
     }
 
     pub fn is_token_op(data: &str) -> bool {
-        data.contains("\"op\":")
+        // V8-M-02: use the real decoder instead of naive string match
+        Self::decode(data).is_some()
     }
 }
 
@@ -96,12 +97,7 @@ impl Transaction {
         Ok(tx)
     }
 
-    pub fn new_coinbase(to_address: String, amount: u64, block_index: u64) -> Self {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
+    pub fn new_coinbase(to_address: String, amount: u64, block_index: u64, block_timestamp: u64) -> Self {
         let mut tx = Self {
             txid: String::new(),
             from_address: COINBASE_ADDRESS.to_string(),
@@ -110,7 +106,7 @@ impl Transaction {
             fee: 0,
             nonce: 0,
             data: format!("block_{}", block_index),
-            timestamp,
+            timestamp: block_timestamp,
             chain_id: 0,
             signature: String::new(),
             public_key: String::new(),
@@ -249,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_coinbase_transaction() {
-        let tx = Transaction::new_coinbase("SRX_validator".to_string(), 100_000_000, 1);
+        let tx = Transaction::new_coinbase("SRX_validator".to_string(), 100_000_000, 1, 1_712_620_800);
         assert!(tx.is_coinbase());
         assert_eq!(tx.amount, 100_000_000);
         assert!(!tx.txid.is_empty());

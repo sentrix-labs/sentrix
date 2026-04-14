@@ -155,7 +155,7 @@ fn test_sliding_window_survives_restart() {
     let reloaded_latest = loaded.get_block(height_before).expect("latest in window");
     assert_eq!(reloaded_latest.hash, latest_hash, "latest block hash must survive restart");
 
-    assert!(loaded.is_valid_chain(), "chain must be valid after reload");
+    assert!(loaded.is_valid_chain_window(), "chain must be valid after reload");
 }
 
 /// Blocks added after a window overflow do not appear in get_block() for evicted indices.

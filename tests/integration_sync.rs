@@ -53,8 +53,8 @@ fn test_two_node_sync_empty_blocks() {
     assert_eq!(bal_a, bal_b, "validator balances must match after sync");
 
     // Both chains must be valid
-    assert!(bc_a.is_valid_chain(), "node A chain invalid");
-    assert!(bc_b.is_valid_chain(), "node B chain invalid");
+    assert!(bc_a.is_valid_chain_window(), "node A chain invalid");
+    assert!(bc_b.is_valid_chain_window(), "node B chain invalid");
 }
 
 /// Blocks containing user transactions must sync correctly: balances and tx history
@@ -107,7 +107,7 @@ fn test_two_node_sync_with_transactions() {
         "receiver balance mismatch after sync"
     );
 
-    assert!(bc_b.is_valid_chain(), "node B chain invalid after tx sync");
+    assert!(bc_b.is_valid_chain_window(), "node B chain invalid after tx sync");
 }
 
 /// Applying the same block twice must be rejected (duplicate block).

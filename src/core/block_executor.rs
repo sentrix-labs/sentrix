@@ -2,7 +2,7 @@
 
 use hex;
 use std::collections::{HashMap, HashSet};
-use crate::core::blockchain::{Blockchain, CHAIN_WINDOW_SIZE};
+use crate::core::blockchain::{Blockchain, CHAIN_WINDOW_SIZE, is_valid_sentrix_address};
 use crate::core::block::{Block, STATE_ROOT_FORK_HEIGHT};
 use crate::core::transaction::TokenOp;
 use crate::types::error::{SentrixError, SentrixResult};
@@ -85,10 +85,16 @@ impl Blockchain {
             // Validate token operation if present
             if let Some(token_op) = TokenOp::decode(&tx.data) {
                 match &token_op {
-                    TokenOp::Transfer { contract, amount, .. } => {
+                    TokenOp::Transfer { contract, to, amount } => {
                         if !self.contracts.exists(contract) {
                             return Err(SentrixError::InvalidTransaction(
                                 format!("token contract {} not found", contract)
+                            ));
+                        }
+                        // V8-H-02: validate target address
+                        if !is_valid_sentrix_address(to) {
+                            return Err(SentrixError::InvalidTransaction(
+                                format!("invalid token transfer target address: '{}'", to)
                             ));
                         }
                         let token_bal = self.contracts.get_token_balance(contract, &tx.from_address);
@@ -107,17 +113,29 @@ impl Blockchain {
                             return Err(SentrixError::InsufficientBalance { have: token_bal, need: *amount });
                         }
                     }
-                    TokenOp::Mint { contract, .. } => {
+                    TokenOp::Mint { contract, to, .. } => {
                         if !self.contracts.exists(contract) {
                             return Err(SentrixError::InvalidTransaction(
                                 format!("token contract {} not found", contract)
                             ));
                         }
+                        // V8-H-02: validate target address
+                        if !is_valid_sentrix_address(to) {
+                            return Err(SentrixError::InvalidTransaction(
+                                format!("invalid token mint target address: '{}'", to)
+                            ));
+                        }
                     }
-                    TokenOp::Approve { contract, .. } => {
+                    TokenOp::Approve { contract, spender, .. } => {
                         if !self.contracts.exists(contract) {
                             return Err(SentrixError::InvalidTransaction(
                                 format!("token contract {} not found", contract)
+                            ));
+                        }
+                        // V8-H-02: validate spender address
+                        if !is_valid_sentrix_address(spender) {
+                            return Err(SentrixError::InvalidTransaction(
+                                format!("invalid token approve spender address: '{}'", spender)
                             ));
                         }
                     }
@@ -231,16 +249,16 @@ impl Blockchain {
                     }
                     Some(received_root) => {
                         // Received block: verify peer's state_root matches ours (V7-C-01).
+                        // V8-CRIT-01: reject the block on mismatch instead of logging.
                         if received_root != computed_root {
-                            tracing::error!(
-                                "V7-C-01 CRITICAL: state_root mismatch at block {} — \
-                                 received {}, computed {}. Possible state divergence.",
-                                last.index,
-                                hex::encode(received_root),
-                                hex::encode(computed_root),
-                            );
-                            // Override with locally-computed root.
-                            // TODO: full rollback + block rejection in a future release.
+                            return Err(SentrixError::ChainValidationFailed(
+                                format!(
+                                    "state_root mismatch at block {}: received {}, computed {}",
+                                    last.index,
+                                    hex::encode(received_root),
+                                    hex::encode(computed_root),
+                                )
+                            ));
                         }
                         last.state_root = Some(computed_root);
                     }

@@ -16,11 +16,17 @@ impl Blockchain {
         }
 
         // Build transaction list — coinbase first
+        // V8-CRIT-03: Use the block timestamp for the coinbase (deterministic).
+        let block_timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let reward = self.get_block_reward();
         let coinbase = Transaction::new_coinbase(
             validator_address.to_string(),
             reward,
             next_height,
+            block_timestamp,
         );
 
         let mut transactions = vec![coinbase];

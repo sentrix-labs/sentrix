@@ -65,6 +65,14 @@ impl ChainSync {
                     }
                     let mut bc = blockchain.write().await;
                     for block in &blocks {
+                        // V8-M-05: verify block index continuity before applying
+                        if block.index != current {
+                            tracing::warn!(
+                                "Sync: expected block index {}, got {} — aborting sync",
+                                current, block.index
+                            );
+                            return Ok(total_synced);
+                        }
                         match bc.add_block(block.clone()) {
                             Ok(()) => {
                                 // PR #61: persist each synced block to sled immediately.

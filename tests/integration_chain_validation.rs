@@ -23,7 +23,7 @@ fn test_valid_chain_passes() {
     for _ in 0..50 {
         common::mine_empty_block(&mut bc, &val.address);
     }
-    assert!(bc.is_valid_chain(), "valid 50-block chain should pass validation");
+    assert!(bc.is_valid_chain_window(), "valid 50-block chain should pass validation");
 }
 
 /// A block with a wrong previous_hash must be rejected.
@@ -33,7 +33,11 @@ fn test_block_with_wrong_prev_hash_rejected() {
     common::mine_empty_block(&mut bc, &val.address);
 
     // Craft a block with a tampered previous_hash
-    let coinbase = Transaction::new_coinbase(val.address.clone(), BLOCK_REWARD, 2);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let coinbase = Transaction::new_coinbase(val.address.clone(), BLOCK_REWARD, 2, now);
     let tampered_block = Block::new(
         2,
         "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
@@ -53,7 +57,11 @@ fn test_block_from_unauthorized_validator_rejected() {
 
     let intruder = Wallet::generate();
     let prev_hash = bc.latest_block().expect("latest_block").hash.clone();
-    let coinbase = Transaction::new_coinbase(intruder.address.clone(), BLOCK_REWARD, 2);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let coinbase = Transaction::new_coinbase(intruder.address.clone(), BLOCK_REWARD, 2, now);
     let bad_block = Block::new(2, prev_hash, vec![coinbase], intruder.address.clone());
 
     let result = bc.add_block(bad_block);
@@ -73,7 +81,11 @@ fn test_block_with_oversized_coinbase_rejected() {
 
     let prev_hash = bc.latest_block().expect("latest_block").hash.clone();
     let inflated_reward = BLOCK_REWARD * 100; // 100× block reward
-    let coinbase = Transaction::new_coinbase(val.address.clone(), inflated_reward, 2);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let coinbase = Transaction::new_coinbase(val.address.clone(), inflated_reward, 2, now);
     let bad_block = Block::new(2, prev_hash, vec![coinbase], val.address.clone());
 
     let result = bc.add_block(bad_block);
@@ -99,7 +111,7 @@ fn test_block_with_timestamp_before_previous_rejected() {
     // A valid second block should always succeed
     common::mine_empty_block(&mut bc, &val.address);
     assert_eq!(bc.height(), 2, "two blocks should have been mined");
-    assert!(bc.is_valid_chain(), "chain should still be valid");
+    assert!(bc.is_valid_chain_window(), "chain should still be valid");
 }
 
 /// A TX with an incorrect chain_id inside a block must cause add_block to fail.
@@ -163,7 +175,7 @@ fn test_chain_validity_after_mixed_blocks() {
     }
 
     assert_eq!(bc.height(), 50);
-    assert!(bc.is_valid_chain(), "50-block mixed chain must be valid");
+    assert!(bc.is_valid_chain_window(), "50-block mixed chain must be valid");
 }
 
 /// A second blockchain independently mines the same transactions and reaches
@@ -181,6 +193,6 @@ fn test_independent_chains_have_same_height() {
     }
 
     assert_eq!(bc1.height(), bc2.height(), "independently mined chains must have same height");
-    assert!(bc1.is_valid_chain());
-    assert!(bc2.is_valid_chain());
+    assert!(bc1.is_valid_chain_window());
+    assert!(bc2.is_valid_chain_window());
 }
