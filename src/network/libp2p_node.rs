@@ -40,6 +40,8 @@ enum SwarmCommand {
     ConnectPeer(Multiaddr),
     Broadcast(SentrixRequest),
     GetPeerCount(tokio::sync::oneshot::Sender<usize>),
+    /// Re-dial bootstrap peers that are no longer connected.
+    ReconnectPeers(Vec<Multiaddr>),
 }
 
 // ── Public handle ────────────────────────────────────────
@@ -105,6 +107,11 @@ impl LibP2pNode {
     pub async fn broadcast_transaction(&self, tx: &Transaction) {
         let req = SentrixRequest::NewTransaction { transaction: tx.clone() };
         let _ = self.cmd_tx.send(SwarmCommand::Broadcast(req)).await;
+    }
+
+    /// Re-dial bootstrap peers that may have disconnected.
+    pub async fn reconnect_peers(&self, addrs: Vec<Multiaddr>) {
+        let _ = self.cmd_tx.send(SwarmCommand::ReconnectPeers(addrs)).await;
     }
 
     /// Returns the number of currently verified (handshaked) peers.
@@ -188,6 +195,13 @@ async fn run_swarm(
                     Some(SwarmCommand::GetPeerCount(reply)) => {
                         let _ = reply.send(verified_peers.len());
                     }
+                    Some(SwarmCommand::ReconnectPeers(addrs)) => {
+                        for addr in addrs {
+                            if let Err(e) = swarm.dial(addr.clone()) {
+                                tracing::warn!("libp2p reconnect dial {} failed: {}", addr, e);
+                            }
+                        }
+                    }
                     None => {
                         tracing::info!("libp2p: command channel closed, stopping swarm");
                         break;
@@ -264,10 +278,15 @@ async fn on_swarm_event(
             pending_handshakes.insert(req_id, peer_id);
         }
 
-        SwarmEvent::ConnectionClosed { peer_id, .. } => {
-            tracing::info!("libp2p: connection to {} closed", peer_id);
-            verified_peers.remove(&peer_id);
-            let _ = event_tx.send(NodeEvent::PeerDisconnected(peer_id.to_string())).await;
+        SwarmEvent::ConnectionClosed { peer_id, num_established, .. } => {
+            tracing::info!("libp2p: connection to {} closed ({} remaining)", peer_id, num_established);
+            // Only remove from verified peers when ALL connections to this peer are gone.
+            // Bidirectional dialing creates 2 connections per peer; libp2p prunes duplicates.
+            // Previously, we removed on ANY close, orphaning the surviving connection.
+            if num_established == 0 {
+                verified_peers.remove(&peer_id);
+                let _ = event_tx.send(NodeEvent::PeerDisconnected(peer_id.to_string())).await;
+            }
         }
 
         SwarmEvent::Behaviour(SentrixBehaviourEvent::Rr(rr_event)) => {
