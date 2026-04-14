@@ -174,9 +174,11 @@ impl SentrixBehaviour {
             identify::Config::new(SENTRIX_PROTOCOL.to_string(), local_public_key),
         );
 
+        let rr_config = request_response::Config::default()
+            .with_request_timeout(std::time::Duration::from_secs(60));
         let rr = request_response::Behaviour::new(
             [(SENTRIX_PROTOCOL.to_string(), ProtocolSupport::Full)],
-            request_response::Config::default(),
+            rr_config,
         );
 
         Self { identify, rr }
