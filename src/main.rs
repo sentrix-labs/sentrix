@@ -12,6 +12,7 @@ use sentrix::storage::db::Storage;
 use sentrix::api::routes::{create_router, SharedState};
 use sentrix::network::node::{DEFAULT_PORT, NodeEvent};
 use sentrix::network::libp2p_node::{LibP2pNode, make_multiaddr};
+use libp2p::Multiaddr;
 
 const DEFAULT_API_PORT: u16 = 8545;
 
@@ -529,6 +530,36 @@ async fn cmd_start(
             }
         }
     });
+
+    // ── Periodic reconnect to bootstrap peers ────────────
+    // Collect bootstrap multiaddrs for reconnection
+    let bootstrap_addrs: Vec<Multiaddr> = peers_str.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|peer_str| {
+            let parts: Vec<&str> = peer_str.splitn(2, ':').collect();
+            if let [host, port_part] = parts.as_slice()
+                && let Ok(p) = port_part.parse::<u16>()
+            {
+                return make_multiaddr(host, p).ok();
+            }
+            None
+        })
+        .collect();
+
+    if !bootstrap_addrs.is_empty() {
+        let lp2p_reconnect = lp2p.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                let count = lp2p_reconnect.peer_count().await;
+                if count < bootstrap_addrs.len() {
+                    tracing::info!("Reconnecting: {} peers, expected {}", count, bootstrap_addrs.len());
+                    lp2p_reconnect.reconnect_peers(bootstrap_addrs.clone()).await;
+                }
+            }
+        });
+    }
 
     // ── Shared: REST API (always started) ───────────────
     let app = create_router(shared.clone());
