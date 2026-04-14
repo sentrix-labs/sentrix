@@ -85,20 +85,21 @@ pub struct SignedTxRequest {
     pub transaction: Transaction,
 }
 
-// H-05 FIX: Constant-time string comparison — no early return on length mismatch
-// (early return leaks key length via timing oracle)
+// V8-API-H-02: Use `subtle` crate for constant-time comparison instead of hand-rolled impl.
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    use subtle::ConstantTimeEq;
     let a_bytes = a.as_bytes();
     let b_bytes = b.as_bytes();
+    // Pad both to max_len so comparison traverses equal bytes regardless of input length.
     let max_len = a_bytes.len().max(b_bytes.len());
-    // Include length difference in result so mismatched lengths always return false
-    let mut result: u8 = (a_bytes.len() ^ b_bytes.len()) as u8;
-    for i in 0..max_len {
-        let ab = if i < a_bytes.len() { a_bytes[i] } else { 0 };
-        let bb = if i < b_bytes.len() { b_bytes[i] } else { 0 };
-        result |= ab ^ bb;
-    }
-    result == 0
+    let mut a_padded = vec![0u8; max_len];
+    let mut b_padded = vec![0u8; max_len];
+    a_padded[..a_bytes.len()].copy_from_slice(a_bytes);
+    b_padded[..b_bytes.len()].copy_from_slice(b_bytes);
+    // Length difference must also cause failure (constant-time).
+    let len_eq: subtle::Choice = (a_bytes.len() as u64).ct_eq(&(b_bytes.len() as u64));
+    let content_eq: subtle::Choice = a_padded.ct_eq(&b_padded);
+    (len_eq & content_eq).into()
 }
 
 
@@ -122,6 +123,12 @@ async fn ip_rate_limit_middleware(
 
     let allowed = if let Some(limiter) = request.extensions().get::<IpRateLimiter>().cloned() {
         let mut map = limiter.lock().await;  // V6-M-03: async lock — yields instead of blocking thread
+
+        // V8-API-M-02: prevent unbounded HashMap growth — evict stale entries
+        if map.len() > 10_000 {
+            map.retain(|_, (_, ts)| ts.elapsed().as_secs() < RATE_LIMIT_WINDOW_SECS);
+        }
+
         let now = Instant::now();
         let entry = map.entry(ip).or_insert((0, now));
         if entry.1.elapsed().as_secs() >= RATE_LIMIT_WINDOW_SECS {
@@ -385,7 +392,7 @@ async fn validate_chain(
     }
 
     // Full O(n) chain scan — only runs when height has changed
-    let valid = bc.is_valid_chain();
+    let valid = bc.is_valid_chain_window();
     VALIDATE_CACHE_HEIGHT.store(height, Ordering::Relaxed);
     VALIDATE_CACHE_RESULT.store(valid, Ordering::Relaxed);
 
@@ -630,6 +637,8 @@ async fn get_wallet_info(
     State(state): State<SharedState>,
     Path(address): Path<String>,
 ) -> Json<serde_json::Value> {
+    // V8-API-H-01: normalize address to lowercase for case-insensitive lookup
+    let address = address.to_lowercase();
     let bc = state.read().await;
     let balance = bc.accounts.get_balance(&address);
     let nonce = bc.accounts.get_nonce(&address);
@@ -764,6 +773,8 @@ async fn get_address_info(
     State(state): State<SharedState>,
     Path(address): Path<String>,
 ) -> Json<serde_json::Value> {
+    // V8-API-H-01: normalize address to lowercase for case-insensitive lookup
+    let address = address.to_lowercase();
     let bc = state.read().await;
     let balance = bc.accounts.get_balance(&address);
     let nonce = bc.accounts.get_nonce(&address);

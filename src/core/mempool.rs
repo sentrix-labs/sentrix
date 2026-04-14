@@ -64,6 +64,13 @@ impl Blockchain {
             ));
         }
 
+        // V8-H-03: Reject duplicate txid (same transaction submitted twice)
+        if self.mempool.iter().any(|existing| existing.txid == tx.txid) {
+            return Err(SentrixError::InvalidTransaction(
+                format!("duplicate txid in mempool: {}", tx.txid)
+            ));
+        }
+
         // Basic validation
         let expected_nonce = self.accounts.get_nonce(&tx.from_address)
             + self.mempool_pending_count(&tx.from_address);

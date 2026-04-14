@@ -96,18 +96,31 @@ impl Block {
     }
 
     // Genesis block — block 0, no previous hash
+    // V8-CRIT-02: Hardcoded timestamp for deterministic genesis across all nodes.
     pub fn genesis() -> Self {
+        const GENESIS_TIMESTAMP: u64 = 1_712_620_800; // 2024-04-09 00:00:00 UTC
         let genesis_tx = Transaction::new_coinbase(
             "GENESIS".to_string(),
             0,
             0,
+            GENESIS_TIMESTAMP,
         );
-        Self::new(
-            0,
-            "0".repeat(64),
-            vec![genesis_tx],
-            "GENESIS".to_string(),
-        )
+
+        let txids: Vec<String> = vec![genesis_tx.txid.clone()];
+        let merkle = merkle_root(&txids);
+
+        let mut block = Self {
+            index: 0,
+            previous_hash: "0".repeat(64),
+            transactions: vec![genesis_tx],
+            timestamp: GENESIS_TIMESTAMP,
+            merkle_root: merkle,
+            validator: "GENESIS".to_string(),
+            hash: String::new(),
+            state_root: None,
+        };
+        block.hash = block.calculate_hash();
+        block
     }
 
     pub fn tx_count(&self) -> usize {
@@ -228,7 +241,7 @@ mod tests {
         let block1 = Block::new(
             1,
             genesis.hash.clone(),
-            vec![Transaction::new_coinbase("validator1".to_string(), 100_000_000, 1)],
+            vec![Transaction::new_coinbase("validator1".to_string(), 100_000_000, 1, 1_712_620_800)],
             "validator1".to_string(),
         );
         assert!(block1.validate_structure(1, &genesis.hash).is_ok());
@@ -254,7 +267,7 @@ mod tests {
         let mut block = Block::new(
             STATE_ROOT_FORK_HEIGHT,
             "0".repeat(64),
-            vec![Transaction::new_coinbase("v1".to_string(), 100_000_000, STATE_ROOT_FORK_HEIGHT)],
+            vec![Transaction::new_coinbase("v1".to_string(), 100_000_000, STATE_ROOT_FORK_HEIGHT, 1_712_620_800)],
             "v1".to_string(),
         );
         // state_root = None → "0"*64 sentinel in hash

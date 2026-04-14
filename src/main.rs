@@ -585,7 +585,7 @@ fn cmd_chain_validate() -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
     let bc = storage.load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
-    let valid = bc.is_valid_chain();
+    let valid = bc.is_valid_chain_window();
     println!("Chain valid: {}", valid);
     println!("Height: {}", bc.height());
     println!("Total blocks: {}", bc.height() + 1);

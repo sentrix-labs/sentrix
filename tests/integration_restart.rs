@@ -52,7 +52,7 @@ fn test_restart_preserves_full_state() {
     );
 
     // Chain must still be valid
-    assert!(loaded.is_valid_chain(), "chain invalid after restart");
+    assert!(loaded.is_valid_chain_window(), "chain invalid after restart");
 
     // Block hashes must be identical for all blocks in the sliding window
     let window_start = loaded.chain_window_start();
@@ -124,5 +124,5 @@ fn test_restart_height_integrity() {
     let storage2 = Storage::open(&path).expect("reopen");
     let loaded = storage2.load_blockchain().expect("load").expect("no state");
     assert_eq!(loaded.height(), expected_height, "height must survive restart");
-    assert!(loaded.is_valid_chain(), "reloaded chain must be valid");
+    assert!(loaded.is_valid_chain_window(), "reloaded chain must be valid");
 }

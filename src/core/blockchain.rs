@@ -158,7 +158,8 @@ impl Blockchain {
     }
 
     // ── Chain validation ─────────────────────────────────
-    pub fn is_valid_chain(&self) -> bool {
+    // V8-M-03: renamed from is_valid_chain → is_valid_chain_window to clarify scope
+    pub fn is_valid_chain_window(&self) -> bool {
         for i in 1..self.chain.len() {
             let block = &self.chain[i];
             let prev = &self.chain[i - 1];
@@ -393,7 +394,7 @@ mod tests {
         let bc = setup_chain();
         assert_eq!(bc.height(), 0);
         assert_eq!(bc.total_minted, TOTAL_PREMINE);
-        assert!(bc.is_valid_chain());
+        assert!(bc.is_valid_chain_window());
     }
 
     #[test]
@@ -409,7 +410,7 @@ mod tests {
         assert_eq!(block.index, 1);
         bc.add_block(block).unwrap();
         assert_eq!(bc.height(), 1);
-        assert!(bc.is_valid_chain());
+        assert!(bc.is_valid_chain_window());
     }
 
     #[test]
@@ -456,7 +457,7 @@ mod tests {
 
         // Tamper with txid — breaks merkle root integrity
         bc.chain[1].transactions[0].txid = "tampered".to_string();
-        assert!(!bc.is_valid_chain());
+        assert!(!bc.is_valid_chain_window());
     }
 
     #[test]
@@ -780,9 +781,10 @@ mod tests {
         ).unwrap();
 
         // Create transfer transaction
+        let bob = TEST_RECV; // V8-H-02: use valid-format address
         let token_op = TokenOp::Transfer {
             contract: contract.clone(),
-            to: "bob".to_string(),
+            to: bob.to_string(),
             amount: 100_000,
         };
         let tx = Transaction::new(
@@ -798,7 +800,7 @@ mod tests {
 
         // Verify token balances
         assert_eq!(bc.token_balance(&contract, &alice), 400_000);
-        assert_eq!(bc.token_balance(&contract, "bob"), 100_000);
+        assert_eq!(bc.token_balance(&contract, bob), 100_000);
     }
 
     #[test]

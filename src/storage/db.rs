@@ -31,17 +31,31 @@ impl Storage {
     }
 
     // L-01 FIX: Scan all stored blocks and write missing hash→index entries.
-    // O(n) only on first open when old data lacks the hash index; subsequent opens are O(1).
+    // V8-H-04: O(1) check via sentinel key — skip the full O(n) scan on subsequent opens.
     pub fn ensure_hash_index(&self) -> SentrixResult<()> {
+        // Fast path: if hash_index_complete marker exists, all blocks are already indexed.
+        if self.db.contains_key("hash_index_complete").unwrap_or(false) {
+            return Ok(());
+        }
+
         let height = self.load_height()?;
+        let mut indexed_any = false;
         for i in 0..=height {
             let key = format!("block:{}", i);
             if let Some(block) = self.get::<Block>(&key)? {
+                indexed_any = true;
                 let hash_key = format!("hash:{}", block.hash);
                 if self.get::<u64>(&hash_key)?.is_none() {
                     self.put(&hash_key, &block.index)?;
                 }
             }
+        }
+
+        // Mark indexing as complete so future opens skip the scan.
+        // Only set sentinel if blocks actually exist — prevents false-positive
+        // on empty DBs (e.g. first open before any blocks are stored).
+        if indexed_any {
+            self.put("hash_index_complete", &true)?;
         }
         Ok(())
     }

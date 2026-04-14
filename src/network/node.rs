@@ -161,6 +161,12 @@ impl Node {
                     let peer_ip = peer_addr.ip();
                     {
                         let mut counts = connection_counts.lock().await;
+
+                        // V8-M-06: prevent unbounded HashMap growth — evict stale entries
+                        if counts.len() > 10_000 {
+                            counts.retain(|_, (_, ts)| ts.elapsed() <= RATE_LIMIT_WINDOW);
+                        }
+
                         let entry = counts.entry(peer_ip).or_insert((0, Instant::now()));
                         if entry.1.elapsed() > RATE_LIMIT_WINDOW {
                             *entry = (0, Instant::now());
