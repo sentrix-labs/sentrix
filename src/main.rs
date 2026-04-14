@@ -253,7 +253,7 @@ async fn main() -> anyhow::Result<()> {
         },
 
         Commands::Start { validator_key, port, peers } => {
-            // H-04: validator_key can also come from env var
+            // validator_key can also come from SENTRIX_VALIDATOR_KEY env var
             let resolved_key = validator_key.or_else(|| std::env::var("SENTRIX_VALIDATOR_KEY").ok());
             cmd_start(resolved_key, port, peers).await?;
         }
@@ -297,7 +297,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// H-04 FIX: Resolve private key from CLI arg or env var, warn if CLI
+// Resolve private key from CLI arg or env var; warn if passed via CLI (shell history risk)
 fn resolve_key(cli_arg: Option<String>, env_var: &str, label: &str) -> anyhow::Result<String> {
     if let Some(ref key) = cli_arg {
         eprintln!("WARNING: passing {} as CLI argument is insecure. Prefer {} env var.", label, env_var);
@@ -450,7 +450,7 @@ async fn cmd_start(
 
     // ── P2P: libp2p TCP + Noise + Yamux ─────────────────
     println!("P2P transport: libp2p (Noise encrypted)");
-    // V9-M-02: Persist node identity so PeerId stays stable across restarts.
+    // Persist node identity keypair so PeerId stays stable across restarts.
     // A new PeerId on every restart breaks peer routing and libp2p's security model.
     let keypair_path = get_data_dir().join("node_keypair");
     let keypair = if keypair_path.exists() {
@@ -507,7 +507,7 @@ async fn cmd_start(
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-                // V9-H-01: Release write lock before disk I/O so API reads are not
+                // Release write lock before disk I/O so API reads are not
                 // blocked for the full duration of save_blockchain() (~3s stall fixed).
                 let result = {
                     let mut bc = shared_clone.write().await;
@@ -526,7 +526,7 @@ async fn cmd_start(
 
                 if let Some((height, block_clone)) = result {
                     println!("Block {} produced by {}", height, wallet.address);
-                    // V9-H-03: save_block (fast — only block data + height) every block.
+                    // save_block (fast — only block data + height) every block.
                     // Full state (accounts, validators, tokens) via read lock — API still serves.
                     let _ = storage_clone.save_block(&block_clone);
                     {
@@ -599,7 +599,7 @@ async fn cmd_start(
 
     println!("Node started. Press Ctrl+C to stop.");
 
-    // V9-M-01: Graceful shutdown on SIGTERM/SIGINT — saves state before exit.
+    // Graceful shutdown on SIGTERM/SIGINT — saves state before exit.
     // Without this, kill/systemctl stop corrupts in-flight state and causes chain forks.
     let shutdown_storage = storage.clone();
     let shutdown_shared = shared.clone();

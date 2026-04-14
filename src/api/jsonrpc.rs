@@ -170,7 +170,7 @@ pub async fn jsonrpc_handler(
             }
         }
         "sentrix_sendTransaction" => {
-            // C-01 FIX: No longer accepts private_key in params.
+            // JSON-RPC token operations accept signed transactions only — no private_key in params.
             // params[0] must be a pre-signed Transaction object (same fields as POST /transactions).
             // Client is responsible for signing the transaction locally before sending.
             let tx: Transaction = match serde_json::from_value(params[0].clone()) {
@@ -222,7 +222,7 @@ pub async fn jsonrpc_handler(
     })
 }
 
-// M-03 FIX: hard cap on batch size
+// Hard cap on batch size to prevent CPU saturation from oversized batch requests
 const MAX_BATCH_SIZE: usize = 100;
 
 // ── Smart dispatcher (single + batch) ────────────────────
@@ -244,7 +244,7 @@ pub async fn rpc_dispatcher(
             Err(_) => return Json(JsonRpcResponse::err(None, -32600, "Invalid Request")).into_response(),
         };
 
-        // M-03 FIX: reject oversized batches
+        // Reject oversized batches before deserializing individual requests
         if requests.len() > MAX_BATCH_SIZE {
             return Json(JsonRpcResponse::err(
                 None, -32600,

@@ -60,7 +60,7 @@ impl SentrixTrie {
         // T-B: when updating an existing key, record the old leaf hash so it can be
         // removed after the new leaf is written (prevents orphaned-node storage leak).
         let mut old_leaf_hash: Option<NodeHash> = None;
-        // V7-L-01: track old internal nodes so we can clean them up after Phase 3.
+        // Track old internal nodes so they can be cleaned up after structural replacement.
         let mut old_internal_hashes: Vec<NodeHash> = Vec::new();
 
         loop {
@@ -118,13 +118,13 @@ impl SentrixTrie {
                     break;
                 }
                 TrieNode::Internal { left, right, .. } => {
-                    // V7-M-04: get_bit(key, 256) would be OOB — Internal at depth 256 is corrupt
+                    // get_bit(key, 256) would be out of bounds — an Internal node at depth 256 indicates corruption
                     if depth >= 256 {
                         return Err(SentrixError::Internal(
                             "trie: corrupt tree — Internal node at depth 256 (key space exhausted)".into(),
                         ));
                     }
-                    // V7-L-01: record this internal node; it will be replaced by Phase 3.
+                    // Record this internal node so it can be cleaned up when structurally replaced.
                     old_internal_hashes.push(current);
                     let bit = get_bit(key, depth);
                     let (child, sibling) = if bit { (right, left) } else { (left, right) };
@@ -162,7 +162,7 @@ impl SentrixTrie {
 
         self.root = up_hash;
 
-        // V7-L-01: delete old internal nodes that were replaced by Phase 3.
+        // Delete old internal nodes that were structurally replaced during this insert.
         // These became orphaned because new internal nodes were written with different hashes.
         for old_hash in old_internal_hashes {
             let _ = self.cache.delete_node(&old_hash);
@@ -217,7 +217,7 @@ impl SentrixTrie {
     /// also collapses to an empty hash (short-circuit property maintained).
     ///
     /// Fully iterative — O(1) stack depth.
-    // V7-M-01: initial None assignments are intentional; the compiler warns because they are
+    // Initial None assignments are intentional; the compiler warns because they are
     // always overwritten inside the loop before being read.
     #[allow(unused_assignments)]
     pub fn delete(&mut self, key: &[u8; 32]) -> SentrixResult<NodeHash> {
@@ -225,7 +225,7 @@ impl SentrixTrie {
         let mut current = self.root;
         let mut depth = 0usize;
 
-        // V7-M-01: storage for leaf/value hashes captured in Phase 1 for cleanup in Phase 2.
+        // Storage for leaf/value hashes captured in Phase 1 — cleaned up in Phase 2.
         let mut found_leaf_hash: Option<NodeHash> = None;
         let mut found_value_hash: Option<NodeHash> = None;
 
@@ -253,13 +253,13 @@ impl SentrixTrie {
                     if leaf_key != *key {
                         return Ok(self.root); // different leaf — key absent
                     }
-                    // V7-M-01: capture leaf and value hash for cleanup after Phase 2.
+                    // Capture leaf and value hash for cleanup once Phase 2 relinks around the deleted node.
                     found_leaf_hash = Some(current);
                     found_value_hash = Some(leaf_vh);
                     break depth; // found — leaf is at `depth`
                 }
                 TrieNode::Internal { left, right, .. } => {
-                    // V7-M-04: Internal at depth 256 is corrupt (all key bits exhausted).
+                    // Internal at depth 256 means all key bits are exhausted — tree structure is corrupt
                     if depth >= 256 {
                         return Err(SentrixError::Internal(
                             "trie: corrupt tree — Internal node at depth 256".into(),
@@ -280,7 +280,7 @@ impl SentrixTrie {
         let mut up_depth = found_depth; // depth of the node represented by up_hash
 
         for (sibling, is_right) in path.iter().rev() {
-            // V7-M-04: defensive guard against underflow on corrupt trees.
+            // Defensive guard against underflow on corrupt or malformed trees
             if up_depth == 0 {
                 break;
             }
@@ -304,7 +304,7 @@ impl SentrixTrie {
 
         self.root = up_hash;
 
-        // V7-M-01: clean up the deleted leaf node and its value blob.
+        // Clean up the deleted leaf node and its associated value blob from storage.
         if let Some(leaf_hash) = found_leaf_hash {
             let _ = self.cache.delete_node(&leaf_hash);
         }
@@ -373,7 +373,7 @@ impl SentrixTrie {
                     });
                 }
                 TrieNode::Internal { left, right, .. } => {
-                    // V7-M-04: Internal at depth 256 is corrupt (key space exhausted).
+                    // Internal at depth 256 means the key space is exhausted — tree structure is corrupt
                     if depth >= 256 {
                         return Err(SentrixError::Internal(
                             "trie: corrupt tree — Internal node at depth 256 in prove".into(),
@@ -432,7 +432,7 @@ impl std::fmt::Debug for SentrixTrie {
 }
 
 /// Clone shares the same underlying sled trees (Arc-based) but starts with a fresh LRU cache.
-/// V7-I-03: uses the original capacity, not hardcoded 10_000.
+/// Uses the original capacity from construction, not a hardcoded default.
 impl Clone for SentrixTrie {
     fn clone(&self) -> Self {
         Self {
@@ -662,7 +662,7 @@ mod tests {
         let _ = removed; // count varies — just assert GC runs without error
     }
 
-    /// V7-M-01: delete() must clean up the deleted leaf node and value blob.
+    /// delete() cleans up both the leaf node and its associated value blob.
     #[test]
     fn test_delete_cleans_up_leaf_node_and_value() {
         let (_dir, db) = temp_db();
@@ -690,7 +690,7 @@ mod tests {
         assert!(trie.get(&key).unwrap().is_none(), "deleted key must not be found");
     }
 
-    /// V7-L-01: insert must clean up old internal nodes on structural change.
+    /// insert cleans up old internal nodes when a structural relink is required.
     #[test]
     fn test_insert_cleans_old_internal_nodes() {
         let (_dir, db) = temp_db();
@@ -727,7 +727,7 @@ mod tests {
         let _ = nodes_1; // suppress unused warning
     }
 
-    /// V7-M-04: prove() does not require a mutable reference (V7-M-03).
+    /// prove() only reads the trie — no mutable reference required.
     #[test]
     fn test_prove_works_with_shared_reference() {
         let (_dir, db) = temp_db();
@@ -743,7 +743,7 @@ mod tests {
         assert!(proof.verify_membership(&root));
     }
 
-    /// V7-I-03: clone uses original capacity, not hardcoded 10_000.
+    /// Clone preserves the original capacity rather than using a hardcoded default.
     #[test]
     fn test_clone_preserves_capacity() {
         let (_dir, db) = temp_db();

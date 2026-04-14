@@ -6,7 +6,7 @@ use crate::types::error::{SentrixError, SentrixResult};
 impl Blockchain {
     // ── SRX-20 Token Operations ────────────────────────────
 
-    // V6-M-01 FIX: pub(crate) — not called from routes.rs (which uses the mempool/add_block path).
+    // pub(crate) — not callable from routes.rs; canonical on-chain path uses the mempool/add_block pipeline.
     // Direct state mutation bypasses transaction lifecycle; restrict to internal/testing use only.
     // #[allow(dead_code)] — kept for potential future internal use (migration, genesis tooling)
     #[allow(dead_code)]
@@ -35,21 +35,21 @@ impl Blockchain {
             deployer_acc.balance = deployer_acc.balance.checked_sub(deploy_fee)
                 .ok_or_else(|| SentrixError::Internal("deploy fee underflow".to_string()))?;
 
-            let burn_share = deploy_fee.div_ceil(2); // L-02 FIX: burn rounds up
+            let burn_share = deploy_fee.div_ceil(2); // burn gets ceiling so no fee is lost to rounding
             let eco_share = deploy_fee - burn_share;
             self.accounts.total_burned += burn_share;
             self.accounts.credit(ECOSYSTEM_FUND_ADDRESS, eco_share)?;
         }
 
         // Deploy contract — use deployer+nonce as seed (internal path; no txid available here)
-        // V6-C-01: this is pub(crate) internal only; canonical on-chain path uses tx.txid in add_block
+        // Internal only — canonical on-chain path passes tx.txid through add_block for deterministic addressing
         let nonce = self.accounts.get_nonce(deployer);
         let seed = format!("{}|{}|{}", deployer, nonce, name);
         let contract_address = self.contracts.deploy(deployer, &name, &symbol, decimals, total_supply, max_supply, &seed)?;
         Ok(contract_address)
     }
 
-    // V6-M-01 FIX: pub(crate) — internal/testing use only; routes use mempool path
+    // pub(crate) — internal/testing use only; routes submit through the mempool path
     #[allow(dead_code)]
     pub(crate) fn token_transfer(
         &mut self,
@@ -74,7 +74,7 @@ impl Blockchain {
             caller_acc.balance = caller_acc.balance.checked_sub(gas_fee)
                 .ok_or_else(|| SentrixError::Internal("gas fee underflow".to_string()))?;
 
-            let burn_share = gas_fee.div_ceil(2); // L-02 FIX: burn rounds up
+            let burn_share = gas_fee.div_ceil(2); // burn gets ceiling so no fee is lost to rounding
             let val_share = gas_fee - burn_share;
             self.accounts.total_burned += burn_share;
 
@@ -92,7 +92,7 @@ impl Blockchain {
         Ok(())
     }
 
-    // V6-M-01 FIX: pub(crate) — internal/testing use only; routes use mempool path
+    // pub(crate) — internal/testing use only; routes submit through the mempool path
     #[allow(dead_code)]
     pub(crate) fn token_burn(
         &mut self,
@@ -116,7 +116,7 @@ impl Blockchain {
             caller_acc.balance = caller_acc.balance.checked_sub(gas_fee)
                 .ok_or_else(|| SentrixError::Internal("gas fee underflow".to_string()))?;
 
-            let burn_share = gas_fee.div_ceil(2); // L-02 FIX: burn rounds up
+            let burn_share = gas_fee.div_ceil(2); // burn gets ceiling so no fee is lost to rounding
             let val_share = gas_fee - burn_share;
             self.accounts.total_burned += burn_share;
 

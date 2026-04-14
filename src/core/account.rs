@@ -84,7 +84,7 @@ impl AccountDB {
         // Credit recipient
         self.credit(to, amount)?;
 
-        // L-02 FIX: Burn rounds up (ceiling) so odd fees are never lost — validator gets floor
+        // Burn gets ceiling division so odd fees are never lost — validator gets the floor share
         let burn_amount = fee.div_ceil(2);
         self.total_burned = self.total_burned.saturating_add(burn_amount);
 

@@ -10,7 +10,7 @@ use axum::{
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::collections::HashMap;
-// V6-M-03 FIX: tokio::sync::Mutex is async-safe — does not block Tokio worker threads.
+// tokio::sync::Mutex is async-safe — does not block Tokio worker threads.
 // std::sync::Mutex::lock() is a blocking syscall; holding it in async context
 // starves other tasks on the same thread under high load.
 use tokio::sync::Mutex;
@@ -77,15 +77,14 @@ pub struct SendTxRequest {
     pub transaction: Transaction,
 }
 
-// C-01 FIX: Token endpoints now accept pre-signed transactions.
-// Private keys MUST be kept client-side — server never receives them.
-// Client: build TokenOp JSON → put in tx.data → sign tx → POST here.
+// Token endpoints accept pre-signed transactions only — private keys stay client-side.
+// Client builds TokenOp JSON → encodes in tx.data → signs locally → POSTs signed tx here.
 #[derive(Deserialize)]
 pub struct SignedTxRequest {
     pub transaction: Transaction,
 }
 
-// V8-API-H-02: Use `subtle` crate for constant-time comparison instead of hand-rolled impl.
+// Constant-time comparison via `subtle` crate prevents timing-based API key leakage.
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
     use subtle::ConstantTimeEq;
     let a_bytes = a.as_bytes();
@@ -122,9 +121,9 @@ async fn ip_rate_limit_middleware(
         .unwrap_or_else(|| "unknown".to_string());
 
     let allowed = if let Some(limiter) = request.extensions().get::<IpRateLimiter>().cloned() {
-        let mut map = limiter.lock().await;  // V6-M-03: async lock — yields instead of blocking thread
+        let mut map = limiter.lock().await;  // async lock — yields to executor instead of blocking the thread
 
-        // V8-API-M-02: prevent unbounded HashMap growth — evict stale entries
+        // Evict stale entries to keep the rate-limiter map from growing without bound
         if map.len() > 10_000 {
             map.retain(|_, (_, ts)| ts.elapsed().as_secs() < RATE_LIMIT_WINDOW_SECS);
         }
@@ -158,9 +157,8 @@ async fn ip_rate_limit_middleware(
 
 // ── Router ───────────────────────────────────────────────
 pub fn create_router(state: SharedState) -> Router {
-    // M-06 FIX: CORS — fail-safe restrictive default.
-    // If SENTRIX_CORS_ORIGIN is not set → no cross-origin allowed (safest default).
-    // Use SENTRIX_CORS_ORIGIN=* only for local development; set specific origins in production.
+    // CORS uses a fail-safe restrictive default — no cross-origin allowed unless SENTRIX_CORS_ORIGIN is set.
+    // Use SENTRIX_CORS_ORIGIN=* for local development only; set specific origins in production.
     let cors = match std::env::var("SENTRIX_CORS_ORIGIN").ok().as_deref() {
         Some("*") => {
             // Explicit wildcard — allow all origins (dev only)
@@ -194,7 +192,7 @@ pub fn create_router(state: SharedState) -> Router {
                 ])
         }
         _ => {
-            // M-06 FIX: Not set → restrictive default, no cross-origin requests allowed.
+            // No SENTRIX_CORS_ORIGIN set → restrictive default, no cross-origin requests allowed.
             // Set SENTRIX_CORS_ORIGIN in .env to enable cross-origin access.
             CorsLayer::new()
                 .allow_methods([
@@ -209,7 +207,7 @@ pub fn create_router(state: SharedState) -> Router {
         }
     };
 
-    // V5-06: Per-IP rate limiter shared across all requests
+    // Per-IP rate limiter shared across all requests via tower Extension
     let rate_limiter: IpRateLimiter = Arc::new(Mutex::new(HashMap::new()));
 
     // Single router — auth is enforced via the ApiKey extractor embedded
@@ -258,10 +256,9 @@ pub fn create_router(state: SharedState) -> Router {
         // ── Explorer ─────────────────────────────────────────────
         .nest("/explorer", explorer_router(state.clone()))
         .layer(cors)
-        // C-02 FIX: Global HTTP concurrency limit — prevent CPU saturation from concurrent heavy
-        // requests (e.g. /chain/validate).
+        // Global HTTP concurrency limit prevents CPU saturation from concurrent heavy requests (e.g. /chain/validate).
         .layer(ConcurrencyLimitLayer::new(500))
-        // V5-06: Per-IP rate limit (60 req/min, defense-in-depth behind nginx)
+        // Per-IP rate limit (60 req/min, defense-in-depth behind nginx)
         // Layer order: Extension (outer) → rate_limit middleware → concurrency → cors → handler
         .layer(axum::middleware::from_fn(ip_rate_limit_middleware))
         .layer(axum::Extension(rate_limiter))
@@ -311,7 +308,7 @@ async fn chain_info(State(state): State<SharedState>) -> Json<serde_json::Value>
     Json(bc.chain_stats())
 }
 
-// H-07 FIX: Paginated block listing (default 20, max 100, newest first)
+// Paginated block listing — default 20, max 100, newest first
 async fn get_blocks(
     State(state): State<SharedState>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -323,7 +320,7 @@ async fn get_blocks(
         .unwrap_or(20)
         .min(100); // hard cap at 100
 
-    let total = bc.height() + 1; // I-01 FIX: use true height, not window size
+    let total = bc.height() + 1; // true height from last block's index, not window size
     let start_skip = (page * limit) as usize;
 
     let blocks: Vec<serde_json::Value> = bc.chain.iter()
@@ -362,17 +359,17 @@ async fn get_block(
     match bc.get_block(index) {
         Some(block) => serde_json::to_value(block)
             .map(Json)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR), // L-05 FIX: no unwrap
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR),
         None => Err(StatusCode::NOT_FOUND),
     }
 }
 
-// M-07 FIX: Cache last validation result per block height to avoid O(n) recompute on every call.
+// Cache last validation result per block height to avoid O(n) recompute on every call.
 static VALIDATE_CACHE_HEIGHT: AtomicU64 = AtomicU64::new(u64::MAX);
 static VALIDATE_CACHE_RESULT: AtomicBool = AtomicBool::new(false);
 
-// M-07 FIX: validate_chain now requires X-API-Key authentication.
-// An O(n) full chain scan on a 92,000+ block chain per unauthenticated request = DoS vector.
+// validate_chain requires X-API-Key authentication — an O(n) full chain scan per
+// unauthenticated request would be a viable DoS vector on a long chain.
 async fn validate_chain(
     _auth: ApiKey,
     State(state): State<SharedState>,
@@ -386,7 +383,7 @@ async fn validate_chain(
         return Json(serde_json::json!({
             "valid": cached_valid,
             "height": height,
-            "total_blocks": bc.height() + 1, // I-01 FIX: true total, not window size
+            "total_blocks": bc.height() + 1, // true total from block index, not window length
             "cached": true,
         }));
     }
@@ -408,7 +405,7 @@ async fn get_balance(
     State(state): State<SharedState>,
     Path(address): Path<String>,
 ) -> Json<serde_json::Value> {
-    // H-05 FIX: Normalize address to lowercase (REST vs RPC consistency)
+    // Normalize address to lowercase for case-insensitive lookup (REST/RPC consistency)
     let address = address.to_lowercase();
     let bc = state.read().await;
     let balance = bc.accounts.get_balance(&address);
@@ -423,7 +420,7 @@ async fn get_nonce(
     State(state): State<SharedState>,
     Path(address): Path<String>,
 ) -> Json<serde_json::Value> {
-    // H-05 FIX: Normalize address to lowercase
+    // Normalize address to lowercase for case-insensitive lookup
     let address = address.to_lowercase();
     let bc = state.read().await;
     let nonce = bc.accounts.get_nonce(&address);
@@ -528,7 +525,7 @@ async fn get_token_balance(
     }))
 }
 
-// C-01 FIX: Token endpoints no longer accept private keys.
+// Token operations are submitted as pre-signed transactions — server never touches private keys.
 // Client must sign the transaction locally:
 //   1. Build TokenOp JSON → put in tx.data
 //   2. Set tx.to_address = TOKEN_OP_ADDRESS ("0x0000000000000000000000000000000000000000")
@@ -637,12 +634,12 @@ async fn get_wallet_info(
     State(state): State<SharedState>,
     Path(address): Path<String>,
 ) -> Json<serde_json::Value> {
-    // V8-API-H-01: normalize address to lowercase for case-insensitive lookup
+    // Normalize address to lowercase for case-insensitive lookup
     let address = address.to_lowercase();
     let bc = state.read().await;
     let balance = bc.accounts.get_balance(&address);
     let nonce = bc.accounts.get_nonce(&address);
-    // V6-M-04: get_address_tx_count returns window-aware metadata (see chain_queries.rs)
+    // get_address_tx_count returns window-aware metadata; see chain_queries.rs for coverage details
     let tx_count_info = bc.get_address_tx_count(&address);
     Json(serde_json::json!({
         "address": address,
@@ -731,7 +728,7 @@ async fn get_richlist(State(state): State<SharedState>) -> Json<serde_json::Valu
     Json(serde_json::json!({ "holders": holders, "total": total }))
 }
 
-// I-03: Admin audit log — requires X-API-Key authentication
+// Admin audit log — requires X-API-Key authentication
 async fn get_admin_log(
     _auth: ApiKey,
     State(state): State<SharedState>,
@@ -750,7 +747,7 @@ fn api_err(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
 
 // ── Address history handlers ─────────────────────────────
 
-// L-03 FIX: paginated address history
+// Paginated address history
 async fn get_address_history(
     State(state): State<SharedState>,
     Path(address): Path<String>,
@@ -773,12 +770,12 @@ async fn get_address_info(
     State(state): State<SharedState>,
     Path(address): Path<String>,
 ) -> Json<serde_json::Value> {
-    // V8-API-H-01: normalize address to lowercase for case-insensitive lookup
+    // Normalize address to lowercase for case-insensitive lookup
     let address = address.to_lowercase();
     let bc = state.read().await;
     let balance = bc.accounts.get_balance(&address);
     let nonce = bc.accounts.get_nonce(&address);
-    // V6-M-04: get_address_tx_count returns window-aware metadata (see chain_queries.rs)
+    // get_address_tx_count returns window-aware metadata; see chain_queries.rs for coverage details
     let tx_count_info = bc.get_address_tx_count(&address);
     Json(serde_json::json!({
         "address": address,
@@ -798,7 +795,7 @@ async fn get_address_proof(
     State(state): State<SharedState>,
     Path(address): Path<String>,
 ) -> impl IntoResponse {
-    // V7-L-02: validate address format BEFORE acquiring any lock.
+    // Validate address format before acquiring any lock — fail fast on bad input
     // Rejects obviously-invalid inputs early (no lock overhead, no trie traversal).
     if !crate::core::blockchain::is_valid_sentrix_address(&address) {
         return (
@@ -811,7 +808,7 @@ async fn get_address_proof(
             .into_response();
     }
 
-    // V7-M-03: downgrade from WRITE to READ lock.
+    // Read lock is sufficient for proof generation — no state mutation required
     // prove() previously took &mut self due to LRU mutation; TrieCache now uses an
     // internal Mutex<LruCache>, so prove() takes &self — a read lock is sufficient.
     // This prevents proof requests from blocking block production (which needs a write lock).
@@ -850,7 +847,7 @@ async fn get_address_proof(
                     "terminal_hash_hex": hex::encode(proof.terminal_hash),
                     "siblings_hex": proof.siblings.iter().map(hex::encode).collect::<Vec<_>>(),
                     "root_hex": hex::encode(trie.root_hash()),
-                    // V7-I-01: document proof scope — only native SRX is committed.
+                    // Proof covers native SRX state only — token balances are not committed to the trie
                     "scope": "native_srx_only",
                     "scope_note": "Proof covers native SRX balance and nonce only. SRX-20 token balances are not committed to the state root.",
                 }))

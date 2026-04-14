@@ -7,8 +7,8 @@ use sha3::Digest;
 use zeroize::Zeroizing;
 use crate::types::error::{SentrixError, SentrixResult};
 
-// M-05 FIX: no Clone — prevents accidental secret key duplication in memory
-// L-04 FIX: secret_key_bytes is Zeroizing<[u8; 32]> — auto-zeroes on drop, no heap String
+// No Clone — prevents accidental secret key duplication in memory
+// secret_key_bytes is Zeroizing<[u8; 32]> — automatically zeroed on drop, never stored as a heap String
 #[derive(Debug)]
 pub struct Wallet {
     pub address: String,         // 0x + 40 hex chars (Ethereum style)

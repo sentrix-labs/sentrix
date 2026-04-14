@@ -14,7 +14,7 @@ pub const TOKEN_OP_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum TokenOp {
-    // V5-02: max_supply=0 means unlimited; #[serde(default)] for backward compat with old txs
+    // max_supply=0 means unlimited; #[serde(default)] for backward compatibility with older transactions
     Deploy { name: String, symbol: String, decimals: u8, supply: u64, #[serde(default)] max_supply: u64 },
     Transfer { contract: String, to: String, amount: u64 },
     Burn { contract: String, amount: u64 },
@@ -33,7 +33,7 @@ impl TokenOp {
     }
 
     pub fn is_token_op(data: &str) -> bool {
-        // V8-M-02: use the real decoder instead of naive string match
+        // Use the full decoder rather than naive string matching to correctly identify token op transactions
         Self::decode(data).is_some()
     }
 }
@@ -119,7 +119,7 @@ impl Transaction {
         self.from_address == COINBASE_ADDRESS
     }
 
-    // H-01 FIX: Canonical signing payload using BTreeMap for deterministic key ordering
+    // Canonical signing payload uses BTreeMap for deterministic key ordering across all nodes
     // and serde_json for proper escaping of special characters
     pub fn signing_payload(&self) -> String {
         let mut map = std::collections::BTreeMap::new();
@@ -131,7 +131,7 @@ impl Transaction {
         map.insert("nonce", serde_json::Value::from(self.nonce));
         map.insert("timestamp", serde_json::Value::from(self.timestamp));
         map.insert("to", serde_json::Value::from(self.to_address.as_str()));
-        // M-01 FIX: unwrap → unwrap_or_else to avoid panic in production path
+        // unwrap_or_else avoids panic in production if signing fails unexpectedly
         serde_json::to_string(&map).unwrap_or_else(|_| String::from("{}"))
     }
 
@@ -152,7 +152,7 @@ impl Transaction {
 
     pub fn verify(&self) -> SentrixResult<()> {
         if self.is_coinbase() {
-            // H-03 FIX: Coinbase must have empty signature and public_key
+            // Coinbase transactions have empty signature and public_key — no private key signs block rewards
             if !self.signature.is_empty() || !self.public_key.is_empty() {
                 return Err(SentrixError::InvalidTransaction(
                     "coinbase transaction must not have signature or public_key".to_string()
@@ -167,7 +167,7 @@ impl Transaction {
         let public_key = PublicKey::from_slice(&pub_key_bytes)
             .map_err(|_| SentrixError::InvalidSignature)?;
 
-        // C-01 FIX: Verify public key maps to from_address
+        // Verify the public key cryptographically derives to from_address — prevents key substitution
         let derived_address = crate::wallet::wallet::Wallet::derive_address(&public_key);
         if derived_address != self.from_address {
             return Err(SentrixError::InvalidTransaction(

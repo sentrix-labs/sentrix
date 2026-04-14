@@ -16,14 +16,14 @@ impl Blockchain {
         // ── Pass 1: dry-run validation ───────────────────
         block.validate_structure(expected_index, &expected_prev)?;
 
-        // C-02 FIX: Verify validator authorization for this block height
+        // Verify the block's validator is authorized for this round-robin slot before committing
         if !self.authority.is_authorized(&block.validator, expected_index)? {
             return Err(SentrixError::UnauthorizedValidator(
                 format!("validator {} not authorized for block {}", block.validator, expected_index)
             ));
         }
 
-        // H-06 FIX: Validate block timestamp
+        // Block timestamp must be ≥ previous block and within 15s of wall time
         let prev_timestamp = self.latest_block()?.timestamp;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -70,7 +70,7 @@ impl Blockchain {
             // Validate
             tx.validate(nonce, self.chain_id)?;
 
-            // H-02 FIX: checked addition to prevent overflow
+            // Checked addition prevents integer overflow on amount + fee
             let needed = tx.amount.checked_add(tx.fee)
                 .ok_or_else(|| SentrixError::InvalidTransaction(
                     "amount + fee overflow".to_string()
@@ -91,7 +91,7 @@ impl Blockchain {
                                 format!("token contract {} not found", contract)
                             ));
                         }
-                        // V8-H-02: validate target address
+                        // Validate token transfer target is a well-formed Sentrix address
                         if !is_valid_sentrix_address(to) {
                             return Err(SentrixError::InvalidTransaction(
                                 format!("invalid token transfer target address: '{}'", to)
@@ -119,7 +119,7 @@ impl Blockchain {
                                 format!("token contract {} not found", contract)
                             ));
                         }
-                        // V8-H-02: validate target address
+                        // Validate token mint target is a well-formed Sentrix address
                         if !is_valid_sentrix_address(to) {
                             return Err(SentrixError::InvalidTransaction(
                                 format!("invalid token mint target address: '{}'", to)
@@ -132,7 +132,7 @@ impl Blockchain {
                                 format!("token contract {} not found", contract)
                             ));
                         }
-                        // V8-H-02: validate spender address
+                        // Validate spender is a well-formed Sentrix address before recording allowance
                         if !is_valid_sentrix_address(spender) {
                             return Err(SentrixError::InvalidTransaction(
                                 format!("invalid token approve spender address: '{}'", spender)
@@ -140,7 +140,7 @@ impl Blockchain {
                         }
                     }
                     TokenOp::Deploy { name, symbol, .. } => {
-                        // V6-C-01: validate name/symbol lengths now so Pass 2 won't fail mid-commit
+                        // Pre-validate name and symbol in Pass 1 to keep Pass 2 atomic — no mid-commit failures
                         if name.is_empty() || name.len() > 64 {
                             return Err(SentrixError::InvalidTransaction(
                                 "token name must be 1–64 characters".to_string(),
@@ -180,7 +180,7 @@ impl Blockchain {
             if let Some(token_op) = TokenOp::decode(&tx.data) {
                 match token_op {
                     TokenOp::Deploy { name, symbol, decimals, supply, max_supply } => {
-                        // V6-C-01 FIX: use tx.txid as deterministic seed — same txid on every node
+                        // Contract address derived from tx.txid — deterministic across all nodes for the same transaction
                         self.contracts.deploy(&tx.from_address, &name, &symbol, decimals, supply, max_supply, &tx.txid)?;
                     }
                     TokenOp::Transfer { contract, to, amount } => {
@@ -199,7 +199,7 @@ impl Blockchain {
             }
         }
 
-        // L-02 FIX: Burn gets ceiling, validator gets floor — ensures total_fee is fully distributed
+        // Burn gets ceiling division, validator gets floor — all fees distributed with no rounding loss
         let burn_fee_share = total_fee.div_ceil(2);
         let validator_fee_share = total_fee - burn_fee_share;
         if validator_fee_share > 0 {
@@ -216,21 +216,21 @@ impl Blockchain {
             .collect();
         self.mempool.retain(|tx| !mined_txids.contains(&tx.txid));
 
-        // M-04 FIX: Prune stale transactions after each block
+        // Prune expired transactions after each block to keep mempool bounded
         self.prune_mempool();
 
         // Append block to chain
         self.chain.push(block);
 
-        // I-01 FIX: sliding window — evict oldest blocks that exceed CHAIN_WINDOW_SIZE
-        // Evicted blocks remain in sled storage; only the in-memory window shrinks
+        // Sliding window: evict oldest blocks beyond CHAIN_WINDOW_SIZE; evicted blocks stay in sled
+        // Only the in-memory window shrinks — full history is always available on disk
         if self.chain.len() > CHAIN_WINDOW_SIZE {
             let excess = self.chain.len() - CHAIN_WINDOW_SIZE;
             self.chain.drain(..excess);
         }
 
-        // Step 5: Update state trie, set state_root, verify consensus (V7-H-01, V7-C-01).
-        // V7-H-01: update_trie_for_block now propagates errors instead of swallowing them.
+        // Update state trie after block commit, stamp state_root on the block header,
+        // and verify the sender's committed root when receiving from peers.
         let trie_root = self.update_trie_for_block()
             .map_err(|e| SentrixError::Internal(
                 format!("trie update failed at block {}: {}", self.height(), e)
@@ -249,7 +249,7 @@ impl Blockchain {
                     }
                     Some(received_root) => {
                         // Received block: verify peer's state_root matches ours (V7-C-01).
-                        // V8-CRIT-01: reject the block on mismatch instead of logging.
+                        // State root mismatch is fatal — reject the block to prevent accepting a diverged chain state
                         if received_root != computed_root {
                             return Err(SentrixError::ChainValidationFailed(
                                 format!(
@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(bc.accounts.get_balance("v1"), balance_before);
     }
 
-    // V6-C-01 test: contract address is deterministic — same seed produces same address
+    // Contract address must be deterministic — same txid on any node produces the same address
     #[test]
     fn test_contract_address_deterministic() {
         let mut bc1 = setup();

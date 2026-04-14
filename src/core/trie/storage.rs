@@ -98,7 +98,7 @@ impl TrieStorage {
         self.roots
             .insert(version.to_be_bytes(), root.as_slice())
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
-        // V7-H-02: flush all three trees in order (nodes → values → roots) so that
+        // Flush all three trees in order (nodes → values → roots) so that
         // node/value writes that preceded this root are durable before the root pointer
         // is committed.  Flushing only `roots` would leave nodes/values in the OS page
         // cache — a crash could produce a valid root pointing to missing nodes.
@@ -137,8 +137,8 @@ impl TrieStorage {
     /// Scans both `trie_nodes` and `trie_values`, collecting every hash not in the live
     /// set, then deletes them.  Returns the total count of entries removed across both trees.
     ///
-    /// V7-M-02: previously only GC'd `trie_nodes`; orphaned value blobs (from delete()
-    /// calls) were never cleaned.  Now both trees are scanned.
+    /// GC sweeps both `trie_nodes` and `trie_values` — orphaned value blobs from delete()
+    /// calls were previously never cleaned.  Now both trees are scanned.
     ///
     /// Callers must supply a complete set of hashes reachable from all committed roots
     /// they wish to preserve.  Nodes referenced only by un-committed (in-flight) mutations
@@ -148,7 +148,7 @@ impl TrieStorage {
         live_hashes: &std::collections::HashSet<NodeHash>,
     ) -> SentrixResult<usize> {
         let node_count = self.gc_tree(&self.nodes, live_hashes)?;
-        // V7-M-02: also GC value blobs — leaf value_hash == leaf node_hash, same live set.
+        // Also GC value blobs — leaf value_hash matches leaf node_hash, same live set.
         let value_count = self.gc_tree(&self.values, live_hashes)?;
         Ok(node_count + value_count)
     }

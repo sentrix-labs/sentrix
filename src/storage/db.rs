@@ -12,7 +12,7 @@ pub struct Storage {
 
 impl Storage {
     pub fn open(path: &str) -> SentrixResult<Self> {
-        // V5-04: Warn if node operator has not confirmed disk encryption is active
+        // Warn if the node operator has not confirmed disk encryption is active
         if std::env::var("SENTRIX_ENCRYPTED_DISK").as_deref() != Ok("true") {
             tracing::warn!(
                 "SECURITY WARNING: SENTRIX_ENCRYPTED_DISK is not set to 'true'. \
@@ -25,13 +25,13 @@ impl Storage {
         let db = sled::open(path)
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         let storage = Self { db };
-        // L-01 FIX: Re-index any blocks missing a hash→index entry (migration for old data)
+        // Re-index blocks missing a hash→index entry (one-time migration for pre-index data)
         storage.ensure_hash_index()?;
         Ok(storage)
     }
 
-    // L-01 FIX: Scan all stored blocks and write missing hash→index entries.
-    // V8-H-04: O(1) check via sentinel key — skip the full O(n) scan on subsequent opens.
+    // Scan all stored blocks and write missing hash→index entries.
+    // O(1) check via sentinel key — skip the full O(n) scan on subsequent opens.
     pub fn ensure_hash_index(&self) -> SentrixResult<()> {
         // Fast path: if hash_index_complete marker exists, all blocks are already indexed.
         if self.db.contains_key("hash_index_complete").unwrap_or(false) {
@@ -107,11 +107,11 @@ impl Storage {
         Ok(())
     }
 
-    // M-04 FIX: chain field is #[serde(skip)], always reconstruct from per-block keys
+    // chain field is #[serde(skip)] — always reconstructed from individual per-block sled keys
     pub fn load_blockchain(&self) -> SentrixResult<Option<Blockchain>> {
         // Try new format (state + per-block)
         if let Some(mut bc) = self.get::<Blockchain>("state")? {
-            // I-01 FIX: only load the sliding window (last CHAIN_WINDOW_SIZE blocks) into RAM.
+            // Load only the sliding window (last CHAIN_WINDOW_SIZE blocks) into RAM.
             // Older blocks remain in sled and are accessible on-demand via load_block().
             let height = self.load_height()?;
             let window_start = height.saturating_sub(CHAIN_WINDOW_SIZE as u64 - 1);
@@ -120,9 +120,7 @@ impl Storage {
                 match self.load_block(i)? {
                     Some(block) => blocks.push(block),
                     None => {
-                        // PR #62: Missing block — caused by pre-PR#61 sync_from_peer()
-                        // not persisting blocks. Adjust height to last available block
-                        // so the node can start and re-sync from peers.
+                        // Missing block detected during window reconstruction — node will re-sync from peers.
                         let effective = if let Some(last) = blocks.last() {
                             last.index
                         } else {
@@ -151,7 +149,7 @@ impl Storage {
                 }
             }
             bc.chain = blocks;
-            // Step 5: Restore state trie from the same sled DB
+            // Restore the state trie from sled after loading blockchain state
             if let Err(e) = bc.init_trie(&self.db) {
                 tracing::warn!("trie init failed after blockchain load: {}", e);
             }
@@ -168,7 +166,7 @@ impl Storage {
                 let excess = bc.chain.len() - CHAIN_WINDOW_SIZE;
                 bc.chain.drain(..excess);
             }
-            // Step 5: Restore state trie (migration path)
+            // Restore the state trie from sled (migration from legacy storage format)
             if let Err(e) = bc.init_trie(&self.db) {
                 tracing::warn!("trie init failed after blockchain migration: {}", e);
             }

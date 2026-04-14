@@ -13,7 +13,7 @@ use crate::types::error::{SentrixError, SentrixResult};
 #[cfg(test)]
 const PBKDF2_ITERATIONS: u32 = 600_000; // NIST SP 800-132 recommended minimum (v1, tests only)
 
-// I-02: Argon2id parameters (v2) — memory-hard KDF
+// Argon2id parameters (v2 keystore format) — memory-hard KDF for brute-force resistance
 const ARGON2_M_COST: u32 = 65_536; // 64 MiB
 const ARGON2_T_COST: u32 = 3;      // 3 iterations
 const ARGON2_P_COST: u32 = 4;      // 4 parallel lanes
@@ -35,7 +35,7 @@ pub struct KeystoreCrypto {
     pub kdf: String,
     // PBKDF2 param (v1 only; 0 for v2 — always serialized for backward compat)
     pub kdf_iterations: u32,
-    // I-02: Argon2id params (v2 only; absent in v1 keystores)
+    // Argon2id params present only in v2 keystores; v1 keystores used PBKDF2
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub argon2_m_cost: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,7 +49,7 @@ pub struct KeystoreCrypto {
 }
 
 impl Keystore {
-    // I-02: Default encryption now uses Argon2id (version 2).
+    // Default encryption uses Argon2id (keystore version 2) for stronger key derivation.
     // Old keystores (PBKDF2, version 1) can still be decrypted via decrypt().
     pub fn encrypt(wallet: &Wallet, password: &str) -> SentrixResult<Self> {
         let mut salt = [0u8; SALT_SIZE];
@@ -57,7 +57,7 @@ impl Keystore {
         OsRng.fill_bytes(&mut salt);
         OsRng.fill_bytes(&mut nonce_bytes);
 
-        // I-02: Derive key using Argon2id
+        // Derive encryption key using Argon2id
         let mut key_bytes = [0u8; KEY_SIZE];
         let params = Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, Some(KEY_SIZE))
             .map_err(|e| SentrixError::KeystoreError(e.to_string()))?;
@@ -109,7 +109,7 @@ impl Keystore {
         let ciphertext = hex::decode(&self.crypto.ciphertext)
             .map_err(|_| SentrixError::KeystoreError("invalid ciphertext".to_string()))?;
 
-        // I-02: Select KDF based on stored kdf field
+        // Select KDF based on the stored kdf field — supports both v1 (PBKDF2) and v2 (Argon2id)
         let mut key_bytes = [0u8; KEY_SIZE];
         match self.crypto.kdf.as_str() {
             "argon2id" => {
@@ -160,7 +160,7 @@ impl Keystore {
         Wallet::from_private_key(&private_key_hex)
     }
 
-    // I-02: Migrate a v1 (PBKDF2) keystore to v2 (Argon2id).
+    // Migrate a v1 (PBKDF2) keystore to v2 (Argon2id) for stronger key derivation.
     // Decrypts with the password, then re-encrypts using Argon2id.
     // Returns self unchanged if already v2.
     pub fn migrate_to_argon2id(&self, password: &str) -> SentrixResult<Self> {
@@ -227,7 +227,7 @@ mod tests {
         let loaded: Keystore = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.address, wallet.address);
         assert_eq!(loaded.crypto.cipher, "aes-256-gcm");
-        // I-02: default is now argon2id
+        // Default KDF is argon2id (v2 keystore format)
         assert_eq!(loaded.crypto.kdf, "argon2id");
     }
 

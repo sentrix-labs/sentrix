@@ -62,7 +62,7 @@ impl Block {
 
     pub fn calculate_hash(&self) -> String {
         if self.index >= STATE_ROOT_FORK_HEIGHT {
-            // V7-C-01: include state_root in hash to cryptographically commit it.
+            // Include state_root in the block hash to cryptographically commit the account state.
             // state_root = None → 64 zero hex chars (pre-trie or genesis sentinel).
             let state_root_hex = self.state_root
                 .map(hex::encode)
@@ -96,7 +96,7 @@ impl Block {
     }
 
     // Genesis block — block 0, no previous hash
-    // V8-CRIT-02: Hardcoded timestamp for deterministic genesis across all nodes.
+    // Hardcoded genesis timestamp ensures all nodes derive an identical genesis block.
     pub fn genesis() -> Self {
         const GENESIS_TIMESTAMP: u64 = 1_712_620_800; // 2024-04-09 00:00:00 UTC
         let genesis_tx = Transaction::new_coinbase(

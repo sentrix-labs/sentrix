@@ -35,7 +35,7 @@ impl ChainSync {
 
         Node::send_message(&mut stream, &handshake).await?;
 
-        // H-01 FIX: Validate chain_id in peer handshake response
+        // Validate chain_id in peer handshake to prevent cross-network peer connections
         let (peer_height, peer_chain_id) = match Node::read_message(&mut stream).await? {
             Message::Handshake { height, chain_id, .. } => (height, chain_id),
             _ => return Err(SentrixError::NetworkError("expected handshake".to_string())),
@@ -65,7 +65,7 @@ impl ChainSync {
                     }
                     let mut bc = blockchain.write().await;
                     for block in &blocks {
-                        // V8-M-05: verify block index continuity before applying
+                        // Verify block index continuity before applying — reject out-of-order or duplicate blocks
                         if block.index != current {
                             tracing::warn!(
                                 "Sync: expected block index {}, got {} — aborting sync",
@@ -75,9 +75,7 @@ impl ChainSync {
                         }
                         match bc.add_block(block.clone()) {
                             Ok(()) => {
-                                // PR #61: persist each synced block to sled immediately.
-                                // Previously, sync only updated in-memory state; on restart
-                                // the node loaded stale sled state and diverged.
+                                // Persist each synced block to sled immediately rather than batching
                                 if let Err(e) = storage.save_block(block) {
                                     tracing::warn!("Sync: failed to persist block {}: {}", block.index, e);
                                     return Ok(total_synced);

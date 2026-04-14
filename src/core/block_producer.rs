@@ -16,7 +16,7 @@ impl Blockchain {
         }
 
         // Build transaction list — coinbase first
-        // V8-CRIT-03: Use the block timestamp for the coinbase (deterministic).
+        // Coinbase uses the block's timestamp — deterministic across all nodes for the same block.
         let block_timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -32,8 +32,7 @@ impl Blockchain {
         let mut transactions = vec![coinbase];
 
         // Take up to MAX_TX_PER_BLOCK from mempool (snapshot — do NOT drain here).
-        // V6-H-01 FIX: drain() before add_block() means txs are permanently lost if
-        // add_block() fails (e.g. stale prev_hash, validator race). Clone instead.
+        // Clone mempool transactions into the block — do NOT drain before add_block succeeds.
         // add_block() removes mined txs from mempool via retain() after a successful commit.
         let take = self.mempool.len().min(MAX_TX_PER_BLOCK - 1);
         let mempool_txs: Vec<Transaction> = self.mempool.iter().take(take).cloned().collect();
@@ -75,7 +74,7 @@ mod tests {
 
     const RECV: &str = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
-    // V6-H-01 test: create_block must NOT drain mempool (clone only)
+    // create_block must clone mempool transactions — not drain them — so they can retry on failure
     #[test]
     fn test_create_block_does_not_drain_mempool() {
         let mut bc = setup();
@@ -93,7 +92,7 @@ mod tests {
         assert_eq!(bc.mempool_size(), 1, "mempool must not be drained by create_block");
     }
 
-    // V6-H-01 test: tx removed from mempool only after successful add_block
+    // Transactions are removed from mempool only after successful add_block
     #[test]
     fn test_mempool_cleared_only_after_add_block() {
         let mut bc = setup();
