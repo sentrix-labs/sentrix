@@ -212,7 +212,7 @@ fn test_account_state_in_trie_matches_blockchain() {
     let root  = bc.latest_block().unwrap().state_root.unwrap();
 
     // Re-open a fresh trie view on the same DB to test persistence
-    let mut trie = SentrixTrie::open(&db, bc.height()).unwrap();
+    let trie = SentrixTrie::open(&db, bc.height()).unwrap();
     let proof = trie.prove(&key).unwrap();
 
     assert!(proof.found, "validator must be in trie");
@@ -350,7 +350,7 @@ fn test_tx_recipient_appears_in_trie() {
     let recv_key = address_to_key(RECV_ADDR);
     let root = bc.latest_block().unwrap().state_root.unwrap();
     let trie_height = bc.height();
-    let mut trie = SentrixTrie::open(&db, trie_height).unwrap();
+    let trie = SentrixTrie::open(&db, trie_height).unwrap();
     let proof = trie.prove(&recv_key).unwrap();
 
     assert!(proof.found, "recipient must be in trie after receiving funds");
@@ -409,7 +409,7 @@ fn test_trie_validator_balance_matches_after_block() {
 
     let expected = bc.accounts.get_balance(&vaddr);
     let key = address_to_key(&vaddr);
-    let mut trie = SentrixTrie::open(&db, bc.height()).unwrap();
+    let trie = SentrixTrie::open(&db, bc.height()).unwrap();
     let proof = trie.prove(&key).unwrap();
 
     assert!(proof.found, "validator must be in trie");
@@ -437,7 +437,7 @@ fn test_proof_verified_after_block_with_tx() {
 
     let root = bc.latest_block().unwrap().state_root.unwrap();
     let key  = address_to_key(RECV_ADDR);
-    let mut trie = SentrixTrie::open(&db, bc.height()).unwrap();
+    let trie = SentrixTrie::open(&db, bc.height()).unwrap();
     let proof = trie.prove(&key).unwrap();
 
     assert!(proof.found);
