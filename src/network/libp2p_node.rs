@@ -224,20 +224,10 @@ async fn run_swarm(
                 .await;
             }
 
-            // ── Periodic sync (Step 3d) ──────────────────
+            // ── Periodic sync (Step 3d) — DISABLED for connection stability test ──
             _ = sync_interval.tick() => {
-                if verified_peers.is_empty() {
-                    continue;
-                }
-                let our_height = blockchain.read().await.height();
-                // Pick first verified peer and request blocks.
-                // If more peers have blocks, handshake/broadcast will cover them.
-                if let Some(&peer_id) = verified_peers.iter().next() {
-                    let req_id = swarm.behaviour_mut().rr.send_request(
-                        &peer_id,
-                        SentrixRequest::GetBlocks { from_height: our_height + 1 },
-                    );
-                    pending_syncs.insert(req_id, peer_id);
+                if !verified_peers.is_empty() {
+                    tracing::info!("libp2p: {} verified peers alive (sync disabled for test)", verified_peers.len());
                 }
             }
         }
@@ -596,8 +586,8 @@ async fn on_inbound_response(
                 peer_addr: peer.to_string(),
                 peer_height: height,
             }).await;
-            // Immediately initiate sync from this peer
-            return Some((peer, our_height + 1));
+            // DON'T initiate sync immediately — test if connection survives
+            // Periodic sync (30s timer) will handle it instead
         }
     }
 
