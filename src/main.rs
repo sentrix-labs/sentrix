@@ -627,8 +627,9 @@ async fn cmd_start(
                     NodeEvent::SyncNeeded { peer_addr, peer_height } => {
                         tracing::info!("Sync needed from {} (height: {})", peer_addr, peer_height);
                         let shared_sync = shared_for_events.clone();
+                        let storage_sync = storage_for_legacy_p2p.clone();
                         tokio::spawn(async move {
-                            match ChainSync::sync_from_peer(&peer_addr, &shared_sync).await {
+                            match ChainSync::sync_from_peer(&peer_addr, &shared_sync, storage_sync).await {
                                 Ok(n) if n > 0 => tracing::info!("Synced {} blocks from {}", n, peer_addr),
                                 Ok(_) => {}
                                 Err(e) => tracing::warn!("Sync from {} failed: {}", peer_addr, e),
@@ -642,13 +643,14 @@ async fn cmd_start(
         // Periodic sync: every 30s — legacy TCP path only
         let shared_ps = shared.clone();
         let node_ps = node.clone();
+        let storage_ps = storage.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
                 let peer_addrs: Vec<String> = node_ps.peers.read().await
                     .keys().cloned().collect();
                 for addr in peer_addrs {
-                    match ChainSync::sync_from_peer(&addr, &shared_ps).await {
+                    match ChainSync::sync_from_peer(&addr, &shared_ps, storage_ps.clone()).await {
                         Ok(n) if n > 0 => tracing::info!("Periodic sync: {} blocks from {}", n, addr),
                         Ok(_) => {}
                         Err(_) => {}

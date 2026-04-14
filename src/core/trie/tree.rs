@@ -578,7 +578,7 @@ mod tests {
     #[test]
     fn test_empty_trie_nonmembership_proof() {
         let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let trie = SentrixTrie::open(&db, 0).unwrap();
         let key = address_to_key("0xffff");
         let root = trie.root_hash();
         let proof = trie.prove(&key).unwrap();
