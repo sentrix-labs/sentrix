@@ -12,7 +12,7 @@
 
 [![Build](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![Rust](https://img.shields.io/badge/rust-1.94-orange)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-325%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-335%20passing-brightgreen)]()
 [![Consensus](https://img.shields.io/badge/consensus-PoA-blue)]()
 [![License](https://img.shields.io/badge/license-BUSL--1.1-purple)](LICENSE)
 [![Chain ID](https://img.shields.io/badge/chain%20ID-7119-yellow)]()
@@ -395,7 +395,7 @@ This creates **deflationary pressure**: as network activity increases, more SRX 
 cargo test
 ```
 
-**325 tests** — 274 unit tests across all modules + 51 integration tests across 9 suites:
+**335 tests** — 284 unit tests across all modules + 51 integration tests across 9 suites:
 
 **Integration test suites (`tests/`):**
 
@@ -448,7 +448,7 @@ GET /trie/proof/{address}
 
 Proofs are self-verifiable: given `(key, value, proof, root)`, any client can recompute the root from the leaf up and confirm inclusion without trusting the node.
 
-### Audit status (T-A ~ T-H)
+### Audit status (T-A ~ T-H + V7)
 
 | Finding | Fix | Status |
 |---|---|---|
@@ -460,6 +460,30 @@ Proofs are self-verifiable: given `(key, value, proof, root)`, any client can re
 | T-F: no GC for orphaned nodes | `gc_orphaned_nodes(live_hashes)` | ✅ Fixed PR #54 |
 | T-G: missing deny.toml for trie deps | `blake3`, `lru` added to Cargo.toml | ✅ Satisfied |
 | T-H: missing integration tests | `tests/integration_trie.rs` (6 tests) | ✅ Fixed PR #55 |
+| V7-C-01: state_root not in block hash | `STATE_ROOT_FORK_HEIGHT=100_000`; hash includes state_root for blocks ≥ 100K | ✅ Fixed PR #57 |
+| V7-H-01: trie errors swallowed | `update_trie_for_block()` propagates errors | ✅ Fixed PR #57 |
+| V7-H-02: crash-unsafe store_root | Flush all 3 sled trees before returning | ✅ Fixed PR #57 |
+| V7-M-01~M-05: storage leaks, DoS, panic | Full cleanup, read lock, depth guard, P2P persist | ✅ Fixed PR #57 |
+| V7-L-01~L-03: path cleanup, validation | Old internals deleted, address validated, async flush | ✅ Fixed PR #57 |
+| V7-I-01~I-04: backfill, clone, TOKEN_OP | AccountDB backfill, capacity stored, filter TOKEN_OP | ✅ Fixed PR #57 |
+| Stale root traversal on restart | `node_exists()` + `reset_to_empty()` before backfill | ✅ Fixed PR #59+#60 |
+
+### Chain recovery procedure
+
+If trie state diverges across nodes (detect via CRITICAL state_root mismatch logs):
+
+```bash
+# 1. Stop node
+systemctl stop sentrix-node   # or sentrix-val{N}
+
+# 2. Reset trie (drops trie_nodes/trie_values/trie_roots sled trees)
+./sentrix chain reset-trie
+
+# 3. Restart — init_trie() will backfill from AccountDB automatically
+systemctl start sentrix-node
+```
+
+All nodes running from the same AccountDB state will produce identical backfill roots (deterministic Binary SMT).
 
 ---
 
@@ -528,8 +552,11 @@ See [SECURITY.md](SECURITY.md) for responsible disclosure policy.
 - [x] **Step 1** — cargo-deny + clippy -D warnings enforcement (PR #42)
 - [x] **Step 2** — blockchain.rs split → 6 focused modules (PR #43)
 - [x] **Step 3** — libp2p + Noise XX encryption (PR #45)
-- [x] **Step 4** — 9 integration test suites, 325 tests total (PR #46 + #55)
+- [x] **Step 4** — 9 integration test suites, 335 tests total (PR #46 + #55)
 - [x] **Step 5** — SentrixTrie Binary Sparse Merkle Tree state root (PR #48-#55)
+- [x] **Security Audit V7** — 15 findings, all fixed; STATE_ROOT_FORK_HEIGHT=100K; trie errors fatal (PR #57)
+- [x] **Chain Recovery Tools** — `sentrix chain reset-trie`; stale-height fix; deterministic backfill (PR #58-#60)
+- [x] **ChainSync Persistence** — P2P-synced blocks persisted to sled immediately; prevents state divergence on restart (PR #61)
 - [ ] **Phase 2** — DPoS + BFT Finality + EVM compatibility
 - [ ] **Phase 3** — Sharding, cross-chain bridge, governance
 - [ ] **Phase 4** — SDK, mobile wallet, DEX, NFT platform
