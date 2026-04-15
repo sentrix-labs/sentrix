@@ -206,8 +206,18 @@ pub fn verify_vote_signature(payload: &[u8], signature: &[u8], expected_validato
         return false; // unsigned votes are invalid
     }
     match recover_signer(payload, signature) {
-        Ok(addr) => addr == expected_validator,
-        Err(_) => false,
+        Ok(ref addr) if addr == expected_validator => true,
+        Ok(addr) => {
+            tracing::warn!(
+                "BFT sig mismatch: expected={} recovered={} sig_len={}",
+                &expected_validator[..12], &addr[..12], signature.len(),
+            );
+            false
+        }
+        Err(e) => {
+            tracing::warn!("BFT sig recovery failed: {} sig_len={}", e, signature.len());
+            false
+        }
     }
 }
 
