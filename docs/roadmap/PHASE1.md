@@ -11,22 +11,24 @@ Done. Live in production.
 - ECDSA secp256k1 signing with chain_id replay protection
 - SentrixTrie (256-level Binary SMT, BLAKE3+SHA-256)
 - SRX-20 tokens (SNTX deployed, 10B supply)
-- libp2p networking (Noise XX + Yamux)
+- libp2p networking (Noise XX + Yamux, bincode wire, Kademlia DHT, gossipsub)
 - REST API (25+ endpoints) + JSON-RPC 2.0 (20 methods)
 - Block explorer (12 pages, dark theme)
 - Encrypted keystore (AES-256-GCM, Argon2id)
-- sled storage with 1000-block sliding window
+- sled storage with 1000-block sliding window + disk pruning
 - CI/CD: GitHub Actions → test → build → 3-VPS deploy
 - Branch protection on main (PR + CI required)
+- Pentest 6/6 passed on live production node
 
 ## Numbers
 
 | | |
 |-|-|
-| Tests | 277+ |
-| PRs merged | #1–#81 |
+| Tests | 357 |
+| PRs merged | #1–#83 |
 | Audit rounds | 11 (94 findings, 78 fixed) |
-| Chain height | 131,000+ |
+| Chain height | 141,000+ |
+| Pentest | 6/6 passed on live node |
 | `unsafe` blocks | 0 |
 | Clippy warnings | 0 |
 

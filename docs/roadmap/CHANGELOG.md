@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.0.0] — 2026-04-15
+
+Pioneer release. v1.0.0 tagged and published.
+
+Highlights since 0.1.0:
+- 7 validators across 3 VPS, full mesh peering
+- CI/CD pipeline deploying to all 3 VPS with ordered stop/start and health checks
+- P0 security hardening: libp2p peer limits, per-IP rate limiting, legacy TCP deprecated (PR #82)
+- Full documentation suite: 20 files (PR #83)
+- Pentest 6/6 passed on live production node
+- P2P upgrades: bincode wire protocol, Kademlia DHT discovery, gossipsub propagation
+- Disk pruning for trie roots
+- 357 tests (was 284), protocol `/sentrix/2.0.0`
+- Version strings dynamic via `env!("CARGO_PKG_VERSION")`
+- Network phase names: Pioneer (current), Voyager, Frontier, Odyssey
+- UI branding: "Sentrix" — mainnet/testnet via chain_id (7119/7120)
+
+---
+
 ## [0.1.0] — 2026-04-15
 
 Pioneer phase complete.
