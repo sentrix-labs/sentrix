@@ -84,6 +84,17 @@ pub struct Blockchain {
     /// None until init_trie() is called; not persisted in sled "state" blob.
     #[serde(skip)]
     pub(crate) state_trie: Option<SentrixTrie>,
+
+    // ── Voyager DPoS state (Phase 2a) ────────────────────
+    /// Staking registry for DPoS validator management
+    #[serde(default)]
+    pub stake_registry: crate::core::staking::StakeRegistry,
+    /// Epoch manager for validator set rotation
+    #[serde(default = "crate::core::epoch::EpochManager::new")]
+    pub epoch_manager: crate::core::epoch::EpochManager,
+    /// Slashing engine for liveness + double-sign tracking
+    #[serde(default)]
+    pub slashing: crate::core::slashing::SlashingEngine,
 }
 
 impl Blockchain {
@@ -97,6 +108,9 @@ impl Blockchain {
             total_minted: 0,
             chain_id: get_chain_id(),
             state_trie: None,
+            stake_registry: crate::core::staking::StakeRegistry::new(),
+            epoch_manager: crate::core::epoch::EpochManager::new(),
+            slashing: crate::core::slashing::SlashingEngine::new(),
         };
         bc.initialize_genesis();
         bc

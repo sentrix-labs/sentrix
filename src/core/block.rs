@@ -29,6 +29,15 @@ pub struct Block {
     /// Not included in calculate_hash() — backward-compatible with all existing blocks.
     #[serde(default)]
     pub state_root: Option<[u8; 32]>,
+
+    // ── Voyager BFT fields (Phase 2a) ────────────────────
+    /// BFT round number (0 for Pioneer blocks)
+    #[serde(default)]
+    pub round: u32,
+    /// BFT justification (precommit signatures from 2/3+1 validators).
+    /// None for Pioneer blocks.
+    #[serde(default)]
+    pub justification: Option<crate::core::bft_messages::BlockJustification>,
 }
 
 impl Block {
@@ -55,6 +64,8 @@ impl Block {
             validator,
             hash: String::new(),
             state_root: None,
+            round: 0,
+            justification: None,
         };
         block.hash = block.calculate_hash();
         block
@@ -118,6 +129,8 @@ impl Block {
             validator: "GENESIS".to_string(),
             hash: String::new(),
             state_root: None,
+            round: 0,
+            justification: None,
         };
         block.hash = block.calculate_hash();
         block
