@@ -10,8 +10,31 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Planned
-- Voyager: DPoS validator elections + BFT finality
-- Voyager: EVM integration via revm
+- Voyager: EVM integration via revm (Phase 2b)
+
+---
+
+## [1.1.0] — 2026-04-15
+
+Voyager DPoS + BFT. The consensus upgrade.
+
+### Added
+- DPoS staking: register validator (15K SRX min), delegate, undelegate, redelegate
+- Epoch system: 28,800 blocks (~24h), validator set rotation, unbonding release
+- Slashing: downtime (1% + jail) and double-sign (20% + permaban)
+- BFT consensus: Tendermint-style propose/prevote/precommit with 2/3+1 stake-weighted finality
+- BFT message types in P2P layer (proposal, prevote, precommit broadcast)
+- Fork transition: VOYAGER_FORK_HEIGHT env var (default u64::MAX, mainnet safe)
+- Testnet live: chain_id 7120, port 9545, VPS3
+- REST endpoints: /staking/validators, /staking/delegations, /staking/unbonding, /epoch/current, /epoch/history
+- Staking tx types: RegisterValidator, Delegate, Undelegate, Redelegate, Unjail, SubmitEvidence
+- Block fields: round + justification (serde default, backward compat with Pioneer blocks)
+- 113 new tests (463 total, was 357)
+
+### Changed
+- chain_id configurable via SENTRIX_CHAIN_ID env var
+- Block production loop: Voyager bookkeeping (rewards, liveness, epoch) after fork height
+- Blockchain struct: added StakeRegistry, EpochManager, SlashingEngine
 
 ---
 
@@ -162,6 +185,7 @@ Pioneer release. PoA chain live with 7 validators across 3 VPS, 141K+ blocks, 11
 
 ---
 
-[Unreleased]: https://github.com/satyakwok/sentrix/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/satyakwok/sentrix/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/satyakwok/sentrix/releases/tag/v1.1.0
 [1.0.0]: https://github.com/satyakwok/sentrix/releases/tag/v1.0.0
 [0.1.0]: https://github.com/satyakwok/sentrix/releases/tag/v0.1.0
