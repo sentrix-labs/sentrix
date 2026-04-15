@@ -913,7 +913,9 @@ async fn cmd_start(
                         loop {
                             match action {
                                 BftAction::BroadcastPrevote(ref prevote) => {
-                                    lp2p_clone.broadcast_bft_prevote(prevote).await;
+                                    let mut signed_pv = prevote.clone();
+                                    signed_pv.sign(&validator_secret_key);
+                                    lp2p_clone.broadcast_bft_prevote(&signed_pv).await;
                                     let bc = shared_clone.read().await;
                                     let our_stake = bc.stake_registry.get_validator(&wallet.address)
                                         .map(|v| v.total_stake()).unwrap_or(0);
@@ -922,7 +924,9 @@ async fn cmd_start(
                                     continue;
                                 }
                                 BftAction::BroadcastPrecommit(ref precommit) => {
-                                    lp2p_clone.broadcast_bft_precommit(precommit).await;
+                                    let mut signed_pc = precommit.clone();
+                                    signed_pc.sign(&validator_secret_key);
+                                    lp2p_clone.broadcast_bft_precommit(&signed_pc).await;
                                     let bc = shared_clone.read().await;
                                     let our_stake = bc.stake_registry.get_validator(&wallet.address)
                                         .map(|v| v.total_stake()).unwrap_or(0);
@@ -1041,7 +1045,9 @@ async fn cmd_start(
                         loop {
                             match action {
                                 BftAction::BroadcastPrevote(ref prevote) => {
-                                    lp2p_clone.broadcast_bft_prevote(prevote).await;
+                                    let mut signed_pv = prevote.clone();
+                                    signed_pv.sign(&validator_secret_key);
+                                    lp2p_clone.broadcast_bft_prevote(&signed_pv).await;
                                     let bc = shared_clone.read().await;
                                     let our_stake = bc.stake_registry.get_validator(&wallet.address)
                                         .map(|v| v.total_stake()).unwrap_or(0);
@@ -1050,7 +1056,9 @@ async fn cmd_start(
                                     continue;
                                 }
                                 BftAction::BroadcastPrecommit(ref precommit) => {
-                                    lp2p_clone.broadcast_bft_precommit(precommit).await;
+                                    let mut signed_pc = precommit.clone();
+                                    signed_pc.sign(&validator_secret_key);
+                                    lp2p_clone.broadcast_bft_precommit(&signed_pc).await;
                                     let bc = shared_clone.read().await;
                                     let our_stake = bc.stake_registry.get_validator(&wallet.address)
                                         .map(|v| v.total_stake()).unwrap_or(0);

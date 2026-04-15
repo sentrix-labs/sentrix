@@ -203,7 +203,8 @@ pub fn recover_signer(payload: &[u8], signature: &[u8]) -> SentrixResult<String>
 /// Verify that a signature was produced by the claimed validator address.
 pub fn verify_vote_signature(payload: &[u8], signature: &[u8], expected_validator: &str) -> bool {
     if signature.is_empty() {
-        return false; // unsigned votes are invalid
+        tracing::warn!("BFT: UNSIGNED vote from {} (empty signature)", &expected_validator[..12.min(expected_validator.len())]);
+        return false;
     }
     match recover_signer(payload, signature) {
         Ok(ref addr) if addr == expected_validator => true,
