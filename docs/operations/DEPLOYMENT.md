@@ -120,3 +120,59 @@ sentrix start --validator-key <key2> --port 8546 --p2p-port 30304 --data-dir dat
 ```
 
 Each needs its own systemd service file and firewall rules.
+
+## Testnet
+
+Run a testnet node alongside mainnet on the same machine. Same binary, different chain_id and ports.
+
+```bash
+# Set testnet chain_id
+export SENTRIX_CHAIN_ID=7120
+export SENTRIX_DATA_DIR=/opt/sentrix-testnet/data
+export SENTRIX_API_PORT=9545
+
+# Init testnet genesis
+sentrix init --admin 0x<testnet_admin_address>
+
+# Add validator
+export SENTRIX_ADMIN_KEY=<admin_private_key>
+sentrix validator add <address> "Testnet Validator" <public_key>
+
+# Start
+sentrix start --validator-key <key> --port 31303
+```
+
+Systemd service example:
+
+```ini
+# /etc/systemd/system/sentrix-testnet.service
+[Unit]
+Description=Sentrix Testnet Node
+After=network.target
+
+[Service]
+Type=simple
+User=sentrix
+WorkingDirectory=/opt/sentrix-testnet
+ExecStart=/opt/sentrix/sentrix start --validator-key <key> --port 31303
+Restart=on-failure
+RestartSec=5
+Environment=SENTRIX_DATA_DIR=/opt/sentrix-testnet/data
+Environment=SENTRIX_CHAIN_ID=7120
+Environment=SENTRIX_API_PORT=9545
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Key differences from mainnet:
+
+| | Mainnet | Testnet |
+|-|---------|---------|
+| Chain ID | 7119 | 7120 |
+| API port | 8545 | 9545 |
+| P2P port | 30303 | 31303 |
+| Data dir | /opt/sentrix/data | /opt/sentrix-testnet/data |
+
+The two networks are completely isolated — different chain_id means peers reject each other on handshake.

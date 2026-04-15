@@ -100,9 +100,11 @@ jobs:
 
       # Phase 2: Stop ALL validators — VPS3 first, then VPS2, then VPS1
       # Order matters: stop remote validators first to prevent orphan blocks.
-      - name: Stop VPS3 node
+      - name: Stop VPS3 nodes
         run: |
           ssh -i ~/.ssh/id_rsa_vps3 ${{ secrets.VPS3_USER }}@${{ secrets.VPS3_HOST }} "
+            sudo systemctl stop sentrix-testnet || true
+            echo 'stopped sentrix-testnet'
             sudo systemctl stop sentrix-core || true
             echo 'stopped sentrix-core'
           "
@@ -168,11 +170,13 @@ jobs:
             done
           "
 
-      - name: Start VPS3 node
+      - name: Start VPS3 nodes
         run: |
           ssh -i ~/.ssh/id_rsa_vps3 ${{ secrets.VPS3_USER }}@${{ secrets.VPS3_HOST }} "
             sudo systemctl start sentrix-core
             echo 'VPS3 sentrix-core started'
+            sudo systemctl start sentrix-testnet
+            echo 'VPS3 sentrix-testnet started'
           "
 
       # Phase 5: Health check — verify chain is advancing on all VPS
