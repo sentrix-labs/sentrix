@@ -18,7 +18,7 @@
 | | |
 |-|-|
 | Chain ID | 7120 (0x1bd0) |
-| RPC | http://46.250.229.238:9545 |
+| RPC | https://testnet-rpc.sentriscloud.com |
 | P2P port | 31303 |
 | API port | 9545 |
 | Block time | 3s |
@@ -35,7 +35,7 @@ Add network manually:
 | Field | Mainnet | Testnet |
 |-------|---------|---------|
 | Network Name | Sentrix | Sentrix Testnet |
-| RPC URL | https://sentrix-rpc.sentriscloud.com | http://46.250.229.238:9545 |
+| RPC URL | https://sentrix-rpc.sentriscloud.com | https://testnet-rpc.sentriscloud.com |
 | Chain ID | 7119 | 7120 |
 | Symbol | SRX | SRX |
 | Explorer | https://sentrixscan.sentriscloud.com | — |
@@ -49,7 +49,7 @@ import { JsonRpcProvider } from "ethers";
 const mainnet = new JsonRpcProvider("https://sentrix-rpc.sentriscloud.com");
 
 // Testnet
-const testnet = new JsonRpcProvider("http://46.250.229.238:9545");
+const testnet = new JsonRpcProvider("https://testnet-rpc.sentriscloud.com");
 
 const height = await provider.getBlockNumber();
 const balance = await provider.getBalance("0x...");
@@ -62,7 +62,7 @@ const balance = await provider.getBalance("0x...");
 curl -s https://sentrix-rpc.sentriscloud.com/chain/info | jq
 
 # Testnet
-curl -s http://46.250.229.238:9545/chain/info | jq
+curl -s https://testnet-rpc.sentriscloud.com/chain/info | jq
 
 # JSON-RPC
 curl -X POST https://sentrix-rpc.sentriscloud.com/rpc \
