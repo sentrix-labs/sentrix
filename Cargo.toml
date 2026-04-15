@@ -70,7 +70,7 @@ zeroize = "1.7"
 subtle = "2.5"
 blake3 = "1.5"
 lru = "0.12"
-bincode = "1.3"
+bincode = "3.0"
 
 [dev-dependencies]
 tempfile = "3"
