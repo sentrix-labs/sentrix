@@ -2,8 +2,13 @@
 //
 // Proposal, Prevote, Precommit, BlockJustification.
 // All serializable with bincode to match P2P wire format.
+// Signatures use secp256k1 ECDSA (same as transaction signing).
 
 use serde::{Deserialize, Serialize};
+use secp256k1::{Secp256k1, Message, SecretKey};
+use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+use sha2::{Sha256, Digest};
+use crate::types::error::{SentrixError, SentrixResult};
 
 // ── Proposal ─────────────────────────────────────────────────
 
@@ -159,6 +164,95 @@ pub enum BftMessage {
     Precommit(Precommit),
 }
 
+// ── Vote Signing (secp256k1 ECDSA) ──────────────────────────
+
+/// Sign arbitrary bytes with a secp256k1 secret key.
+/// Returns 65-byte recoverable signature (64-byte compact + 1-byte recovery_id).
+pub fn sign_payload(payload: &[u8], secret_key: &SecretKey) -> Vec<u8> {
+    let secp = Secp256k1::signing_only();
+    let hash = Sha256::digest(payload);
+    // SHA-256 always produces 32 bytes — from_digest_slice cannot fail
+    #[allow(clippy::expect_used)]
+    let msg = Message::from_digest_slice(&hash).expect("SHA-256 always 32 bytes");
+    let sig = secp.sign_ecdsa_recoverable(&msg, secret_key);
+    let (rec_id, compact) = sig.serialize_compact();
+    let mut out = compact.to_vec(); // 64 bytes
+    out.push(rec_id.to_i32() as u8);   // 1 byte recovery id
+    out
+}
+
+/// Verify a recoverable signature and return the signer's Ethereum-style address.
+/// Returns Err if signature is invalid or malformed.
+pub fn recover_signer(payload: &[u8], signature: &[u8]) -> SentrixResult<String> {
+    if signature.len() != 65 {
+        return Err(SentrixError::InvalidSignature);
+    }
+    let secp = Secp256k1::verification_only();
+    let hash = Sha256::digest(payload);
+    let msg = Message::from_digest_slice(&hash)
+        .map_err(|_| SentrixError::InvalidSignature)?;
+    let rec_id = RecoveryId::from_i32(signature[64] as i32)
+        .map_err(|_| SentrixError::InvalidSignature)?;
+    let sig = RecoverableSignature::from_compact(&signature[..64], rec_id)
+        .map_err(|_| SentrixError::InvalidSignature)?;
+    let pubkey = secp.recover_ecdsa(&msg, &sig)
+        .map_err(|_| SentrixError::InvalidSignature)?;
+    Ok(crate::wallet::wallet::Wallet::derive_address(&pubkey))
+}
+
+/// Verify that a signature was produced by the claimed validator address.
+pub fn verify_vote_signature(payload: &[u8], signature: &[u8], expected_validator: &str) -> bool {
+    if signature.is_empty() {
+        return false; // unsigned votes are invalid
+    }
+    match recover_signer(payload, signature) {
+        Ok(addr) => addr == expected_validator,
+        Err(_) => false,
+    }
+}
+
+impl Prevote {
+    /// Sign this prevote with the given secret key, filling the signature field.
+    pub fn sign(&mut self, secret_key: &SecretKey) {
+        let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
+        self.signature = sign_payload(&payload, secret_key);
+    }
+
+    /// Verify this prevote's signature matches the claimed validator.
+    pub fn verify_sig(&self) -> bool {
+        let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
+        verify_vote_signature(&payload, &self.signature, &self.validator)
+    }
+}
+
+impl Precommit {
+    /// Sign this precommit with the given secret key, filling the signature field.
+    pub fn sign(&mut self, secret_key: &SecretKey) {
+        let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
+        self.signature = sign_payload(&payload, secret_key);
+    }
+
+    /// Verify this precommit's signature matches the claimed validator.
+    pub fn verify_sig(&self) -> bool {
+        let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
+        verify_vote_signature(&payload, &self.signature, &self.validator)
+    }
+}
+
+impl Proposal {
+    /// Sign this proposal with the given secret key.
+    pub fn sign(&mut self, secret_key: &SecretKey) {
+        let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
+        self.signature = sign_payload(&payload, secret_key);
+    }
+
+    /// Verify this proposal's signature matches the claimed proposer.
+    pub fn verify_sig(&self) -> bool {
+        let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
+        verify_vote_signature(&payload, &self.signature, &self.proposer)
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -301,5 +395,124 @@ mod tests {
         let encoded = bincode::serialize(&pc).unwrap();
         let decoded: Precommit = bincode::deserialize(&encoded).unwrap();
         assert_eq!(pc, decoded);
+    }
+
+    // ── Signature tests ──────────────────────────────────────
+
+    fn make_wallet() -> crate::wallet::wallet::Wallet {
+        crate::wallet::wallet::Wallet::generate()
+    }
+
+    #[test]
+    fn test_prevote_sign_verify() {
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let mut pv = Prevote {
+            height: 100, round: 0,
+            block_hash: Some("hash_abc".into()),
+            validator: wallet.address.clone(),
+            signature: vec![],
+        };
+        pv.sign(&sk);
+        assert_eq!(pv.signature.len(), 65);
+        assert!(pv.verify_sig());
+    }
+
+    #[test]
+    fn test_precommit_sign_verify() {
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let mut pc = Precommit {
+            height: 200, round: 1,
+            block_hash: Some("hash_def".into()),
+            validator: wallet.address.clone(),
+            signature: vec![],
+        };
+        pc.sign(&sk);
+        assert_eq!(pc.signature.len(), 65);
+        assert!(pc.verify_sig());
+    }
+
+    #[test]
+    fn test_proposal_sign_verify() {
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let mut prop = Proposal {
+            height: 300, round: 0,
+            block_hash: "hash_ghi".into(),
+            block_data: vec![1, 2, 3],
+            proposer: wallet.address.clone(),
+            signature: vec![],
+        };
+        prop.sign(&sk);
+        assert_eq!(prop.signature.len(), 65);
+        assert!(prop.verify_sig());
+    }
+
+    #[test]
+    fn test_tampered_prevote_fails_verify() {
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let mut pv = Prevote {
+            height: 100, round: 0,
+            block_hash: Some("original".into()),
+            validator: wallet.address.clone(),
+            signature: vec![],
+        };
+        pv.sign(&sk);
+        // Tamper with the block_hash
+        pv.block_hash = Some("tampered".into());
+        assert!(!pv.verify_sig());
+    }
+
+    #[test]
+    fn test_wrong_validator_fails_verify() {
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let mut pv = Prevote {
+            height: 100, round: 0,
+            block_hash: Some("hash".into()),
+            validator: wallet.address.clone(),
+            signature: vec![],
+        };
+        pv.sign(&sk);
+        // Change claimed validator
+        pv.validator = "0xwrongaddress000000000000000000000000000".into();
+        assert!(!pv.verify_sig());
+    }
+
+    #[test]
+    fn test_nil_prevote_sign_verify() {
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let mut pv = Prevote {
+            height: 100, round: 0,
+            block_hash: None, // nil vote
+            validator: wallet.address.clone(),
+            signature: vec![],
+        };
+        pv.sign(&sk);
+        assert!(pv.verify_sig());
+    }
+
+    #[test]
+    fn test_empty_signature_fails() {
+        let pv = Prevote {
+            height: 100, round: 0,
+            block_hash: Some("hash".into()),
+            validator: "0xsome_address".into(),
+            signature: vec![], // unsigned
+        };
+        assert!(!pv.verify_sig());
+    }
+
+    #[test]
+    fn test_recover_signer() {
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let payload = b"test message";
+        let sig = sign_payload(payload, &sk);
+        let recovered = recover_signer(payload, &sig).unwrap();
+        assert_eq!(recovered, wallet.address);
     }
 }

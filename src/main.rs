@@ -75,6 +75,9 @@ enum Commands {
         /// Validator private key hex (optional — node runs in relay mode if not set)
         #[arg(long)]
         validator_key: Option<String>,
+        /// Path to encrypted keystore file (alternative to --validator-key)
+        #[arg(long)]
+        validator_keystore: Option<String>,
         /// P2P port
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
@@ -120,6 +123,21 @@ enum WalletCommands {
     /// Show wallet info from keystore file
     Info {
         keystore_file: String,
+    },
+    /// Encrypt a private key to a keystore file
+    Encrypt {
+        private_key: String,
+        #[arg(long)]
+        password: Option<String>,
+        /// Output file (default: data/wallets/<addr>.json)
+        #[arg(long)]
+        output: Option<String>,
+    },
+    /// Decrypt a keystore file to show the private key (for backup only)
+    Decrypt {
+        keystore_file: String,
+        #[arg(long)]
+        password: Option<String>,
     },
 }
 
@@ -231,6 +249,10 @@ async fn main() -> anyhow::Result<()> {
             WalletCommands::Generate { password } => cmd_wallet_generate(password)?,
             WalletCommands::Import { private_key, password } => cmd_wallet_import(&private_key, password)?,
             WalletCommands::Info { keystore_file } => cmd_wallet_info(&keystore_file)?,
+            WalletCommands::Encrypt { private_key, password, output } =>
+                cmd_wallet_encrypt(&private_key, password, output)?,
+            WalletCommands::Decrypt { keystore_file, password } =>
+                cmd_wallet_decrypt(&keystore_file, password)?,
         },
 
         Commands::Validator { action } => match action {
@@ -253,9 +275,20 @@ async fn main() -> anyhow::Result<()> {
             ValidatorCommands::List => cmd_validator_list()?,
         },
 
-        Commands::Start { validator_key, port, peers } => {
-            // validator_key can also come from SENTRIX_VALIDATOR_KEY env var
-            let resolved_key = validator_key.or_else(|| std::env::var("SENTRIX_VALIDATOR_KEY").ok());
+        Commands::Start { validator_key, validator_keystore, port, peers } => {
+            // Resolve validator key: --validator-key > --validator-keystore > env var
+            let resolved_key = if let Some(key) = validator_key {
+                Some(key)
+            } else if let Some(ks_path) = validator_keystore {
+                // Decrypt keystore to get private key
+                let pwd = resolve_password(None)?;
+                let keystore = Keystore::load(&ks_path)?;
+                let wallet = keystore.decrypt(&pwd)?;
+                println!("Keystore decrypted: {}", wallet.address);
+                Some(wallet.secret_key_hex())
+            } else {
+                std::env::var("SENTRIX_VALIDATOR_KEY").ok()
+            };
             cmd_start(resolved_key, port, peers).await?;
         }
 
@@ -366,6 +399,54 @@ fn cmd_wallet_info(keystore_file: &str) -> anyhow::Result<()> {
     println!("  Cipher:  {}", keystore.crypto.cipher);
     println!("  KDF:     {} ({} iterations)", keystore.crypto.kdf, keystore.crypto.kdf_iterations);
     Ok(())
+}
+
+fn cmd_wallet_encrypt(private_key: &str, password: Option<String>, output: Option<String>) -> anyhow::Result<()> {
+    let pwd = resolve_password(password)?;
+    let wallet = Wallet::from_private_key(private_key)?;
+    let keystore = Keystore::encrypt(&wallet, &pwd)?;
+    let filename = output.unwrap_or_else(|| {
+        let dir = get_wallets_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        format!("{}/{}.json", dir, &wallet.address[2..10])
+    });
+    keystore.save(&filename)?;
+    println!("Wallet encrypted:");
+    println!("  Address:  {}", wallet.address);
+    println!("  Saved to: {}", filename);
+    println!("  KDF:      argon2id");
+    Ok(())
+}
+
+fn cmd_wallet_decrypt(keystore_file: &str, password: Option<String>) -> anyhow::Result<()> {
+    let pwd = resolve_password(password)?;
+    let keystore = Keystore::load(keystore_file)?;
+    let wallet = keystore.decrypt(&pwd)?;
+    println!("Wallet decrypted:");
+    println!("  Address:     {}", wallet.address);
+    println!("  Public key:  {}", wallet.public_key);
+    // Private key printed to stdout ONLY — never logged, never in API
+    println!("  Private key: {}", wallet.secret_key_hex());
+    Ok(())
+}
+
+/// Resolve password from CLI arg, SENTRIX_WALLET_PASSWORD env var, or terminal prompt.
+fn resolve_password(cli_password: Option<String>) -> anyhow::Result<String> {
+    if let Some(pw) = cli_password {
+        return Ok(pw);
+    }
+    if let Ok(pw) = std::env::var("SENTRIX_WALLET_PASSWORD") {
+        return Ok(pw);
+    }
+    // Prompt on terminal
+    eprint!("Enter wallet password: ");
+    let mut pw = String::new();
+    std::io::stdin().read_line(&mut pw)?;
+    let pw = pw.trim().to_string();
+    if pw.is_empty() {
+        anyhow::bail!("Password cannot be empty");
+    }
+    Ok(pw)
 }
 
 fn cmd_validator_add(address: &str, name: &str, public_key: &str, admin_key: &str) -> anyhow::Result<()> {
@@ -508,6 +589,9 @@ async fn cmd_start(
     // cleanly before the process exits (guarantees trie.commit() is not interrupted).
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
+    // BFT event channel — forwards P2P BFT votes from event handler to validator loop
+    let (bft_tx, bft_rx) = tokio::sync::mpsc::channel::<sentrix::core::bft_messages::BftMessage>(256);
+
     // Validator loop
     if let Some(key_hex) = validator_key {
         let wallet = Wallet::from_private_key(&key_hex)?;
@@ -516,163 +600,488 @@ async fn cmd_start(
         let storage_clone = storage.clone();
         let lp2p_clone = lp2p.clone();
         let shutdown_flag_clone = shutdown_flag.clone();
+        let mut bft_rx = bft_rx; // move receiver into this task
+        let validator_secret_key = wallet.get_secret_key()?;
         tokio::spawn(async move {
+            use sentrix::core::bft::{BftEngine, BftAction};
+            use sentrix::core::bft_messages::{BftMessage, Proposal};
+            use sentrix::core::block::Block;
+
             let mut voyager_activated = false;
+            // Persistent BFT state for Voyager mode
+            let mut bft_engine: Option<BftEngine> = None;
+            let mut proposed_block: Option<Block> = None;
+            let mut last_finalized_height: u64 = 0;
+
             loop {
                 if shutdown_flag_clone.load(Ordering::Acquire) {
                     tracing::info!("Validator loop: shutdown flag set — exiting");
                     break;
                 }
-                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-                let result = {
-                    let mut bc = shared_clone.write().await;
-
-                    // ── Voyager fork activation (one-time) ──────
-                    if !voyager_activated && Blockchain::is_voyager_height(bc.height().saturating_add(1)) {
+                // ── Voyager fork activation (read lock first, write only if needed) ──
+                if !voyager_activated {
+                    let bc = shared_clone.read().await;
+                    if Blockchain::is_voyager_height(bc.height().saturating_add(1)) {
+                        drop(bc);
+                        let mut bc = shared_clone.write().await;
                         tracing::info!("Voyager fork reached at height {} — activating DPoS", bc.height());
                         if let Err(e) = bc.activate_voyager() {
                             tracing::warn!("activate_voyager failed: {}", e);
                         }
                         voyager_activated = true;
                     }
+                }
 
-                    // ── Block production (Pioneer or Voyager) ───
-                    match bc.create_block(&wallet.address) {
-                        Ok(mut block) => {
-                            let height = block.index;
+                // ════════════════════════════════════════════════
+                // Pioneer mode: original 3s polling, no BFT
+                // ════════════════════════════════════════════════
+                if !voyager_activated {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-                            // ── BFT consensus (Voyager only) ──────
-                            if voyager_activated {
-                                use sentrix::core::bft::{BftEngine, BftAction};
-                                let our_stake = bc.stake_registry.get_validator(&wallet.address)
-                                    .map(|v| v.total_stake()).unwrap_or(0);
-                                let block_hash = block.hash.clone();
-
-                                // Use our_stake as total for self-voting (local finalization).
-                                // In multi-validator mode: use real total + collect P2P votes.
-                                let mut bft = BftEngine::new(
-                                    height, wallet.address.clone(), our_stake,
-                                );
-
-                                // Own proposal → self-prevote → self-precommit → finalize
-                                if let BftAction::BroadcastPrevote(prevote) =
-                                    bft.on_own_proposal(&block_hash)
-                                    && let BftAction::BroadcastPrecommit(precommit) =
-                                        bft.on_prevote_weighted(&prevote, our_stake)
-                                    && let BftAction::FinalizeBlock { round, justification, .. } =
-                                        bft.on_precommit_weighted(&precommit, our_stake)
-                                {
-                                    block.round = round;
-                                    block.justification = Some(justification);
-                                    tracing::info!(
-                                        "BFT finalized height={} round={}",
-                                        height, round,
-                                    );
-                                }
-                            }
-
-                            match bc.add_block(block) {
-                                Ok(()) => {
-                                    let updated = bc.latest_block().ok().cloned();
-
-                                    // ── Post-block Voyager bookkeeping ──
-                                    if voyager_activated {
-                                        // Record block for epoch + reward tracking
-                                        let reward = bc.get_block_reward();
-                                        bc.epoch_manager.record_block(reward);
-
-                                        // Record liveness: proposer signed
-                                        let active = bc.stake_registry.active_set.clone();
-                                        let signers = vec![wallet.address.clone()];
-                                        bc.slashing.record_block_signatures(&active, &signers, height);
-
-                                        // Distribute reward to proposer
-                                        let validator_fee = 0; // TODO: actual fee from block
-                                        let _ = bc.stake_registry.distribute_reward(
-                                            &wallet.address, reward, validator_fee,
-                                        );
-
-                                        // Check epoch boundary — split borrows to satisfy borrow checker
-                                        if sentrix::core::epoch::EpochManager::is_epoch_boundary(height) {
-                                            tracing::info!("Epoch boundary at height {} — transitioning", height);
-
-                                            // Process unbonding (split borrow: take stake_registry out temporarily)
-                                            let released = bc.stake_registry.process_unbonding(height);
-                                            for (delegator, amount) in &released {
-                                                bc.accounts.credit(delegator, *amount)
-                                                    .unwrap_or_else(|e| tracing::warn!("unbonding credit failed: {}", e));
-                                            }
-                                            if !released.is_empty() {
-                                                tracing::info!("Released {} unbonding entries", released.len());
-                                            }
-
-                                            // Update active set + epoch
-                                            bc.stake_registry.update_active_set();
-                                            let active = bc.stake_registry.active_set.clone();
-                                            let total_staked: u64 = active.iter()
-                                                .filter_map(|a| bc.stake_registry.get_validator(a))
-                                                .map(|v| v.total_stake())
-                                                .sum();
-                                            bc.epoch_manager.record_block(0); // finalize current epoch
-                                            let finished = bc.epoch_manager.current_epoch.clone();
-                                            bc.epoch_manager.history.push(finished);
-                                            if bc.epoch_manager.history.len() > bc.epoch_manager.max_history {
-                                                bc.epoch_manager.history.remove(0);
-                                            }
-                                            let next_num = bc.epoch_manager.current_epoch.epoch_number + 1;
-                                            let next_start = next_num * sentrix::core::epoch::EPOCH_LENGTH;
-                                            bc.epoch_manager.current_epoch = sentrix::core::epoch::EpochInfo {
-                                                epoch_number: next_num,
-                                                start_height: next_start,
-                                                end_height: next_start + sentrix::core::epoch::EPOCH_LENGTH - 1,
-                                                validator_set: active.clone(),
-                                                total_staked,
-                                                total_rewards: 0,
-                                                total_blocks_produced: 0,
-                                            };
-                                            tracing::info!("Epoch {} started — {} validators, {} staked",
-                                                next_num, active.len(), total_staked);
-
-                                            // Check liveness slashing
-                                            // Extract slashing engine to avoid double mutable borrow
-                                            let mut slashing = std::mem::take(&mut bc.slashing);
-                                            let slashed = slashing.check_liveness(
-                                                &mut bc.stake_registry, &active, height,
-                                            );
-                                            bc.slashing = slashing;
-                                            for (val, amt) in &slashed {
-                                                tracing::warn!("Slashed {} for {} sentri (downtime)", val, amt);
-                                                bc.accounts.burn(*amt);
-                                            }
-                                        }
+                    let result = {
+                        let mut bc = shared_clone.write().await;
+                        match bc.create_block(&wallet.address) {
+                            Ok(block) => {
+                                let height = block.index;
+                                match bc.add_block(block) {
+                                    Ok(()) => {
+                                        let updated = bc.latest_block().ok().cloned();
+                                        Some((height, updated))
                                     }
-
-                                    Some((height, updated))
+                                    Err(e) => { tracing::warn!("add_block failed: {}", e); None }
                                 }
-                                Err(e) => { tracing::warn!("add_block failed: {}", e); None }
                             }
+                            Err(_) => None,
                         }
-                        Err(_) => None,
+                    };
+
+                    if let Some((height, Some(block_to_save))) = result {
+                        println!("Block {} produced by {}", height, wallet.address);
+                        let _ = storage_clone.save_block(&block_to_save);
+                        {
+                            let bc = shared_clone.read().await;
+                            let _ = storage_clone.save_blockchain(&bc);
+                        }
+                        lp2p_clone.broadcast_block(&block_to_save).await;
                     }
+                    continue;
+                }
+
+                // ════════════════════════════════════════════════
+                // Voyager mode: event-driven BFT consensus
+                // ════════════════════════════════════════════════
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                // Compute total active stake and current chain height (read lock)
+                let (current_height, total_active_stake) = {
+                    let bc = shared_clone.read().await;
+                    let total: u64 = bc.stake_registry.active_set.iter()
+                        .filter_map(|a| bc.stake_registry.get_validator(a))
+                        .map(|v| v.total_stake())
+                        .sum();
+                    (bc.height(), total)
                 };
 
-                if let Some((height, Some(block_to_save))) = result {
-                    println!("Block {} produced by {}", height, wallet.address);
-                    let _ = storage_clone.save_block(&block_to_save);
-                    {
-                        let bc = shared_clone.read().await;
-                        let _ = storage_clone.save_blockchain(&bc);
+                let next_height = current_height.saturating_add(1);
+
+                // Initialize or advance BFT engine when height changes
+                if bft_engine.is_none() || last_finalized_height < current_height {
+                    last_finalized_height = current_height;
+                    let mut bft = BftEngine::new(next_height, wallet.address.clone(), total_active_stake);
+                    proposed_block = None;
+
+                    // Check if we're the proposer for this height+round
+                    let bc = shared_clone.read().await;
+                    let we_are_proposer = bft.is_proposer(&bc.stake_registry);
+                    drop(bc);
+
+                    if we_are_proposer {
+                        // We're the proposer — create block and broadcast proposal
+                        let mut bc = shared_clone.write().await;
+                        match bc.create_block(&wallet.address) {
+                            Ok(block) => {
+                                let block_hash = block.hash.clone();
+                                let block_data = bincode::serialize(&block).unwrap_or_default();
+                                let mut proposal = Proposal {
+                                    height: next_height,
+                                    round: bft.round(),
+                                    block_hash: block_hash.clone(),
+                                    block_data,
+                                    proposer: wallet.address.clone(),
+                                    signature: vec![],
+                                };
+                                proposal.sign(&validator_secret_key);
+                                proposed_block = Some(block);
+                                drop(bc);
+
+                                // Broadcast signed proposal to peers
+                                lp2p_clone.broadcast_bft_proposal(&proposal).await;
+
+                                // Self-vote: on_own_proposal triggers prevote
+                                let initial_action = bft.on_own_proposal(&block_hash);
+
+                                // Cascading BFT action loop
+                                let mut action = initial_action;
+                                loop {
+                                    match action {
+                                        BftAction::BroadcastPrevote(ref prevote) => {
+                                            let mut signed_pv = prevote.clone();
+                                            signed_pv.sign(&validator_secret_key);
+                                            lp2p_clone.broadcast_bft_prevote(&signed_pv).await;
+                                            let bc = shared_clone.read().await;
+                                            let our_stake = bc.stake_registry.get_validator(&wallet.address)
+                                                .map(|v| v.total_stake()).unwrap_or(0);
+                                            drop(bc);
+                                            action = bft.on_prevote_weighted(prevote, our_stake);
+                                            continue;
+                                        }
+                                        BftAction::BroadcastPrecommit(ref precommit) => {
+                                            let mut signed_pc = precommit.clone();
+                                            signed_pc.sign(&validator_secret_key);
+                                            lp2p_clone.broadcast_bft_precommit(&signed_pc).await;
+                                            let bc = shared_clone.read().await;
+                                            let our_stake = bc.stake_registry.get_validator(&wallet.address)
+                                                .map(|v| v.total_stake()).unwrap_or(0);
+                                            drop(bc);
+                                            action = bft.on_precommit_weighted(precommit, our_stake);
+                                            continue;
+                                        }
+                                        BftAction::FinalizeBlock { height, round, block_hash: _, ref justification } => {
+                                            if let Some(mut blk) = proposed_block.take() {
+                                                blk.round = round;
+                                                blk.justification = Some(justification.clone());
+                                                let proposer = blk.validator.clone();
+
+                                                let mut bc = shared_clone.write().await;
+                                                match bc.add_block(blk) {
+                                                    Ok(()) => {
+                                                        let updated = bc.latest_block().ok().cloned();
+
+                                                        // ── Post-block Voyager bookkeeping ──
+                                                        let reward = bc.get_block_reward();
+                                                        bc.epoch_manager.record_block(reward);
+
+                                                        let active = bc.stake_registry.active_set.clone();
+                                                        let signers = vec![proposer.clone()];
+                                                        bc.slashing.record_block_signatures(&active, &signers, height);
+
+                                                        let validator_fee = 0;
+                                                        let _ = bc.stake_registry.distribute_reward(
+                                                            &proposer, reward, validator_fee,
+                                                        );
+
+                                                        if sentrix::core::epoch::EpochManager::is_epoch_boundary(height) {
+                                                            tracing::info!("Epoch boundary at height {} — transitioning", height);
+                                                            let released = bc.stake_registry.process_unbonding(height);
+                                                            for (delegator, amount) in &released {
+                                                                bc.accounts.credit(delegator, *amount)
+                                                                    .unwrap_or_else(|e| tracing::warn!("unbonding credit failed: {}", e));
+                                                            }
+                                                            if !released.is_empty() {
+                                                                tracing::info!("Released {} unbonding entries", released.len());
+                                                            }
+
+                                                            bc.stake_registry.update_active_set();
+                                                            let active_set = bc.stake_registry.active_set.clone();
+                                                            let total_staked: u64 = active_set.iter()
+                                                                .filter_map(|a| bc.stake_registry.get_validator(a))
+                                                                .map(|v| v.total_stake())
+                                                                .sum();
+                                                            bc.epoch_manager.record_block(0);
+                                                            let finished = bc.epoch_manager.current_epoch.clone();
+                                                            bc.epoch_manager.history.push(finished);
+                                                            if bc.epoch_manager.history.len() > bc.epoch_manager.max_history {
+                                                                bc.epoch_manager.history.remove(0);
+                                                            }
+                                                            let next_num = bc.epoch_manager.current_epoch.epoch_number + 1;
+                                                            let next_start = next_num * sentrix::core::epoch::EPOCH_LENGTH;
+                                                            bc.epoch_manager.current_epoch = sentrix::core::epoch::EpochInfo {
+                                                                epoch_number: next_num,
+                                                                start_height: next_start,
+                                                                end_height: next_start + sentrix::core::epoch::EPOCH_LENGTH - 1,
+                                                                validator_set: active_set.clone(),
+                                                                total_staked,
+                                                                total_rewards: 0,
+                                                                total_blocks_produced: 0,
+                                                            };
+                                                            tracing::info!("Epoch {} started — {} validators, {} staked",
+                                                                next_num, active_set.len(), total_staked);
+
+                                                            let mut slashing = std::mem::take(&mut bc.slashing);
+                                                            let slashed = slashing.check_liveness(
+                                                                &mut bc.stake_registry, &active_set, height,
+                                                            );
+                                                            bc.slashing = slashing;
+                                                            for (val, amt) in &slashed {
+                                                                tracing::warn!("Slashed {} for {} sentri (downtime)", val, amt);
+                                                                bc.accounts.burn(*amt);
+                                                            }
+                                                        }
+
+                                                        tracing::info!("BFT finalized height={} round={}", height, round);
+                                                        last_finalized_height = height;
+
+                                                        drop(bc);
+                                                        if let Some(ref saved_block) = updated {
+                                                            println!("Block {} produced by {}", height, proposer);
+                                                            let _ = storage_clone.save_block(saved_block);
+                                                            let bc = shared_clone.read().await;
+                                                            let _ = storage_clone.save_blockchain(&bc);
+                                                            drop(bc);
+                                                            lp2p_clone.broadcast_block(saved_block).await;
+                                                        }
+                                                    }
+                                                    Err(e) => tracing::warn!("BFT add_block failed: {}", e),
+                                                }
+                                            }
+                                            break;
+                                        }
+                                        BftAction::TimeoutAdvanceRound => {
+                                            bft.advance_round();
+                                            tracing::info!("BFT timeout — round {}", bft.round());
+                                            break;
+                                        }
+                                        BftAction::SkipRound => {
+                                            tracing::warn!("BFT skip round at height {}", bft.height());
+                                            break;
+                                        }
+                                        BftAction::Wait | BftAction::ProposeBlock => break,
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("create_block failed: {}", e);
+                                drop(bc);
+                            }
+                        }
                     }
-                    lp2p_clone.broadcast_block(&block_to_save).await;
+
+                    bft_engine = Some(bft);
+                }
+
+                // Process incoming BFT messages from peers
+                if let Some(ref mut bft) = bft_engine {
+                    // Drain all available BFT messages
+                    while let Ok(msg) = bft_rx.try_recv() {
+                        let action = match msg {
+                            BftMessage::Propose(proposal) => {
+                                if proposal.height != bft.height() || proposal.round != bft.round() {
+                                    continue;
+                                }
+                                if !proposal.verify_sig() {
+                                    tracing::warn!("Invalid proposal signature from {}", &proposal.proposer);
+                                    continue;
+                                }
+                                if let Ok(block) = bincode::deserialize::<Block>(&proposal.block_data) {
+                                    proposed_block = Some(block);
+                                    let bc = shared_clone.read().await;
+                                    let a = bft.on_proposal(&proposal.block_hash, &proposal.proposer, &bc.stake_registry);
+                                    drop(bc);
+                                    a
+                                } else {
+                                    tracing::warn!("Failed to deserialize block from BFT proposal");
+                                    continue;
+                                }
+                            }
+                            BftMessage::Prevote(prevote) => {
+                                if !prevote.verify_sig() {
+                                    tracing::warn!("Invalid prevote signature from {}", &prevote.validator);
+                                    continue;
+                                }
+                                let bc = shared_clone.read().await;
+                                let stake = bc.stake_registry.get_validator(&prevote.validator)
+                                    .map(|v| v.total_stake()).unwrap_or(0);
+                                drop(bc);
+                                bft.on_prevote_weighted(&prevote, stake)
+                            }
+                            BftMessage::Precommit(precommit) => {
+                                if !precommit.verify_sig() {
+                                    tracing::warn!("Invalid precommit signature from {}", &precommit.validator);
+                                    continue;
+                                }
+                                let bc = shared_clone.read().await;
+                                let stake = bc.stake_registry.get_validator(&precommit.validator)
+                                    .map(|v| v.total_stake()).unwrap_or(0);
+                                drop(bc);
+                                bft.on_precommit_weighted(&precommit, stake)
+                            }
+                        };
+
+                        // Cascading BFT action loop for peer messages
+                        let mut action = action;
+                        loop {
+                            match action {
+                                BftAction::BroadcastPrevote(ref prevote) => {
+                                    lp2p_clone.broadcast_bft_prevote(prevote).await;
+                                    let bc = shared_clone.read().await;
+                                    let our_stake = bc.stake_registry.get_validator(&wallet.address)
+                                        .map(|v| v.total_stake()).unwrap_or(0);
+                                    drop(bc);
+                                    action = bft.on_prevote_weighted(prevote, our_stake);
+                                    continue;
+                                }
+                                BftAction::BroadcastPrecommit(ref precommit) => {
+                                    lp2p_clone.broadcast_bft_precommit(precommit).await;
+                                    let bc = shared_clone.read().await;
+                                    let our_stake = bc.stake_registry.get_validator(&wallet.address)
+                                        .map(|v| v.total_stake()).unwrap_or(0);
+                                    drop(bc);
+                                    action = bft.on_precommit_weighted(precommit, our_stake);
+                                    continue;
+                                }
+                                BftAction::FinalizeBlock { height, round, block_hash: _, ref justification } => {
+                                    if let Some(mut blk) = proposed_block.take() {
+                                        blk.round = round;
+                                        blk.justification = Some(justification.clone());
+                                        let proposer = blk.validator.clone();
+
+                                        let mut bc = shared_clone.write().await;
+                                        match bc.add_block(blk) {
+                                            Ok(()) => {
+                                                let updated = bc.latest_block().ok().cloned();
+
+                                                // ── Post-block Voyager bookkeeping ──
+                                                let reward = bc.get_block_reward();
+                                                bc.epoch_manager.record_block(reward);
+
+                                                let active = bc.stake_registry.active_set.clone();
+                                                let signers = vec![proposer.clone()];
+                                                bc.slashing.record_block_signatures(&active, &signers, height);
+
+                                                let validator_fee = 0;
+                                                let _ = bc.stake_registry.distribute_reward(
+                                                    &proposer, reward, validator_fee,
+                                                );
+
+                                                if sentrix::core::epoch::EpochManager::is_epoch_boundary(height) {
+                                                    tracing::info!("Epoch boundary at height {} — transitioning", height);
+                                                    let released = bc.stake_registry.process_unbonding(height);
+                                                    for (delegator, amount) in &released {
+                                                        bc.accounts.credit(delegator, *amount)
+                                                            .unwrap_or_else(|e| tracing::warn!("unbonding credit failed: {}", e));
+                                                    }
+                                                    if !released.is_empty() {
+                                                        tracing::info!("Released {} unbonding entries", released.len());
+                                                    }
+
+                                                    bc.stake_registry.update_active_set();
+                                                    let active_set = bc.stake_registry.active_set.clone();
+                                                    let total_staked: u64 = active_set.iter()
+                                                        .filter_map(|a| bc.stake_registry.get_validator(a))
+                                                        .map(|v| v.total_stake())
+                                                        .sum();
+                                                    bc.epoch_manager.record_block(0);
+                                                    let finished = bc.epoch_manager.current_epoch.clone();
+                                                    bc.epoch_manager.history.push(finished);
+                                                    if bc.epoch_manager.history.len() > bc.epoch_manager.max_history {
+                                                        bc.epoch_manager.history.remove(0);
+                                                    }
+                                                    let next_num = bc.epoch_manager.current_epoch.epoch_number + 1;
+                                                    let next_start = next_num * sentrix::core::epoch::EPOCH_LENGTH;
+                                                    bc.epoch_manager.current_epoch = sentrix::core::epoch::EpochInfo {
+                                                        epoch_number: next_num,
+                                                        start_height: next_start,
+                                                        end_height: next_start + sentrix::core::epoch::EPOCH_LENGTH - 1,
+                                                        validator_set: active_set.clone(),
+                                                        total_staked,
+                                                        total_rewards: 0,
+                                                        total_blocks_produced: 0,
+                                                    };
+                                                    tracing::info!("Epoch {} started — {} validators, {} staked",
+                                                        next_num, active_set.len(), total_staked);
+
+                                                    let mut slashing = std::mem::take(&mut bc.slashing);
+                                                    let slashed = slashing.check_liveness(
+                                                        &mut bc.stake_registry, &active_set, height,
+                                                    );
+                                                    bc.slashing = slashing;
+                                                    for (val, amt) in &slashed {
+                                                        tracing::warn!("Slashed {} for {} sentri (downtime)", val, amt);
+                                                        bc.accounts.burn(*amt);
+                                                    }
+                                                }
+
+                                                tracing::info!("BFT finalized height={} round={}", height, round);
+                                                last_finalized_height = height;
+
+                                                drop(bc);
+                                                if let Some(ref saved_block) = updated {
+                                                    println!("Block {} produced by {}", height, proposer);
+                                                    let _ = storage_clone.save_block(saved_block);
+                                                    let bc = shared_clone.read().await;
+                                                    let _ = storage_clone.save_blockchain(&bc);
+                                                    drop(bc);
+                                                    lp2p_clone.broadcast_block(saved_block).await;
+                                                }
+                                            }
+                                            Err(e) => tracing::warn!("BFT add_block failed: {}", e),
+                                        }
+                                    }
+                                    break;
+                                }
+                                BftAction::TimeoutAdvanceRound => {
+                                    bft.advance_round();
+                                    tracing::info!("BFT timeout — round {}", bft.round());
+                                    break;
+                                }
+                                BftAction::SkipRound => {
+                                    tracing::warn!("BFT skip round at height {}", bft.height());
+                                    break;
+                                }
+                                BftAction::Wait | BftAction::ProposeBlock => break,
+                            }
+                        }
+                    }
+
+                    // Check for BFT timeouts
+                    if bft.is_timed_out() {
+                        let timeout_action = bft.on_timeout();
+                        let mut action = timeout_action;
+                        loop {
+                            match action {
+                                BftAction::BroadcastPrevote(ref prevote) => {
+                                    lp2p_clone.broadcast_bft_prevote(prevote).await;
+                                    let bc = shared_clone.read().await;
+                                    let our_stake = bc.stake_registry.get_validator(&wallet.address)
+                                        .map(|v| v.total_stake()).unwrap_or(0);
+                                    drop(bc);
+                                    action = bft.on_prevote_weighted(prevote, our_stake);
+                                    continue;
+                                }
+                                BftAction::BroadcastPrecommit(ref precommit) => {
+                                    lp2p_clone.broadcast_bft_precommit(precommit).await;
+                                    let bc = shared_clone.read().await;
+                                    let our_stake = bc.stake_registry.get_validator(&wallet.address)
+                                        .map(|v| v.total_stake()).unwrap_or(0);
+                                    drop(bc);
+                                    action = bft.on_precommit_weighted(precommit, our_stake);
+                                    continue;
+                                }
+                                BftAction::TimeoutAdvanceRound => {
+                                    bft.advance_round();
+                                    tracing::info!("BFT timeout — advanced to round {}", bft.round());
+                                    break;
+                                }
+                                BftAction::SkipRound => {
+                                    tracing::warn!("BFT skip round at height {}", bft.height());
+                                    // Reset engine so next iteration starts fresh height
+                                    bft_engine = None;
+                                    break;
+                                }
+                                _ => break,
+                            }
+                        }
+                    }
                 }
             }
         });
     }
 
-    // Event handler — persist P2P blocks to sled
+    // Event handler — persist P2P blocks to sled + forward BFT events
     // Sync is handled inside the libp2p swarm task (Step 3d).
     let storage_for_p2p = storage.clone();
+    let bft_tx_clone = bft_tx;
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             match event {
@@ -688,15 +1097,18 @@ async fn cmd_start(
                 NodeEvent::SyncNeeded { peer_addr, peer_height } => {
                     tracing::info!("Sync needed from {} (height: {})", peer_addr, peer_height);
                 }
-                // BFT events — logged; multi-validator routing in future
+                // BFT events — forward to validator loop for multi-validator consensus
                 NodeEvent::BftProposal(p) => {
-                    tracing::info!("BFT proposal received: height={} round={}", p.height, p.round);
+                    tracing::info!("BFT proposal: height={} round={} proposer={}", p.height, p.round, &p.proposer[..p.proposer.len().min(12)]);
+                    let _ = bft_tx_clone.send(sentrix::core::bft_messages::BftMessage::Propose(p)).await;
                 }
                 NodeEvent::BftPrevote(v) => {
-                    tracing::info!("BFT prevote received: height={} round={}", v.height, v.round);
+                    tracing::info!("BFT prevote: height={} round={} from={}", v.height, v.round, &v.validator[..v.validator.len().min(12)]);
+                    let _ = bft_tx_clone.send(sentrix::core::bft_messages::BftMessage::Prevote(v)).await;
                 }
                 NodeEvent::BftPrecommit(c) => {
-                    tracing::info!("BFT precommit received: height={} round={}", c.height, c.round);
+                    tracing::info!("BFT precommit: height={} round={} from={}", c.height, c.round, &c.validator[..c.validator.len().min(12)]);
+                    let _ = bft_tx_clone.send(sentrix::core::bft_messages::BftMessage::Precommit(c)).await;
                 }
             }
         }
