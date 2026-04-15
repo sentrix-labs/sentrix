@@ -345,6 +345,8 @@ async fn get_blocks(
             "tx_count": b.tx_count(),
             "validator": b.validator,
             "merkle_root": b.merkle_root,
+            "round": b.round,
+            "has_justification": b.justification.is_some(),
         }))
         .collect();
 
