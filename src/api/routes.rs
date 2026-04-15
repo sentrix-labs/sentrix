@@ -31,7 +31,6 @@ use crate::api::explorer;
 // Returns 401 if SENTRIX_API_KEY is set and the request doesn't match.
 pub struct ApiKey;
 
-#[axum::async_trait]
 impl<S: Send + Sync> FromRequestParts<S> for ApiKey {
     type Rejection = StatusCode;
 
