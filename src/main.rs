@@ -611,7 +611,6 @@ async fn cmd_start(
             // Persistent BFT state for Voyager mode
             let mut bft_engine: Option<BftEngine> = None;
             let mut proposed_block: Option<Block> = None;
-            let mut last_finalized_height: u64 = 0;
 
             loop {
                 if shutdown_flag_clone.load(Ordering::Acquire) {
@@ -685,9 +684,12 @@ async fn cmd_start(
 
                 let next_height = current_height.saturating_add(1);
 
-                // Initialize or advance BFT engine when height changes
-                if bft_engine.is_none() || last_finalized_height < current_height {
-                    last_finalized_height = current_height;
+                // Initialize BFT engine for next height when chain has advanced
+                let need_new_round = match &bft_engine {
+                    None => true,
+                    Some(bft) => bft.height() <= current_height,
+                };
+                if need_new_round {
                     let mut bft = BftEngine::new(next_height, wallet.address.clone(), total_active_stake);
                     proposed_block = None;
 
@@ -828,7 +830,6 @@ async fn cmd_start(
                                                         }
 
                                                         tracing::info!("BFT finalized height={} round={}", height, round);
-                                                        last_finalized_height = height;
 
                                                         drop(bc);
                                                         if let Some(ref saved_block) = updated {
@@ -1015,7 +1016,6 @@ async fn cmd_start(
                                                 }
 
                                                 tracing::info!("BFT finalized height={} round={}", height, round);
-                                                last_finalized_height = height;
 
                                                 drop(bc);
                                                 if let Some(ref saved_block) = updated {
