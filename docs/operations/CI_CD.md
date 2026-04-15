@@ -11,9 +11,9 @@ Push to main → TEST → DEPLOY (only main branch)
 ### Test Job (every push + PR)
 
 1. `cargo deny check` — license + supply chain
-2. `cargo clippy -- -D warnings` — zero warnings (deny unwrap/expect/panic)
+2. `cargo clippy --tests -- -D warnings` — zero warnings (deny unwrap/expect/panic)
 3. `cargo build --release`
-4. `cargo test` — 357 tests
+4. `cargo test` — 479+ tests
 5. Upload binary as artifact (1-day retention)
 
 ### Deploy Job (main only, after test passes)

@@ -12,7 +12,7 @@ Highlights since 0.1.0:
 - Pentest 6/6 passed on live production node
 - P2P upgrades: bincode wire protocol, Kademlia DHT discovery, gossipsub propagation
 - Disk pruning for trie roots
-- 357 tests (was 284), protocol `/sentrix/2.0.0`
+- 479+ tests (was 284), protocol `/sentrix/2.0.0`
 - Version strings dynamic via `env!("CARGO_PKG_VERSION")`
 - Network phase names: Pioneer (current), Voyager, Frontier, Odyssey
 - UI branding: "Sentrix" — mainnet/testnet via chain_id (7119/7120)

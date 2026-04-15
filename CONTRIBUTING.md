@@ -76,7 +76,7 @@ tests/
 
 ### Reporting Bugs
 
-1. Check [existing issues](https://github.com/satyakwok/sentrix-chain/issues) to avoid duplicates
+1. Check [existing issues](https://github.com/satyakwok/sentrix/issues) to avoid duplicates
 2. Open a new issue with:
    - Clear title describing the bug
    - Steps to reproduce
@@ -94,11 +94,11 @@ Open an issue with the `feature-request` label. Include:
 ### Submitting Pull Requests
 
 1. **Fork** the repository
-2. **Create a branch** from `master`: `git checkout -b feat/my-feature`
+2. **Create a branch** from `main`: `git checkout -b feat/my-feature`
 3. **Make your changes** — keep commits focused and atomic
 4. **Add tests** for any new functionality
 5. **Run the test suite**: `cargo test` — all tests must pass
-6. **Run clippy**: `cargo clippy` — no warnings
+6. **Run clippy**: `cargo clippy --tests -- -D warnings` — must be clean
 7. **Push** to your fork and open a Pull Request
 
 ---
@@ -150,7 +150,7 @@ Before submitting, make sure:
 
 ## Testing
 
-We take testing seriously. The project has **81+ tests** across 10 suites.
+We take testing seriously. The project has **479+ tests** across 12 suites.
 
 ### Running tests
 
