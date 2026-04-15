@@ -517,29 +517,106 @@ async fn cmd_start(
         let lp2p_clone = lp2p.clone();
         let shutdown_flag_clone = shutdown_flag.clone();
         tokio::spawn(async move {
+            let mut voyager_activated = false;
             loop {
-                // Stop before acquiring the write lock so the shutdown handler
-                // can obtain it immediately without racing a new block cycle.
                 if shutdown_flag_clone.load(Ordering::Acquire) {
                     tracing::info!("Validator loop: shutdown flag set — exiting");
                     break;
                 }
                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
 
-                // Release write lock before disk I/O so API reads are not
-                // blocked for the full duration of save_blockchain() (~3s stall fixed).
                 let result = {
                     let mut bc = shared_clone.write().await;
+
+                    // ── Voyager fork activation (one-time) ──────
+                    if !voyager_activated && Blockchain::is_voyager_height(bc.height().saturating_add(1)) {
+                        tracing::info!("Voyager fork reached at height {} — activating DPoS", bc.height());
+                        if let Err(e) = bc.activate_voyager() {
+                            tracing::warn!("activate_voyager failed: {}", e);
+                        }
+                        voyager_activated = true;
+                    }
+
+                    // ── Block production (Pioneer or Voyager) ───
                     match bc.create_block(&wallet.address) {
                         Ok(block) => {
                             let height = block.index;
                             match bc.add_block(block) {
                                 Ok(()) => {
-                                    // Capture H2: above STATE_ROOT_FORK_HEIGHT, add_block()
-                                    // stamps state_root and recomputes the block hash in-place.
-                                    // Must use latest_block() here — NOT a pre-add_block clone —
-                                    // so disk and broadcast always carry the canonical H2 hash.
                                     let updated = bc.latest_block().ok().cloned();
+
+                                    // ── Post-block Voyager bookkeeping ──
+                                    if voyager_activated {
+                                        // Record block for epoch + reward tracking
+                                        let reward = bc.get_block_reward();
+                                        bc.epoch_manager.record_block(reward);
+
+                                        // Record liveness: proposer signed
+                                        let active = bc.stake_registry.active_set.clone();
+                                        let signers = vec![wallet.address.clone()];
+                                        bc.slashing.record_block_signatures(&active, &signers, height);
+
+                                        // Distribute reward to proposer
+                                        let validator_fee = 0; // TODO: actual fee from block
+                                        let _ = bc.stake_registry.distribute_reward(
+                                            &wallet.address, reward, validator_fee,
+                                        );
+
+                                        // Check epoch boundary — split borrows to satisfy borrow checker
+                                        if sentrix::core::epoch::EpochManager::is_epoch_boundary(height) {
+                                            tracing::info!("Epoch boundary at height {} — transitioning", height);
+
+                                            // Process unbonding (split borrow: take stake_registry out temporarily)
+                                            let released = bc.stake_registry.process_unbonding(height);
+                                            for (delegator, amount) in &released {
+                                                bc.accounts.credit(delegator, *amount)
+                                                    .unwrap_or_else(|e| tracing::warn!("unbonding credit failed: {}", e));
+                                            }
+                                            if !released.is_empty() {
+                                                tracing::info!("Released {} unbonding entries", released.len());
+                                            }
+
+                                            // Update active set + epoch
+                                            bc.stake_registry.update_active_set();
+                                            let active = bc.stake_registry.active_set.clone();
+                                            let total_staked: u64 = active.iter()
+                                                .filter_map(|a| bc.stake_registry.get_validator(a))
+                                                .map(|v| v.total_stake())
+                                                .sum();
+                                            bc.epoch_manager.record_block(0); // finalize current epoch
+                                            let finished = bc.epoch_manager.current_epoch.clone();
+                                            bc.epoch_manager.history.push(finished);
+                                            if bc.epoch_manager.history.len() > bc.epoch_manager.max_history {
+                                                bc.epoch_manager.history.remove(0);
+                                            }
+                                            let next_num = bc.epoch_manager.current_epoch.epoch_number + 1;
+                                            let next_start = next_num * sentrix::core::epoch::EPOCH_LENGTH;
+                                            bc.epoch_manager.current_epoch = sentrix::core::epoch::EpochInfo {
+                                                epoch_number: next_num,
+                                                start_height: next_start,
+                                                end_height: next_start + sentrix::core::epoch::EPOCH_LENGTH - 1,
+                                                validator_set: active.clone(),
+                                                total_staked,
+                                                total_rewards: 0,
+                                                total_blocks_produced: 0,
+                                            };
+                                            tracing::info!("Epoch {} started — {} validators, {} staked",
+                                                next_num, active.len(), total_staked);
+
+                                            // Check liveness slashing
+                                            // Extract slashing engine to avoid double mutable borrow
+                                            let mut slashing = std::mem::take(&mut bc.slashing);
+                                            let slashed = slashing.check_liveness(
+                                                &mut bc.stake_registry, &active, height,
+                                            );
+                                            bc.slashing = slashing;
+                                            for (val, amt) in &slashed {
+                                                tracing::warn!("Slashed {} for {} sentri (downtime)", val, amt);
+                                                bc.accounts.burn(*amt);
+                                            }
+                                        }
+                                    }
+
                                     Some((height, updated))
                                 }
                                 Err(e) => { tracing::warn!("add_block failed: {}", e); None }
@@ -547,12 +624,10 @@ async fn cmd_start(
                         }
                         Err(_) => None,
                     }
-                }; // write lock released here — API reads no longer stalled
+                };
 
                 if let Some((height, Some(block_to_save))) = result {
                     println!("Block {} produced by {}", height, wallet.address);
-                    // save_block (fast — only block data + height) every block.
-                    // Full state (accounts, validators, tokens) via read lock — API still serves.
                     let _ = storage_clone.save_block(&block_to_save);
                     {
                         let bc = shared_clone.read().await;

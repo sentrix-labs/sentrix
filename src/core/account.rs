@@ -48,6 +48,11 @@ impl AccountDB {
         self.accounts.get(address).map(|a| a.nonce).unwrap_or(0)
     }
 
+    /// Burn tokens (add to total_burned tracker, no balance deducted)
+    pub fn burn(&mut self, amount: u64) {
+        self.total_burned = self.total_burned.saturating_add(amount);
+    }
+
     pub fn credit(&mut self, address: &str, amount: u64) -> SentrixResult<()> {
         let account = self.get_or_create(address);
         account.balance = account.balance.checked_add(amount)
