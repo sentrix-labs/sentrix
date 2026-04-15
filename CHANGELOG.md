@@ -17,14 +17,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.0.0] — 2026-04-15
 
-Pioneer release. PoA chain live with 7 validators across 3 VPS, 131K+ blocks, 11 security audit rounds.
+Pioneer release. PoA chain live with 7 validators across 3 VPS, 141K+ blocks, 11 security audit rounds.
 
 ### Milestones since 0.1.0 (Pioneer)
 - 7 validators running across 3 geographically separate VPS (full mesh peering)
 - CI/CD pipeline deploying to all 3 VPS with ordered stop/start and health checks
 - P0 security hardening: libp2p peer limits, per-IP rate limiting, legacy TCP deprecated
 - VPS3 (Sentrix Core) added as 7th validator
-- Chain height 131,000+, zero downtime incidents since stabilization
+- Chain height 141,000+, zero downtime incidents since stabilization
 - 11 security audit rounds completed (94 findings, 78 fixed, score 8.3/10)
 - Full documentation suite (20 files across architecture, security, operations, tokenomics, roadmap)
 

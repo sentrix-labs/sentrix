@@ -4,7 +4,7 @@
 
 [![Build](https://github.com/satyakwok/sentrix/actions/workflows/ci.yml/badge.svg)](https://github.com/satyakwok/sentrix/actions)
 [![Rust](https://img.shields.io/badge/rust-1.94+-orange)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-342%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-357%20passing-brightgreen)]()
 [![License](https://img.shields.io/badge/license-BUSL--1.1-purple)](LICENSE)
 [![Chain ID](https://img.shields.io/badge/chain%20ID-7119-blue)]()
 
@@ -57,7 +57,7 @@ cargo build --release
 
 ```bash
 cargo test
-# 342 tests across 11 suites — unit + integration
+# 357 tests across 11 suites — unit + integration
 ```
 
 ### Bootstrap a local node
@@ -292,7 +292,7 @@ Known limitations: PoA consensus (Pioneer phase) requires trust in the validator
 
 | Phase | Timeline | Focus |
 |-------|----------|-------|
-| **Pioneer** ✅ | Complete | PoA core, SRX-20 tokens, SentrixTrie, libp2p Noise, 342 tests, live network |
+| **Pioneer** ✅ | Complete | PoA core, SRX-20 tokens, SentrixTrie, libp2p Noise, 357 tests, live network |
 | **Voyager** | 2026-05 → 2026-07 | DPoS validator elections, BFT finality, EVM (revm) |
 | **Frontier** | 2026-08 → 2026-10 | Ecosystem expansion, dApps, real users |
 | **Odyssey** | 2027+ | Full public chain, cross-chain bridges, mature ecosystem |

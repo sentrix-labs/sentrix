@@ -71,7 +71,7 @@ src/types/error.rs           SentrixError (14 variants)
 |-|-|
 | Source files | ~40 |
 | Lines of code | ~16,000+ |
-| Tests | 277+ |
+| Tests | 357 |
 | Dependencies | 27 crates |
 | `unsafe` blocks | 0 |
 | License | BUSL-1.1 |

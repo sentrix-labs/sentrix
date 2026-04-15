@@ -81,7 +81,7 @@ sentrix start --peers [BOOTSTRAP_NODE]:30303
 SENTRIX_CHAIN_ID=7120 SENTRIX_API_PORT=9545 \
   sentrix init --admin 0x<your_address>
 SENTRIX_CHAIN_ID=7120 SENTRIX_API_PORT=9545 \
-  sentrix start --port 31303 --peers VPS3_IP_REDACTED:31303
+  sentrix start --port 31303 --peers [TESTNET_BOOTSTRAP]:31303
 ```
 
 ## How chain_id works

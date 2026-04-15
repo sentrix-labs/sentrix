@@ -10,7 +10,7 @@ No fund-loss vulnerabilities. No data corruption risks. Main gap is DoS resistan
 
 | | |
 |-|-|
-| Rust 2024, 39 files, ~6,500 LoC | 277+ tests |
+| Rust 2024, 39 files, ~6,500 LoC | 357 tests |
 | PoA round-robin, 3s blocks | Chain ID 7119 |
 | 210M SRX max supply | 27 crates |
 
