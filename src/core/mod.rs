@@ -13,3 +13,4 @@ pub mod merkle;
 pub mod vm;
 pub mod trie;
 pub mod staking;
+pub mod epoch;
