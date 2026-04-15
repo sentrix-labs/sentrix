@@ -45,11 +45,11 @@ Add network manually:
 ```js
 import { JsonRpcProvider } from "ethers";
 
-// Mainnet
-const mainnet = new JsonRpcProvider("https://sentrix-rpc.sentriscloud.com");
+// Testnet (for development)
+const provider = new JsonRpcProvider("https://testnet-rpc.sentriscloud.com");
 
-// Testnet
-const testnet = new JsonRpcProvider("https://testnet-rpc.sentriscloud.com");
+// Mainnet (for production)
+// const provider = new JsonRpcProvider("https://sentrix-rpc.sentriscloud.com");
 
 const height = await provider.getBlockNumber();
 const balance = await provider.getBalance("0x...");
@@ -58,14 +58,14 @@ const balance = await provider.getBalance("0x...");
 ### curl
 
 ```bash
-# Mainnet
-curl -s https://sentrix-rpc.sentriscloud.com/chain/info | jq
-
-# Testnet
+# Testnet (default for development)
 curl -s https://testnet-rpc.sentriscloud.com/chain/info | jq
 
+# Mainnet (production)
+curl -s https://sentrix-rpc.sentriscloud.com/chain/info | jq
+
 # JSON-RPC
-curl -X POST https://sentrix-rpc.sentriscloud.com/rpc \
+curl -X POST https://testnet-rpc.sentriscloud.com/rpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}'
 ```

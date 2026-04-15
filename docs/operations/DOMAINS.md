@@ -36,26 +36,29 @@ Chain ID: 7120
 
 ## For Developers
 
-Connect MetaMask or ethers.js to mainnet:
-```
-RPC URL:  https://sentrix-rpc.sentriscloud.com
-Chain ID: 7119
-Symbol:   SRX
-```
-
-Connect to testnet:
+Connect to testnet (for development and testing):
 ```
 RPC URL:  https://testnet-rpc.sentriscloud.com
 Chain ID: 7120
 Symbol:   SRX
 ```
 
-API example:
+Testnet tokens have no real value. Use the faucet to get test SRX.
+
 ```bash
-curl https://sentrix-api.sentriscloud.com/chain/info
-curl -X POST https://sentrix-rpc.sentriscloud.com/rpc \
+curl https://testnet-rpc.sentriscloud.com/chain/info
+curl -X POST https://testnet-rpc.sentriscloud.com/rpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}'
+```
+
+## For Production
+
+Connect to mainnet:
+```
+RPC URL:  https://sentrix-rpc.sentriscloud.com
+Chain ID: 7119
+Symbol:   SRX
 ```
 
 ## Community
