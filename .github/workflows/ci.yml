@@ -8,8 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -35,9 +33,7 @@ jobs:
         run: cargo install cargo-deny --locked
 
       - name: Deny check
-        # V6-M-02 FIX: advisories section is configured in deny.toml (vulnerability=deny).
-        # Advisories subcheck is skipped in CI because cargo-deny v0.19.1 has a parse panic
-        # on advisories using CVSS 4.0 format (RUSTSEC-2026-0073 etc). Skip until upstream fixes.
+        # advisories skipped: cargo-deny v0.19.1 panics on CVSS 4.0 format (RUSTSEC-2026-0073 etc).
         # Track: https://github.com/EmbarkStudios/cargo-deny/issues
         run: cargo deny check licenses bans sources
 
@@ -50,41 +46,13 @@ jobs:
       - name: Test
         run: cargo test
 
-  build-and-push:
-    name: Build & Push Image
-    needs: test
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
+      - name: Upload binary
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=ref,event=branch
-            type=sha,prefix=sha-
-            type=raw,value=latest
-
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          name: sentrix-binary
+          path: target/release/sentrix
+          retention-days: 1
 
   deploy:
     name: Deploy to VPS
@@ -92,94 +60,120 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - name: Download binary
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/index
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          name: sentrix-binary
+          path: ./release
 
-      - name: Build release binary
-        run: cargo build --release
+      - name: Make binary executable
+        run: chmod +x ./release/sentrix
 
       # V5-09: Rotate VPS_SSH_KEY secrets periodically (recommended: every 90 days).
-      # Go to repo Settings → Secrets → VPS1_SSH_KEY / VPS2_SSH_KEY to update.
-      #
-      # PR #63: Graceful deploy — stop FIRST, then replace binary, then start.
-      # Previous approach (mv + systemctl restart) killed processes mid-trie-write,
-      # causing state corruption and the chain fork incident 2026-04-14.
-      - name: Deploy to VPS1
+      # PR #63: Graceful deploy — stop first, replace binary, then start.
+      - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.VPS1_SSH_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.VPS1_HOST }} >> ~/.ssh/known_hosts
-          scp target/release/sentrix \
-            ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }}:/tmp/sentrix_new
-          ssh ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }} "
-            echo '--- Stopping sentrix-node (graceful, max 30s) ---'
-            sudo systemctl stop sentrix-node || true
-            sleep 2
-
-            echo '--- Replacing binary ---'
-            sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
-            sudo chmod +x /opt/sentrix/sentrix
-
-            echo '--- Starting sentrix-node ---'
-            sudo systemctl start sentrix-node
-            sleep 5
-
-            echo '--- Verifying ---'
-            systemctl is-active sentrix-node
-          "
-
-      - name: Deploy to VPS2
-        env:
-          VPS2_HOST: ${{ secrets.VPS2_HOST }}
-          VPS2_USER: ${{ secrets.VPS2_USER }}
-          VPS2_SSH_KEY: ${{ secrets.VPS2_SSH_KEY }}
-        run: |
-          if [ -z "$VPS2_HOST" ]; then echo "VPS2 secrets not configured, skipping"; exit 0; fi
-          echo "$VPS2_SSH_KEY" > ~/.ssh/id_rsa_vps2
+          echo "${{ secrets.VPS1_SSH_KEY }}" > ~/.ssh/id_rsa_vps1
+          chmod 600 ~/.ssh/id_rsa_vps1
+          echo "${{ secrets.VPS2_SSH_KEY }}" > ~/.ssh/id_rsa_vps2
           chmod 600 ~/.ssh/id_rsa_vps2
-          ssh-keyscan -H "$VPS2_HOST" >> ~/.ssh/known_hosts
-          scp -i ~/.ssh/id_rsa_vps2 target/release/sentrix \
-            "$VPS2_USER@$VPS2_HOST:/tmp/sentrix_new"
-          ssh -i ~/.ssh/id_rsa_vps2 "$VPS2_USER@$VPS2_HOST" "
-            SERVICES=\$(systemctl list-units --type=service --no-legend 2>/dev/null | grep -i 'sentrix-val' | awk '{print \$1}')
-            if [ -z \"\$SERVICES\" ]; then
-              echo 'No sentrix-val services found, skipping'
-              exit 0
-            fi
+          ssh-keyscan -H ${{ secrets.VPS1_HOST }} >> ~/.ssh/known_hosts
+          ssh-keyscan -H ${{ secrets.VPS2_HOST }} >> ~/.ssh/known_hosts
 
-            echo '--- Stopping all validators (graceful, max 30s each) ---'
-            for svc in \$SERVICES; do
-              echo \"Stopping \$svc...\"
-              sudo systemctl stop \"\$svc\" || true
-            done
-            sleep 2
+      # Phase 1: Upload binary to all VPS while nodes are still running
+      - name: Upload binary to VPS1
+        run: |
+          scp -i ~/.ssh/id_rsa_vps1 ./release/sentrix \
+            ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }}:/tmp/sentrix_new
 
-            echo '--- Replacing binary ---'
-            sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
-            sudo chmod +x /opt/sentrix/sentrix
+      - name: Upload binary to VPS2
+        run: |
+          scp -i ~/.ssh/id_rsa_vps2 ./release/sentrix \
+            ${{ secrets.VPS2_USER }}@${{ secrets.VPS2_HOST }}:/tmp/sentrix_new
 
-            echo '--- Starting all validators ---'
-            for svc in \$SERVICES; do
-              echo \"Starting \$svc...\"
-              sudo systemctl start \"\$svc\"
-              sleep 1
-            done
-            sleep 5
-
-            echo '--- Verifying ---'
-            for svc in \$SERVICES; do
-              systemctl is-active \"\$svc\"
+      # Phase 2: Stop ALL validators — VPS2 first, then VPS1
+      # Order matters: VPS2 has 5 validators that would produce orphan blocks
+      # if VPS1 went offline first with old code still running on VPS2.
+      - name: Stop VPS2 validators
+        run: |
+          ssh -i ~/.ssh/id_rsa_vps2 ${{ secrets.VPS2_USER }}@${{ secrets.VPS2_HOST }} "
+            echo '--- Stopping VPS2 validators ---'
+            for svc in sentrix-val1 sentrix-val2 sentrix-val3 sentrix-val4 sentrix-val5; do
+              sudo systemctl stop \$svc || true
+              echo \"  stopped \$svc\"
             done
           "
+
+      - name: Stop VPS1 node
+        run: |
+          ssh -i ~/.ssh/id_rsa_vps1 ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }} "
+            echo '--- Stopping VPS1 sentrix-node ---'
+            sudo systemctl stop sentrix-node || true
+            echo '  stopped sentrix-node'
+          "
+
+      # Phase 3: Replace binary on all VPS
+      - name: Replace binary VPS1
+        run: |
+          ssh -i ~/.ssh/id_rsa_vps1 ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }} "
+            sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
+            sudo chmod +x /opt/sentrix/sentrix
+            echo 'VPS1 binary replaced'
+          "
+
+      - name: Replace binary VPS2
+        run: |
+          ssh -i ~/.ssh/id_rsa_vps2 ${{ secrets.VPS2_USER }}@${{ secrets.VPS2_HOST }} "
+            sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
+            sudo chmod +x /opt/sentrix/sentrix
+            echo 'VPS2 binary replaced'
+          "
+
+      # Phase 4: Start ALL validators
+      - name: Start VPS1 node
+        run: |
+          ssh -i ~/.ssh/id_rsa_vps1 ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }} "
+            sudo systemctl start sentrix-node
+            echo 'VPS1 sentrix-node started'
+          "
+
+      - name: Start VPS2 validators
+        run: |
+          ssh -i ~/.ssh/id_rsa_vps2 ${{ secrets.VPS2_USER }}@${{ secrets.VPS2_HOST }} "
+            echo '--- Starting VPS2 validators ---'
+            for svc in sentrix-val1 sentrix-val2 sentrix-val3 sentrix-val4 sentrix-val5; do
+              sudo systemctl start \$svc
+              sleep 1
+              echo \"  started \$svc\"
+            done
+          "
+
+      # Phase 5: Health check — verify chain is advancing on both VPS
+      - name: Health check
+        run: |
+          echo '--- Waiting 20s for nodes to stabilize ---'
+          sleep 20
+
+          VPS1_H0=$(curl -sf --max-time 10 http://${{ secrets.VPS1_HOST }}:8545/chain/info \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['height'])" 2>/dev/null || echo "0")
+          VPS2_H0=$(curl -sf --max-time 10 http://${{ secrets.VPS2_HOST }}:8545/chain/info \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['height'])" 2>/dev/null || echo "0")
+          echo "Height T0 — VPS1: $VPS1_H0 | VPS2: $VPS2_H0"
+
+          sleep 15
+
+          VPS1_H1=$(curl -sf --max-time 10 http://${{ secrets.VPS1_HOST }}:8545/chain/info \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['height'])" 2>/dev/null || echo "0")
+          VPS2_H1=$(curl -sf --max-time 10 http://${{ secrets.VPS2_HOST }}:8545/chain/info \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['height'])" 2>/dev/null || echo "0")
+          echo "Height T1 — VPS1: $VPS1_H1 | VPS2: $VPS2_H1"
+
+          if [ "$VPS1_H1" -gt "$VPS1_H0" ] && [ "$VPS2_H1" -gt "$VPS2_H0" ]; then
+            echo "Chain advancing on both VPS. Deploy successful."
+          else
+            echo "ERROR: Chain not advancing after deploy!"
+            echo "  VPS1: $VPS1_H0 -> $VPS1_H1"
+            echo "  VPS2: $VPS2_H0 -> $VPS2_H1"
+            exit 1
+          fi
