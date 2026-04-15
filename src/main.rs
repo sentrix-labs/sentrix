@@ -855,6 +855,10 @@ async fn cmd_start(
                                             tracing::warn!("BFT skip round at height {}", bft.height());
                                             break;
                                         }
+                                        BftAction::SyncNeeded { .. } => {
+                                            tracing::info!("BFT: peer ahead, need block sync");
+                                            break;
+                                        }
                                         BftAction::Wait | BftAction::ProposeBlock => break,
                                     }
                                 }
@@ -921,6 +925,9 @@ async fn cmd_start(
                                     .map(|v| v.total_stake()).unwrap_or(0);
                                 drop(bc);
                                 bft.on_precommit_weighted(&precommit, stake)
+                            }
+                            BftMessage::RoundStatus(status) => {
+                                bft.on_round_status(&status)
                             }
                         };
 
@@ -1046,6 +1053,10 @@ async fn cmd_start(
                                 }
                                 BftAction::SkipRound => {
                                     tracing::warn!("BFT skip round at height {}", bft.height());
+                                    break;
+                                }
+                                BftAction::SyncNeeded { peer_height } => {
+                                    tracing::info!("BFT: peer at height {}, need block sync", peer_height);
                                     break;
                                 }
                                 BftAction::Wait | BftAction::ProposeBlock => break,

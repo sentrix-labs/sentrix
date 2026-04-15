@@ -157,11 +157,25 @@ pub fn supermajority_threshold(total_stake: u64) -> u64 {
 
 // ── BFT Network Message Wrapper ──────────────────────────────
 
+// ── Round Status (convergence protocol) ─────────────────────
+
+/// Periodically gossiped by validators so that peers returning from partition
+/// can learn the current (height, round) without waiting for a vote.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoundStatus {
+    pub height: u64,
+    pub round: u32,
+    pub validator: String,
+}
+
+// ── BFT Network Message Wrapper ─────────────────────────────
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BftMessage {
     Propose(Proposal),
     Prevote(Prevote),
     Precommit(Precommit),
+    RoundStatus(RoundStatus),
 }
 
 // ── Vote Signing (secp256k1 ECDSA) ──────────────────────────

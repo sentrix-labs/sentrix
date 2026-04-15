@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 // errors used by integration callers, not directly in this module
 use crate::core::bft_messages::{
-    Prevote, Precommit, BlockJustification, supermajority_threshold,
+    Prevote, Precommit, BlockJustification, RoundStatus, supermajority_threshold,
 };
 use crate::core::staking::StakeRegistry;
 
@@ -195,6 +195,8 @@ pub enum BftAction {
     TimeoutAdvanceRound,
     /// Nothing to do yet — waiting for more votes
     Wait,
+    /// Peer is at a higher height — we need to sync blocks first
+    SyncNeeded { peer_height: u64 },
 }
 
 #[derive(Debug)]
@@ -528,6 +530,34 @@ impl BftEngine {
         }
     }
 
+    /// Handle a RoundStatus gossip from a peer.
+    /// If peer is at a higher round (same height) → catch up.
+    /// If peer is at a higher height → signal that block sync is needed.
+    pub fn on_round_status(&mut self, status: &RoundStatus) -> BftAction {
+        if status.height > self.state.height {
+            // Peer is ahead — we need to sync blocks, not BFT
+            return BftAction::SyncNeeded { peer_height: status.height };
+        }
+        if status.height < self.state.height {
+            // Peer is behind us — ignore
+            return BftAction::Wait;
+        }
+        // Same height — catch up round if behind
+        if status.round > self.state.round {
+            self.catch_up_round(status.round);
+        }
+        BftAction::Wait
+    }
+
+    /// Build a RoundStatus message for gossiping to peers
+    pub fn build_round_status(&self) -> RoundStatus {
+        RoundStatus {
+            height: self.state.height,
+            round: self.state.round,
+            validator: self.our_address.clone(),
+        }
+    }
+
     pub fn height(&self) -> u64 {
         self.state.height
     }
@@ -826,6 +856,113 @@ mod tests {
             }
             _ => panic!("expected prevote for locked hash"),
         }
+    }
+
+    #[test]
+    fn test_round_status_catch_up() {
+        let (mut engine, _) = setup();
+        assert_eq!(engine.round(), 0);
+
+        let status = RoundStatus {
+            height: 100,
+            round: 5,
+            validator: "0xval001".into(),
+        };
+        let action = engine.on_round_status(&status);
+        assert!(matches!(action, BftAction::Wait));
+        assert_eq!(engine.round(), 5); // caught up
+    }
+
+    #[test]
+    fn test_round_status_higher_height_triggers_sync() {
+        let (mut engine, _) = setup();
+        assert_eq!(engine.height(), 100);
+
+        let status = RoundStatus {
+            height: 200,
+            round: 0,
+            validator: "0xval001".into(),
+        };
+        let action = engine.on_round_status(&status);
+        match action {
+            BftAction::SyncNeeded { peer_height } => assert_eq!(peer_height, 200),
+            _ => panic!("expected SyncNeeded, got {:?}", action),
+        }
+        assert_eq!(engine.height(), 100); // unchanged
+    }
+
+    #[test]
+    fn test_round_status_lower_height_ignored() {
+        let (mut engine, _) = setup();
+        engine.new_height(200, engine.state.total_active_stake);
+
+        let status = RoundStatus {
+            height: 50,
+            round: 10,
+            validator: "0xval001".into(),
+        };
+        let action = engine.on_round_status(&status);
+        assert!(matches!(action, BftAction::Wait));
+        assert_eq!(engine.round(), 0); // unchanged
+    }
+
+    #[test]
+    fn test_round_status_same_round_noop() {
+        let (mut engine, _) = setup();
+        engine.state.round = 3;
+
+        let status = RoundStatus {
+            height: 100,
+            round: 3,
+            validator: "0xval001".into(),
+        };
+        let action = engine.on_round_status(&status);
+        assert!(matches!(action, BftAction::Wait));
+        assert_eq!(engine.round(), 3); // unchanged
+    }
+
+    #[test]
+    fn test_round_status_lower_round_ignored() {
+        let (mut engine, _) = setup();
+        engine.state.round = 5;
+
+        let status = RoundStatus {
+            height: 100,
+            round: 2,
+            validator: "0xval001".into(),
+        };
+        let action = engine.on_round_status(&status);
+        assert!(matches!(action, BftAction::Wait));
+        assert_eq!(engine.round(), 5); // unchanged
+    }
+
+    #[test]
+    fn test_build_round_status() {
+        let (engine, _) = setup();
+        let status = engine.build_round_status();
+        assert_eq!(status.height, 100);
+        assert_eq!(status.round, 0);
+        assert_eq!(status.validator, "0xval000");
+    }
+
+    #[test]
+    fn test_partition_recovery_simulation() {
+        // Simulate: val000 is stuck at round 0, peers advanced to round 3
+        let (mut engine, _) = setup();
+        assert_eq!(engine.round(), 0);
+
+        // Receive round status from 3 peers all at round 3
+        for i in 1..=3 {
+            let status = RoundStatus {
+                height: 100,
+                round: 3,
+                validator: format!("0xval{:03}", i),
+            };
+            engine.on_round_status(&status);
+        }
+        // Engine should have caught up to round 3
+        assert_eq!(engine.round(), 3);
+        assert_eq!(engine.phase(), BftPhase::Propose); // fresh round
     }
 
     #[test]
