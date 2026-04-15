@@ -48,7 +48,7 @@ sled = "0.34"
 
 # Networking
 tokio = { version = "1.0", features = ["full"] }
-libp2p = { version = "0.54", features = ["tcp", "noise", "yamux", "gossipsub", "kad", "identify", "tokio", "request-response", "macros"] }
+libp2p = { version = "0.56", features = ["tcp", "noise", "yamux", "gossipsub", "kad", "identify", "tokio", "request-response", "macros"] }
 
 # CLI
 clap = { version = "4.0", features = ["derive"] }
