@@ -520,6 +520,7 @@ async fn cmd_start(
         let lp2p_clone = lp2p.clone();
         let shutdown_flag_clone = shutdown_flag.clone();
         let mut bft_rx = bft_rx; // move receiver into this task
+        let validator_secret_key = wallet.get_secret_key()?;
         tokio::spawn(async move {
             use sentrix::core::bft::{BftEngine, BftAction};
             use sentrix::core::bft_messages::{BftMessage, Proposal};
@@ -621,7 +622,7 @@ async fn cmd_start(
                             Ok(block) => {
                                 let block_hash = block.hash.clone();
                                 let block_data = bincode::serialize(&block).unwrap_or_default();
-                                let proposal = Proposal {
+                                let mut proposal = Proposal {
                                     height: next_height,
                                     round: bft.round(),
                                     block_hash: block_hash.clone(),
@@ -629,10 +630,11 @@ async fn cmd_start(
                                     proposer: wallet.address.clone(),
                                     signature: vec![],
                                 };
+                                proposal.sign(&validator_secret_key);
                                 proposed_block = Some(block);
                                 drop(bc);
 
-                                // Broadcast proposal to peers
+                                // Broadcast signed proposal to peers
                                 lp2p_clone.broadcast_bft_proposal(&proposal).await;
 
                                 // Self-vote: on_own_proposal triggers prevote
@@ -643,7 +645,9 @@ async fn cmd_start(
                                 loop {
                                     match action {
                                         BftAction::BroadcastPrevote(ref prevote) => {
-                                            lp2p_clone.broadcast_bft_prevote(prevote).await;
+                                            let mut signed_pv = prevote.clone();
+                                            signed_pv.sign(&validator_secret_key);
+                                            lp2p_clone.broadcast_bft_prevote(&signed_pv).await;
                                             let bc = shared_clone.read().await;
                                             let our_stake = bc.stake_registry.get_validator(&wallet.address)
                                                 .map(|v| v.total_stake()).unwrap_or(0);
@@ -652,7 +656,9 @@ async fn cmd_start(
                                             continue;
                                         }
                                         BftAction::BroadcastPrecommit(ref precommit) => {
-                                            lp2p_clone.broadcast_bft_precommit(precommit).await;
+                                            let mut signed_pc = precommit.clone();
+                                            signed_pc.sign(&validator_secret_key);
+                                            lp2p_clone.broadcast_bft_precommit(&signed_pc).await;
                                             let bc = shared_clone.read().await;
                                             let our_stake = bc.stake_registry.get_validator(&wallet.address)
                                                 .map(|v| v.total_stake()).unwrap_or(0);
@@ -782,6 +788,10 @@ async fn cmd_start(
                                 if proposal.height != bft.height() || proposal.round != bft.round() {
                                     continue;
                                 }
+                                if !proposal.verify_sig() {
+                                    tracing::warn!("Invalid proposal signature from {}", &proposal.proposer);
+                                    continue;
+                                }
                                 if let Ok(block) = bincode::deserialize::<Block>(&proposal.block_data) {
                                     proposed_block = Some(block);
                                     let bc = shared_clone.read().await;
@@ -794,6 +804,10 @@ async fn cmd_start(
                                 }
                             }
                             BftMessage::Prevote(prevote) => {
+                                if !prevote.verify_sig() {
+                                    tracing::warn!("Invalid prevote signature from {}", &prevote.validator);
+                                    continue;
+                                }
                                 let bc = shared_clone.read().await;
                                 let stake = bc.stake_registry.get_validator(&prevote.validator)
                                     .map(|v| v.total_stake()).unwrap_or(0);
@@ -801,6 +815,10 @@ async fn cmd_start(
                                 bft.on_prevote_weighted(&prevote, stake)
                             }
                             BftMessage::Precommit(precommit) => {
+                                if !precommit.verify_sig() {
+                                    tracing::warn!("Invalid precommit signature from {}", &precommit.validator);
+                                    continue;
+                                }
                                 let bc = shared_clone.read().await;
                                 let stake = bc.stake_registry.get_validator(&precommit.validator)
                                     .map(|v| v.total_stake()).unwrap_or(0);
