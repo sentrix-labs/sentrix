@@ -545,20 +545,19 @@ async fn cmd_start(
                             // ── BFT consensus (Voyager only) ──────
                             if voyager_activated {
                                 use sentrix::core::bft::{BftEngine, BftAction};
-                                let total_active_stake: u64 = bc.stake_registry.active_set.iter()
-                                    .filter_map(|a| bc.stake_registry.get_validator(a))
-                                    .map(|v| v.total_stake())
-                                    .sum();
                                 let our_stake = bc.stake_registry.get_validator(&wallet.address)
                                     .map(|v| v.total_stake()).unwrap_or(0);
                                 let block_hash = block.hash.clone();
+
+                                // Use our_stake as total for self-voting (local finalization).
+                                // In multi-validator mode: use real total + collect P2P votes.
                                 let mut bft = BftEngine::new(
-                                    height, wallet.address.clone(), total_active_stake,
+                                    height, wallet.address.clone(), our_stake,
                                 );
 
-                                // Propose → self-prevote → self-precommit → finalize
+                                // Own proposal → self-prevote → self-precommit → finalize
                                 if let BftAction::BroadcastPrevote(prevote) =
-                                    bft.on_proposal(&block_hash, &wallet.address, &bc.stake_registry)
+                                    bft.on_own_proposal(&block_hash)
                                     && let BftAction::BroadcastPrecommit(precommit) =
                                         bft.on_prevote_weighted(&prevote, our_stake)
                                     && let BftAction::FinalizeBlock { round, justification, .. } =

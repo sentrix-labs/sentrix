@@ -253,7 +253,7 @@ impl BftEngine {
         elapsed >= timeout
     }
 
-    /// Handle receiving a proposal
+    /// Handle receiving a proposal from another validator
     pub fn on_proposal(
         &mut self,
         block_hash: &str,
@@ -270,6 +270,19 @@ impl BftEngine {
             return BftAction::Wait; // wrong proposer, ignore
         }
 
+        self.accept_proposal(block_hash)
+    }
+
+    /// Handle our own proposal — skip proposer validation (we created this block).
+    /// Used in the validator loop where we already know we're the block producer.
+    pub fn on_own_proposal(&mut self, block_hash: &str) -> BftAction {
+        if self.state.phase != BftPhase::Propose {
+            return BftAction::Wait;
+        }
+        self.accept_proposal(block_hash)
+    }
+
+    fn accept_proposal(&mut self, block_hash: &str) -> BftAction {
         self.state.proposed_hash = Some(block_hash.to_string());
         self.state.phase = BftPhase::Prevote;
         self.phase_start = Instant::now();
@@ -872,5 +885,45 @@ mod tests {
             }
         }
         assert!(finalized);
+    }
+
+    #[test]
+    fn test_single_validator_self_finalize() {
+        // Single-validator BFT: on_own_proposal → self-prevote → self-precommit → finalize
+        let our_stake = MIN_SELF_STAKE;
+        let mut engine = BftEngine::new(500, "0xsolo".into(), our_stake);
+
+        // 1. Own proposal (no proposer validation)
+        let action = engine.on_own_proposal("solo_hash");
+        let prevote = match action {
+            BftAction::BroadcastPrevote(pv) => {
+                assert_eq!(pv.block_hash, Some("solo_hash".into()));
+                pv
+            }
+            _ => panic!("expected BroadcastPrevote, got {:?}", action),
+        };
+        assert_eq!(engine.phase(), BftPhase::Prevote);
+
+        // 2. Self-prevote (100% stake = instant supermajority)
+        let action = engine.on_prevote_weighted(&prevote, our_stake);
+        let precommit = match action {
+            BftAction::BroadcastPrecommit(pc) => {
+                assert_eq!(pc.block_hash, Some("solo_hash".into()));
+                pc
+            }
+            _ => panic!("expected BroadcastPrecommit, got {:?}", action),
+        };
+        assert_eq!(engine.phase(), BftPhase::Precommit);
+
+        // 3. Self-precommit → finalize
+        let action = engine.on_precommit_weighted(&precommit, our_stake);
+        match action {
+            BftAction::FinalizeBlock { height, block_hash, justification, .. } => {
+                assert_eq!(height, 500);
+                assert_eq!(block_hash, "solo_hash");
+                assert!(justification.has_supermajority(our_stake));
+            }
+            _ => panic!("expected FinalizeBlock, got {:?}", action),
+        }
     }
 }
