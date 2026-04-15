@@ -65,7 +65,7 @@ pub async fn jsonrpc_handler(
             Ok(json!(true))
         }
         "web3_clientVersion" => {
-            Ok(json!("Sentrix/0.1.0/Rust"))
+            Ok(json!(format!("Sentrix/{}/Rust", env!("CARGO_PKG_VERSION"))))
         }
         "eth_blockNumber" => {
             let bc = state.read().await;

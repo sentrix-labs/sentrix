@@ -290,7 +290,7 @@ async fn root() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "name": "Sentrix",
         "chain_id": 7119,
-        "version": "0.1.0",
+        "version": env!("CARGO_PKG_VERSION"),
         "docs": {
             "chain_info": "/chain/info",
             "blocks": "/chain/blocks",
