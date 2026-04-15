@@ -22,6 +22,35 @@ pub enum TokenOp {
     Approve { contract: String, spender: String, amount: u64 },
 }
 
+// ── Staking operation types (Voyager Phase 2a) ──────────────
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum StakingOp {
+    RegisterValidator { self_stake: u64, commission_rate: u16, public_key: String },
+    Delegate { validator: String, amount: u64 },
+    Undelegate { validator: String, amount: u64 },
+    Redelegate { from_validator: String, to_validator: String, amount: u64 },
+    Unjail,
+    SubmitEvidence { height: u64, block_hash_a: String, block_hash_b: String, signature_a: String, signature_b: String },
+}
+
+impl StakingOp {
+    pub fn encode(&self) -> SentrixResult<String> {
+        serde_json::to_string(self)
+            .map_err(|e| SentrixError::InvalidTransaction(e.to_string()))
+    }
+
+    pub fn decode(data: &str) -> Option<Self> {
+        serde_json::from_str(data).ok()
+    }
+
+    pub fn is_staking_op(data: &str) -> bool {
+        Self::decode(data).is_some()
+    }
+}
+
+pub const STAKING_ADDRESS: &str = "0x0000000000000000000000000000000000000100";
+
 impl TokenOp {
     pub fn encode(&self) -> SentrixResult<String> {
         serde_json::to_string(self)
