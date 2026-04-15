@@ -16,8 +16,11 @@ impl Blockchain {
         // ── Pass 1: dry-run validation ───────────────────
         block.validate_structure(expected_index, &expected_prev)?;
 
-        // Verify the block's validator is authorized for this round-robin slot before committing
-        if !self.authority.is_authorized(&block.validator, expected_index)? {
+        // Pioneer: round-robin PoA authority check.
+        // Voyager: proposer selected by DPoS + BFT justification — skip Pioneer authority.
+        if !Blockchain::is_voyager_height(expected_index)
+            && !self.authority.is_authorized(&block.validator, expected_index)?
+        {
             return Err(SentrixError::UnauthorizedValidator(
                 format!("validator {} not authorized for block {}", block.validator, expected_index)
             ));
