@@ -247,6 +247,12 @@ pub fn create_router(state: SharedState) -> Router {
         // ── State trie ───────────────────────────────────────────
         .route("/address/:address/proof",         get(get_address_proof))
         .route("/chain/state-root/:height",       get(get_state_root))
+        // ── Staking (Voyager DPoS) ───────────────────────────────
+        .route("/staking/validators",              get(staking_validators))
+        .route("/staking/delegations/:address",    get(staking_delegations))
+        .route("/staking/unbonding/:address",      get(staking_unbonding))
+        .route("/epoch/current",                   get(epoch_current))
+        .route("/epoch/history",                   get(epoch_history))
         // ── RPC ──────────────────────────────────────────────────
         .route("/rpc",                            post(rpc_dispatcher))
         // ── Admin ────────────────────────────────────────────────
@@ -741,6 +747,119 @@ async fn get_admin_log(
     Json(serde_json::json!({
         "log": bc.authority.admin_log,
         "count": bc.authority.admin_log.len(),
+    }))
+}
+
+// ── Staking + Epoch handlers (Voyager Phase 2a) ─────────
+
+async fn staking_validators(
+    State(state): State<SharedState>,
+) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    let validators: Vec<serde_json::Value> = bc.stake_registry.validators.values()
+        .map(|v| serde_json::json!({
+            "address": v.address,
+            "self_stake": v.self_stake,
+            "total_delegated": v.total_delegated,
+            "total_stake": v.total_stake(),
+            "commission_rate": v.commission_rate,
+            "is_jailed": v.is_jailed,
+            "is_tombstoned": v.is_tombstoned,
+            "is_active": bc.stake_registry.is_active(&v.address),
+            "blocks_signed": v.blocks_signed,
+            "blocks_missed": v.blocks_missed,
+            "pending_rewards": v.pending_rewards,
+        }))
+        .collect();
+    Json(serde_json::json!({
+        "validators": validators,
+        "active_count": bc.stake_registry.active_count(),
+        "total_count": bc.stake_registry.validators.len(),
+    }))
+}
+
+async fn staking_delegations(
+    State(state): State<SharedState>,
+    axum::extract::Path(address): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    let addr = address.to_lowercase();
+    let delegations: Vec<serde_json::Value> = bc.stake_registry.get_delegations(&addr)
+        .iter()
+        .map(|d| serde_json::json!({
+            "validator": d.validator,
+            "amount": d.amount,
+            "height": d.height,
+        }))
+        .collect();
+    Json(serde_json::json!({
+        "delegator": addr,
+        "delegations": delegations,
+        "count": delegations.len(),
+    }))
+}
+
+async fn staking_unbonding(
+    State(state): State<SharedState>,
+    axum::extract::Path(address): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    let addr = address.to_lowercase();
+    let entries: Vec<serde_json::Value> = bc.stake_registry.get_pending_unbonding(&addr)
+        .iter()
+        .map(|u| serde_json::json!({
+            "validator": u.validator,
+            "amount": u.amount,
+            "completion_height": u.completion_height,
+        }))
+        .collect();
+    Json(serde_json::json!({
+        "delegator": addr,
+        "unbonding": entries,
+        "count": entries.len(),
+    }))
+}
+
+async fn epoch_current(
+    State(state): State<SharedState>,
+) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    let epoch = &bc.epoch_manager.current_epoch;
+    Json(serde_json::json!({
+        "epoch_number": epoch.epoch_number,
+        "start_height": epoch.start_height,
+        "end_height": epoch.end_height,
+        "validator_set": epoch.validator_set,
+        "total_staked": epoch.total_staked,
+        "total_rewards": epoch.total_rewards,
+        "total_blocks_produced": epoch.total_blocks_produced,
+    }))
+}
+
+async fn epoch_history(
+    State(state): State<SharedState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    let count: usize = params.get("count")
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(10)
+        .min(100);
+    let epochs: Vec<serde_json::Value> = bc.epoch_manager.recent_epochs(count)
+        .iter()
+        .map(|e| serde_json::json!({
+            "epoch_number": e.epoch_number,
+            "start_height": e.start_height,
+            "end_height": e.end_height,
+            "validator_count": e.validator_set.len(),
+            "total_staked": e.total_staked,
+            "total_rewards": e.total_rewards,
+            "total_blocks_produced": e.total_blocks_produced,
+        }))
+        .collect();
+    Json(serde_json::json!({
+        "epochs": epochs,
+        "count": epochs.len(),
     }))
 }
 
