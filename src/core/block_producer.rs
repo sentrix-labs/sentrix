@@ -10,10 +10,22 @@ impl Blockchain {
     pub fn create_block(&mut self, validator_address: &str) -> SentrixResult<Block> {
         let next_height = self.height() + 1;
 
-        // Check authorization
+        // Check authorization (Pioneer round-robin)
         if !self.authority.is_authorized(validator_address, next_height)? {
             return Err(SentrixError::NotYourTurn);
         }
+
+        self.build_block(validator_address)
+    }
+
+    /// Create a block without Pioneer authority check.
+    /// Used in Voyager BFT mode where proposer is selected by DPoS weighted round-robin.
+    pub fn create_block_voyager(&mut self, validator_address: &str) -> SentrixResult<Block> {
+        self.build_block(validator_address)
+    }
+
+    fn build_block(&mut self, validator_address: &str) -> SentrixResult<Block> {
+        let next_height = self.height() + 1;
 
         // Build transaction list — coinbase first
         // Coinbase uses the block's timestamp — deterministic across all nodes for the same block.

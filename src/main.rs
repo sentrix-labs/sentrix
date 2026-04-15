@@ -705,9 +705,9 @@ async fn cmd_start(
                     drop(bc);
 
                     if we_are_proposer {
-                        // We're the proposer — create block and broadcast proposal
+                        // We're the proposer — create block (Voyager: skip Pioneer authority)
                         let mut bc = shared_clone.write().await;
-                        match bc.create_block(&wallet.address) {
+                        match bc.create_block_voyager(&wallet.address) {
                             Ok(block) => {
                                 let block_hash = block.hash.clone();
                                 let block_data = bincode::serialize(&block).unwrap_or_default();
