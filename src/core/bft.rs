@@ -229,6 +229,24 @@ impl BftEngine {
         self.phase_start = Instant::now();
     }
 
+    /// Round catch-up: if peers are at a higher round, fast-forward.
+    /// Returns true if we advanced (caller should re-check proposer).
+    pub fn catch_up_round(&mut self, target_round: u32) -> bool {
+        if target_round <= self.state.round {
+            return false;
+        }
+        tracing::info!(
+            "BFT round catch-up: round {} → {} at height {}",
+            self.state.round, target_round, self.state.height,
+        );
+        while self.state.round < target_round {
+            self.state.advance_round();
+            self.collector.reset();
+        }
+        self.phase_start = Instant::now();
+        true
+    }
+
     /// Are we the proposer for current height+round?
     pub fn is_proposer(&self, stake_registry: &StakeRegistry) -> bool {
         stake_registry
@@ -363,7 +381,14 @@ impl BftEngine {
 
     /// Handle receiving a prevote with known stake weight
     pub fn on_prevote_weighted(&mut self, prevote: &Prevote, stake: u64) -> BftAction {
-        if prevote.height != self.state.height || prevote.round != self.state.round {
+        if prevote.height != self.state.height {
+            return BftAction::Wait;
+        }
+        // Round catch-up: fast-forward if peer is ahead
+        if prevote.round > self.state.round {
+            self.catch_up_round(prevote.round);
+        }
+        if prevote.round != self.state.round {
             return BftAction::Wait;
         }
         if self.state.prevotes.contains_key(&prevote.validator) {
@@ -404,7 +429,14 @@ impl BftEngine {
 
     /// Handle receiving a precommit with known stake weight
     pub fn on_precommit_weighted(&mut self, precommit: &Precommit, stake: u64) -> BftAction {
-        if precommit.height != self.state.height || precommit.round != self.state.round {
+        if precommit.height != self.state.height {
+            return BftAction::Wait;
+        }
+        // Round catch-up: fast-forward if peer is ahead
+        if precommit.round > self.state.round {
+            self.catch_up_round(precommit.round);
+        }
+        if precommit.round != self.state.round {
             return BftAction::Wait;
         }
         if self.state.precommits.contains_key(&precommit.validator) {
