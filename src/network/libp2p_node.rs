@@ -596,7 +596,7 @@ async fn on_rr_event(
         // ── Inbound: peer sent us a request ──────────────
         RrEvent::Message {
             peer,
-            message: RrMessage::Request { request, channel, .. },
+            message: RrMessage::Request { request, channel, .. }, ..
         } => {
             on_inbound_request(
                 peer,
@@ -614,7 +614,7 @@ async fn on_rr_event(
         // ── Inbound: peer replied to one of our requests ─
         RrEvent::Message {
             peer,
-            message: RrMessage::Response { request_id, response },
+            message: RrMessage::Response { request_id, response }, ..
         } => {
             // Check if this response matches a pending GetBlocks sync request
             let followup = on_inbound_response(
@@ -639,7 +639,7 @@ async fn on_rr_event(
             }
         }
 
-        RrEvent::OutboundFailure { peer, request_id, error } => {
+        RrEvent::OutboundFailure { peer, request_id, error, .. } => {
             pending_handshakes.remove(&request_id);
             pending_syncs.remove(&request_id);
             tracing::warn!("libp2p: outbound failure to {}: {}", peer, error);
