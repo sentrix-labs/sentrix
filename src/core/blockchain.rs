@@ -22,11 +22,18 @@ pub const BLOCK_TIME_SECS: u64    = 3;
 pub const MAX_TX_PER_BLOCK: usize = 100;
 pub const CHAIN_ID: u64           = 7119; // default; overridable via SENTRIX_CHAIN_ID env
 
-/// Voyager DPoS fork activation height.
-/// Blocks before this: Pioneer consensus (PoA round-robin).
-/// Blocks at/after this: Voyager consensus (DPoS + BFT).
-/// Set to u64::MAX to disable (Pioneer-only mode). Testnet uses lower value.
-pub const VOYAGER_DPOS_HEIGHT: u64 = u64::MAX; // disabled until testnet-validated
+/// Default Voyager DPoS fork activation height.
+/// u64::MAX = disabled (Pioneer-only). Override via VOYAGER_FORK_HEIGHT env var.
+const VOYAGER_DPOS_HEIGHT_DEFAULT: u64 = u64::MAX;
+
+/// Read Voyager fork height from env, default u64::MAX (mainnet safe).
+/// Testnet sets VOYAGER_FORK_HEIGHT=<height> in systemd service.
+pub fn get_voyager_fork_height() -> u64 {
+    std::env::var("VOYAGER_FORK_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(VOYAGER_DPOS_HEIGHT_DEFAULT)
+}
 
 /// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
 pub fn get_chain_id() -> u64 {
@@ -149,9 +156,9 @@ impl Blockchain {
     }
 
     /// Is the given height at or after the Voyager DPoS fork?
-    #[allow(clippy::absurd_extreme_comparisons)]
     pub fn is_voyager_height(height: u64) -> bool {
-        height >= VOYAGER_DPOS_HEIGHT
+        let fork = get_voyager_fork_height();
+        fork != u64::MAX && height >= fork
     }
 
     /// Is the current chain past the Voyager fork?
