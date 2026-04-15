@@ -14,3 +14,4 @@ pub mod vm;
 pub mod trie;
 pub mod staking;
 pub mod epoch;
+pub mod slashing;
