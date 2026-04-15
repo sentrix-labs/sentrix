@@ -875,7 +875,14 @@ async fn cmd_start(
                     while let Ok(msg) = bft_rx.try_recv() {
                         let action = match msg {
                             BftMessage::Propose(proposal) => {
-                                if proposal.height != bft.height() || proposal.round != bft.round() {
+                                if proposal.height != bft.height() {
+                                    continue;
+                                }
+                                // Round catch-up for proposals
+                                if proposal.round > bft.round() {
+                                    bft.catch_up_round(proposal.round);
+                                }
+                                if proposal.round != bft.round() {
                                     continue;
                                 }
                                 if !proposal.verify_sig() {
