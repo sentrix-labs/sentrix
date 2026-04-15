@@ -45,7 +45,7 @@ fn get_wallets_dir() -> String {
 
 #[derive(Parser)]
 #[command(name = "sentrix")]
-#[command(about = "Sentrix (SRX) — Layer-1 Blockchain · Sentrix Mainnet")]
+#[command(about = "Sentrix (SRX) — Layer-1 Blockchain")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
