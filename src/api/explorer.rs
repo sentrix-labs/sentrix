@@ -45,6 +45,7 @@ fn address_label(addr: &str) -> Option<&'static str> {
         a if a.starts_with("0x7be6d0") => Some("BlockForge Asia"),
         a if a.starts_with("0x7dcc4f") => Some("PacificStake"),
         a if a.starts_with("0xd2116b") => Some("Archipelago Network"),
+        a if a.starts_with("0x87c997") => Some("Sentrix Core"),
         a if a.starts_with("0xeb70fd") => Some("Ecosystem Fund"),
         _ => None,
     }
