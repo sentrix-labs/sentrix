@@ -19,7 +19,10 @@ Each node has an Ed25519 keypair at `data/identity/node_keypair`, generated on f
 
 ## Peer Discovery
 
-Manual for now — pass `--peers` on startup:
+Two mechanisms:
+
+1. **Kademlia DHT** — automatic peer discovery via random walks every 60s. When Identify completes, peer listen addresses are added to the Kademlia routing table. New nodes discover the network by connecting to one bootstrap peer.
+2. **Manual** — pass `--peers` on startup as fallback:
 
 ```bash
 sentrix start --validator-key <key> --peers [NODE_IP]:30303,[NODE_IP]:30303
@@ -29,9 +32,26 @@ Peers go through chain_id verification before being added to `verified_peers`. W
 
 Bootstrap peers re-dialed every 30s if disconnected. Idle timeout set to `Duration::MAX` — connections stay open permanently.
 
-## Messages
+Kademlia protocol: `/sentrix/kad/1.0.0` with in-memory store.
 
-Length-prefixed JSON over RequestResponse protocol. 4-byte BE length header, 10 MiB cap.
+## Block & Transaction Propagation (Gossipsub)
+
+Blocks and transactions propagate via gossipsub pub/sub:
+
+| Topic | Content | Format |
+|-------|---------|--------|
+| `sentrix/blocks/1` | New blocks | bincode-encoded `GossipBlock` |
+| `sentrix/txs/1` | New transactions | bincode-encoded `GossipTransaction` |
+
+Gossipsub config: 5s heartbeat, strict validation, 10 MiB max message size.
+
+When a gossipsub message arrives, the block/transaction is validated via the same `add_block()` / `add_to_mempool()` path as request-response messages.
+
+## Request-Response Messages
+
+Length-prefixed **bincode** over RequestResponse protocol. 4-byte BE length header, 10 MiB cap.
+
+Switched from JSON in v2.0.0 for ~3-5x smaller messages and faster serialization.
 
 | Message | What it does |
 |---------|-------------|
@@ -71,8 +91,13 @@ Sync and block processing run in `tokio::spawn()` tasks — they don't block the
 ```rust
 struct SentrixBehaviour {
     identify: identify::Behaviour,
-    request_response: request_response::Behaviour<SentrixCodec>,
+    kademlia: kad::Behaviour<kad::store::MemoryStore>,
+    gossipsub: gossipsub::Behaviour,
+    rr: request_response::Behaviour<SentrixCodec>,
 }
 ```
 
-Identify for peer info exchange, RequestResponse for everything else.
+- **Identify**: peer info exchange, feeds addresses into Kademlia
+- **Kademlia**: DHT-based peer discovery with periodic bootstrap
+- **Gossipsub**: pub/sub block and transaction propagation
+- **RequestResponse**: sync, handshake, height queries (bincode codec)
