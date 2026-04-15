@@ -91,15 +91,17 @@ impl Storage {
         // Save state (accounts, authority, contracts, mempool, metadata)
         self.put("state", blockchain)?;
 
-        // Save each block individually: key = "block:{index}" + hash index
+        // Save each block individually: key = "block:{index}" + hash index.
+        // Always overwrite — no contains_key guard — so an H2 block (with recomputed
+        // state_root hash) corrects any stale H1 entry that was written before
+        // add_block() stamped the state_root (fork-prevention, PR #78).
         for block in &blockchain.chain {
             let key = format!("block:{}", block.index);
-            if !self.db.contains_key(&key).unwrap_or(false) {
-                self.put(&key, block)?;
-                // Hash → index lookup
-                let hash_key = format!("hash:{}", block.hash);
-                self.put(&hash_key, &block.index)?;
-            }
+            self.put(&key, block)?;
+            // Hash → index lookup (old hash entries for the same index become
+            // harmless orphans in sled; they are never queried in normal operation)
+            let hash_key = format!("hash:{}", block.hash);
+            self.put(&hash_key, &block.index)?;
         }
 
         self.save_height(blockchain.height())?;
@@ -412,6 +414,33 @@ mod tests {
         let bc = Blockchain::new("admin".to_string());
         storage.save_blockchain(&bc).unwrap();
         assert!(storage.db_size_bytes() > 0);
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    // ── PR-78: save_blockchain overwrites stale block (H1→H2 correction) ──
+
+    #[test]
+    fn test_save_blockchain_overwrites_stale_block() {
+        // Regression: save_blockchain must overwrite an existing block so that
+        // an H2 block (state_root + recomputed hash) corrects any stale H1 entry.
+        let path = temp_db_path();
+        let storage = Storage::open(&path).unwrap();
+
+        let bc = Blockchain::new("admin".to_string());
+        let canonical_hash = bc.chain[0].hash.clone();
+
+        // Simulate an H1 block already on disk with a wrong hash.
+        let mut stale = bc.chain[0].clone();
+        stale.hash = "stale_h1_hash".to_string();
+        storage.save_block(&stale).unwrap();
+
+        // save_blockchain carries the canonical (H2) version — must overwrite.
+        storage.save_blockchain(&bc).unwrap();
+
+        let stored = storage.load_block(0).unwrap().unwrap();
+        assert_eq!(stored.hash, canonical_hash,
+            "save_blockchain must overwrite stale H1 block with canonical H2 block");
+
         let _ = std::fs::remove_dir_all(&path);
     }
 

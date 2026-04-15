@@ -460,8 +460,11 @@ async fn on_inbound_request(
                 match chain.add_block(*block.clone()) {
                     Ok(()) => {
                         tracing::info!("libp2p: applied block {} from {}", block.index, peer);
+                        // Capture H2 (with state_root + recomputed hash) before releasing
+                        // the write lock — same fix as validator loop (PR #78).
+                        let updated = chain.latest_block().ok().cloned().unwrap_or(*block);
                         drop(chain);
-                        let _ = etx.send(NodeEvent::NewBlock(*block)).await;
+                        let _ = etx.send(NodeEvent::NewBlock(updated)).await;
                     }
                     Err(e) => {
                         tracing::warn!("libp2p: rejected block from {}: {}", peer, e);
@@ -553,7 +556,10 @@ async fn on_inbound_response(
             for block in &blocks_owned {
                 match chain.add_block(block.clone()) {
                     Ok(()) => {
-                        let _ = etx.send(NodeEvent::NewBlock(block.clone())).await;
+                        // Use H2 (post-add_block state_root hash) — not the raw peer block (PR #78).
+                        let updated = chain.latest_block().ok().cloned()
+                            .unwrap_or_else(|| block.clone());
+                        let _ = etx.send(NodeEvent::NewBlock(updated)).await;
                         synced += 1;
                     }
                     Err(e) => {

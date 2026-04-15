@@ -533,9 +533,15 @@ async fn cmd_start(
                     match bc.create_block(&wallet.address) {
                         Ok(block) => {
                             let height = block.index;
-                            let block_clone = block.clone();
                             match bc.add_block(block) {
-                                Ok(()) => Some((height, block_clone)),
+                                Ok(()) => {
+                                    // Capture H2: above STATE_ROOT_FORK_HEIGHT, add_block()
+                                    // stamps state_root and recomputes the block hash in-place.
+                                    // Must use latest_block() here — NOT a pre-add_block clone —
+                                    // so disk and broadcast always carry the canonical H2 hash.
+                                    let updated = bc.latest_block().ok().cloned();
+                                    Some((height, updated))
+                                }
                                 Err(e) => { tracing::warn!("add_block failed: {}", e); None }
                             }
                         }
@@ -543,16 +549,16 @@ async fn cmd_start(
                     }
                 }; // write lock released here — API reads no longer stalled
 
-                if let Some((height, block_clone)) = result {
+                if let Some((height, Some(block_to_save))) = result {
                     println!("Block {} produced by {}", height, wallet.address);
                     // save_block (fast — only block data + height) every block.
                     // Full state (accounts, validators, tokens) via read lock — API still serves.
-                    let _ = storage_clone.save_block(&block_clone);
+                    let _ = storage_clone.save_block(&block_to_save);
                     {
                         let bc = shared_clone.read().await;
                         let _ = storage_clone.save_blockchain(&bc);
                     }
-                    lp2p_clone.broadcast_block(&block_clone).await;
+                    lp2p_clone.broadcast_block(&block_to_save).await;
                 }
             }
         });
