@@ -17,3 +17,4 @@ pub mod epoch;
 pub mod slashing;
 pub mod bft_messages;
 pub mod bft;
+pub mod evm;
