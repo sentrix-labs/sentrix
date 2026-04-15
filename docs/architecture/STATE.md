@@ -68,6 +68,21 @@ let valid = proof.verify(&key, &value, &root);  // no trie access needed
 
 Available via `GET /trie/proof/{address}`.
 
+### Disk Pruning
+
+The trie supports automatic disk pruning to prevent unbounded growth:
+
+```rust
+trie.prune(1000)?;  // keep last 1000 versions, GC the rest
+```
+
+Pruning steps:
+1. Delete old root entries from `trie_roots` and `trie_committed_roots` for versions older than `(current - keep)`
+2. Walk all surviving roots to build a live-hash set of reachable nodes
+3. Garbage-collect any node/value not in the live set
+
+Default retention: 1000 versions (configurable). Should be called periodically (e.g. every 100 blocks) in the block production loop.
+
 ### GC
 
 Orphaned nodes can pile up. Clean them with:
@@ -75,6 +90,8 @@ Orphaned nodes can pile up. Clean them with:
 ```bash
 sentrix chain reset-trie  # rebuilds from current account state
 ```
+
+Or use the automatic pruning above which handles GC as part of the prune cycle.
 
 ### Fork Height
 

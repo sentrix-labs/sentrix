@@ -18,7 +18,9 @@ use std::time::Instant;
 use futures::StreamExt;
 use libp2p::{
     core::ConnectedPoint,
+    gossipsub,
     identity::Keypair,
+    kad,
     multiaddr::Protocol,
     noise,
     request_response::{self, OutboundRequestId},
@@ -33,6 +35,7 @@ use crate::core::block::Block;
 use crate::core::transaction::Transaction;
 use crate::network::behaviour::{
     SentrixBehaviour, SentrixBehaviourEvent, SentrixRequest, SentrixResponse,
+    GossipBlock, GossipTransaction, BLOCKS_TOPIC, TXS_TOPIC,
 };
 use crate::network::node::{NodeEvent, SharedBlockchain};
 use crate::types::error::{SentrixError, SentrixResult};
@@ -53,6 +56,14 @@ enum SwarmCommand {
     Listen(Multiaddr),
     ConnectPeer(Multiaddr),
     Broadcast(SentrixRequest),
+    /// Publish a block via gossipsub.
+    GossipBlock(Box<Block>),
+    /// Publish a transaction via gossipsub.
+    GossipTx(Transaction),
+    /// Add a peer address to Kademlia DHT.
+    AddKadPeer(PeerId, Multiaddr),
+    /// Trigger a Kademlia bootstrap (random walk).
+    KadBootstrap,
     GetPeerCount(tokio::sync::oneshot::Sender<usize>),
     /// Re-dial bootstrap peers that are no longer connected.
     ReconnectPeers(Vec<Multiaddr>),
@@ -111,16 +122,14 @@ impl LibP2pNode {
             .map_err(|_| SentrixError::NetworkError("swarm task closed".to_string()))
     }
 
-    /// Broadcast a new block to all verified (handshaked) peers.
+    /// Broadcast a new block to all peers via gossipsub.
     pub async fn broadcast_block(&self, block: &Block) {
-        let req = SentrixRequest::NewBlock { block: Box::new(block.clone()) };
-        let _ = self.cmd_tx.send(SwarmCommand::Broadcast(req)).await;
+        let _ = self.cmd_tx.send(SwarmCommand::GossipBlock(Box::new(block.clone()))).await;
     }
 
-    /// Broadcast a new transaction to all verified peers.
+    /// Broadcast a new transaction to all peers via gossipsub.
     pub async fn broadcast_transaction(&self, tx: &Transaction) {
-        let req = SentrixRequest::NewTransaction { transaction: tx.clone() };
-        let _ = self.cmd_tx.send(SwarmCommand::Broadcast(req)).await;
+        let _ = self.cmd_tx.send(SwarmCommand::GossipTx(tx.clone())).await;
     }
 
     /// Broadcast a BFT proposal to all verified peers.
@@ -144,6 +153,16 @@ impl LibP2pNode {
     /// Re-dial bootstrap peers that may have disconnected.
     pub async fn reconnect_peers(&self, addrs: Vec<Multiaddr>) {
         let _ = self.cmd_tx.send(SwarmCommand::ReconnectPeers(addrs)).await;
+    }
+
+    /// Add a known peer to the Kademlia routing table (bootstrap node).
+    pub async fn add_kad_peer(&self, peer_id: PeerId, addr: Multiaddr) {
+        let _ = self.cmd_tx.send(SwarmCommand::AddKadPeer(peer_id, addr)).await;
+    }
+
+    /// Trigger a Kademlia bootstrap (random walk to discover peers).
+    pub async fn kad_bootstrap(&self) {
+        let _ = self.cmd_tx.send(SwarmCommand::KadBootstrap).await;
     }
 
     /// Returns the number of currently verified (handshaked) peers.
@@ -253,7 +272,7 @@ async fn run_swarm(
     event_tx: mpsc::Sender<NodeEvent>,
     mut cmd_rx: mpsc::Receiver<SwarmCommand>,
 ) -> SentrixResult<()> {
-    let mut swarm = SwarmBuilder::with_existing_identity(keypair)
+    let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
         .with_tokio()
         .with_tcp(
             tcp::Config::default().nodelay(true),
@@ -261,11 +280,12 @@ async fn run_swarm(
             yamux::Config::default,
         )
         .map_err(|e| SentrixError::NetworkError(format!("transport init: {e}")))?
-        .with_behaviour(|key| Ok(SentrixBehaviour::new(key.public())))
+        .with_behaviour(|key| {
+            let peer_id = PeerId::from_public_key(&key.public());
+            Ok(SentrixBehaviour::new_with_keypair(peer_id, key))
+        })
         .map_err(|e| SentrixError::NetworkError(format!("behaviour init: {e}")))?
         // Keep connections alive indefinitely — don't close idle connections.
-        // Without this, RequestResponse's KeepAliveTimeout fires when no
-        // requests are in-flight, killing all peer connections.
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(std::time::Duration::from_secs(u64::MAX)))
         .build();
 
@@ -283,6 +303,8 @@ async fn run_swarm(
 
     // Periodic sync: every 30s, request missing blocks from verified peers.
     let mut sync_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    // Periodic Kademlia bootstrap: every 60s, random walk to discover new peers.
+    let mut kad_interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
 
     loop {
         tokio::select! {
@@ -303,6 +325,38 @@ async fn run_swarm(
                         let peers: Vec<PeerId> = verified_peers.iter().cloned().collect();
                         for peer_id in peers {
                             swarm.behaviour_mut().rr.send_request(&peer_id, req.clone());
+                        }
+                    }
+                    Some(SwarmCommand::GossipBlock(block)) => {
+                        let topic = gossipsub::IdentTopic::new(BLOCKS_TOPIC);
+                        let msg = GossipBlock { block: *block };
+                        match bincode::serialize(&msg) {
+                            Ok(data) => {
+                                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                                    tracing::debug!("gossipsub publish block failed: {}", e);
+                                }
+                            }
+                            Err(e) => tracing::warn!("gossip block serialize failed: {}", e),
+                        }
+                    }
+                    Some(SwarmCommand::GossipTx(tx)) => {
+                        let topic = gossipsub::IdentTopic::new(TXS_TOPIC);
+                        let msg = GossipTransaction { transaction: tx };
+                        match bincode::serialize(&msg) {
+                            Ok(data) => {
+                                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                                    tracing::debug!("gossipsub publish tx failed: {}", e);
+                                }
+                            }
+                            Err(e) => tracing::warn!("gossip tx serialize failed: {}", e),
+                        }
+                    }
+                    Some(SwarmCommand::AddKadPeer(peer_id, addr)) => {
+                        swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+                    }
+                    Some(SwarmCommand::KadBootstrap) => {
+                        if let Err(e) = swarm.behaviour_mut().kademlia.bootstrap() {
+                            tracing::debug!("kademlia bootstrap failed: {}", e);
                         }
                     }
                     Some(SwarmCommand::GetPeerCount(reply)) => {
@@ -338,7 +392,7 @@ async fn run_swarm(
                 .await;
             }
 
-            // ── Periodic sync (Step 3d) + rate limiter cleanup ──
+            // ── Periodic sync + rate limiter cleanup ──
             _ = sync_interval.tick() => {
                 ip_limiter.prune_stale();
                 if verified_peers.is_empty() {
@@ -352,6 +406,11 @@ async fn run_swarm(
                     );
                     pending_syncs.insert(req_id, peer_id);
                 }
+            }
+
+            // ── Periodic Kademlia bootstrap ──
+            _ = kad_interval.tick() => {
+                let _ = swarm.behaviour_mut().kademlia.bootstrap();
             }
         }
     }
@@ -434,9 +493,77 @@ async fn on_swarm_event(
             .await;
         }
 
-        SwarmEvent::Behaviour(SentrixBehaviourEvent::Identify(_)) => {
-            // Identify events are informational; libp2p handles them internally.
+        SwarmEvent::Behaviour(SentrixBehaviourEvent::Identify(
+            libp2p::identify::Event::Received { peer_id, info, .. }
+        )) => {
+            // When Identify completes, add the peer's listen addresses to Kademlia.
+            for addr in info.listen_addrs {
+                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+            }
         }
+
+        SwarmEvent::Behaviour(SentrixBehaviourEvent::Identify(_)) => {}
+
+        SwarmEvent::Behaviour(SentrixBehaviourEvent::Kademlia(kad_event)) => {
+            match kad_event {
+                kad::Event::RoutingUpdated { peer, .. } => {
+                    tracing::debug!("kademlia: routing updated for {}", peer);
+                }
+                kad::Event::OutboundQueryProgressed {
+                    result: kad::QueryResult::Bootstrap(Ok(stats)), ..
+                } => {
+                    tracing::debug!("kademlia: bootstrap step, {} remaining", stats.num_remaining);
+                }
+                _ => {}
+            }
+        }
+
+        SwarmEvent::Behaviour(SentrixBehaviourEvent::Gossipsub(
+            gossipsub::Event::Message { message, propagation_source, .. }
+        )) => {
+            let topic = message.topic.as_str();
+            if topic == BLOCKS_TOPIC {
+                    match bincode::deserialize::<GossipBlock>(&message.data) {
+                        Ok(gossip) => {
+                            let bc = blockchain.clone();
+                            let etx = event_tx.clone();
+                            let peer = propagation_source;
+                            tokio::spawn(async move {
+                                let mut chain = bc.write().await;
+                                match chain.add_block(gossip.block.clone()) {
+                                    Ok(()) => {
+                                        let updated = chain.latest_block().ok().cloned()
+                                            .unwrap_or(gossip.block);
+                                        drop(chain);
+                                        let _ = etx.send(NodeEvent::NewBlock(updated)).await;
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!("gossip block from {} rejected: {}", peer, e);
+                                    }
+                                }
+                            });
+                        }
+                        Err(e) => tracing::warn!("gossip: bad block message: {}", e),
+                    }
+                } else if topic == TXS_TOPIC {
+                    match bincode::deserialize::<GossipTransaction>(&message.data) {
+                        Ok(gossip) => {
+                            let bc = blockchain.clone();
+                            let etx = event_tx.clone();
+                            tokio::spawn(async move {
+                                let mut chain = bc.write().await;
+                                if chain.add_to_mempool(gossip.transaction.clone()).is_ok() {
+                                    drop(chain);
+                                    let _ = etx.send(NodeEvent::NewTransaction(gossip.transaction)).await;
+                                }
+                            });
+                        }
+                        Err(e) => tracing::warn!("gossip: bad tx message: {}", e),
+                    }
+                }
+        }
+
+        SwarmEvent::Behaviour(SentrixBehaviourEvent::Gossipsub(_)) => {}
 
         SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
             tracing::warn!("libp2p: outgoing connection error to {:?}: {}", peer_id, error);

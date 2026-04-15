@@ -417,6 +417,68 @@ impl SentrixTrie {
         Ok(self.cache.storage.load_node(hash)?.is_some())
     }
 
+    /// Prune old trie roots and garbage-collect orphaned nodes.
+    ///
+    /// Keeps the last `keep_versions` committed roots (default 1000).
+    /// Removes old root entries from storage, then walks all surviving roots
+    /// to build a live-hash set, and finally GCs any node/value not in that set.
+    ///
+    /// Returns `(roots_pruned, nodes_gc'd)`.
+    pub fn prune(&self, keep_versions: u64) -> SentrixResult<(usize, usize)> {
+        let roots_pruned = self.cache.storage.prune_old_roots(self.version, keep_versions)?;
+        if roots_pruned == 0 {
+            return Ok((0, 0));
+        }
+
+        // Build live set: walk all remaining committed roots and collect reachable hashes.
+        let mut live = std::collections::HashSet::new();
+        // Walk the current root
+        self.collect_reachable(self.root, &mut live)?;
+        // Walk all other surviving roots in storage
+        // (they share most nodes with current root, but some may diverge)
+        let cutoff = self.version.saturating_sub(keep_versions);
+        for version in (cutoff + 1)..=self.version {
+            if let Some(root) = self.cache.storage.load_root(version)?
+                && !live.contains(&root)
+            {
+                self.collect_reachable(root, &mut live)?;
+            }
+        }
+
+        let nodes_gc = self.cache.storage.gc_orphaned_nodes(&live)?;
+        tracing::info!(
+            "trie prune: removed {} old roots, GC'd {} orphaned entries",
+            roots_pruned, nodes_gc
+        );
+        Ok((roots_pruned, nodes_gc))
+    }
+
+    /// Recursively collect all node hashes reachable from `hash`.
+    fn collect_reachable(
+        &self,
+        hash: NodeHash,
+        live: &mut std::collections::HashSet<NodeHash>,
+    ) -> SentrixResult<()> {
+        use crate::core::trie::node::empty_hash;
+        // Skip empty subtrees and already-visited nodes
+        if hash == empty_hash(0) || live.contains(&hash) {
+            return Ok(());
+        }
+        live.insert(hash);
+        if let Some(node) = self.cache.storage.load_node(&hash)? {
+            match node {
+                TrieNode::Leaf { value_hash, .. } => {
+                    live.insert(value_hash);
+                }
+                TrieNode::Internal { left, right, .. } => {
+                    self.collect_reachable(left, live)?;
+                    self.collect_reachable(right, live)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Reset the working root to the empty tree.
     /// Call this before a fresh backfill when the committed root's nodes are
     /// stale (deleted by V7-L-01); without this, insert() would try to

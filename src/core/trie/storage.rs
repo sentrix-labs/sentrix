@@ -198,6 +198,48 @@ impl TrieStorage {
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
+    /// Prune old trie roots, keeping only the last `keep` versions.
+    ///
+    /// Deletes root entries from both `trie_roots` and `trie_committed_roots` for
+    /// versions older than `(latest_version - keep)`. Returns the number of roots removed.
+    pub fn prune_old_roots(&self, latest_version: u64, keep: u64) -> SentrixResult<usize> {
+        if latest_version <= keep {
+            return Ok(0); // Nothing to prune
+        }
+        let cutoff = latest_version - keep;
+        let mut removed = 0usize;
+
+        // Iterate trie_roots to find versions <= cutoff
+        let mut to_delete: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for entry in self.roots.iter() {
+            let (k, v) = entry.map_err(|e| SentrixError::StorageError(e.to_string()))?;
+            if k.len() == 8 {
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(&k);
+                let version = u64::from_be_bytes(buf);
+                if version <= cutoff {
+                    to_delete.push((k.to_vec(), v.to_vec()));
+                }
+            }
+        }
+
+        for (key, root_hash) in &to_delete {
+            // Remove from trie_roots
+            self.roots
+                .remove(key.as_slice())
+                .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+            // Remove from reverse index (trie_committed_roots)
+            if root_hash.len() == 32 {
+                self.committed_root_hashes
+                    .remove(root_hash.as_slice())
+                    .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+            }
+            removed += 1;
+        }
+
+        Ok(removed)
+    }
+
     /// T-F: Garbage-collect node and value entries not present in `live_hashes`.
     ///
     /// Scans both `trie_nodes` and `trie_values`, collecting every hash not in the live
@@ -430,6 +472,53 @@ mod tests {
         assert!(
             storage2.is_committed_root(&root).unwrap(),
             "ensure_committed_roots_index() must backfill pre-migration roots"
+        );
+    }
+
+    // ── Disk pruning tests ──────────────────────────────
+
+    #[test]
+    fn test_prune_old_roots_removes_stale() {
+        let (_dir, storage) = temp_storage();
+        // Store roots for versions 1..=10
+        for v in 1u64..=10 {
+            storage.store_root(v, &dummy_hash(v as u8)).unwrap();
+        }
+        // Prune keeping last 3 (versions 8,9,10 survive; 1-7 deleted)
+        let removed = storage.prune_old_roots(10, 3).unwrap();
+        assert_eq!(removed, 7, "should remove versions 1-7");
+        // Verify surviving roots
+        assert!(storage.load_root(8).unwrap().is_some(), "version 8 must survive");
+        assert!(storage.load_root(10).unwrap().is_some(), "version 10 must survive");
+        // Verify pruned roots
+        assert!(storage.load_root(1).unwrap().is_none(), "version 1 must be pruned");
+        assert!(storage.load_root(7).unwrap().is_none(), "version 7 must be pruned");
+    }
+
+    #[test]
+    fn test_prune_old_roots_noop_when_few_versions() {
+        let (_dir, storage) = temp_storage();
+        for v in 1u64..=5 {
+            storage.store_root(v, &dummy_hash(v as u8)).unwrap();
+        }
+        // Keep 10 but only 5 exist — no pruning
+        let removed = storage.prune_old_roots(5, 10).unwrap();
+        assert_eq!(removed, 0, "should not prune when versions < keep");
+    }
+
+    #[test]
+    fn test_prune_removes_reverse_index() {
+        let (_dir, storage) = temp_storage();
+        let root = dummy_hash(0x42);
+        storage.store_root(1, &root).unwrap();
+        storage.store_root(10, &dummy_hash(0xFF)).unwrap();
+        assert!(storage.is_committed_root(&root).unwrap());
+
+        // Prune keeping only last 1 (version 10 survives, version 1 removed)
+        storage.prune_old_roots(10, 1).unwrap();
+        assert!(
+            !storage.is_committed_root(&root).unwrap(),
+            "pruned root must be removed from reverse index"
         );
     }
 }
