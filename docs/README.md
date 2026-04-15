@@ -25,13 +25,13 @@
 ## Tokenomics
 
 - [SRX](tokenomics/SRX.md) — supply, halving, fees
-- [Staking](tokenomics/STAKING.md) — DPoS design (Phase 2, planned)
+- [Staking](tokenomics/STAKING.md) — DPoS design (Voyager, planned)
 - [Token Standards](tokenomics/TOKEN_STANDARDS.md) — SRX-20, SNTX
 
 ## Roadmap
 
-- [Phase 1](roadmap/PHASE1.md) — PoA (done)
-- [Phase 2](roadmap/PHASE2.md) — DPoS + BFT + EVM (planned)
+- [Pioneer](roadmap/PHASE1.md) — PoA (done)
+- [Voyager](roadmap/PHASE2.md) — DPoS + BFT + EVM (planned)
 - [Changelog](roadmap/CHANGELOG.md) — PR history
 
 ## Quick Ref
@@ -44,7 +44,7 @@
 | Max supply | 210M SRX |
 | Reward | 1 SRX/block, halving every 42M blocks |
 | Fees | 50% burn / 50% validator |
-| Consensus | PoA → DPoS (Phase 2) |
+| Consensus | PoA (Pioneer) → DPoS (Voyager) |
 | License | BUSL-1.1 |
 
 ## Quick Start

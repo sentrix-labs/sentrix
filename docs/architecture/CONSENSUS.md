@@ -69,8 +69,8 @@ block.timestamp <= now + 15s             (not too far ahead)
 
 - No fork choice. First block at a height wins. Network partitions can cause permanent splits. Fine for 7 controlled validators, needs fixing before scaling.
 - No block skip. If expected validator is offline, chain waits. No timeout.
-- No block signatures. Block has validator address but isn't signed. Auth is via round-robin schedule check. Signing needed for Phase 2.
+- No block signatures. Block has validator address but isn't signed. Auth is via round-robin schedule check. Signing needed for Voyager.
 
-## Phase 2
+## Voyager
 
-Replaces PoA with DPoS: open registration (15K SRX stake), top 100 by stake, BFT finality (2/3+ votes), slashing. See [Phase 2](../roadmap/PHASE2.md).
+Replaces PoA with DPoS: open registration (15K SRX stake), top 100 by stake, BFT finality (2/3+ votes), slashing. See [Voyager](../roadmap/PHASE2.md).

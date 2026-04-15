@@ -66,6 +66,6 @@ curl -H "X-API-Key: <key>" http://[NODE_IP]:8545/admin/log
 
 Each validator produces ~4,114 blocks/day (with 7 validators, 3s blocks). That's ~4,114 SRX/day from rewards alone, plus `floor(fee/2)` from each included transaction.
 
-## Phase 2
+## Voyager
 
-DPoS: open registration with 15K SRX stake, top 100 by stake score, epoch-based rotation, slashing. See [Phase 2](../roadmap/PHASE2.md).
+DPoS: open registration with 15K SRX stake, top 100 by stake score, epoch-based rotation, slashing. See [Voyager](../roadmap/PHASE2.md).

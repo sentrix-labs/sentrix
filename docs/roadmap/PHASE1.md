@@ -1,4 +1,4 @@
-# Phase 1 — PoA Chain (Complete)
+# Pioneer — PoA Chain (Complete)
 
 Done. Live in production.
 
@@ -45,4 +45,4 @@ Done. Live in production.
 
 ## What's Next
 
-Phase 2: DPoS + BFT + EVM. See [PHASE2.md](PHASE2.md).
+Next up: Voyager (DPoS + BFT + EVM). See [PHASE2.md](PHASE2.md).

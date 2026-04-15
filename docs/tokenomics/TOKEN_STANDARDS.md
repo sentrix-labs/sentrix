@@ -45,7 +45,7 @@ Explorer: `/explorer/tokens` and `/explorer/token/{contract}`.
 | Contract address | EVM deployment | `SRX20_` + deterministic hash |
 | Approve front-run | Vulnerable | Mitigated (reset to 0 first) |
 | Max supply | Optional | Built-in, enforced in mint() |
-| VM | EVM | Native engine (Phase 1), revm (Phase 2) |
+| VM | EVM | Native engine (Pioneer), revm (Voyager) |
 
 ## SNTX
 
@@ -63,6 +63,6 @@ Planned uses: governance, fee discounts, staking boosts.
 
 ## Planned
 
-**SRC-20 (Phase 2):** EVM-compatible via revm. Solidity ABI, gas metering, events.
+**SRC-20 (Voyager):** EVM-compatible via revm. Solidity ABI, gas metering, events.
 
 **SRTX (Future):** USD-pegged stablecoin. SRX-collateralized.

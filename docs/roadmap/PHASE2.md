@@ -1,6 +1,7 @@
-# Phase 2 — DPoS + BFT + EVM (Planned)
+# Voyager — DPoS + BFT + EVM (Planned)
 
 > Design finalized. Not implemented yet. Target: Q3 2026.
+> Voyager is the next network phase after Pioneer.
 
 ## Three Things
 
@@ -24,7 +25,7 @@ Smart contracts in Solidity. Using [revm](https://github.com/bluealloy/revm) (Pa
 
 Gas pricing: 0.1 sentri/gas. Block gas limit: 30M. Transfer ≈ 0.000021 SRX.
 
-Why revm and not custom VM: DPoS + BFT is already hard. EVM compatibility gives immediate access to existing tooling. Custom VM can wait for Phase 4 if demand justifies it.
+Why revm and not custom VM: DPoS + BFT is already hard. EVM compatibility gives immediate access to existing tooling. Custom VM can wait for Odyssey if demand justifies it.
 
 ## TODO
 
@@ -34,7 +35,7 @@ Why revm and not custom VM: DPoS + BFT is already hard. EVM compatibility gives 
 
 ## Migration
 
-No chain reset. Protocol upgrade at a predetermined fork height. Existing 7 validators grandfathered in. Staking opens for new validators.
+No chain reset. Protocol upgrade at a predetermined fork height. Existing 7 Pioneer validators grandfathered in. Staking opens for new validators.
 
 ## Prerequisites
 
@@ -45,6 +46,6 @@ No chain reset. Protocol upgrade at a predetermined fork height. Existing 7 vali
 
 ## Future Phases
 
-**Phase 3 (Q4 2026, if needed):** Sharding. Only if >1K TPS demand proven.
+**Frontier (Q4 2026, if needed):** Ecosystem expansion, dApps, real users. Sharding only if >1K TPS demand proven.
 
-**Phase 4 (2027+, if demand):** Custom VM with parallel execution. 90% Solidity compat. Would need external audit (Zellic/Trail of Bits).
+**Odyssey (2027+, if demand):** Full public chain, cross-chain bridges. Custom VM with parallel execution if EVM proves insufficient. Would need external audit (Zellic/Trail of Bits).

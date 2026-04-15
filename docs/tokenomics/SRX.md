@@ -1,6 +1,6 @@
 # SRX
 
-Native coin. Used for fees, validator rewards, and staking (Phase 2).
+Native coin. Used for fees, validator rewards, and staking (Voyager).
 
 ## Units
 

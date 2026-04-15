@@ -28,10 +28,10 @@ There is a need for a blockchain that starts simple and controlled, then progres
 
 Sentrix takes the **progressive decentralization** approach:
 
-1. **Phase 1**: Proof of Authority — fast, controlled, battle-tested
-2. **Phase 2**: Public PoA — open participation, token economy
-3. **Phase 3**: Delegated Proof of Stake — community-governed validators
-4. **Phase 4**: Full public chain — smart contracts, cross-chain bridges
+1. **Pioneer**: Proof of Authority — fast, controlled, battle-tested
+2. **Voyager**: DPoS + BFT + EVM — public validators, smart contracts
+3. **Frontier**: Ecosystem expansion — dApps, real users, scaling
+4. **Odyssey**: Full public chain — cross-chain bridges, mature ecosystem
 
 This mirrors the path taken by successful chains like BNB Chain (PoA → DPoS) and Polygon (PoA → PoS).
 

@@ -284,7 +284,7 @@ The Sentrix codebase has undergone multiple rounds of security review covering:
 - Storage integrity (atomic block commit, trie GC, graceful shutdown state save)
 - Wallet security (Argon2id key derivation, Zeroizing secret key storage, no server-side key handling)
 
-Known limitations: PoA consensus requires trust in the validator set by design. Validators are controlled by the admin address. Phase 2 will introduce DPoS to distribute control.
+Known limitations: PoA consensus (Pioneer phase) requires trust in the validator set by design. Validators are controlled by the admin address. The Voyager upgrade will introduce DPoS to distribute control.
 
 ---
 
@@ -292,10 +292,10 @@ Known limitations: PoA consensus requires trust in the validator set by design. 
 
 | Phase | Timeline | Focus |
 |-------|----------|-------|
-| **Phase 1** ✅ | Complete | PoA core, SRX-20 tokens, SentrixTrie, libp2p Noise, 342 tests, live network |
-| **Phase 2** | 2026-05 → 2026-07 | DPoS validator elections, BFT finality, EVM (revm) |
-| **Phase 3** | 2026-08 → 2026-10 | Sharding (only if >1,000 TPS demand demonstrated) |
-| **Phase 4** | 2027+ | Custom parallel VM (only if EVM proves insufficient) |
+| **Pioneer** ✅ | Complete | PoA core, SRX-20 tokens, SentrixTrie, libp2p Noise, 342 tests, live network |
+| **Voyager** | 2026-05 → 2026-07 | DPoS validator elections, BFT finality, EVM (revm) |
+| **Frontier** | 2026-08 → 2026-10 | Ecosystem expansion, dApps, real users |
+| **Odyssey** | 2027+ | Full public chain, cross-chain bridges, mature ecosystem |
 
 ---
 

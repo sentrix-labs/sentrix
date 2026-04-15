@@ -239,7 +239,7 @@ fn page(title: &str, body: &str) -> Html<String> {
 <style>{CSS}</style></head><body>
 <header><div class="container">
 <h1>⬡ Sentrix Explorer</h1>
-<span>Chain ID: 7119 &nbsp;|&nbsp; PoA Blockchain</span>
+<span>Chain ID: 7119 &nbsp;|&nbsp; Pioneer Network</span>
 <div class="search-bar">
   <input id="srx-search" type="text" placeholder="Search by TX hash, block height, or address" autocomplete="off" />
   <button onclick="srxSearch()">Search</button>

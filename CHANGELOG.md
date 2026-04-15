@@ -10,16 +10,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Planned
-- Phase 2: DPoS validator elections + BFT finality
-- Phase 2: EVM integration via revm
+- Voyager: DPoS validator elections + BFT finality
+- Voyager: EVM integration via revm
 
 ---
 
 ## [1.0.0] — 2026-04-15
 
-Phase 1 production release. PoA chain live with 7 validators across 3 VPS, 131K+ blocks, 11 security audit rounds.
+Pioneer release. PoA chain live with 7 validators across 3 VPS, 131K+ blocks, 11 security audit rounds.
 
-### Milestones since 0.1.0
+### Milestones since 0.1.0 (Pioneer)
 - 7 validators running across 3 geographically separate VPS (full mesh peering)
 - CI/CD pipeline deploying to all 3 VPS with ordered stop/start and health checks
 - P0 security hardening: libp2p peer limits, per-IP rate limiting, legacy TCP deprecated

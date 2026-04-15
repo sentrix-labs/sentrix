@@ -2,7 +2,7 @@
 
 ## [0.1.0] — 2026-04-15
 
-Phase 1 complete.
+Pioneer phase complete.
 
 ### Added
 

@@ -1,10 +1,10 @@
-# Staking (Phase 2 — Planned)
+# Staking (Voyager — Planned)
 
 > Not implemented yet. This is the finalized design.
 
 ## How It Works
 
-Phase 2 switches from PoA (admin picks validators) to DPoS (stake picks validators). Anyone with 15K SRX can register. Token holders delegate to their preferred validators.
+Voyager switches from PoA (admin picks validators) to DPoS (stake picks validators). Anyone with 15K SRX can register. Token holders delegate to their preferred validators.
 
 **Active set:** Top 100 by `self_stake + delegated_stake`. Recalculated every epoch (28,800 blocks ≈ 1 day).
 
@@ -44,7 +44,7 @@ Cost to attack (51%): 51 validators × 15K SRX = 765K SRX minimum, plus 20% slas
 
 ## Gas (EVM)
 
-Phase 2 adds gas metering via revm:
+Voyager adds gas metering via revm:
 
 | | |
 |-|-|

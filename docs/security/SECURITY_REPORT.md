@@ -1,6 +1,6 @@
 # Security Report v1.0
 
-Score: 8.3/10 — production-ready for PoA early mainnet.
+Score: 8.3/10 — production-ready for Pioneer network.
 
 After 10 prior audit rounds (94 findings, 78 fixed), the codebase is in good shape. Zero `unsafe`, no-panic policy enforced via CI, checked arithmetic everywhere, constant-time crypto. Not typical for a project this young.
 
@@ -47,7 +47,7 @@ Full report: [PENTEST_RESULTS.md](PENTEST_RESULTS.md)
 
 Done ✅: libp2p peer limit, per-IP rate limit, legacy TCP deprecated.
 
-Next: Block skip mechanism, peer reputation, sync randomization, block-level signatures (for Phase 2).
+Next: Block skip mechanism, peer reputation, sync randomization, block-level signatures (for Voyager).
 
 ## Context
 

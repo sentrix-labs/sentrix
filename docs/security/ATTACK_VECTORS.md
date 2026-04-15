@@ -37,7 +37,7 @@ Protected. Noise XX = encrypted + mutually authenticated. PeerId from Ed25519 ke
 
 ### 2.1 Validator Spoofing
 
-Protected. `add_block()` checks `is_authorized()` per height. Validator registration requires crypto proof (pubkey → address derivation). No block-level signatures yet though — planned for Phase 2.
+Protected. `add_block()` checks `is_authorized()` per height. Validator registration requires crypto proof (pubkey → address derivation). No block-level signatures yet though — planned for Voyager.
 
 ### 2.2 Double Spend
 
@@ -56,7 +56,7 @@ Protected. Only authorized validators can produce. Timestamp bounds enforced. St
 
 ### 2.5 Nothing-at-Stake
 
-N/A — PoA, not PoS. Relevant for Phase 2 DPoS. Will need slashing + unbonding period.
+N/A — PoA, not PoS. Relevant for Voyager (DPoS). Will need slashing + unbonding period.
 
 ---
 
