@@ -1,0 +1,122 @@
+# Deployment
+
+How to deploy a Sentrix node on a Linux server.
+
+## Requirements
+
+- Linux (Ubuntu 22.04+ / Debian 12+)
+- 2 CPU, 2 GB RAM, 20 GB SSD
+- Ports open: 8545 (API), 30303 (P2P)
+
+## Build from Source
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+
+git clone https://github.com/satyakwok/sentrix.git
+cd sentrix
+cargo build --release
+# → target/release/sentrix
+```
+
+## Docker
+
+```bash
+git clone https://github.com/satyakwok/sentrix.git && cd sentrix
+docker compose up -d --build
+```
+
+Ports 8545 + 30303 exposed, data in named volume, health check on `/health`, auto-restart.
+
+## Bootstrap a Node
+
+```bash
+# Generate wallet
+sentrix wallet generate
+
+# Init chain
+sentrix init --admin-address 0x<your_address>
+
+# Add validator
+sentrix validator add --address 0x<addr> --public-key 04<pubkey> --name "Name"
+
+# Start
+sentrix start --validator-key <key> --peers [PEER_IP]:30303
+```
+
+## Systemd
+
+```ini
+# /etc/systemd/system/sentrix-node.service
+[Unit]
+Description=Sentrix Chain Node
+After=network.target
+
+[Service]
+Type=simple
+User=sentrix
+WorkingDirectory=/opt/sentrix
+ExecStart=/opt/sentrix/sentrix start \
+  --validator-key <key> \
+  --peers [PEER_IP]:30303 \
+  --data-dir /opt/sentrix/data
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+Environment=SENTRIX_API_KEY=<key>
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now sentrix-node
+```
+
+## Environment Variables
+
+| Var | Default | What |
+|-----|---------|------|
+| `SENTRIX_API_KEY` | (none) | Auth for write endpoints. Unset = all public |
+| `SENTRIX_DATA_DIR` | `./data` | Chain data path |
+| `SENTRIX_CORS_ORIGIN` | (none) | CORS origin. Unset = restrictive |
+| `RUST_LOG` | `info` | Log level |
+
+## Firewall
+
+```bash
+sudo ufw allow 22/tcp && sudo ufw allow 8545/tcp && sudo ufw allow 30303/tcp && sudo ufw enable
+```
+
+## Data Directory
+
+```
+data/
+├── chain.db/         # sled (blocks, state, index)
+├── identity/
+│   └── node_keypair  # Ed25519 for libp2p PeerId
+└── wallets/          # encrypted keystores
+```
+
+## Joining the Network
+
+```bash
+sentrix init --admin-address 0x<genesis_admin>
+sentrix start --peers [BOOTSTRAP]:30303
+# Connects via libp2p, verifies chain_id 7119, syncs from genesis
+```
+
+Validator registration needs admin auth — contact the network admin.
+
+## Multiple Validators on One Machine
+
+Different ports + data dirs per validator:
+
+```bash
+sentrix start --validator-key <key1> --port 8545 --p2p-port 30303 --data-dir data1
+sentrix start --validator-key <key2> --port 8546 --p2p-port 30304 --data-dir data2
+```
+
+Each needs its own systemd service file and firewall rules.
