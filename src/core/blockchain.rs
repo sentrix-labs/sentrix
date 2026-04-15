@@ -22,6 +22,12 @@ pub const BLOCK_TIME_SECS: u64    = 3;
 pub const MAX_TX_PER_BLOCK: usize = 100;
 pub const CHAIN_ID: u64           = 7119; // default; overridable via SENTRIX_CHAIN_ID env
 
+/// Voyager DPoS fork activation height.
+/// Blocks before this: Pioneer consensus (PoA round-robin).
+/// Blocks at/after this: Voyager consensus (DPoS + BFT).
+/// Set to u64::MAX to disable (Pioneer-only mode). Testnet uses lower value.
+pub const VOYAGER_DPOS_HEIGHT: u64 = u64::MAX; // disabled until testnet-validated
+
 /// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
 pub fn get_chain_id() -> u64 {
     std::env::var("SENTRIX_CHAIN_ID")
@@ -140,6 +146,52 @@ impl Blockchain {
     /// Blocks with index < chain_window_start() are only in sled storage.
     pub fn chain_window_start(&self) -> u64 {
         self.chain.first().map(|b| b.index).unwrap_or(0)
+    }
+
+    /// Is the given height at or after the Voyager DPoS fork?
+    #[allow(clippy::absurd_extreme_comparisons)]
+    pub fn is_voyager_height(height: u64) -> bool {
+        height >= VOYAGER_DPOS_HEIGHT
+    }
+
+    /// Is the current chain past the Voyager fork?
+    pub fn is_voyager_active(&self) -> bool {
+        Self::is_voyager_height(self.height())
+    }
+
+    /// Initialize Voyager state at fork activation.
+    /// Called once when chain reaches VOYAGER_DPOS_HEIGHT.
+    /// Migrates existing 7 Pioneer validators to DPoS with equal stake.
+    pub fn activate_voyager(&mut self) -> SentrixResult<()> {
+        use crate::core::staking::MIN_SELF_STAKE;
+
+        // Migrate Pioneer validators → DPoS validators
+        let validators: Vec<String> = self.authority.active_validators()
+            .iter()
+            .map(|v| v.address.clone())
+            .collect();
+        for address in &validators {
+            if let Err(e) = self.stake_registry.register_validator(
+                address,
+                MIN_SELF_STAKE,
+                1000, // 10% default commission
+                self.height(),
+            ) {
+                tracing::warn!("Failed to migrate validator {}: {}", address, e);
+            }
+        }
+
+        // Initialize epoch manager with the new stake registry
+        self.stake_registry.update_active_set();
+        self.epoch_manager.initialize(&self.stake_registry, self.height());
+
+        tracing::info!(
+            "Voyager DPoS activated at height {}. {} validators migrated.",
+            self.height(),
+            self.stake_registry.active_count()
+        );
+
+        Ok(())
     }
 
     // Returns Err instead of panicking when chain is empty
