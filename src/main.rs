@@ -694,6 +694,14 @@ async fn cmd_start(
                     // Check if we're the proposer for this height+round
                     let bc = shared_clone.read().await;
                     let we_are_proposer = bft.is_proposer(&bc.stake_registry);
+                    let expected_proposer = bft.expected_proposer(&bc.stake_registry);
+                    let active_count = bc.stake_registry.active_count();
+                    tracing::info!(
+                        "BFT round start: height={} round={} active={} proposer={:?} we_are={}",
+                        next_height, bft.round(), active_count,
+                        expected_proposer.as_deref().map(|a| &a[..12.min(a.len())]),
+                        we_are_proposer,
+                    );
                     drop(bc);
 
                     if we_are_proposer {
