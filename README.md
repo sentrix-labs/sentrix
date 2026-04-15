@@ -302,12 +302,12 @@ Known limitations: PoA consensus (Pioneer phase) requires trust in the validator
 ## Network
 
 - **Chain ID:** 7119 (`0x1bcf`)
-- **RPC:** `https://rpc.sentrixchain.com`
-- **Block Explorer:** [sentrixscan.com](https://sentrixscan.com)
-- **Wallet:** [wallet.sentrixchain.com](https://wallet.sentrixchain.com)
-- **Landing:** [sentrixchain.com](https://sentrixchain.com)
-- **Faucet:** [faucet.sentrixchain.com](https://faucet.sentrixchain.com)
-- **Telegram:** [t.me/sentrixchain](https://t.me/sentrixchain)
+- **RPC:** `https://sentrix-rpc.sentriscloud.com`
+- **Block Explorer:** [sentrixscan.sentriscloud.com](https://sentrixscan.sentriscloud.com)
+- **Wallet:** [sentrix-wallet.sentriscloud.com](https://sentrix-wallet.sentriscloud.com)
+- **Landing:** [sentrix.sentriscloud.com](https://sentrix.sentriscloud.com)
+- **Faucet:** [faucet.sentriscloud.com](https://faucet.sentriscloud.com)
+- **Telegram:** [t.me/SentrixCommunity](https://t.me/SentrixCommunity)
 - **GitHub:** [github.com/satyakwok/sentrix](https://github.com/satyakwok/sentrix)
 
 ---

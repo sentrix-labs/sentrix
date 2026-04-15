@@ -18,6 +18,7 @@
 ## Operations
 
 - [Networks](operations/NETWORKS.md) — mainnet + testnet config, how to connect
+- [Domains](operations/DOMAINS.md) — all service URLs and endpoints
 - [Deployment](operations/DEPLOYMENT.md) — build, configure, run a node
 - [CI/CD](operations/CI_CD.md) — pipeline, deploy phases
 - [Validators](operations/VALIDATORS.md) — setup, registration, current set
