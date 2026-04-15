@@ -15,3 +15,4 @@ pub mod trie;
 pub mod staking;
 pub mod epoch;
 pub mod slashing;
+pub mod bft_messages;
