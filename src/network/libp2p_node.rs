@@ -12,10 +12,14 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
+use std::time::Instant;
 
 use futures::StreamExt;
 use libp2p::{
+    core::ConnectedPoint,
     identity::Keypair,
+    multiaddr::Protocol,
     noise,
     request_response::{self, OutboundRequestId},
     swarm::SwarmEvent,
@@ -32,6 +36,16 @@ use crate::network::behaviour::{
 };
 use crate::network::node::{NodeEvent, SharedBlockchain};
 use crate::types::error::{SentrixError, SentrixResult};
+
+// ── P2P protection constants ────────────────────────────
+/// Maximum number of verified (handshaked) peers.
+const MAX_LIBP2P_PEERS: usize = 50;
+/// Maximum new connections per IP within the rate window.
+const MAX_CONN_PER_IP: u32 = 5;
+/// Rate limit window (seconds).
+const RATE_LIMIT_WINDOW_SECS: u64 = 60;
+/// Temporary ban duration for IPs that exceed rate limit (seconds).
+const BAN_DURATION_SECS: u64 = 300;
 
 // ── Internal command channel ─────────────────────────────
 
@@ -136,6 +150,80 @@ pub fn make_multiaddr(host: &str, port: u16) -> SentrixResult<Multiaddr> {
         .map_err(|e| SentrixError::NetworkError(format!("invalid multiaddr '{}': {}", s, e)))
 }
 
+// ── IP extraction helper ────────────────────────────────
+
+/// Extract IP address from a libp2p `ConnectedPoint`.
+fn extract_ip(endpoint: &ConnectedPoint) -> Option<IpAddr> {
+    let addr = match endpoint {
+        ConnectedPoint::Dialer { address, .. } => address,
+        ConnectedPoint::Listener { send_back_addr, .. } => send_back_addr,
+    };
+    for protocol in addr.iter() {
+        match protocol {
+            Protocol::Ip4(ip) => return Some(IpAddr::V4(ip)),
+            Protocol::Ip6(ip) => return Some(IpAddr::V6(ip)),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Per-IP connection rate limiter with temporary bans.
+struct IpRateLimiter {
+    /// Connection count + window start per IP.
+    counts: HashMap<IpAddr, (u32, Instant)>,
+    /// Banned IPs with ban start time.
+    bans: HashMap<IpAddr, Instant>,
+}
+
+impl IpRateLimiter {
+    fn new() -> Self {
+        Self {
+            counts: HashMap::new(),
+            bans: HashMap::new(),
+        }
+    }
+
+    /// Check if an IP is allowed to connect. Returns `false` if banned or rate-limited.
+    fn check_and_track(&mut self, ip: IpAddr) -> bool {
+        // Check active ban
+        if let Some(ban_time) = self.bans.get(&ip) {
+            if ban_time.elapsed() < std::time::Duration::from_secs(BAN_DURATION_SECS) {
+                return false;
+            }
+            // Ban expired
+            self.bans.remove(&ip);
+        }
+
+        // Track connection rate
+        let now = Instant::now();
+        let entry = self.counts.entry(ip).or_insert((0, now));
+        if entry.1.elapsed() > std::time::Duration::from_secs(RATE_LIMIT_WINDOW_SECS) {
+            *entry = (1, now);
+        } else {
+            entry.0 += 1;
+            if entry.0 > MAX_CONN_PER_IP {
+                tracing::warn!(
+                    "libp2p: IP {} exceeded rate limit ({} connections in {}s), banning for {}s",
+                    ip, entry.0, RATE_LIMIT_WINDOW_SECS, BAN_DURATION_SECS
+                );
+                self.bans.insert(ip, now);
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Prune stale entries to prevent unbounded growth.
+    fn prune_stale(&mut self) {
+        let window = std::time::Duration::from_secs(RATE_LIMIT_WINDOW_SECS);
+        let ban_dur = std::time::Duration::from_secs(BAN_DURATION_SECS);
+        self.counts.retain(|_, (_, start)| start.elapsed() < window);
+        self.bans.retain(|_, start| start.elapsed() < ban_dur);
+    }
+}
+
 // ── Swarm event loop ─────────────────────────────────────
 
 // large_futures: the Swarm owns SentrixBehaviour which has internal caches;
@@ -171,6 +259,9 @@ async fn run_swarm(
     let mut pending_handshakes: HashMap<OutboundRequestId, PeerId> = HashMap::new();
     // Track outbound GetBlocks requests by ID so responses can be matched to the originating peer.
     let mut pending_syncs: HashMap<OutboundRequestId, PeerId> = HashMap::new();
+
+    // Per-IP rate limiter for connection flood protection.
+    let mut ip_limiter = IpRateLimiter::new();
 
     // Periodic sync: every 30s, request missing blocks from verified peers.
     let mut sync_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
@@ -224,12 +315,14 @@ async fn run_swarm(
                     &mut pending_handshakes,
                     &mut pending_syncs,
                     our_chain_id,
+                    &mut ip_limiter,
                 )
                 .await;
             }
 
-            // ── Periodic sync (Step 3d) ──────────────────
+            // ── Periodic sync (Step 3d) + rate limiter cleanup ──
             _ = sync_interval.tick() => {
+                ip_limiter.prune_stale();
                 if verified_peers.is_empty() {
                     continue;
                 }
@@ -260,6 +353,7 @@ async fn on_swarm_event(
     pending_handshakes: &mut HashMap<OutboundRequestId, PeerId>,
     pending_syncs: &mut HashMap<OutboundRequestId, PeerId>,
     our_chain_id: u64,
+    ip_limiter: &mut IpRateLimiter,
 ) {
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
@@ -267,7 +361,24 @@ async fn on_swarm_event(
         }
 
         // Send our Handshake as soon as a TCP connection is established.
-        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+        SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+            // Fix 1: Reject if we already have MAX_LIBP2P_PEERS verified peers.
+            if verified_peers.len() >= MAX_LIBP2P_PEERS {
+                tracing::warn!(
+                    "libp2p: peer limit reached ({}/{}), rejecting {}",
+                    verified_peers.len(), MAX_LIBP2P_PEERS, peer_id
+                );
+                let _ = swarm.disconnect_peer_id(peer_id);
+                return;
+            }
+
+            // Fix 2: Per-IP rate limiting — reject if IP is banned or over limit.
+            if let Some(ip) = extract_ip(&endpoint) && !ip_limiter.check_and_track(ip) {
+                tracing::warn!("libp2p: IP {} rate-limited, rejecting {}", ip, peer_id);
+                let _ = swarm.disconnect_peer_id(peer_id);
+                return;
+            }
+
             tracing::info!("libp2p: TCP connection to {}", peer_id);
             let height = blockchain.read().await.height();
             let req = SentrixRequest::Handshake {
@@ -421,6 +532,17 @@ async fn on_inbound_request(
                 // Respond with Ack so the peer gets a clean close
                 let _ = swarm.behaviour_mut().rr.send_response(channel, SentrixResponse::Ack);
                 // Disconnect the peer
+                let _ = swarm.disconnect_peer_id(peer);
+                return;
+            }
+
+            // Peer limit: don't accept more verified peers than MAX_LIBP2P_PEERS.
+            if verified_peers.len() >= MAX_LIBP2P_PEERS && !verified_peers.contains(&peer) {
+                tracing::warn!(
+                    "libp2p: peer limit reached ({}/{}), rejecting handshake from {}",
+                    verified_peers.len(), MAX_LIBP2P_PEERS, peer
+                );
+                let _ = swarm.behaviour_mut().rr.send_response(channel, SentrixResponse::Ack);
                 let _ = swarm.disconnect_peer_id(peer);
                 return;
             }
@@ -699,6 +821,92 @@ mod tests {
         ).await;
         // connect_peer sends to channel — should always succeed (swarm handles actual dial)
         assert!(dial_result.is_ok(), "connect_peer should not fail to send command");
+    }
+
+    // ── extract_ip helper ────────────────────────────────
+
+    #[test]
+    fn test_extract_ip_from_dialer() {
+        let addr: Multiaddr = "/ip4/192.168.1.1/tcp/30303".parse().expect("valid");
+        let endpoint = ConnectedPoint::Dialer {
+            address: addr,
+            role_override: libp2p::core::Endpoint::Dialer,
+            port_use: libp2p::core::transport::PortUse::Reuse,
+        };
+        let ip = extract_ip(&endpoint);
+        assert_eq!(ip, Some(IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1))));
+    }
+
+    #[test]
+    fn test_extract_ip_from_listener() {
+        let local: Multiaddr = "/ip4/0.0.0.0/tcp/30303".parse().expect("valid");
+        let remote: Multiaddr = "/ip4/10.0.0.5/tcp/45678".parse().expect("valid");
+        let endpoint = ConnectedPoint::Listener {
+            local_addr: local,
+            send_back_addr: remote,
+        };
+        let ip = extract_ip(&endpoint);
+        assert_eq!(ip, Some(IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 5))));
+    }
+
+    // ── IpRateLimiter ───────────────────────────────────
+
+    #[test]
+    fn test_rate_limiter_allows_within_limit() {
+        let mut limiter = IpRateLimiter::new();
+        let ip: IpAddr = "1.2.3.4".parse().expect("valid");
+
+        for _ in 0..MAX_CONN_PER_IP {
+            assert!(limiter.check_and_track(ip), "should allow within limit");
+        }
+    }
+
+    #[test]
+    fn test_rate_limiter_bans_over_limit() {
+        let mut limiter = IpRateLimiter::new();
+        let ip: IpAddr = "1.2.3.4".parse().expect("valid");
+
+        for _ in 0..MAX_CONN_PER_IP {
+            limiter.check_and_track(ip);
+        }
+        // Next connection should trigger ban
+        assert!(!limiter.check_and_track(ip), "should reject over limit");
+        // Subsequent connections also rejected (banned)
+        assert!(!limiter.check_and_track(ip), "should stay banned");
+    }
+
+    #[test]
+    fn test_rate_limiter_different_ips_independent() {
+        let mut limiter = IpRateLimiter::new();
+        let ip_a: IpAddr = "1.2.3.4".parse().expect("valid");
+        let ip_b: IpAddr = "5.6.7.8".parse().expect("valid");
+
+        // Exhaust limit for IP A
+        for _ in 0..MAX_CONN_PER_IP {
+            limiter.check_and_track(ip_a);
+        }
+        assert!(!limiter.check_and_track(ip_a), "IP A should be banned");
+        // IP B should still be allowed
+        assert!(limiter.check_and_track(ip_b), "IP B should be allowed");
+    }
+
+    #[test]
+    fn test_rate_limiter_prune_stale() {
+        let mut limiter = IpRateLimiter::new();
+        let ip: IpAddr = "1.2.3.4".parse().expect("valid");
+
+        limiter.check_and_track(ip);
+        assert_eq!(limiter.counts.len(), 1);
+        // Entries within window should survive prune
+        limiter.prune_stale();
+        assert_eq!(limiter.counts.len(), 1);
+    }
+
+    #[test]
+    fn test_peer_limit_constant() {
+        assert_eq!(MAX_LIBP2P_PEERS, 50, "max peers should be 50");
+        assert_eq!(MAX_CONN_PER_IP, 5, "max connections per IP should be 5");
+        assert_eq!(BAN_DURATION_SECS, 300, "ban duration should be 5 minutes");
     }
 
     #[tokio::test]

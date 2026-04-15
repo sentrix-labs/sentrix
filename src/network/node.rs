@@ -1,4 +1,12 @@
-// node.rs - Sentrix — Full P2P TCP Node
+// node.rs - Sentrix — Legacy P2P TCP Node (DEPRECATED)
+//
+// SECURITY: The raw TCP transport in this file is PLAINTEXT — no encryption.
+// All production P2P traffic MUST use libp2p (Noise XX + Yamux) via
+// `libp2p_node.rs`. This file is retained only for shared type definitions
+// (NodeEvent, SharedBlockchain, DEFAULT_PORT) used by the rest of the codebase.
+//
+// The TCP listener/handler functions below are NOT called by main.rs.
+// Do NOT re-enable raw TCP P2P without adding encryption.
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
