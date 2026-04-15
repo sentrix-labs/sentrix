@@ -539,8 +539,40 @@ async fn cmd_start(
 
                     // ── Block production (Pioneer or Voyager) ───
                     match bc.create_block(&wallet.address) {
-                        Ok(block) => {
+                        Ok(mut block) => {
                             let height = block.index;
+
+                            // ── BFT consensus (Voyager only) ──────
+                            if voyager_activated {
+                                use sentrix::core::bft::{BftEngine, BftAction};
+                                let total_active_stake: u64 = bc.stake_registry.active_set.iter()
+                                    .filter_map(|a| bc.stake_registry.get_validator(a))
+                                    .map(|v| v.total_stake())
+                                    .sum();
+                                let our_stake = bc.stake_registry.get_validator(&wallet.address)
+                                    .map(|v| v.total_stake()).unwrap_or(0);
+                                let block_hash = block.hash.clone();
+                                let mut bft = BftEngine::new(
+                                    height, wallet.address.clone(), total_active_stake,
+                                );
+
+                                // Propose → self-prevote → self-precommit → finalize
+                                if let BftAction::BroadcastPrevote(prevote) =
+                                    bft.on_proposal(&block_hash, &wallet.address, &bc.stake_registry)
+                                    && let BftAction::BroadcastPrecommit(precommit) =
+                                        bft.on_prevote_weighted(&prevote, our_stake)
+                                    && let BftAction::FinalizeBlock { round, justification, .. } =
+                                        bft.on_precommit_weighted(&precommit, our_stake)
+                                {
+                                    block.round = round;
+                                    block.justification = Some(justification);
+                                    tracing::info!(
+                                        "BFT finalized height={} round={}",
+                                        height, round,
+                                    );
+                                }
+                            }
+
                             match bc.add_block(block) {
                                 Ok(()) => {
                                     let updated = bc.latest_block().ok().cloned();
@@ -657,15 +689,15 @@ async fn cmd_start(
                 NodeEvent::SyncNeeded { peer_addr, peer_height } => {
                     tracing::info!("Sync needed from {} (height: {})", peer_addr, peer_height);
                 }
-                // BFT events — handled by BFT state machine in Voyager mode (future)
+                // BFT events — logged; multi-validator routing in future
                 NodeEvent::BftProposal(p) => {
-                    tracing::debug!("BFT proposal received: height={} round={}", p.height, p.round);
+                    tracing::info!("BFT proposal received: height={} round={}", p.height, p.round);
                 }
                 NodeEvent::BftPrevote(v) => {
-                    tracing::debug!("BFT prevote received: height={} round={}", v.height, v.round);
+                    tracing::info!("BFT prevote received: height={} round={}", v.height, v.round);
                 }
                 NodeEvent::BftPrecommit(c) => {
-                    tracing::debug!("BFT precommit received: height={} round={}", c.height, c.round);
+                    tracing::info!("BFT precommit received: height={} round={}", c.height, c.round);
                 }
             }
         }
