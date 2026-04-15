@@ -24,9 +24,9 @@ Done. Live in production.
 
 | | |
 |-|-|
-| Tests | 357 |
-| PRs merged | #1–#83 |
-| Audit rounds | 11 (94 findings, 78 fixed) |
+| Tests | 479+ |
+| PRs merged | #1–#94 |
+| Audit rounds | 11 (116 findings, 78+ fixed) |
 | Chain height | 141,000+ |
 | Pentest | 6/6 passed on live node |
 | `unsafe` blocks | 0 |

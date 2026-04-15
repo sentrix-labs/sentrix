@@ -38,7 +38,7 @@ jobs:
         run: cargo deny check licenses bans sources
 
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --tests -- -D warnings
 
       - name: Build
         run: cargo build --release
@@ -182,8 +182,8 @@ jobs:
       # Phase 5: Health check — verify chain is advancing on all VPS
       - name: Health check
         run: |
-          echo '--- Waiting 20s for nodes to stabilize ---'
-          sleep 20
+          echo '--- Waiting 60s for nodes to stabilize ---'
+          sleep 60
 
           VPS1_H0=$(curl -sf --max-time 10 http://${{ secrets.VPS1_HOST }}:8545/chain/info \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['height'])" 2>/dev/null || echo "0")
