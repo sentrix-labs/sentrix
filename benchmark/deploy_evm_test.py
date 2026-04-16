@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
-"""Deploy a minimal Solidity contract to Sentrix testnet via EVM."""
+"""Deploy a minimal Solidity contract to Sentrix testnet via EVM.
 
-import hashlib, json, requests, time
+Configure via env vars:
+  SENTRIX_RPC          — RPC endpoint (default: http://127.0.0.1:9545/rpc)
+  SENTRIX_CHAIN_ID     — chain id (default: 7120, testnet)
+  SENTRIX_DEPLOYER_KEY — raw hex private key (no 0x), required
+"""
+
+import hashlib, json, os, requests, sys, time
 from collections import OrderedDict
 from ecdsa import SigningKey, SECP256k1
 from ecdsa.util import sigencode_string
 from Crypto.Hash import keccak
 
-RPC = "http://VPS3_IP_REDACTED:9545/rpc"
-CHAIN_ID = 7120
-PRIVATE_KEY = "REDACTED_COMPROMISED_KEY_DRAINED_2026_04_17"  # early_validator
+RPC = os.environ.get("SENTRIX_RPC", "http://127.0.0.1:9545/rpc")
+CHAIN_ID = int(os.environ.get("SENTRIX_CHAIN_ID", "7120"))
+PRIVATE_KEY = os.environ.get("SENTRIX_DEPLOYER_KEY", "").lstrip("0x")
+if not PRIVATE_KEY:
+    sys.exit("SENTRIX_DEPLOYER_KEY env var required (raw hex, no 0x prefix)")
 
 # Minimal contract: storage[0] = 42, returns 32 bytes
 # PUSH1 0x42 PUSH1 0x00 SSTORE PUSH1 0x42 PUSH1 0x00 MSTORE PUSH1 0x20 PUSH1 0x00 RETURN

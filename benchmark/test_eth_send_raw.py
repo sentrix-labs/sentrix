@@ -1,13 +1,22 @@
 #!/usr/bin/env python3
-"""Test eth_sendRawTransaction on Sentrix testnet."""
+"""Test eth_sendRawTransaction on Sentrix testnet.
 
-import json
+Configure via env vars:
+  SENTRIX_RPC          — RPC endpoint (default: http://127.0.0.1:9545/rpc)
+  SENTRIX_CHAIN_ID     — chain id (default: 7120, testnet)
+  SENTRIX_DEPLOYER_KEY — hex private key (with or without 0x), required
+"""
+
+import json, os, sys
 import requests
 from eth_account import Account
 
-RPC = "http://VPS3_IP_REDACTED:9545/rpc"
-CHAIN_ID = 7120
-PRIVATE_KEY = "0xREDACTED_COMPROMISED_KEY_DRAINED_2026_04_17"
+RPC = os.environ.get("SENTRIX_RPC", "http://127.0.0.1:9545/rpc")
+CHAIN_ID = int(os.environ.get("SENTRIX_CHAIN_ID", "7120"))
+_raw = os.environ.get("SENTRIX_DEPLOYER_KEY", "").lstrip("0x")
+if not _raw:
+    sys.exit("SENTRIX_DEPLOYER_KEY env var required")
+PRIVATE_KEY = "0x" + _raw
 
 
 def rpc(method, params):

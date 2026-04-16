@@ -71,6 +71,11 @@ env.example
 # Test artifacts
 /test-ledger/
 
+# Python bytecode (benchmark/ scripts)
+__pycache__/
+*.pyc
+*.pyo
+
 # Rust editor backup files
 **/*.rs.bk
 

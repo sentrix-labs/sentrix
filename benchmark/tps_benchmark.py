@@ -25,7 +25,7 @@ except ImportError:
 
 # ── Configuration ─────────────────────────────────────────────
 
-RPC_URL = os.environ.get("SENTRIX_RPC", "http://VPS3_IP_REDACTED:9545")
+RPC_URL = os.environ.get("SENTRIX_RPC", "http://127.0.0.1:9545")
 CHAIN_ID = 7120  # testnet
 MIN_FEE = 10_000  # 0.0001 SRX in sentri
 SENTRI_PER_SRX = 100_000_000
