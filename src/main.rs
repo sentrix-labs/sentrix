@@ -192,6 +192,17 @@ enum ValidatorCommands {
         #[arg(long)]
         admin_key: Option<String>,
     },
+    /// Transfer the admin role to a new address (admin only).
+    /// Use to rotate out a compromised admin key without a hard fork.
+    /// Run on EACH validator's chain DB — the admin field is local node
+    /// state, not part of block headers.
+    TransferAdmin {
+        /// New admin address (0x + 40 hex). Must be valid Sentrix format.
+        new_admin: String,
+        /// Current admin private key (prefer SENTRIX_ADMIN_KEY env var)
+        #[arg(long)]
+        admin_key: Option<String>,
+    },
     /// List all validators
     List,
 }
@@ -324,6 +335,13 @@ async fn main() -> anyhow::Result<()> {
             } => {
                 let key = resolve_key(admin_key, "SENTRIX_ADMIN_KEY", "admin key")?;
                 cmd_validator_rename(&address, &new_name, &key)?;
+            }
+            ValidatorCommands::TransferAdmin {
+                new_admin,
+                admin_key,
+            } => {
+                let key = resolve_key(admin_key, "SENTRIX_ADMIN_KEY", "admin key")?;
+                cmd_validator_transfer_admin(&new_admin, &key)?;
             }
             ValidatorCommands::List => cmd_validator_list()?,
         },
@@ -562,6 +580,27 @@ fn cmd_validator_add(
 
     storage.save_blockchain(&bc)?;
     println!("Validator added: {} ({})", name, address);
+    Ok(())
+}
+
+fn cmd_validator_transfer_admin(new_admin: &str, admin_key: &str) -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    let mut bc = storage
+        .load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized. Run: sentrix init"))?;
+
+    let admin_wallet = Wallet::from_private_key(admin_key)?;
+    let old_admin = bc.authority.admin_address.clone();
+
+    bc.authority
+        .transfer_admin(&admin_wallet.address, new_admin.to_string())?;
+
+    storage.save_blockchain(&bc)?;
+    println!("Admin role transferred:");
+    println!("  old: {}", old_admin);
+    println!("  new: {}", new_admin);
+    println!("Note: this only updates THIS node's chain DB. Run on every");
+    println!("validator's DB to complete cluster-wide rotation.");
     Ok(())
 }
 

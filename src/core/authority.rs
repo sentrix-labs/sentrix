@@ -352,6 +352,69 @@ impl AuthorityManager {
         self.active_validators().len()
     }
 
+    /// Transfer the admin role to a new address. Only the current admin can
+    /// invoke this. Used to rotate out a compromised admin key without a hard
+    /// fork.
+    ///
+    /// Notes:
+    /// - `admin_address` is local node state (not part of block headers), so
+    ///   each node must run this independently. The chain's consensus is
+    ///   unaffected because admin checks happen at CLI/API time, not at block
+    ///   validation time.
+    /// - After this call, the old admin address has zero admin powers on this
+    ///   node. To complete cluster-wide rotation, run on every validator's
+    ///   chain DB.
+    /// - Self-transfer (new == current) is rejected as a no-op so we don't
+    ///   pollute the audit log with empty events.
+    /// - Burn-address transfer (`0x000…`) is allowed — operationally this
+    ///   disables admin operations forever (no key controls the burn address).
+    pub fn transfer_admin(
+        &mut self,
+        caller: &str,
+        new_admin: String,
+    ) -> SentrixResult<()> {
+        if caller != self.admin_address {
+            return Err(SentrixError::UnauthorizedValidator(format!(
+                "{} is not admin",
+                caller
+            )));
+        }
+        if !crate::core::blockchain::is_valid_sentrix_address(&new_admin) {
+            return Err(SentrixError::InvalidTransaction(format!(
+                "invalid new admin address format: {}",
+                new_admin
+            )));
+        }
+        if new_admin == self.admin_address {
+            return Err(SentrixError::InvalidTransaction(
+                "new admin address is the same as the current admin (no-op)".to_string(),
+            ));
+        }
+
+        let old_admin = self.admin_address.clone();
+        self.admin_address = new_admin.clone();
+
+        tracing::warn!(
+            "ADMIN_OP: {} called transfer_admin -> {} at {}",
+            caller,
+            new_admin,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        );
+        // Audit-log records the old admin in `caller` (who acted) and the new
+        // admin as the `target_address` of the transfer.
+        self.admin_log.push(AdminEvent::now(
+            "transfer_admin",
+            &old_admin,
+            &new_admin,
+            "(admin role)",
+        ));
+        self.trim_admin_log();
+        Ok(())
+    }
+
     /// Test-only helper: add a validator without public key crypto validation.
     /// Use this in unit tests where you want to control the address string directly.
     #[cfg(test)]
@@ -778,5 +841,104 @@ mod tests {
             "Expected min 3 error, got: {}",
             err_str
         );
+    }
+
+    // ── transfer_admin tests ────────────────────────────────
+
+    const NEW_ADMIN_ADDR: &str = "0xREDACTED_V2_ADDR_2026_04_17";
+
+    #[test]
+    fn test_transfer_admin_happy_path() {
+        let mut mgr = setup();
+        // setup() uses "admin" as admin, but transfer_admin requires a
+        // valid Sentrix address format for the NEW admin. Seed a valid
+        // current admin first by direct mutation (test-only).
+        mgr.admin_address = "0x4f3319a747fd564136209cd5d9e7d1a1e4d142be".to_string();
+        let old_admin = mgr.admin_address.clone();
+        let log_len_before = mgr.admin_log.len();
+
+        mgr.transfer_admin(&old_admin, NEW_ADMIN_ADDR.to_string())
+            .expect("admin can transfer to a fresh valid address");
+
+        assert_eq!(mgr.admin_address, NEW_ADMIN_ADDR);
+        assert_eq!(mgr.admin_log.len(), log_len_before + 1);
+        let last = mgr.admin_log.last().unwrap();
+        assert_eq!(last.operation, "transfer_admin");
+        assert_eq!(last.caller, old_admin);
+        assert_eq!(last.target_address, NEW_ADMIN_ADDR);
+    }
+
+    #[test]
+    fn test_transfer_admin_unauthorized_caller_rejected() {
+        let mut mgr = setup();
+        mgr.admin_address = "0x4f3319a747fd564136209cd5d9e7d1a1e4d142be".to_string();
+        let result = mgr.transfer_admin("not-the-admin", NEW_ADMIN_ADDR.to_string());
+        assert!(result.is_err());
+        // Admin field must be unchanged.
+        assert_eq!(mgr.admin_address, "0x4f3319a747fd564136209cd5d9e7d1a1e4d142be");
+    }
+
+    #[test]
+    fn test_transfer_admin_invalid_address_rejected() {
+        let mut mgr = setup();
+        mgr.admin_address = "0x4f3319a747fd564136209cd5d9e7d1a1e4d142be".to_string();
+        let admin = mgr.admin_address.clone();
+        // Missing 0x prefix, wrong length, non-hex chars all rejected.
+        for bad in [
+            "abcdef",
+            "0xabc",
+            "0x4f3319a747fd564136209cd5d9e7d1a1e4d142bezz", // non-hex
+            "",
+        ] {
+            let result = mgr.transfer_admin(&admin, bad.to_string());
+            assert!(result.is_err(), "should reject bad address {:?}", bad);
+        }
+        assert_eq!(mgr.admin_address, "0x4f3319a747fd564136209cd5d9e7d1a1e4d142be");
+    }
+
+    #[test]
+    fn test_transfer_admin_self_transfer_rejected() {
+        let mut mgr = setup();
+        mgr.admin_address = "0x4f3319a747fd564136209cd5d9e7d1a1e4d142be".to_string();
+        let admin = mgr.admin_address.clone();
+        let result = mgr.transfer_admin(&admin, admin.clone());
+        assert!(result.is_err());
+        // Audit log must not contain a transfer_admin entry for a no-op.
+        assert!(!mgr.admin_log.iter().any(|e| e.operation == "transfer_admin"));
+    }
+
+    #[test]
+    fn test_transfer_admin_old_admin_loses_powers() {
+        // After transfer, the old admin's signature must NOT be accepted
+        // for subsequent admin operations.
+        let mut mgr = setup_4();
+        mgr.admin_address = "0x4f3319a747fd564136209cd5d9e7d1a1e4d142be".to_string();
+        let old_admin = mgr.admin_address.clone();
+        mgr.transfer_admin(&old_admin, NEW_ADMIN_ADDR.to_string())
+            .unwrap();
+
+        // Old admin tries to remove a validator — must fail.
+        let any_addr = mgr.active_validators()[0].address.clone();
+        let result = mgr.remove_validator(&old_admin, &any_addr);
+        assert!(result.is_err(), "old admin must lose powers after transfer");
+
+        // New admin succeeds for the same op.
+        let ok = mgr.remove_validator(NEW_ADMIN_ADDR, &any_addr);
+        assert!(ok.is_ok(), "new admin should be able to perform admin ops");
+    }
+
+    #[test]
+    fn test_transfer_admin_to_burn_address_disables_admin_forever() {
+        // Special pattern — transferring to 0x000…0 (no key derives this
+        // address) effectively retires the admin role permanently.
+        let mut mgr = setup();
+        mgr.admin_address = "0x4f3319a747fd564136209cd5d9e7d1a1e4d142be".to_string();
+        let admin = mgr.admin_address.clone();
+        let burn = "0x0000000000000000000000000000000000000000";
+        mgr.transfer_admin(&admin, burn.to_string()).unwrap();
+        assert_eq!(mgr.admin_address, burn);
+        // Old admin loses powers; burn address has no key so no one can
+        // pose as admin.
+        assert!(mgr.remove_validator(&admin, "anything").is_err());
     }
 }
