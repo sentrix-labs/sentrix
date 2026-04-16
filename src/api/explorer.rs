@@ -569,6 +569,26 @@ pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<Str
         if let Some(block) = bc.get_block(i) {
             for tx in &block.transactions {
                 let is_cb = tx.is_coinbase();
+                let data_str = &tx.data;
+                let is_evm = data_str.starts_with("EVM:");
+                let is_token = !is_evm
+                    && !data_str.is_empty()
+                    && crate::core::transaction::TokenOp::decode(data_str).is_some();
+                let is_create =
+                    is_evm && tx.to_address == crate::core::transaction::TOKEN_OP_ADDRESS;
+
+                let type_badge = if is_cb {
+                    r#"<span class="badge badge-blue">COINBASE</span>"#
+                } else if is_create {
+                    r#"<span class="badge badge-yellow">EVM CREATE</span>"#
+                } else if is_evm {
+                    r#"<span class="badge badge-yellow">EVM CALL</span>"#
+                } else if is_token {
+                    r#"<span class="badge badge-blue">TOKEN</span>"#
+                } else {
+                    r#"<span class="badge badge-blue">TRANSFER</span>"#
+                };
+
                 let from_disp = if tx.from_address == "COINBASE" {
                     "COINBASE".to_string()
                 } else {
@@ -579,6 +599,7 @@ pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<Str
                 let row = format!(
                     r#"<tr>
                     <td class="hash"><a href="/explorer/tx/{}">{}</a></td>
+                    <td>{}</td>
                     <td class="mono">{}</td>
                     <td class="mono">{}</td>
                     <td>{:.8} SRX</td>
@@ -588,6 +609,7 @@ pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<Str
                     </tr>"#,
                     html_escape(&tx.txid),
                     html_escape(&truncate(&tx.txid, 16)),
+                    type_badge,
                     from_disp,
                     to_disp,
                     srx(tx.amount),
@@ -611,7 +633,7 @@ pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<Str
     } else {
         format!(
             r#"<table>
-        <tr><th>TxID</th><th>From</th><th>To</th><th>Amount</th><th>Fee</th><th>Block</th><th>Time (UTC)</th></tr>
+        <tr><th>TxID</th><th>Type</th><th>From</th><th>To</th><th>Amount</th><th>Fee</th><th>Block</th><th>Time (UTC)</th></tr>
         {regular_rows}
         </table>"#
         )
@@ -619,7 +641,7 @@ pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<Str
 
     let coinbase_content = format!(
         r#"<table>
-    <tr><th>TxID</th><th>From</th><th>To (Validator)</th><th>Amount</th><th>Fee</th><th>Block</th><th>Time (UTC)</th></tr>
+    <tr><th>TxID</th><th>Type</th><th>From</th><th>To (Validator)</th><th>Amount</th><th>Fee</th><th>Block</th><th>Time (UTC)</th></tr>
     {coinbase_rows}
     </table>"#
     );
