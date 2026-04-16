@@ -1,83 +1,94 @@
-# Build artifacts
-/target/
+# ============================================================
+# Sentrix Chain — strict .gitignore
+# Backed up by .githooks/pre-commit which scans staged content.
+# ============================================================
 
-# Chain data & wallets — NEVER commit
+# ── Build artifacts ─────────────────────────────────────────
+/target/
+*.rlib
+*.rmeta
+
+# ── Chain data & DBs (NEVER commit) ─────────────────────────
 /data/
 *.db
 *.db-*
+/test-ledger/
 
-# Wallet files — contains private keys
-**/wallets/
-**/genesis_wallets*.json
-**/node_keys/
-
-# Keystore files
+# ── Wallets, keys, secrets (NEVER commit) ───────────────────
+# Keystore files (encrypted, but still sensitive)
 *.keystore
 *.keystore.json
 
-# Private keys / secrets
-*.pem
+# Raw key material
 *.key
+*.pem
+*.p12
+*.pfx
+*.enc
+*.credentials
+
+# Wallet JSON (broad — any file with "wallet" in name)
+*wallet*.json
+**/wallets/
+**/genesis_wallets*
+**/node_keys/
+
+# Anything literally named "private" or "secret" (no extension restriction)
+*private*
+*secret*
 *.secret
+
+# Env files (allow .env.example only)
+.env
+.env.*
 *.env
 *.env.*
-.env.local
-# Allow .env.example (safe template, no real values)
 !.env.example
 
-# Build helper scripts (local dev only)
+# ── Build helper / dev-only scripts ─────────────────────────
 *.bat
 blog.txt
 tlog.txt
 
-# OS files
+# ── OS files ─────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# IDE
+# ── IDE ──────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# Backup files
+# ── Backup, temp, logs ───────────────────────────────────────
 *.bak
 *.backup
 *.old
+*.tmp
+tmp/
+*.log
+log-*.txt
+logs/
 
-# Docker data / runtime
+# ── Docker runtime ───────────────────────────────────────────
 docker-compose.override.yml
 *.tar
 *.tar.gz
 
-# Logs
-*.log
-logs/
-
-# Crash dumps / core dumps (root-level only — avoids matching src/core/)
+# ── Crash dumps (root-level only — avoids matching src/core/) ─
 /core
 /core.*
 *.dmp
 
-# Rust-specific
-*.rlib
-*.rmeta
-
-# Duplicate env template (keep .env.example only)
+# ── Duplicate env template (keep .env.example only) ─────────
 env.example
 
-# Test artifacts
-/test-ledger/
-
-# Python bytecode (benchmark/ scripts)
+# ── Python bytecode (benchmark/ scripts) ────────────────────
 __pycache__/
 *.pyc
 *.pyo
 
-# Rust editor backup files
+# ── Rust editor backup files ────────────────────────────────
 **/*.rs.bk
-
-# Log files
-log-*.txt

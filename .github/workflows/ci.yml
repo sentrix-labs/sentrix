@@ -17,6 +17,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Run our pre-commit secret scanner against every staged-equivalent
+      # file in the working tree. Mirrors .githooks/pre-commit so a
+      # contributor who used `git commit --no-verify` can't sneak secrets
+      # past CI.
+      - name: Secret scan
+        run: |
+          set -e
+          [ -x .githooks/pre-commit ] || chmod +x .githooks/pre-commit
+          # Stage everything currently tracked so the hook sees it as "staged".
+          # Hook scans staged blobs; we stage tracked content into a fresh tree.
+          git add -A
+          bash .githooks/pre-commit
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
