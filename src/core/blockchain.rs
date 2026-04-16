@@ -26,6 +26,10 @@ pub const CHAIN_ID: u64           = 7119; // default; overridable via SENTRIX_CH
 /// u64::MAX = disabled (Pioneer-only). Override via VOYAGER_FORK_HEIGHT env var.
 const VOYAGER_DPOS_HEIGHT_DEFAULT: u64 = u64::MAX;
 
+/// Default Voyager EVM activation height.
+/// u64::MAX = disabled. Override via VOYAGER_EVM_HEIGHT env var.
+const VOYAGER_EVM_HEIGHT_DEFAULT: u64 = u64::MAX;
+
 /// Read Voyager fork height from env, default u64::MAX (mainnet safe).
 /// Testnet sets VOYAGER_FORK_HEIGHT=<height> in systemd service.
 pub fn get_voyager_fork_height() -> u64 {
@@ -33,6 +37,15 @@ pub fn get_voyager_fork_height() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(VOYAGER_DPOS_HEIGHT_DEFAULT)
+}
+
+/// Read EVM fork height from env, default u64::MAX (disabled).
+/// Testnet: set VOYAGER_EVM_HEIGHT=<height> in systemd service.
+pub fn get_evm_fork_height() -> u64 {
+    std::env::var("VOYAGER_EVM_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(VOYAGER_EVM_HEIGHT_DEFAULT)
 }
 
 /// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
@@ -164,6 +177,26 @@ impl Blockchain {
     /// Is the current chain past the Voyager fork?
     pub fn is_voyager_active(&self) -> bool {
         Self::is_voyager_height(self.height())
+    }
+
+    /// Is the given height at or after the EVM fork?
+    pub fn is_evm_height(height: u64) -> bool {
+        let fork = get_evm_fork_height();
+        fork != u64::MAX && height >= fork
+    }
+
+    /// Is the current chain past the EVM fork?
+    pub fn is_evm_active(&self) -> bool {
+        Self::is_evm_height(self.height())
+    }
+
+    /// Initialize EVM state at fork activation.
+    /// Called once when chain reaches VOYAGER_EVM_HEIGHT.
+    /// Migrates all account code_hash fields and initializes gas tracking.
+    pub fn activate_evm(&mut self) {
+        tracing::info!("Activating EVM at height {}", self.height());
+        let migrated = self.accounts.migrate_to_evm();
+        tracing::info!("EVM activated: {} accounts migrated, gas metering enabled", migrated);
     }
 
     /// Initialize Voyager state at fork activation.

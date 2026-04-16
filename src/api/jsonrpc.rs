@@ -75,7 +75,14 @@ pub async fn jsonrpc_handler(
             Ok(json!(to_hex(1_000_000_000)))
         }
         "eth_estimateGas" => {
-            Ok(json!(to_hex(21_000)))
+            // Gas estimation — 21000 for transfers, higher for contract calls
+            let call_obj = &params[0];
+            let data_hex = call_obj["data"].as_str().unwrap_or("0x");
+            if data_hex.len() > 2 {
+                Ok(json!(to_hex(100_000)))
+            } else {
+                Ok(json!(to_hex(21_000)))
+            }
         }
         "eth_getBalance" => {
             let address = params[0].as_str().unwrap_or("").to_lowercase();
@@ -197,7 +204,57 @@ pub async fn jsonrpc_handler(
             Err((-32601, "eth_sendRawTransaction not yet supported — use POST /transactions REST API"))
         }
         "eth_call" => {
-            Ok(json!("0x"))
+            // Execute a read-only EVM call without state mutation.
+            // params[0] = {from, to, data, value, gas}
+            if !state.read().await.is_evm_active() {
+                return Json(JsonRpcResponse::err(id, -32000, "EVM not active yet"));
+            }
+            let call_obj = &params[0];
+            let from_str = call_obj["from"].as_str().unwrap_or("0x0000000000000000000000000000000000000000");
+            let to_str = call_obj["to"].as_str().unwrap_or("");
+            let data_hex = call_obj["data"].as_str().unwrap_or("0x").trim_start_matches("0x");
+            let data_bytes = hex::decode(data_hex).unwrap_or_default();
+            let gas_limit = call_obj["gas"].as_str()
+                .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+                .unwrap_or(30_000_000);
+
+            let bc = state.read().await;
+            use crate::core::evm::database::parse_sentrix_address;
+
+            let from_addr = parse_sentrix_address(from_str)
+                .unwrap_or(alloy_primitives::Address::ZERO);
+            let to_addr = parse_sentrix_address(to_str);
+
+            let tx_kind = match to_addr {
+                Some(addr) => revm::primitives::TxKind::Call(addr),
+                None => revm::primitives::TxKind::Create,
+            };
+
+            let tx = revm::context::TxEnv::builder()
+                .caller(from_addr)
+                .kind(tx_kind)
+                .data(alloy_primitives::Bytes::from(data_bytes))
+                .gas_limit(gas_limit)
+                .gas_price(0)
+                .nonce(bc.accounts.get_nonce(from_str))
+                .chain_id(Some(bc.chain_id))
+                .build()
+                .unwrap_or_default();
+
+            let base_fee = crate::core::evm::gas::INITIAL_BASE_FEE;
+            drop(bc);
+
+            // Convert SentrixEvmDb to InMemoryDB for execution
+            let in_mem_db = revm::database::InMemoryDB::default();
+            match crate::core::evm::executor::execute_tx(in_mem_db, tx, base_fee) {
+                Ok(receipt) => {
+                    let output_hex = format!("0x{}", hex::encode(&receipt.output));
+                    Ok(json!(output_hex))
+                }
+                Err(_e) => {
+                    Err((-32000, "EVM execution failed"))
+                }
+            }
         }
         "eth_syncing" => {
             Ok(json!(false))
@@ -206,10 +263,35 @@ pub async fn jsonrpc_handler(
             Ok(json!([]))
         }
         "eth_getCode" => {
-            Ok(json!("0x"))
+            // Return contract bytecode for an address
+            let address = params[0].as_str().unwrap_or("").to_lowercase();
+            let bc = state.read().await;
+            if let Some(account) = bc.accounts.accounts.get(&address) {
+                if account.is_contract() {
+                    let code_hash_hex = hex::encode(account.code_hash);
+                    if let Some(code) = bc.accounts.get_contract_code(&code_hash_hex) {
+                        Ok(json!(format!("0x{}", hex::encode(code))))
+                    } else {
+                        Ok(json!("0x"))
+                    }
+                } else {
+                    Ok(json!("0x"))
+                }
+            } else {
+                Ok(json!("0x"))
+            }
         }
         "eth_getStorageAt" => {
-            Ok(json!("0x0000000000000000000000000000000000000000000000000000000000000000"))
+            // Return contract storage at slot
+            let address = params[0].as_str().unwrap_or("").to_lowercase();
+            let slot = params[1].as_str().unwrap_or("0x0");
+            let slot_hex = slot.trim_start_matches("0x");
+            let bc = state.read().await;
+            if let Some(value) = bc.accounts.get_contract_storage(&address, slot_hex) {
+                Ok(json!(format!("0x{}", hex::encode(value))))
+            } else {
+                Ok(json!("0x0000000000000000000000000000000000000000000000000000000000000000"))
+            }
         }
         _ => {
             Err((-32601, "Method not found"))

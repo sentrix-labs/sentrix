@@ -6,3 +6,4 @@
 pub mod database;
 pub mod executor;
 pub mod gas;
+pub mod precompiles;
