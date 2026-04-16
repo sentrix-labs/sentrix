@@ -12,14 +12,39 @@ pub struct Storage {
 
 impl Storage {
     pub fn open(path: &str) -> SentrixResult<Self> {
-        // Warn if the node operator has not confirmed disk encryption is active
-        if std::env::var("SENTRIX_ENCRYPTED_DISK").as_deref() != Ok("true") {
-            tracing::warn!(
-                "SECURITY WARNING: SENTRIX_ENCRYPTED_DISK is not set to 'true'. \
-                 The chain database at '{}' may be stored on an unencrypted volume. \
-                 Set SENTRIX_ENCRYPTED_DISK=true in your environment to suppress this warning.",
-                path
-            );
+        // A10: Disk encryption is enforced in production-like envs by default.
+        // The operator MUST set SENTRIX_ENCRYPTED_DISK=true to confirm the
+        // mount holding `path` is encrypted (LUKS/dm-crypt/BitLocker/FDE).
+        //
+        // Escape hatch for test/dev runs: SENTRIX_ALLOW_UNENCRYPTED_DISK=true
+        // downgrades the failure to a logged warning. This flag should never
+        // be set on the validator VPS — it is intended for laptops, CI
+        // runners, and ephemeral integration tests only.
+        let encrypted = std::env::var("SENTRIX_ENCRYPTED_DISK").as_deref() == Ok("true");
+        let dev_override =
+            std::env::var("SENTRIX_ALLOW_UNENCRYPTED_DISK").as_deref() == Ok("true");
+        if !encrypted {
+            if dev_override {
+                tracing::warn!(
+                    "SECURITY WARNING: opening chain DB at '{}' without disk \
+                     encryption confirmation (SENTRIX_ALLOW_UNENCRYPTED_DISK=true). \
+                     Do NOT use this flag on validator nodes.",
+                    path
+                );
+            } else {
+                tracing::error!(
+                    "REFUSING TO OPEN chain DB at '{}': SENTRIX_ENCRYPTED_DISK is not 'true'. \
+                     Confirm the underlying volume is encrypted (LUKS/dm-crypt/BitLocker/FDE) \
+                     and re-launch with SENTRIX_ENCRYPTED_DISK=true. \
+                     For ephemeral test runs only, set SENTRIX_ALLOW_UNENCRYPTED_DISK=true.",
+                    path
+                );
+                return Err(SentrixError::StorageError(
+                    "disk encryption not confirmed: set SENTRIX_ENCRYPTED_DISK=true \
+                     (or SENTRIX_ALLOW_UNENCRYPTED_DISK=true for dev/test)"
+                        .to_string(),
+                ));
+            }
         }
 
         let db = sled::open(path).map_err(|e| SentrixError::StorageError(e.to_string()))?;
@@ -162,6 +187,19 @@ impl Storage {
             if let Err(e) = bc.init_trie(&self.db) {
                 tracing::warn!("trie init failed after blockchain load: {}", e);
             }
+            // A5: bind storage handles for txid_index lookups, backfill once.
+            if let Err(e) = bc.init_storage_handle(&self.db) {
+                tracing::warn!("txid_index init failed: {}", e);
+            } else {
+                match bc.backfill_txid_index(&self.db) {
+                    Ok(0) => {} // already populated
+                    Ok(n) => tracing::info!(
+                        "txid_index: backfilled {} tx entries from sled blocks",
+                        n
+                    ),
+                    Err(e) => tracing::warn!("txid_index backfill failed: {}", e),
+                }
+            }
             return Ok(Some(bc));
         }
 
@@ -178,6 +216,19 @@ impl Storage {
             // Restore the state trie from sled (migration from legacy storage format)
             if let Err(e) = bc.init_trie(&self.db) {
                 tracing::warn!("trie init failed after blockchain migration: {}", e);
+            }
+            // A5: bind storage handles + backfill txid_index after legacy migration.
+            if let Err(e) = bc.init_storage_handle(&self.db) {
+                tracing::warn!("txid_index init failed: {}", e);
+            } else {
+                match bc.backfill_txid_index(&self.db) {
+                    Ok(0) => {}
+                    Ok(n) => tracing::info!(
+                        "txid_index: backfilled {} tx entries from sled blocks",
+                        n
+                    ),
+                    Err(e) => tracing::warn!("txid_index backfill failed: {}", e),
+                }
             }
             return Ok(Some(bc));
         }

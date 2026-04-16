@@ -1,0 +1,11 @@
+# Cargo-only env overrides. Affects `cargo build`, `cargo test`, `cargo run`
+# invocations on developer machines and CI runners — does NOT propagate to
+# the deployed `sentrix` binary on the VPS, which receives env vars from
+# its systemd unit file.
+#
+# A10: SENTRIX_ALLOW_UNENCRYPTED_DISK=true lets the unit + integration tests
+# open temp sled DBs without setting SENTRIX_ENCRYPTED_DISK=true. Production
+# validators must NOT set this flag — Storage::open() refuses to start
+# without explicit disk-encryption confirmation otherwise.
+[env]
+SENTRIX_ALLOW_UNENCRYPTED_DISK = "true"

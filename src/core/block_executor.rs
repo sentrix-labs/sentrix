@@ -297,6 +297,12 @@ impl Blockchain {
         // Prune expired transactions after each block to keep mempool bounded
         self.prune_mempool();
 
+        // A5: index every tx in this block by txid → block_index for O(1)
+        // lookups beyond the in-memory chain window.
+        for tx in &block.transactions {
+            self.record_tx_in_index(&tx.txid, block.index);
+        }
+
         // Append block to chain
         self.chain.push(block);
 
@@ -441,6 +447,11 @@ impl Blockchain {
                         .contract_address
                         .map(|a| format!("0x{}", hex::encode(a.as_slice()))),
                 );
+                if !receipt.success {
+                    // A2: reverted EVM tx — record so eth_getTransactionReceipt
+                    // returns status=0x0 instead of the default 0x1.
+                    self.accounts.mark_evm_tx_failed(&tx.txid);
+                }
                 // Store contract RUNTIME code (not init code) if CREATE succeeded.
                 // receipt.output contains the runtime bytecode returned by the constructor.
                 if let Some(contract_addr) = receipt.contract_address
@@ -457,6 +468,9 @@ impl Blockchain {
             }
             Err(e) => {
                 tracing::warn!("EVM tx {} failed: {}", &tx.txid[..16.min(tx.txid.len())], e);
+                // A2: hard execution error — also mark as failed so the
+                // tx receipt reports status=0x0.
+                self.accounts.mark_evm_tx_failed(&tx.txid);
             }
         }
         Ok(())

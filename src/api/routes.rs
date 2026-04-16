@@ -112,54 +112,110 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
 pub type IpRateLimiter = Arc<Mutex<HashMap<String, (u32, Instant)>>>;
 const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 const RATE_LIMIT_MAX_REQUESTS: u32 = 60;
+/// A7: tighter per-IP cap applied only to write/expensive endpoints
+/// (POST /transactions, /tokens/deploy|transfer|burn, /rpc). Defends
+/// against single-IP spam of state-mutating requests in addition to the
+/// global 60 req/min ceiling. Read endpoints stay at the global limit.
+const WRITE_RATE_LIMIT_MAX_REQUESTS: u32 = 10;
 
-async fn ip_rate_limit_middleware(
-    request: axum::http::Request<axum::body::Body>,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    // Extract client IP from proxy headers (set by nginx) or fall back to "unknown"
-    let ip = request
+/// A7: distinct limiter newtypes so write+read counters do not alias each
+/// other. Both registered as separate `Extension<T>` entries on requests.
+#[derive(Clone)]
+pub struct GlobalIpLimiter(pub IpRateLimiter);
+#[derive(Clone)]
+pub struct WriteIpLimiter(pub IpRateLimiter);
+
+fn extract_client_ip(request: &axum::http::Request<axum::body::Body>) -> String {
+    request
         .headers()
         .get("x-forwarded-for")
         .or_else(|| request.headers().get("x-real-ip"))
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.split(',').next())
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+        .unwrap_or_else(|| "unknown".to_string())
+}
 
-    let allowed = if let Some(limiter) = request.extensions().get::<IpRateLimiter>().cloned() {
-        let mut map = limiter.lock().await; // async lock — yields to executor instead of blocking the thread
-
-        // Evict stale entries to keep the rate-limiter map from growing without bound
-        if map.len() > 10_000 {
-            map.retain(|_, (_, ts)| ts.elapsed().as_secs() < RATE_LIMIT_WINDOW_SECS);
-        }
-
-        let now = Instant::now();
-        let entry = map.entry(ip).or_insert((0, now));
-        if entry.1.elapsed().as_secs() >= RATE_LIMIT_WINDOW_SECS {
-            *entry = (1, now);
-            true
-        } else {
-            entry.0 += 1;
-            entry.0 <= RATE_LIMIT_MAX_REQUESTS
-        }
+async fn check_rate_limit(
+    limiter: IpRateLimiter,
+    ip: String,
+    max_requests: u32,
+    window_secs: u64,
+) -> bool {
+    let mut map = limiter.lock().await;
+    if map.len() > 10_000 {
+        map.retain(|_, (_, ts)| ts.elapsed().as_secs() < window_secs);
+    }
+    let now = Instant::now();
+    let entry = map.entry(ip).or_insert((0, now));
+    if entry.1.elapsed().as_secs() >= window_secs {
+        *entry = (1, now);
+        true
     } else {
-        true // limiter not configured — allow
-    };
+        entry.0 += 1;
+        entry.0 <= max_requests
+    }
+}
 
+fn rate_limit_response(max: u32, window: u64) -> axum::response::Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(serde_json::json!({
+            "error": "rate limit exceeded",
+            "limit": max,
+            "window_secs": window,
+        })),
+    )
+        .into_response()
+}
+
+async fn ip_rate_limit_middleware(
+    request: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let ip = extract_client_ip(&request);
+    let allowed = if let Some(limiter) = request.extensions().get::<GlobalIpLimiter>().cloned() {
+        check_rate_limit(
+            limiter.0,
+            ip,
+            RATE_LIMIT_MAX_REQUESTS,
+            RATE_LIMIT_WINDOW_SECS,
+        )
+        .await
+    } else {
+        true
+    };
     if allowed {
         next.run(request).await
     } else {
-        (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({
-                "error": "rate limit exceeded",
-                "limit": RATE_LIMIT_MAX_REQUESTS,
-                "window_secs": RATE_LIMIT_WINDOW_SECS,
-            })),
+        rate_limit_response(RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECS)
+    }
+}
+
+/// A7: stricter write-endpoint rate limit (10 req/min per IP). Layered on
+/// top of the global 60/min limit, so an attacker hitting POST endpoints
+/// burns the write quota first while read traffic from the same IP keeps
+/// flowing. Returns 429 with the same response shape as the global limit.
+async fn write_rate_limit_middleware(
+    request: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let ip = extract_client_ip(&request);
+    let allowed = if let Some(limiter) = request.extensions().get::<WriteIpLimiter>().cloned() {
+        check_rate_limit(
+            limiter.0,
+            ip,
+            WRITE_RATE_LIMIT_MAX_REQUESTS,
+            RATE_LIMIT_WINDOW_SECS,
         )
-            .into_response()
+        .await
+    } else {
+        true
+    };
+    if allowed {
+        next.run(request).await
+    } else {
+        rate_limit_response(WRITE_RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECS)
     }
 }
 
@@ -216,8 +272,23 @@ pub fn create_router(state: SharedState) -> Router {
         }
     };
 
-    // Per-IP rate limiter shared across all requests via tower Extension
-    let rate_limiter: IpRateLimiter = Arc::new(Mutex::new(HashMap::new()));
+    // A6/A7: separate counters for global vs write paths so an attacker
+    // hitting writes burns the write quota first without starving read
+    // traffic from the same IP.
+    let global_limiter = GlobalIpLimiter(Arc::new(Mutex::new(HashMap::new())));
+    let write_limiter = WriteIpLimiter(Arc::new(Mutex::new(HashMap::new())));
+
+    // A7: Write endpoints carry a stricter rate limit (10 req/min per IP).
+    // Built as a sub-router so the write middleware applies only to these
+    // routes; the merged outer router still enforces the global 60/min cap.
+    let write_router: Router<SharedState> = Router::new()
+        .route("/transactions", post(send_transaction))
+        .route("/tokens/deploy", post(deploy_token))
+        .route("/tokens/{contract}/transfer", post(token_transfer))
+        .route("/tokens/{contract}/burn", post(token_burn))
+        .route("/rpc", post(rpc_dispatcher))
+        .layer(axum::middleware::from_fn(write_rate_limit_middleware))
+        .layer(axum::Extension(write_limiter));
 
     // Single router — auth is enforced via the ApiKey extractor embedded
     // in each protected handler's parameter list, not via route layers.
@@ -237,10 +308,8 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/blocks", get(get_blocks))
         .route("/blocks/{height}", get(get_block))
         .route("/wallets/{address}", get(get_wallet_info))
-        .route(
-            "/transactions",
-            get(list_transactions).post(send_transaction),
-        )
+        // GET /transactions stays here; POST /transactions is on write_router.
+        .route("/transactions", get(list_transactions))
         .route("/transactions/{txid}", get(get_transaction))
         // ── Token endpoints ──────────────────────────────────────
         .route("/tokens", get(list_tokens))
@@ -248,9 +317,6 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/tokens/{contract}/balance/{addr}", get(get_token_balance))
         .route("/tokens/{contract}/holders", get(get_token_holders_list))
         .route("/tokens/{contract}/trades", get(get_token_trades_list))
-        .route("/tokens/deploy", post(deploy_token))
-        .route("/tokens/{contract}/transfer", post(token_transfer))
-        .route("/tokens/{contract}/burn", post(token_burn))
         // ── Rich list ────────────────────────────────────────────
         .route("/richlist", get(get_richlist))
         // ── Address history ──────────────────────────────────────
@@ -265,21 +331,21 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/staking/unbonding/{address}", get(staking_unbonding))
         .route("/epoch/current", get(epoch_current))
         .route("/epoch/history", get(epoch_history))
-        // ── RPC ──────────────────────────────────────────────────
-        .route("/rpc", post(rpc_dispatcher))
         // ── Admin ────────────────────────────────────────────────
         .route("/admin/log", get(get_admin_log))
         // ── Stats ────────────────────────────────────────────────
         .route("/stats/daily", get(explorer::stats_daily))
         // ── Explorer ─────────────────────────────────────────────
         .nest("/explorer", explorer_router(state.clone()))
+        // ── Write endpoints (stricter rate limit) ────────────────
+        .merge(write_router)
         .layer(cors)
         // Global HTTP concurrency limit prevents CPU saturation from concurrent heavy requests (e.g. /chain/validate).
         .layer(ConcurrencyLimitLayer::new(500))
         // Per-IP rate limit (60 req/min, defense-in-depth behind nginx)
         // Layer order: Extension (outer) → rate_limit middleware → concurrency → cors → handler
         .layer(axum::middleware::from_fn(ip_rate_limit_middleware))
-        .layer(axum::Extension(rate_limiter))
+        .layer(axum::Extension(global_limiter))
         // Reject request bodies larger than 1 MiB — prevents memory exhaustion from unbounded payloads.
         // Single transactions and JSON-RPC batches are well under this limit; legitimate clients
         // are never affected.  Without this, an attacker can stream arbitrary bytes until the node OOMs.
@@ -483,18 +549,12 @@ async fn get_transaction(
     Path(txid): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let bc = state.read().await;
-    for block in bc.chain.iter() {
-        for tx in block.transactions.iter() {
-            if tx.txid == txid {
-                return Ok(Json(serde_json::json!({
-                    "transaction": tx,
-                    "block_index": block.index,
-                    "block_hash": block.hash,
-                })));
-            }
-        }
+    // A5: delegate to Blockchain::get_transaction so lookups fall through to
+    // the sled txid_index for blocks evicted from the in-memory window.
+    match bc.get_transaction(&txid) {
+        Some(value) => Ok(Json(value)),
+        None => Err(StatusCode::NOT_FOUND),
     }
-    Err(StatusCode::NOT_FOUND)
 }
 
 async fn get_mempool(State(state): State<SharedState>) -> Json<serde_json::Value> {

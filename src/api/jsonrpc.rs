@@ -181,11 +181,20 @@ pub async fn jsonrpc_handler(
             match bc.get_transaction(&txid) {
                 Some(tx_data) => {
                     let block_index = tx_data["block_index"].as_u64().unwrap_or(0);
+                    // A2: failed EVM tx → status=0x0 (reverted), success → 0x1.
+                    // Native (non-EVM) txs that reach a block always succeeded — they are
+                    // validated atomically in Pass 1 and only committed if Pass 2 succeeds,
+                    // so they are never recorded as failed.
+                    let status = if bc.accounts.is_evm_tx_failed(&txid) {
+                        "0x0"
+                    } else {
+                        "0x1"
+                    };
                     Ok(json!({
                         "transactionHash": format!("0x{}", txid),
                         "blockNumber": to_hex(block_index),
                         "blockHash": tx_data["block_hash"],
-                        "status": "0x1",
+                        "status": status,
                         "gasUsed": to_hex(21_000),
                         "cumulativeGasUsed": to_hex(21_000),
                         "logs": [],

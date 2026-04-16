@@ -337,54 +337,15 @@ impl BftEngine {
         BftAction::Wait
     }
 
-    /// Handle receiving a prevote
+    /// Handle receiving a prevote with assumed unit stake.
+    ///
+    /// **A4 / test+legacy use only.** Production code MUST call
+    /// [`Self::on_prevote_weighted`] with the actual validator stake from
+    /// the StakeRegistry. Equal-weight unit stake works for tests with N
+    /// validators all assumed equal but is incorrect for any real DPoS
+    /// deployment with weighted stake.
     pub fn on_prevote(&mut self, prevote: &Prevote) -> BftAction {
-        if prevote.height != self.state.height || prevote.round != self.state.round {
-            return BftAction::Wait;
-        }
-
-        // Prevent duplicate prevotes from same validator
-        if self.state.prevotes.contains_key(&prevote.validator) {
-            return BftAction::Wait;
-        }
-
-        // Look up validator's stake
-        let stake = 1; // default; caller should provide actual stake
-        self.state.prevotes.insert(
-            prevote.validator.clone(),
-            (prevote.block_hash.clone(), stake),
-        );
-        self.collector
-            .add_prevote(prevote.block_hash.clone(), stake);
-
-        // Check for supermajority
-        if let Some(hash) = self
-            .collector
-            .prevote_supermajority(self.state.total_active_stake)
-            && self.state.phase == BftPhase::Prevote
-        {
-            self.state.phase = BftPhase::Precommit;
-            self.phase_start = Instant::now();
-
-            // Lock on hash if non-nil
-            if let Some(ref h) = hash {
-                self.state.locked_hash = Some(h.clone());
-                self.state.locked_round = Some(self.state.round);
-            }
-
-            if !self.state.our_precommit_cast {
-                self.state.our_precommit_cast = true;
-                return BftAction::BroadcastPrecommit(Precommit {
-                    height: self.state.height,
-                    round: self.state.round,
-                    block_hash: hash,
-                    validator: self.our_address.clone(),
-                    signature: vec![],
-                });
-            }
-        }
-
-        BftAction::Wait
+        self.on_prevote_weighted(prevote, 1)
     }
 
     /// Handle receiving a prevote with known stake weight

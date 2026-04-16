@@ -98,16 +98,19 @@ impl Blockchain {
             });
         }
 
-        // Insert sorted by fee descending (highest fee = front of queue)
+        // Insert sorted by fee descending (highest fee = front of queue).
+        // A3: position lookup via partition_point — O(log n) comparisons
+        // instead of the previous O(n) linear scan. The trailing memmove
+        // from VecDeque::insert is a single hardware-accelerated memcpy
+        // and stays well below comparison cost at MAX_MEMPOOL_SIZE=10_000.
+        // We deliberately keep VecDeque (not BinaryHeap) because callers
+        // depend on ordered iteration: block_producer.create_block takes
+        // the first N by fee, explorer/API list mempool in fee order, and
+        // tests index `mempool[0]`. BinaryHeap iteration is unordered and
+        // would force a sort on every read — worse trade for read-heavy
+        // access patterns.
         // TODO: RBF (Replace-By-Fee) not yet implemented.
-        // TODO: This linear scan + VecDeque::insert is O(n) per insertion.
-        // At MAX_MEMPOOL_SIZE=10,000 this is ~50M ops/min under heavy load.
-        // Future: replace with BinaryHeap<Transaction> (impl Ord by fee desc) for O(log n).
-        let pos = self
-            .mempool
-            .iter()
-            .position(|existing| existing.fee < tx.fee)
-            .unwrap_or(self.mempool.len());
+        let pos = self.mempool.partition_point(|existing| existing.fee >= tx.fee);
         self.mempool.insert(pos, tx);
         Ok(())
     }

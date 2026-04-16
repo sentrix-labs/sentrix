@@ -78,58 +78,19 @@ fn addr_with_label(addr: &str) -> String {
     }
 }
 
-/// Format unix timestamp as "DD Mon YYYY, HH:MM WIB" (UTC+7)
+/// A8/A9: Format a unix timestamp as `DD Mon YYYY, HH:MM UTC` using chrono.
+/// Replaces the hand-rolled Gregorian conversion with a battle-tested
+/// calendar implementation, and switches the displayed zone from local
+/// WIB (UTC+7) to UTC so explorer pages render consistently no matter
+/// where the operator or visitor is located.
 fn fmt_ts(unix: u64) -> String {
-    const WIB: u64 = 7 * 3600;
-    let t = unix + WIB;
-    let secs_in_day = t % 86400;
-    let days_total = t / 86400; // days since 1970-01-01
-
-    let hh = secs_in_day / 3600;
-    let mm = (secs_in_day % 3600) / 60;
-
-    // Calendar calculation (Gregorian)
-    let mut y = 1970u64;
-    let mut d = days_total;
-    loop {
-        let dy = if (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400) {
-            366
-        } else {
-            365
-        };
-        if d < dy {
-            break;
-        }
-        d -= dy;
-        y += 1;
+    use chrono::{DateTime, Utc};
+    match DateTime::<Utc>::from_timestamp(unix as i64, 0) {
+        Some(dt) => dt.format("%d %b %Y, %H:%M UTC").to_string(),
+        // Pre-1970 / overflow falls back to the raw seconds count so we
+        // never poison a page render with a panic from format()/unwrap.
+        None => format!("{unix} (invalid ts)"),
     }
-    let leap = (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400);
-    let days_in_month = [
-        31u64,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut m = 0usize;
-    for &dim in &days_in_month {
-        if d < dim {
-            break;
-        }
-        d -= dim;
-        m += 1;
-    }
-    let month = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ][m];
-    format!("{} {} {}, {:02}:{:02} WIB", d + 1, month, y, hh, mm)
 }
 
 const CSS: &str = r#"
@@ -175,46 +136,15 @@ canvas { display: block; max-width: 100%; }
 @media (max-width: 700px) { .charts { grid-template-columns: 1fr; } }
 "#;
 
-/// Format day_key (days since 1970-01-01) as "dd/mm"
+/// A8: Format `day_key` (days since 1970-01-01) as `dd/mm` via chrono.
+/// Replaces the hand-rolled Gregorian/leap-year math.
 fn fmt_day(day_key: u64) -> String {
-    let mut d = day_key;
-    let mut y = 1970u64;
-    loop {
-        let dy = if (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400) {
-            366
-        } else {
-            365
-        };
-        if d < dy {
-            break;
-        }
-        d -= dy;
-        y += 1;
+    use chrono::{DateTime, Utc};
+    let secs = day_key.saturating_mul(86400) as i64;
+    match DateTime::<Utc>::from_timestamp(secs, 0) {
+        Some(dt) => dt.format("%d/%m").to_string(),
+        None => format!("{day_key}"),
     }
-    let leap = (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400);
-    let dims = [
-        31u64,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut m = 0usize;
-    for &dim in &dims {
-        if d < dim {
-            break;
-        }
-        d -= dim;
-        m += 1;
-    }
-    format!("{:02}/{:02}", d + 1, m + 1)
 }
 
 const CHART_SECTION: &str = r#"
@@ -516,11 +446,12 @@ pub async fn stats_daily(State(state): State<SharedState>) -> Json<Vec<DailyStat
 
     let bc = state.read().await;
     let height = bc.height();
-    const WIB: u64 = 7 * 3600;
-
+    // A9: bucket by UTC days so the daily stats line up with the explorer's
+    // UTC clock (previously used WIB / UTC+7 which off-by-one'd the chart
+    // around 17:00 UTC).
     let today_day = bc
         .get_block(height)
-        .map(|b| (b.timestamp + WIB) / 86400)
+        .map(|b| b.timestamp / 86400)
         .unwrap_or(0);
 
     let mut map: std::collections::HashMap<u64, (u64, u64)> = std::collections::HashMap::new();
@@ -529,7 +460,7 @@ pub async fn stats_daily(State(state): State<SharedState>) -> Json<Vec<DailyStat
         let earliest = today_day.saturating_sub(13);
         for i in 0..=height {
             if let Some(block) = bc.get_block(i) {
-                let day = (block.timestamp + WIB) / 86400;
+                let day = block.timestamp / 86400;
                 if day >= earliest && day <= today_day {
                     let e = map.entry(day).or_insert((0, 0));
                     e.0 += 1;
@@ -561,7 +492,7 @@ pub async fn stats_daily(State(state): State<SharedState>) -> Json<Vec<DailyStat
         use std::time::{SystemTime, UNIX_EPOCH};
         let now_day = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| (d.as_secs() + WIB) / 86400)
+            .map(|d| d.as_secs() / 86400)
             .unwrap_or(0);
         result = (0..14u64)
             .map(|i| DailyStat {
@@ -680,7 +611,7 @@ pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<Str
     } else {
         format!(
             r#"<table>
-        <tr><th>TxID</th><th>From</th><th>To</th><th>Amount</th><th>Fee</th><th>Block</th><th>Time (WIB)</th></tr>
+        <tr><th>TxID</th><th>From</th><th>To</th><th>Amount</th><th>Fee</th><th>Block</th><th>Time (UTC)</th></tr>
         {regular_rows}
         </table>"#
         )
@@ -688,7 +619,7 @@ pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<Str
 
     let coinbase_content = format!(
         r#"<table>
-    <tr><th>TxID</th><th>From</th><th>To (Validator)</th><th>Amount</th><th>Fee</th><th>Block</th><th>Time (WIB)</th></tr>
+    <tr><th>TxID</th><th>From</th><th>To (Validator)</th><th>Amount</th><th>Fee</th><th>Block</th><th>Time (UTC)</th></tr>
     {coinbase_rows}
     </table>"#
     );
@@ -870,6 +801,8 @@ pub async fn explorer_tx(
             let amount = tx["amount"].as_u64().unwrap_or(0);
             let fee = tx["fee"].as_u64().unwrap_or(0);
             let blk = tx_data["block_index"].as_u64().unwrap_or(0);
+            let data_str = tx["data"].as_str().unwrap_or("");
+            let txid_str = tx["txid"].as_str().unwrap_or("");
 
             let from_link = if tx_from == "COINBASE" {
                 "COINBASE".to_string()
@@ -881,13 +814,80 @@ pub async fn explorer_tx(
                 )
             };
 
+            // B1: classify tx and surface EVM-specific details. EVM txs are
+            // tagged "EVM:gas:hex_data" in the data field by the
+            // eth_sendRawTransaction relayer. Token ops use TokenOp::is_token_op.
+            let is_evm = data_str.starts_with("EVM:");
+            let is_token = !is_evm
+                && !data_str.is_empty()
+                && crate::core::transaction::TokenOp::decode(data_str).is_some();
+            let is_coinbase = tx_from == "COINBASE";
+            let is_create = is_evm && tx_to == crate::core::transaction::TOKEN_OP_ADDRESS;
+
+            let (type_badge_class, type_label) = if is_coinbase {
+                ("badge-blue", "COINBASE")
+            } else if is_create {
+                ("badge-yellow", "EVM CREATE")
+            } else if is_evm {
+                ("badge-yellow", "EVM CALL")
+            } else if is_token {
+                ("badge-blue", "TOKEN OP")
+            } else {
+                ("badge-blue", "NATIVE TRANSFER")
+            };
+
+            // B1: status reflects EVM revert state. failed_evm_txs is populated
+            // by execute_evm_tx_in_block when revm reports !receipt.success.
+            let (status_badge_class, status_label) = if is_evm
+                && bc.accounts.is_evm_tx_failed(txid_str)
+            {
+                ("badge", "REVERTED")
+            } else {
+                ("badge-green", "CONFIRMED")
+            };
+            let status_style = if status_label == "REVERTED" {
+                r#"style="background:#4a1c1c;color:#f87171""#
+            } else {
+                ""
+            };
+
+            // EVM-specific row block: gas_limit + raw calldata preview. For
+            // CREATE we hint that the receipt holds the deployed address.
+            let evm_rows = if is_evm {
+                let parts: Vec<&str> = data_str.splitn(3, ':').collect();
+                let gas_limit = parts.get(1).copied().unwrap_or("?");
+                let calldata = parts.get(2).copied().unwrap_or("");
+                let calldata_preview = if calldata.len() > 200 {
+                    format!("{}…", &calldata[..200])
+                } else {
+                    calldata.to_string()
+                };
+                let create_hint = if is_create {
+                    "<tr><td>Contract</td><td><span class=\"badge badge-yellow\">CREATE</span> \
+                     — call <code>eth_getTransactionReceipt</code> for the deployed address</td></tr>".to_string()
+                } else {
+                    String::new()
+                };
+                format!(
+                    r#"<tr><td>Gas limit</td><td class="mono">{}</td></tr>
+                       <tr><td>Calldata</td><td class="hash" style="word-break:break-all">{}</td></tr>
+                       {}"#,
+                    html_escape(gas_limit),
+                    html_escape(&calldata_preview),
+                    create_hint,
+                )
+            } else {
+                String::new()
+            };
+
             let body = format!(
                 r#"
             {}
             <h2>Transaction</h2>
             <table class="detail-table">
             <tr><td>TxID</td><td class="hash">{}</td></tr>
-            <tr><td>Status</td><td><span class="badge badge-green">CONFIRMED</span></td></tr>
+            <tr><td>Type</td><td><span class="badge {}">{}</span></td></tr>
+            <tr><td>Status</td><td><span class="badge {}" {}>{}</span></td></tr>
             <tr><td>From</td><td class="mono">{}</td></tr>
             <tr><td>To</td><td class="mono"><a href="/explorer/address/{}">{}</a></td></tr>
             <tr><td>Amount</td><td>{:.8} SRX <span style="color:#6b7280">({} sentri)</span></td></tr>
@@ -895,9 +895,15 @@ pub async fn explorer_tx(
             <tr><td>Nonce</td><td>{}</td></tr>
             <tr><td>Block</td><td><a href="/explorer/block/{}">#{}</a></td></tr>
             <tr><td>Timestamp</td><td>{}</td></tr>
+            {}
             </table>"#,
                 nav_tabs("transactions"),
-                html_escape(tx["txid"].as_str().unwrap_or("")),
+                html_escape(txid_str),
+                type_badge_class,
+                type_label,
+                status_badge_class,
+                status_style,
+                status_label,
                 from_link,
                 html_escape(tx_to),
                 html_escape(tx_to),
@@ -908,6 +914,7 @@ pub async fn explorer_tx(
                 blk,
                 blk,
                 html_escape(&fmt_ts(tx["timestamp"].as_u64().unwrap_or(0))),
+                evm_rows,
             );
             page("Transaction", &body)
         }
@@ -1377,17 +1384,18 @@ mod tests {
 
     #[test]
     fn test_fmt_ts() {
-        // 2026-04-12 11:05:00 UTC = 2026-04-12 18:05:00 WIB
-        // Unix: 1775991900 (from actual chain block timestamps)
+        // A9: explorer now displays UTC, not WIB.
+        // 2026-04-12 11:05:00 UTC, Unix: 1775991900.
         let s = fmt_ts(1775991900);
-        assert!(s.contains("WIB"), "should contain WIB: {s}");
+        assert!(s.contains("UTC"), "should contain UTC: {s}");
         assert!(s.contains("Apr"), "should contain Apr: {s}");
         assert!(s.contains("2026"), "should contain 2026: {s}");
         assert!(s.contains("12"), "should contain day 12: {s}");
-        assert!(s.contains("18:05"), "should contain 18:05 WIB: {s}");
-        // epoch 0 = 1 Jan 1970 00:00 UTC = 07:00 WIB
+        assert!(s.contains("11:05"), "should contain 11:05 UTC: {s}");
+        // epoch 0 = 1 Jan 1970 00:00 UTC
         let epoch = fmt_ts(0);
-        assert!(epoch.contains("WIB"), "epoch should contain WIB: {epoch}");
+        assert!(epoch.contains("UTC"), "epoch should contain UTC: {epoch}");
         assert!(epoch.contains("1970"), "epoch should contain 1970: {epoch}");
+        assert!(epoch.contains("00:00"), "epoch should be 00:00 UTC: {epoch}");
     }
 }

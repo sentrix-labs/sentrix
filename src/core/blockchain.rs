@@ -109,6 +109,19 @@ pub struct Blockchain {
     #[serde(skip)]
     pub(crate) state_trie: Option<SentrixTrie>,
 
+    /// A5: sled tree mapping txid (hex string) → block_index (u64 LE bytes).
+    /// Populated by `init_storage_handle()` at startup. Allows O(1) tx lookups
+    /// for blocks that have been evicted from the in-memory chain window
+    /// (CHAIN_WINDOW_SIZE = 1000). Without this index, `get_transaction()`
+    /// only sees the last ~1000 blocks and returns None for older txs.
+    #[serde(skip)]
+    pub(crate) txid_index: Option<sled::Tree>,
+
+    /// A5: sled DB handle so `get_transaction()` can `load_block` on a cache
+    /// miss. Set by `init_storage_handle()`. Cheap clone — sled::Db is Arc.
+    #[serde(skip)]
+    pub(crate) storage_db: Option<sled::Db>,
+
     // ── Voyager DPoS state (Phase 2a) ────────────────────
     /// Staking registry for DPoS validator management
     #[serde(default)]
@@ -132,6 +145,8 @@ impl Blockchain {
             total_minted: 0,
             chain_id: get_chain_id(),
             state_trie: None,
+            txid_index: None,
+            storage_db: None,
             stake_registry: crate::core::staking::StakeRegistry::new(),
             epoch_manager: crate::core::epoch::EpochManager::new(),
             slashing: crate::core::slashing::SlashingEngine::new(),
@@ -141,15 +156,111 @@ impl Blockchain {
     }
 
     fn initialize_genesis(&mut self) {
-        // Apply genesis premine allocations
+        // A1: Apply genesis premine allocations.
+        // credit() can only fail on u64 overflow; with 63M SRX premine vs u64::MAX
+        // (~184B SRX) there is no realistic overflow path. A failure here means
+        // the program is fundamentally broken and the chain cannot start, so we
+        // log a fatal error and abort cleanly via process::exit instead of silently
+        // discarding the result.
         for (address, amount) in GENESIS_ALLOCATIONS {
-            let _ = self.accounts.credit(address, *amount);
+            if let Err(e) = self.accounts.credit(address, *amount) {
+                tracing::error!(
+                    "FATAL: genesis premine credit failed for {} ({}): {}",
+                    address,
+                    amount,
+                    e
+                );
+                std::process::exit(1);
+            }
         }
         self.total_minted = TOTAL_PREMINE;
 
         // Create genesis block
         let genesis = Block::genesis();
         self.chain.push(genesis);
+    }
+
+    /// A5: Bind sled handles so `get_transaction()` can resolve txids that
+    /// fall outside the in-memory chain window. Opens the `txid_index`
+    /// named tree (txid hex bytes → block_index u64 LE) and stores a clone
+    /// of the Db handle (cheap — sled::Db is Arc internally) for on-demand
+    /// block loads.
+    pub fn init_storage_handle(&mut self, db: &sled::Db) -> SentrixResult<()> {
+        let tree = db
+            .open_tree("txid_index")
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        self.txid_index = Some(tree);
+        self.storage_db = Some(db.clone());
+        Ok(())
+    }
+
+    /// A5: Record a tx → block_index mapping. Called by `add_block` for each
+    /// tx in a freshly committed block. No-op if `init_storage_handle` was
+    /// never called (e.g. unit tests with no sled backing).
+    pub(crate) fn record_tx_in_index(&self, txid: &str, block_index: u64) {
+        if let Some(tree) = &self.txid_index {
+            let _ = tree.insert(txid.as_bytes(), &block_index.to_le_bytes());
+        }
+    }
+
+    /// A5: Resolve a txid to its containing (Block, block_index) by
+    /// consulting the sled txid_index then loading the block from sled.
+    /// Returns None if the txid is unknown or the storage handle was never
+    /// initialised.
+    pub(crate) fn lookup_tx_in_storage(&self, txid: &str) -> Option<(Block, u64)> {
+        let tree = self.txid_index.as_ref()?;
+        let db = self.storage_db.as_ref()?;
+        let raw = tree.get(txid.as_bytes()).ok().flatten()?;
+        if raw.len() != 8 {
+            return None;
+        }
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&raw);
+        let block_index = u64::from_le_bytes(buf);
+        let key = format!("block:{}", block_index);
+        let bytes = db.get(key.as_bytes()).ok().flatten()?;
+        let block: Block = serde_json::from_slice(&bytes).ok()?;
+        Some((block, block_index))
+    }
+
+    /// A5: One-shot backfill — walk every sled-stored block from genesis to
+    /// the current height and populate the txid_index for any tx that does
+    /// not already have an entry. Idempotent. Called once at startup so
+    /// nodes upgrading to A5 don't lose lookup coverage on existing chain
+    /// history.
+    pub fn backfill_txid_index(&self, db: &sled::Db) -> SentrixResult<usize> {
+        let tree = match &self.txid_index {
+            Some(t) => t,
+            None => return Ok(0),
+        };
+        let height = self.height();
+        let mut written = 0usize;
+        for i in 0..=height {
+            let key = format!("block:{}", i);
+            let bytes = match db
+                .get(key.as_bytes())
+                .map_err(|e| SentrixError::StorageError(e.to_string()))?
+            {
+                Some(b) => b,
+                None => continue,
+            };
+            let block: Block = match serde_json::from_slice(&bytes) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            for tx in &block.transactions {
+                if tree
+                    .get(tx.txid.as_bytes())
+                    .map_err(|e| SentrixError::StorageError(e.to_string()))?
+                    .is_none()
+                {
+                    tree.insert(tx.txid.as_bytes(), &block.index.to_le_bytes())
+                        .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+                    written += 1;
+                }
+            }
+        }
+        Ok(written)
     }
 
     // ── Chain state queries ──────────────────────────────

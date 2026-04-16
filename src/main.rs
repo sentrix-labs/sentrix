@@ -24,6 +24,22 @@ fn get_api_port() -> u16 {
         .unwrap_or(DEFAULT_API_PORT)
 }
 
+/// C1: Bind host for the REST API listener. Defaults to `0.0.0.0` so the
+/// public mainnet RPC keeps working without any env change. Testnet
+/// validators behind nginx should set `SENTRIX_API_HOST=127.0.0.1` so the
+/// raw API port is no longer exposed on the public interface.
+fn get_api_host() -> String {
+    std::env::var("SENTRIX_API_HOST").unwrap_or_else(|_| "0.0.0.0".to_string())
+}
+
+/// C1: Bind host for the libp2p P2P listener. Default `0.0.0.0` for
+/// mainnet validators that must accept inbound peers from other VPSes.
+/// Loopback-only testnets (val1..val4 peering via 127.0.0.1) should set
+/// `SENTRIX_P2P_HOST=127.0.0.1` so external peers cannot reach them.
+fn get_p2p_host() -> String {
+    std::env::var("SENTRIX_P2P_HOST").unwrap_or_else(|_| "0.0.0.0".to_string())
+}
+
 fn get_data_dir() -> std::path::PathBuf {
     // Check SENTRIX_DATA_DIR env var first (Docker / custom deploy)
     if let Ok(dir) = std::env::var("SENTRIX_DATA_DIR") {
@@ -659,11 +675,13 @@ async fn cmd_start(
             .map_err(|e| anyhow::anyhow!("libp2p init: {}", e))?,
     );
 
-    let listen_addr = make_multiaddr("0.0.0.0", port).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let p2p_host = get_p2p_host();
+    let listen_addr =
+        make_multiaddr(&p2p_host, port).map_err(|e| anyhow::anyhow!("{}", e))?;
     lp2p.listen_on(listen_addr)
         .await
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    println!("libp2p listening on /ip4/0.0.0.0/tcp/{}", port);
+    println!("libp2p listening on /ip4/{}/tcp/{}", p2p_host, port);
 
     // Connect to bootstrap peers
     for peer_str in peers_str
@@ -1506,7 +1524,7 @@ async fn cmd_start(
 
     // ── Shared: REST API (always started) ───────────────
     let app = create_router(shared.clone());
-    let api_addr = format!("0.0.0.0:{}", get_api_port());
+    let api_addr = format!("{}:{}", get_api_host(), get_api_port());
     println!("REST API listening on http://{}", api_addr);
     let listener = tokio::net::TcpListener::bind(&api_addr).await?;
 

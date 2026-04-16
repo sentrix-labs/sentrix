@@ -2,7 +2,11 @@
 
 use crate::types::error::{SentrixError, SentrixResult};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
+
+/// A2: maximum number of failed EVM tx hashes to track before FIFO eviction.
+/// Bounded so the set cannot grow unbounded across the chain lifetime.
+const MAX_FAILED_EVM_TXS: usize = 100_000;
 
 pub const SENTRI_PER_SRX: u64 = 100_000_000;
 
@@ -68,6 +72,16 @@ pub struct AccountDB {
     /// Only populated after Voyager EVM fork.
     #[serde(default)]
     pub contract_storage: HashMap<String, Vec<u8>>,
+    /// A2: Set of EVM tx hashes that reverted during execution. Used by
+    /// `eth_getTransactionReceipt` to return `status=0x0` for failed EVM
+    /// txs (default is `0x1` for success). Bounded with FIFO eviction at
+    /// `MAX_FAILED_EVM_TXS` so it cannot grow unbounded.
+    #[serde(default)]
+    pub failed_evm_txs: HashSet<String>,
+    /// A2: Insertion order for `failed_evm_txs` to drive FIFO eviction
+    /// without scanning the set. Kept in lockstep with `failed_evm_txs`.
+    #[serde(default)]
+    pub failed_evm_txs_order: VecDeque<String>,
 }
 
 impl AccountDB {
@@ -196,6 +210,25 @@ impl AccountDB {
     pub fn set_contract(&mut self, address: &str, code_hash: [u8; 32]) {
         let account = self.get_or_create(address);
         account.code_hash = code_hash;
+    }
+
+    /// A2: Mark an EVM tx hash as failed (reverted). Bounded FIFO — evicts
+    /// the oldest entry once the set hits `MAX_FAILED_EVM_TXS` so the
+    /// structure cannot grow unbounded.
+    pub fn mark_evm_tx_failed(&mut self, txid: &str) {
+        if self.failed_evm_txs.insert(txid.to_string()) {
+            self.failed_evm_txs_order.push_back(txid.to_string());
+            if self.failed_evm_txs_order.len() > MAX_FAILED_EVM_TXS
+                && let Some(oldest) = self.failed_evm_txs_order.pop_front()
+            {
+                self.failed_evm_txs.remove(&oldest);
+            }
+        }
+    }
+
+    /// A2: Returns true if this EVM tx hash is recorded as failed.
+    pub fn is_evm_tx_failed(&self, txid: &str) -> bool {
+        self.failed_evm_txs.contains(txid)
     }
 }
 

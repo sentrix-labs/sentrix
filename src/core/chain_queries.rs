@@ -7,6 +7,8 @@ impl Blockchain {
     // ── Transaction queries ──────────────────────────────
 
     pub fn get_transaction(&self, txid: &str) -> Option<serde_json::Value> {
+        // Fast path: scan the in-memory chain window first (covers the
+        // recent ~CHAIN_WINDOW_SIZE blocks where most lookups land).
         for block in self.chain.iter().rev() {
             for tx in &block.transactions {
                 if tx.txid == txid {
@@ -17,6 +19,19 @@ impl Blockchain {
                         "block_timestamp": block.timestamp,
                     }));
                 }
+            }
+        }
+        // A5 fallback: txid lives in a block evicted from the window.
+        // Resolve via the sled txid_index then load the block from sled.
+        let (block, _idx) = self.lookup_tx_in_storage(txid)?;
+        for tx in &block.transactions {
+            if tx.txid == txid {
+                return Some(serde_json::json!({
+                    "transaction": tx,
+                    "block_index": block.index,
+                    "block_hash": block.hash,
+                    "block_timestamp": block.timestamp,
+                }));
             }
         }
         None

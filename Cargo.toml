@@ -67,6 +67,10 @@ alloy-rlp = "0.3"
 
 # Utils
 uuid = { version = "1.0", features = ["v4"] }
+# A8: chrono for calendar math instead of hand-rolled Gregorian conversion.
+# `default-features = false` drops the unmaintained `time` 0.1 transitive
+# dep and keeps the build small; only the clock feature is enabled.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 thiserror = "1.0"
 futures = "0.3"
 async-trait = "0.1"
