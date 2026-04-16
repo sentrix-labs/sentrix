@@ -608,6 +608,7 @@ async fn cmd_start(
             use sentrix::core::block::Block;
 
             let mut voyager_activated = false;
+            let mut evm_activated = false;
             // Persistent BFT state for Voyager mode
             let mut bft_engine: Option<BftEngine> = None;
             let mut proposed_block: Option<Block> = None;
@@ -629,6 +630,18 @@ async fn cmd_start(
                             tracing::warn!("activate_voyager failed: {}", e);
                         }
                         voyager_activated = true;
+                    }
+                }
+
+                // ── EVM fork activation ──
+                if !evm_activated {
+                    let bc = shared_clone.read().await;
+                    if Blockchain::is_evm_height(bc.height().saturating_add(1)) {
+                        drop(bc);
+                        let mut bc = shared_clone.write().await;
+                        tracing::info!("EVM fork reached at height {} — activating EVM", bc.height());
+                        bc.activate_evm();
+                        evm_activated = true;
                     }
                 }
 
