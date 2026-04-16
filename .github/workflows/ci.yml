@@ -98,43 +98,15 @@ jobs:
           scp -i ~/.ssh/id_rsa_vps3 ./release/sentrix \
             ${{ secrets.VPS3_USER }}@${{ secrets.VPS3_HOST }}:/tmp/sentrix_new
 
-      # Phase 2: Stop ALL validators — VPS3 first, then VPS2, then VPS1
-      # Order matters: stop remote validators first to prevent orphan blocks.
-      - name: Stop VPS3 nodes
-        run: |
-          ssh -i ~/.ssh/id_rsa_vps3 ${{ secrets.VPS3_USER }}@${{ secrets.VPS3_HOST }} "
-            for svc in sentrix-testnet-val1 sentrix-testnet-val2 sentrix-testnet-val3 sentrix-testnet-val4; do
-              sudo systemctl stop \$svc 2>/dev/null || true
-              echo \"  stopped \$svc\"
-            done
-            sudo systemctl stop sentrix-core || true
-            echo 'stopped sentrix-core'
-          "
-
-      - name: Stop VPS2 validators
-        run: |
-          ssh -i ~/.ssh/id_rsa_vps2 ${{ secrets.VPS2_USER }}@${{ secrets.VPS2_HOST }} "
-            echo '--- Stopping VPS2 validators ---'
-            for svc in sentrix-val1 sentrix-val2 sentrix-val3 sentrix-val4 sentrix-val5; do
-              sudo systemctl stop \$svc || true
-              echo \"  stopped \$svc\"
-            done
-          "
-
-      - name: Stop VPS1 node
-        run: |
-          ssh -i ~/.ssh/id_rsa_vps1 ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }} "
-            sudo systemctl stop sentrix-node || true
-            echo 'stopped sentrix-node'
-          "
-
-      # Phase 3: Replace binary on all VPS
+      # Phase 2: Replace binary on all VPS while nodes still running.
+      # Binary file replaced on disk; the running process keeps using its
+      # in-memory copy until restarted (Linux executes from the inode, not the path).
       - name: Replace binary VPS1
         run: |
           ssh -i ~/.ssh/id_rsa_vps1 ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }} "
             sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
             sudo chmod +x /opt/sentrix/sentrix
-            echo 'VPS1 binary replaced'
+            echo 'VPS1 binary replaced (process still running old in-memory copy)'
           "
 
       - name: Replace binary VPS2
@@ -142,7 +114,7 @@ jobs:
           ssh -i ~/.ssh/id_rsa_vps2 ${{ secrets.VPS2_USER }}@${{ secrets.VPS2_HOST }} "
             sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
             sudo chmod +x /opt/sentrix/sentrix
-            echo 'VPS2 binary replaced'
+            echo 'VPS2 binary replaced (process still running old in-memory copy)'
           "
 
       - name: Replace binary VPS3
@@ -150,45 +122,72 @@ jobs:
           ssh -i ~/.ssh/id_rsa_vps3 ${{ secrets.VPS3_USER }}@${{ secrets.VPS3_HOST }} "
             sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
             sudo chmod +x /opt/sentrix/sentrix
-            echo 'VPS3 binary replaced'
+            echo 'VPS3 binary replaced (process still running old in-memory copy)'
           "
 
-      # Phase 4: Start ALL — VPS1 first (anchor), then VPS2 + VPS3
-      - name: Start VPS1 node
-        run: |
-          ssh -i ~/.ssh/id_rsa_vps1 ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }} "
-            sudo systemctl start sentrix-node
-            echo 'VPS1 sentrix-node started'
-          "
+      # Phase 3: Rolling restart — one validator at a time so chain never stops.
+      # PoA round-robin doesn't need supermajority, so 6 of 7 online keeps producing.
+      # Each restart waits 30s for node to come back + sync before moving to next.
 
-      - name: Start VPS2 validators
-        run: |
-          ssh -i ~/.ssh/id_rsa_vps2 ${{ secrets.VPS2_USER }}@${{ secrets.VPS2_HOST }} "
-            echo '--- Starting VPS2 validators ---'
-            for svc in sentrix-val1 sentrix-val2 sentrix-val3 sentrix-val4 sentrix-val5; do
-              sudo systemctl start \$svc
-              sleep 1
-              echo \"  started \$svc\"
-            done
-          "
-
-      - name: Start VPS3 nodes
+      - name: Rolling restart VPS3 (sentrix-core, validator 7/7)
         run: |
           ssh -i ~/.ssh/id_rsa_vps3 ${{ secrets.VPS3_USER }}@${{ secrets.VPS3_HOST }} "
-            sudo systemctl start sentrix-core
-            echo 'VPS3 sentrix-core started'
-            for svc in sentrix-testnet-val1 sentrix-testnet-val2 sentrix-testnet-val3 sentrix-testnet-val4; do
-              sudo systemctl start \$svc
-              sleep 1
-              echo \"  started \$svc\"
+            echo '== Rolling restart sentrix-core =='
+            sudo systemctl restart sentrix-core
+            echo 'restarted sentrix-core, waiting 30s for warm-up...'
+            sleep 30
+            curl -sf --max-time 10 http://localhost:8545/health > /dev/null && echo '  health OK' || (echo '  ERROR: health check failed' && exit 1)
+          "
+
+      - name: Rolling restart VPS2 validators (5 nodes, one at a time)
+        run: |
+          ssh -i ~/.ssh/id_rsa_vps2 ${{ secrets.VPS2_USER }}@${{ secrets.VPS2_HOST }} "
+            for i in 1 2 3 4 5; do
+              SVC=sentrix-val\$i
+              PORT=\$((8544 + i))
+              echo \"== Rolling restart \$SVC (port \$PORT) ==\"
+              sudo systemctl restart \$SVC
+              echo \"restarted \$SVC, waiting 30s for warm-up...\"
+              sleep 30
+              curl -sf --max-time 10 http://localhost:\$PORT/health > /dev/null && echo \"  \$SVC health OK\" || (echo \"  ERROR: \$SVC health check failed\" && exit 1)
             done
           "
 
-      # Phase 5: Health check — verify chain is advancing on all VPS
-      - name: Health check
+      - name: Rolling restart VPS1 (sentrix-node, anchor — last)
         run: |
-          echo '--- Waiting 60s for nodes to stabilize ---'
-          sleep 60
+          ssh -i ~/.ssh/id_rsa_vps1 ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }} "
+            echo '== Rolling restart sentrix-node =='
+            sudo systemctl restart sentrix-node
+            echo 'restarted sentrix-node, waiting 30s for warm-up...'
+            sleep 30
+            curl -sf --max-time 10 http://localhost:8545/health > /dev/null && echo '  health OK' || (echo '  ERROR: health check failed' && exit 1)
+          "
+
+      # Phase 4: Rolling restart testnet validators (BFT — restart one at a time
+      # so 3-of-4 supermajority keeps consensus alive).
+      - name: Rolling restart VPS3 testnet validators
+        run: |
+          ssh -i ~/.ssh/id_rsa_vps3 ${{ secrets.VPS3_USER }}@${{ secrets.VPS3_HOST }} "
+            for i in 1 2 3 4; do
+              SVC=sentrix-testnet-val\$i
+              PORT=\$((9544 + i))
+              if sudo systemctl is-enabled \$SVC > /dev/null 2>&1; then
+                echo \"== Rolling restart \$SVC (port \$PORT) ==\"
+                sudo systemctl restart \$SVC
+                echo \"restarted \$SVC, waiting 30s for warm-up...\"
+                sleep 30
+                curl -sf --max-time 10 http://localhost:\$PORT/health > /dev/null && echo \"  \$SVC health OK\" || echo \"  WARN: \$SVC health failed\"
+              else
+                echo \"\$SVC not enabled, skipping\"
+              fi
+            done
+          "
+
+      # Phase 5: Final cluster-wide health check — verify mainnet advancing on all VPS
+      - name: Cluster health check
+        run: |
+          echo '--- Final cluster health check ---'
+          sleep 10
 
           VPS1_H0=$(curl -sf --max-time 10 http://${{ secrets.VPS1_HOST }}:8545/chain/info \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['height'])" 2>/dev/null || echo "0")
@@ -209,7 +208,7 @@ jobs:
           echo "Height T1 — VPS1: $VPS1_H1 | VPS2: $VPS2_H1 | VPS3: $VPS3_H1"
 
           if [ "$VPS1_H1" -gt "$VPS1_H0" ] && [ "$VPS2_H1" -gt "$VPS2_H0" ] && [ "$VPS3_H1" -gt "$VPS3_H0" ]; then
-            echo "Chain advancing on all 3 VPS. Deploy successful."
+            echo "Chain advancing on all 3 VPS. Rolling deploy successful."
           else
             echo "ERROR: Chain not advancing after deploy!"
             echo "  VPS1: $VPS1_H0 -> $VPS1_H1"
