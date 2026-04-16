@@ -368,11 +368,7 @@ impl AuthorityManager {
     ///   pollute the audit log with empty events.
     /// - Burn-address transfer (`0x000…`) is allowed — operationally this
     ///   disables admin operations forever (no key controls the burn address).
-    pub fn transfer_admin(
-        &mut self,
-        caller: &str,
-        new_admin: String,
-    ) -> SentrixResult<()> {
+    pub fn transfer_admin(&mut self, caller: &str, new_admin: String) -> SentrixResult<()> {
         if caller != self.admin_address {
             return Err(SentrixError::UnauthorizedValidator(format!(
                 "{} is not admin",
@@ -919,7 +915,11 @@ mod tests {
         let result = mgr.transfer_admin(&admin, admin.clone());
         assert!(result.is_err());
         // Audit log must not contain a transfer_admin entry for a no-op.
-        assert!(!mgr.admin_log.iter().any(|e| e.operation == "transfer_admin"));
+        assert!(
+            !mgr.admin_log
+                .iter()
+                .any(|e| e.operation == "transfer_admin")
+        );
     }
 
     #[test]
