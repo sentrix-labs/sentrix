@@ -77,18 +77,23 @@ fn execute_tx_inner(
     match result {
         Ok(result_and_state) => {
             let exec_result = result_and_state.result;
+            let (contract_address, output) = match &exec_result {
+                ExecutionResult::Success {
+                    output: revm::context::result::Output::Create(runtime_bytes, addr),
+                    ..
+                } => (*addr, runtime_bytes.to_vec()),
+                ExecutionResult::Success {
+                    output: revm::context::result::Output::Call(call_bytes),
+                    ..
+                } => (None, call_bytes.to_vec()),
+                _ => (None, Vec::new()),
+            };
             let receipt = TxReceipt {
                 success: exec_result.is_success(),
                 gas_used: exec_result.tx_gas_used(),
-                contract_address: match &exec_result {
-                    ExecutionResult::Success {
-                        output: revm::context::result::Output::Create(_, Some(addr)),
-                        ..
-                    } => Some(*addr),
-                    _ => None,
-                },
+                contract_address,
                 logs: exec_result.into_logs(),
-                output: Vec::new(),
+                output,
             };
             Ok(receipt)
         }

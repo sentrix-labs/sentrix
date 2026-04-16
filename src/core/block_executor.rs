@@ -365,17 +365,17 @@ impl Blockchain {
                     receipt.gas_used,
                     receipt.contract_address.map(|a| format!("0x{}", hex::encode(a.as_slice()))),
                 );
-                // Store contract code if CREATE succeeded
-                if let Some(contract_addr) = receipt.contract_address {
+                // Store contract RUNTIME code (not init code) if CREATE succeeded.
+                // receipt.output contains the runtime bytecode returned by the constructor.
+                if let Some(contract_addr) = receipt.contract_address
+                    && !receipt.output.is_empty()
+                {
                     let addr_str = format!("0x{}", hex::encode(contract_addr.as_slice()));
-                    // Mark as contract account; deployment data is the calldata in CREATE txs
-                    if let Ok(deployed_code) = hex::decode(parts[2]) {
-                        use sha3::{Keccak256, Digest as _};
-                        let code_hash: [u8; 32] = Keccak256::digest(&deployed_code).into();
-                        let code_hash_hex = hex::encode(code_hash);
-                        self.accounts.store_contract_code(&code_hash_hex, deployed_code);
-                        self.accounts.set_contract(&addr_str, code_hash);
-                    }
+                    use sha3::{Keccak256, Digest as _};
+                    let code_hash: [u8; 32] = Keccak256::digest(&receipt.output).into();
+                    let code_hash_hex = hex::encode(code_hash);
+                    self.accounts.store_contract_code(&code_hash_hex, receipt.output.clone());
+                    self.accounts.set_contract(&addr_str, code_hash);
                 }
             }
             Err(e) => {
