@@ -28,6 +28,8 @@ PATTERNS_NAME=(
   "Hardcoded private_key= assignment"
   "Hardcoded secret_key= assignment"
   "Personal Gmail (sentriscloud@gmail.com)"
+  "Known wallet address (founder/validators)"
+  "Generic 0x + 40 hex address (use whitelist allow-paths if legitimate)"
 )
 PATTERNS_REGEX=(
   "\\b[0-9a-fA-F]{64}\\b"
@@ -41,9 +43,11 @@ PATTERNS_REGEX=(
   "private_key[[:space:]]*=[[:space:]]*[\"']?[0-9a-fA-F]{40,}"
   "secret_key[[:space:]]*=[[:space:]]*[\"']?[0-9a-fA-F]{40,}"
   "sentriscloud@gmail\\.com"
+  "0x(4f3319a747fd564136209cd5d9e7d1a1e4d142be|252f8cfed5acfa9d00d99a65e2ac91f395a35d78|328d56b8174697ef6c9e40e19b7663797e16fa47|a7fc67af1ba0c664d859f4c1bcd2eb1f7211f112|682126f5f973bddda2c92fb0dfce8a4ba275c99b|4f9988506a5e9d7a4b0eae15e5b71a02834d6c0f|245785f409d853bb04d6910a3a0f78df7cbd184c|4e9b3c4901ce6f5f60e3fb97ab97b3352675f36b|d2116bc9767249ee2394840ee6bb02896009fb07)"
+  "\\b0x[0-9a-fA-F]{40}\\b"
 )
 
-# Skip these paths from the 64-hex check — they are legitimate hashes:
+# Skip these paths from the broad 64-hex check — they are legitimate hashes:
 # block_hash, state_root, code_hash, EMPTY_*, KECCAK_EMPTY constants, etc.
 HEX_ALLOW_PATHS=(
   "^src/core/account\\.rs$"          # EMPTY_CODE_HASH constant
@@ -53,6 +57,22 @@ HEX_ALLOW_PATHS=(
   "^docs/.*\\.md$"                    # docs may show example hashes
   "^CHANGELOG\\.md$"                  # commit hashes
   "^benchmark/.*\\.py$"               # benchmark scripts (after env-var migration)
+)
+
+# Skip these paths from the broad "0x + 40 hex" address check — they are
+# legitimate places to mention addresses (genesis constants, audit log,
+# the hook itself, the gitignore).
+ADDR_ALLOW_PATHS=(
+  "^\\.gitignore$"
+  "^\\.githooks/pre-commit$"
+  "^\\.github/"                       # CI workflows may reference docs paths
+  "^CHANGELOG\\.md$"                  # historical / audit trail mentions
+  "^src/core/blockchain\\.rs$"        # GENESIS_ALLOCATIONS constants
+  "^src/core/account\\.rs$"           # EMPTY_CODE_HASH derived literals
+  "^src/.*test.*\\.rs$"               # tests use generated random addrs
+  "^tests/"                            # integration tests
+  "^docs/.*\\.md$"                    # docs may show example addresses
+  "^benchmark/.*\\.py$"               # benchmark scripts use env var by default
 )
 
 red()   { printf '\033[31m%s\033[0m' "$*"; }
@@ -77,6 +97,19 @@ filter_out_internal() {
 }
 mapfile -t SCAN < <(filter_out_internal "${STAGED[@]}")
 
+# Helper: is path $1 in the allow-list array $2?
+path_in_allowlist() {
+  local path="$1"
+  shift
+  local allow
+  for allow in "$@"; do
+    if printf '%s' "$path" | grep -qE "$allow"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 violations=0
 for f in "${SCAN[@]}"; do
   [ -f "$f" ] || continue
@@ -88,16 +121,21 @@ for f in "${SCAN[@]}"; do
     name="${PATTERNS_NAME[$i]}"
     regex="${PATTERNS_REGEX[$i]}"
 
-    # Special handling for the broad 64-hex pattern: skip allow-listed paths.
+    # Pattern 0: broad 64-hex — skip allow-listed paths.
     if [ "$i" = "0" ]; then
-      skip=0
-      for allow in "${HEX_ALLOW_PATHS[@]}"; do
-        if printf '%s' "$f" | grep -qE "$allow"; then
-          skip=1
-          break
-        fi
-      done
-      [ "$skip" = "1" ] && continue
+      if path_in_allowlist "$f" "${HEX_ALLOW_PATHS[@]}"; then
+        continue
+      fi
+    fi
+
+    # Patterns 11 (known addresses) and 12 (generic 0x+40hex) share an
+    # allow-list — both legitimately appear in genesis constants
+    # (blockchain.rs), historical changelog entries, the hook itself,
+    # tests using random keypairs, etc.
+    if [ "$i" = "11" ] || [ "$i" = "12" ]; then
+      if path_in_allowlist "$f" "${ADDR_ALLOW_PATHS[@]}"; then
+        continue
+      fi
     fi
 
     if hits=$(printf '%s\n' "$staged_content" | grep -nE "$regex" | head -3); then
