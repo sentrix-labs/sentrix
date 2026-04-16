@@ -38,9 +38,9 @@ impl Blockchain {
         }
 
         // Reject native SRX transfers to zero address — would silently destroy coins with no on-chain record.
-        // TOKEN_OP_ADDRESS (0x000...0) is allowed ONLY when tx.data contains a valid TokenOp;
-        // use TokenOp::Burn for explicit, recorded burns.
-        if tx.to_address == TOKEN_OP_ADDRESS && !TokenOp::is_token_op(&tx.data) {
+        // TOKEN_OP_ADDRESS (0x000...0) is allowed when tx.data contains a valid TokenOp,
+        // OR when this is an EVM CREATE tx (to=zero means contract creation).
+        if tx.to_address == TOKEN_OP_ADDRESS && !TokenOp::is_token_op(&tx.data) && !tx.is_evm_tx() {
             return Err(SentrixError::InvalidTransaction(
                 "cannot send SRX to zero address — use TokenOp::Burn to explicitly burn tokens".to_string()
             ));
