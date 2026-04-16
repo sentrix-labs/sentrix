@@ -293,7 +293,7 @@ impl SRX20Contract {
             .filter(|(_, b)| **b > 0)
             .map(|(addr, bal)| (addr, *bal))
             .collect();
-        holders.sort_by(|a, b| b.1.cmp(&a.1));
+        holders.sort_by_key(|h| std::cmp::Reverse(h.1));
         holders
             .iter()
             .map(|(addr, bal)| {

@@ -1029,7 +1029,7 @@ pub async fn explorer_richlist(State(state): State<SharedState>) -> Html<String>
         .filter(|(_, a)| a.balance > 0)
         .map(|(addr, a)| (addr, a.balance))
         .collect();
-    holders.sort_by(|a, b| b.1.cmp(&a.1));
+    holders.sort_by_key(|h| std::cmp::Reverse(h.1));
     let holders = &holders[..holders.len().min(50)];
 
     let mut rows = String::new();
