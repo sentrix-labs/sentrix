@@ -8,7 +8,7 @@ use revm::database_interface::{Database, DBErrorMarker};
 use revm::state::{AccountInfo, Bytecode};
 use revm::primitives::KECCAK_EMPTY;
 use std::collections::HashMap;
-use crate::core::account::AccountDB;
+use crate::core::account::{AccountDB, EMPTY_CODE_HASH};
 
 /// Minimal EVM database error type that implements DBErrorMarker.
 /// Wraps string error messages for simplicity.
@@ -62,10 +62,16 @@ impl SentrixEvmDb {
         let mut db = Self::new();
         for (addr_str, account) in &account_db.accounts {
             if let Some(addr) = parse_sentrix_address(addr_str) {
+                // Use actual code_hash from account (EMPTY_CODE_HASH for EOA, contract hash for contracts)
+                let code_hash = if account.code_hash == EMPTY_CODE_HASH {
+                    KECCAK_EMPTY
+                } else {
+                    B256::from(account.code_hash)
+                };
                 let info = AccountInfo {
                     balance: U256::from(account.balance),
                     nonce: account.nonce,
-                    code_hash: KECCAK_EMPTY, // EOA — no code
+                    code_hash,
                     account_id: None,
                     code: None,
                 };
@@ -80,10 +86,14 @@ impl SentrixEvmDb {
         if let Some(addr) = parse_sentrix_address(address_str) {
             let balance = account_db.get_balance(address_str);
             let nonce = account_db.get_nonce(address_str);
+            let code_hash = account_db.accounts.get(address_str)
+                .filter(|a| a.code_hash != EMPTY_CODE_HASH)
+                .map(|a| B256::from(a.code_hash))
+                .unwrap_or(KECCAK_EMPTY);
             let info = AccountInfo {
                 balance: U256::from(balance),
                 nonce,
-                code_hash: KECCAK_EMPTY,
+                code_hash,
                 account_id: None,
                 code: None,
             };
