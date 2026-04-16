@@ -56,10 +56,12 @@ pub async fn jsonrpc_handler(
 
     let result = match req.method.as_str() {
         "eth_chainId" => {
-            Ok(json!(to_hex(7119)))
+            let bc = state.read().await;
+            Ok(json!(to_hex(bc.chain_id)))
         }
         "net_version" => {
-            Ok(json!("7119"))
+            let bc = state.read().await;
+            Ok(json!(bc.chain_id.to_string()))
         }
         "net_listening" => {
             Ok(json!(true))
