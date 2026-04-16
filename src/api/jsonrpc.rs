@@ -244,10 +244,42 @@ pub async fn jsonrpc_handler(
                 .unwrap_or_default();
 
             let base_fee = crate::core::evm::gas::INITIAL_BASE_FEE;
+
+            // Populate InMemoryDB with sender account (so gas payment works).
+            // Also load target contract if it has code.
+            let mut in_mem_db = revm::database::InMemoryDB::default();
+            let sender_balance = bc.accounts.get_balance(from_str);
+            let sender_nonce = bc.accounts.get_nonce(from_str);
+            in_mem_db.insert_account_info(
+                from_addr,
+                revm::state::AccountInfo {
+                    balance: alloy_primitives::U256::from(sender_balance).saturating_mul(alloy_primitives::U256::from(10_000_000_000u64)),
+                    nonce: sender_nonce,
+                    code_hash: revm::primitives::KECCAK_EMPTY,
+                    account_id: None,
+                    code: None,
+                },
+            );
+            // Load target contract if present
+            if let Some(target) = to_addr
+                && let Some(target_account) = bc.accounts.accounts.get(to_str)
+                && target_account.is_contract()
+            {
+                let code_hash_hex = hex::encode(target_account.code_hash);
+                if let Some(code_bytes) = bc.accounts.get_contract_code(&code_hash_hex) {
+                    let bytecode = revm::state::Bytecode::new_raw(alloy_primitives::Bytes::from(code_bytes.clone()));
+                    let code_hash = alloy_primitives::B256::from(target_account.code_hash);
+                    in_mem_db.insert_account_info(target, revm::state::AccountInfo {
+                        balance: alloy_primitives::U256::from(target_account.balance),
+                        nonce: target_account.nonce,
+                        code_hash,
+                        account_id: None,
+                        code: Some(bytecode),
+                    });
+                }
+            }
             drop(bc);
 
-            // Convert SentrixEvmDb to InMemoryDB for execution
-            let in_mem_db = revm::database::InMemoryDB::default();
             match crate::core::evm::executor::execute_tx(in_mem_db, tx, base_fee) {
                 Ok(receipt) => {
                     let output_hex = format!("0x{}", hex::encode(&receipt.output));
