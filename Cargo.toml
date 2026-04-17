@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/sentrix-primitives", "crates/sentrix-wallet", "crates/sentrix-trie", "crates/sentrix-staking", "crates/sentrix-evm"]
+members = [".", "crates/sentrix-primitives", "crates/sentrix-wallet", "crates/sentrix-trie", "crates/sentrix-staking", "crates/sentrix-evm", "crates/sentrix-bft"]
 
 [package]
 name = "sentrix"
@@ -39,6 +39,7 @@ sentrix-wallet = { path = "crates/sentrix-wallet" }
 sentrix-trie = { path = "crates/sentrix-trie" }
 sentrix-staking = { path = "crates/sentrix-staking" }
 sentrix-evm = { path = "crates/sentrix-evm" }
+sentrix-bft = { path = "crates/sentrix-bft" }
 
 # Crypto
 secp256k1 = { version = "0.29", features = ["rand", "recovery", "serde"] }

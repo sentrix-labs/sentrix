@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 // errors used by integration callers, not directly in this module
-use crate::core::bft_messages::{
+use crate::messages::{
     BlockJustification, Precommit, Prevote, RoundStatus, supermajority_threshold,
 };
-use crate::core::staking::StakeRegistry;
+use sentrix_staking::StakeRegistry;
 
 // ── Timeouts ─────────────────────────────────────────────────
 
@@ -552,7 +552,7 @@ impl BftEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::staking::MIN_SELF_STAKE;
+    use sentrix_staking::MIN_SELF_STAKE;
 
     fn setup() -> (BftEngine, StakeRegistry) {
         let mut reg = StakeRegistry::new();

@@ -1,8 +1,9 @@
 // core/mod.rs - Sentrix
 pub mod account;
 pub mod authority;
-pub mod bft;
-pub mod bft_messages;
+// Re-export from sentrix-bft crate
+pub use sentrix_bft::engine as bft;
+pub use sentrix_bft::messages as bft_messages;
 pub mod block;
 pub mod block_executor;
 pub mod block_producer;

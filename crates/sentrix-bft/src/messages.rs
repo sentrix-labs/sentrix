@@ -4,7 +4,7 @@
 // All serializable with bincode to match P2P wire format.
 // Signatures use secp256k1 ECDSA (same as transaction signing).
 
-use crate::types::error::{SentrixError, SentrixResult};
+use sentrix_primitives::{SentrixError, SentrixResult};
 use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use secp256k1::{Message, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
@@ -211,7 +211,7 @@ pub fn recover_signer(payload: &[u8], signature: &[u8]) -> SentrixResult<String>
     let pubkey = secp
         .recover_ecdsa(&msg, &sig)
         .map_err(|_| SentrixError::InvalidSignature)?;
-    Ok(crate::wallet::wallet::Wallet::derive_address(&pubkey))
+    Ok(sentrix_wallet::Wallet::derive_address(&pubkey))
 }
 
 /// Verify that a signature was produced by the claimed validator address.
@@ -443,8 +443,8 @@ mod tests {
 
     // ── Signature tests ──────────────────────────────────────
 
-    fn make_wallet() -> crate::wallet::wallet::Wallet {
-        crate::wallet::wallet::Wallet::generate()
+    fn make_wallet() -> sentrix_wallet::Wallet {
+        sentrix_wallet::Wallet::generate()
     }
 
     #[test]
