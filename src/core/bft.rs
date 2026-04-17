@@ -509,23 +509,19 @@ impl BftEngine {
     }
 
     /// Handle a RoundStatus gossip from a peer.
-    /// If peer is at a higher round (same height) → catch up.
     /// If peer is at a higher height → signal that block sync is needed.
+    /// Round differences at the same height are handled by deterministic
+    /// timeouts — no round catch-up. This prevents vote-wipe cascades
+    /// where catching up clears collected votes.
     pub fn on_round_status(&mut self, status: &RoundStatus) -> BftAction {
         if status.height > self.state.height {
-            // Peer is ahead — we need to sync blocks, not BFT
             return BftAction::SyncNeeded {
                 peer_height: status.height,
             };
         }
-        if status.height < self.state.height {
-            // Peer is behind us — ignore
-            return BftAction::Wait;
-        }
-        // Same height — catch up round if behind
-        if status.round > self.state.round {
-            self.catch_up_round(status.round);
-        }
+        // Same or lower height: purely informational. Round convergence
+        // happens naturally via deterministic timeouts (all validators
+        // have identical timeout durations → advance rounds in lockstep).
         BftAction::Wait
     }
 
@@ -853,7 +849,9 @@ mod tests {
     }
 
     #[test]
-    fn test_round_status_catch_up() {
+    fn test_round_status_no_catch_up() {
+        // RoundStatus no longer triggers round catch-up — only timeouts
+        // advance rounds to prevent vote-wipe cascades.
         let (mut engine, _) = setup();
         assert_eq!(engine.round(), 0);
 
@@ -864,7 +862,7 @@ mod tests {
         };
         let action = engine.on_round_status(&status);
         assert!(matches!(action, BftAction::Wait));
-        assert_eq!(engine.round(), 5); // caught up
+        assert_eq!(engine.round(), 0); // NOT caught up — stays at 0
     }
 
     #[test]
@@ -940,8 +938,9 @@ mod tests {
     }
 
     #[test]
-    fn test_partition_recovery_simulation() {
-        // Simulate: val000 is stuck at round 0, peers advanced to round 3
+    fn test_partition_recovery_no_catchup() {
+        // RoundStatus no longer triggers round catch-up (prevents vote-wipe
+        // cascades). Round advancement only happens via deterministic timeouts.
         let (mut engine, _) = setup();
         assert_eq!(engine.round(), 0);
 
@@ -954,9 +953,9 @@ mod tests {
             };
             engine.on_round_status(&status);
         }
-        // Engine should have caught up to round 3
-        assert_eq!(engine.round(), 3);
-        assert_eq!(engine.phase(), BftPhase::Propose); // fresh round
+        // Round stays at 0 — catch-up is disabled. Validator will advance
+        // to round 3 naturally via 3 timeout cycles (~30s with 10s propose).
+        assert_eq!(engine.round(), 0);
     }
 
     #[test]

@@ -1177,10 +1177,8 @@ async fn cmd_start(
                                 if proposal.height != bft.height() {
                                     continue;
                                 }
-                                // Round catch-up for proposals
-                                if proposal.round > bft.round() {
-                                    bft.catch_up_round(proposal.round);
-                                }
+                                // Only process proposals for our current round.
+                                // No catch-up — rounds advance via deterministic timeouts only.
                                 if proposal.round != bft.round() {
                                     continue;
                                 }
