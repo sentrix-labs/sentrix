@@ -924,9 +924,7 @@ async fn on_inbound_request(
                 .behaviour_mut()
                 .rr
                 .send_response(channel, SentrixResponse::Ack);
-            let _ = event_tx
-                .send(NodeEvent::BftRoundStatus(status))
-                .await;
+            let _ = event_tx.send(NodeEvent::BftRoundStatus(status)).await;
         }
     }
 }
