@@ -1,7 +1,7 @@
 // keystore.rs - Sentrix
 
-use crate::types::error::{SentrixError, SentrixResult};
-use crate::wallet::wallet::Wallet;
+use sentrix_primitives::{SentrixError, SentrixResult};
+use crate::wallet::Wallet;
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
     aead::{Aead, KeyInit},
@@ -195,7 +195,7 @@ impl Keystore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wallet::wallet::Wallet;
+    use crate::wallet::Wallet;
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {

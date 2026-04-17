@@ -3,7 +3,7 @@
 // Manages validator stakes, delegations, unbonding, rewards, and commission.
 // Replaces AuthorityManager for blocks >= VOYAGER_DPOS_HEIGHT.
 
-use crate::types::error::{SentrixError, SentrixResult};
+use sentrix_primitives::{SentrixError, SentrixResult};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 

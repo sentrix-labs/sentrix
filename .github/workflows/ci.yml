@@ -51,13 +51,13 @@ jobs:
         run: cargo deny check licenses bans sources
 
       - name: Clippy
-        run: cargo clippy --tests -- -D warnings
+        run: cargo clippy --workspace --tests -- -D warnings
 
       - name: Build
         run: cargo build --release
 
       - name: Test
-        run: cargo test
+        run: cargo test --workspace
 
       - name: Upload binary
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -111,31 +111,44 @@ jobs:
           scp -i ~/.ssh/id_rsa_vps3 ./release/sentrix \
             ${{ secrets.VPS3_USER }}@${{ secrets.VPS3_HOST }}:/tmp/sentrix_new
 
-      # Phase 2: Replace binary on all VPS while nodes still running.
+      # Phase 2: Archive previous binary + replace with new.
       # Binary file replaced on disk; the running process keeps using its
       # in-memory copy until restarted (Linux executes from the inode, not the path).
+      # Archive keeps last 3 versions in /opt/sentrix/releases/ for instant rollback.
       - name: Replace binary VPS1
         run: |
           ssh -i ~/.ssh/id_rsa_vps1 ${{ secrets.VPS1_USER }}@${{ secrets.VPS1_HOST }} "
+            sudo mkdir -p /opt/sentrix/releases
+            PREV_VER=\$(/opt/sentrix/sentrix --version 2>/dev/null | awk '{print \$2}' || echo 'unknown')
+            sudo cp /opt/sentrix/sentrix /opt/sentrix/releases/sentrix-v\${PREV_VER}-\$(date +%Y%m%d%H%M%S) 2>/dev/null || true
+            cd /opt/sentrix/releases && ls -t | tail -n +4 | xargs -r sudo rm -f
             sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
             sudo chmod +x /opt/sentrix/sentrix
-            echo 'VPS1 binary replaced (process still running old in-memory copy)'
+            echo 'VPS1 binary archived + replaced'
           "
 
       - name: Replace binary VPS2
         run: |
           ssh -i ~/.ssh/id_rsa_vps2 ${{ secrets.VPS2_USER }}@${{ secrets.VPS2_HOST }} "
+            sudo mkdir -p /opt/sentrix/releases
+            PREV_VER=\$(/opt/sentrix/sentrix --version 2>/dev/null | awk '{print \$2}' || echo 'unknown')
+            sudo cp /opt/sentrix/sentrix /opt/sentrix/releases/sentrix-v\${PREV_VER}-\$(date +%Y%m%d%H%M%S) 2>/dev/null || true
+            cd /opt/sentrix/releases && ls -t | tail -n +4 | xargs -r sudo rm -f
             sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
             sudo chmod +x /opt/sentrix/sentrix
-            echo 'VPS2 binary replaced (process still running old in-memory copy)'
+            echo 'VPS2 binary archived + replaced'
           "
 
       - name: Replace binary VPS3
         run: |
           ssh -i ~/.ssh/id_rsa_vps3 ${{ secrets.VPS3_USER }}@${{ secrets.VPS3_HOST }} "
+            sudo mkdir -p /opt/sentrix/releases
+            PREV_VER=\$(/opt/sentrix/sentrix --version 2>/dev/null | awk '{print \$2}' || echo 'unknown')
+            sudo cp /opt/sentrix/sentrix /opt/sentrix/releases/sentrix-v\${PREV_VER}-\$(date +%Y%m%d%H%M%S) 2>/dev/null || true
+            cd /opt/sentrix/releases && ls -t | tail -n +4 | xargs -r sudo rm -f
             sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
             sudo chmod +x /opt/sentrix/sentrix
-            echo 'VPS3 binary replaced (process still running old in-memory copy)'
+            echo 'VPS3 binary archived + replaced'
           "
 
       # Phase 3: Rolling restart — one validator at a time so chain never stops.

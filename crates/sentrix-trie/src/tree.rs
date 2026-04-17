@@ -1,10 +1,10 @@
 // trie/tree.rs - Sentrix — Binary Sparse Merkle Tree (256-level, iterative)
 
-use crate::core::trie::cache::TrieCache;
-use crate::core::trie::node::{NodeHash, TrieNode, empty_hash, get_bit, hash_internal, hash_leaf};
-use crate::core::trie::proof::MerkleProof;
-use crate::core::trie::storage::TrieStorage;
-use crate::types::error::{SentrixError, SentrixResult};
+use crate::cache::TrieCache;
+use crate::node::{NodeHash, TrieNode, empty_hash, get_bit, hash_internal, hash_leaf};
+use crate::proof::MerkleProof;
+use crate::storage::TrieStorage;
+use sentrix_primitives::{SentrixError, SentrixResult};
 use sled::Db;
 
 /// Binary Sparse Merkle Tree with 256 levels.
@@ -473,7 +473,7 @@ impl SentrixTrie {
         hash: NodeHash,
         live: &mut std::collections::HashSet<NodeHash>,
     ) -> SentrixResult<()> {
-        use crate::core::trie::node::empty_hash;
+        use crate::node::empty_hash;
         // Skip empty subtrees and already-visited nodes
         if hash == empty_hash(0) || live.contains(&hash) {
             return Ok(());
@@ -529,8 +529,8 @@ impl Clone for SentrixTrie {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::trie::address::{account_value_bytes, account_value_decode, address_to_key};
-    use crate::core::trie::node::NULL_HASH;
+    use crate::address::{account_value_bytes, account_value_decode, address_to_key};
+    use crate::node::NULL_HASH;
 
     fn temp_db() -> (tempfile::TempDir, Db) {
         let dir = tempfile::TempDir::new().unwrap();
@@ -701,13 +701,13 @@ mod tests {
     fn test_custom_capacity_trie_functional() {
         let (_dir, db) = temp_db();
         // Use a tiny capacity to exercise LRU eviction; correctness must be preserved
-        let storage = crate::core::trie::storage::TrieStorage::new(&db).unwrap();
-        let root = crate::core::trie::storage::TrieStorage::new(&db)
+        let storage = crate::storage::TrieStorage::new(&db).unwrap();
+        let root = crate::storage::TrieStorage::new(&db)
             .unwrap()
             .load_root(0)
             .unwrap()
             .unwrap_or_else(|| empty_hash(0));
-        let cache = crate::core::trie::cache::TrieCache::new(storage, 4);
+        let cache = crate::cache::TrieCache::new(storage, 4);
         let mut trie = SentrixTrie {
             cache,
             root,
@@ -874,8 +874,8 @@ mod tests {
     #[test]
     fn test_clone_preserves_capacity() {
         let (_dir, db) = temp_db();
-        let storage = crate::core::trie::storage::TrieStorage::new(&db).unwrap();
-        let cache = crate::core::trie::cache::TrieCache::new(storage, 42);
+        let storage = crate::storage::TrieStorage::new(&db).unwrap();
+        let cache = crate::cache::TrieCache::new(storage, 42);
         let trie = SentrixTrie {
             cache,
             root: empty_hash(0),

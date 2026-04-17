@@ -1,6 +1,6 @@
 // trie/proof.rs - Sentrix — Merkle proof types and verification
 
-use crate::core::trie::node::{NodeHash, get_bit, hash_internal, hash_leaf};
+use crate::node::{NodeHash, get_bit, hash_internal, hash_leaf};
 use serde::{Deserialize, Serialize};
 
 /// A Merkle proof for a key in the SentrixTrie.
@@ -69,7 +69,7 @@ impl MerkleProof {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::trie::node::{empty_hash, hash_leaf};
+    use crate::node::{empty_hash, hash_leaf};
 
     #[test]
     fn test_membership_proof_verify() {

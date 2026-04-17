@@ -1,7 +1,7 @@
 // trie/storage.rs - Sentrix — Persistent sled-backed trie storage
 
-use crate::core::trie::node::{NodeHash, TrieNode};
-use crate::types::error::{SentrixError, SentrixResult};
+use crate::node::{NodeHash, TrieNode};
+use sentrix_primitives::{SentrixError, SentrixResult};
 use sled::{Db, Tree};
 
 /// Low-level persistent storage for trie nodes, values, and version→root mappings.
@@ -299,7 +299,7 @@ impl TrieStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::trie::node::{TrieNode, empty_hash};
+    use crate::node::{TrieNode, empty_hash};
     use std::collections::HashSet;
 
     fn temp_storage() -> (tempfile::TempDir, TrieStorage) {

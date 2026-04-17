@@ -1,0 +1,13 @@
+[package]
+name = "sentrix-staking"
+version = "1.3.0"
+edition = "2024"
+license = "BUSL-1.1"
+description = "DPoS staking, epoch management, and slashing for Sentrix blockchain"
+repository = "https://github.com/satyakwok/sentrix"
+
+[dependencies]
+sentrix-primitives = { path = "../sentrix-primitives" }
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+tracing = "0.1"

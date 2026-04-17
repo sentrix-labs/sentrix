@@ -1,9 +1,6 @@
-// evm/mod.rs — EVM integration via revm (Voyager Phase 2b)
-//
-// Provides Ethereum Virtual Machine execution for Sentrix chain.
-// Uses revm (Rust EVM) for bytecode execution and gas metering.
+// evm/mod.rs — Re-export from sentrix-evm crate for backward compatibility.
 
-pub mod database;
-pub mod executor;
-pub mod gas;
-pub mod precompiles;
+pub use sentrix_evm::database;
+pub use sentrix_evm::executor;
+pub use sentrix_evm::gas;
+pub use sentrix_evm::precompiles;

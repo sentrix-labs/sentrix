@@ -3,8 +3,8 @@
 // Epoch length: 28,800 blocks (~24 hours at 3s).
 // At each epoch boundary: recalculate active set, process unbonding, distribute rewards.
 
-use crate::core::staking::StakeRegistry;
-use crate::types::error::SentrixResult;
+use crate::staking::StakeRegistry;
+use sentrix_primitives::SentrixResult;
 use serde::{Deserialize, Serialize};
 
 pub const EPOCH_LENGTH: u64 = 28_800; // blocks per epoch
@@ -193,7 +193,7 @@ impl EpochManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::staking::{MIN_SELF_STAKE, StakeRegistry};
+    use crate::staking::{MIN_SELF_STAKE, StakeRegistry};
 
     fn setup_registry(count: usize) -> StakeRegistry {
         let mut reg = StakeRegistry::new();

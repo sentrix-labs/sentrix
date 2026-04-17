@@ -4,7 +4,7 @@
 // Handles: tx ordering by priority fee, gas metering, state diffs,
 // and fee distribution (base_fee burned, priority_fee to validator).
 
-use crate::core::evm::gas::BLOCK_GAS_LIMIT;
+use crate::gas::BLOCK_GAS_LIMIT;
 use alloy_primitives::Address;
 use revm::context::TxEnv;
 use revm::context::result::ExecutionResult;
@@ -98,7 +98,7 @@ fn execute_tx_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::evm::gas::INITIAL_BASE_FEE;
+    use crate::gas::INITIAL_BASE_FEE;
     use alloy_primitives::U256;
     use revm::primitives::TxKind;
     use revm::state::AccountInfo;

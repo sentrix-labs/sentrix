@@ -3,7 +3,7 @@
 // Maps Sentrix account state to revm's Database trait, allowing the EVM
 // to read balances, nonces, contract code, and storage from our trie.
 
-use crate::core::account::{AccountDB, EMPTY_CODE_HASH};
+use sentrix_primitives::{AccountDB, EMPTY_CODE_HASH};
 use alloy_primitives::{Address, B256, U256};
 use revm::database_interface::{DBErrorMarker, Database};
 use revm::primitives::KECCAK_EMPTY;

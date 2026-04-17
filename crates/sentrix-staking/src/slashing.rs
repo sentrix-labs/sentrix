@@ -3,8 +3,8 @@
 // Downtime: missed >50% in 100-block sliding window → 1% slash + 200 blocks jail
 // Double-sign: two blocks same height from same validator → 20% slash + permaban
 
-use crate::core::staking::StakeRegistry;
-use crate::types::error::{SentrixError, SentrixResult};
+use crate::staking::StakeRegistry;
+use sentrix_primitives::{SentrixError, SentrixResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -278,7 +278,7 @@ impl SlashingEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::staking::MIN_SELF_STAKE;
+    use crate::staking::MIN_SELF_STAKE;
 
     fn setup_registry() -> StakeRegistry {
         let mut reg = StakeRegistry::new();

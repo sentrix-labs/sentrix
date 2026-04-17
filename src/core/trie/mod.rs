@@ -1,13 +1,14 @@
-// trie/mod.rs - Sentrix — Binary Sparse Merkle Tree module
+// trie/mod.rs — Re-export from sentrix-trie crate for backward compatibility.
 
-pub mod address;
-pub mod cache;
-pub mod node;
-pub mod proof;
-pub mod storage;
-pub mod tree;
+pub use sentrix_trie::address;
+pub use sentrix_trie::cache;
+pub use sentrix_trie::node;
+pub use sentrix_trie::proof;
+pub use sentrix_trie::storage;
+pub use sentrix_trie::tree;
 
-pub use address::{account_value_bytes, account_value_decode, address_to_key};
-pub use node::{NULL_HASH, NodeHash, TrieNode, empty_hash, get_bit, hash_internal, hash_leaf};
-pub use proof::MerkleProof;
-pub use tree::SentrixTrie;
+pub use sentrix_trie::address::{account_value_bytes, account_value_decode, address_to_key};
+pub use sentrix_trie::node::{NodeHash, TrieNode};
+pub use sentrix_trie::node::{NULL_HASH, empty_hash, get_bit, hash_internal, hash_leaf};
+pub use sentrix_trie::proof::MerkleProof;
+pub use sentrix_trie::tree::SentrixTrie;

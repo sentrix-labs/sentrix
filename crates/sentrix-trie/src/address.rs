@@ -1,6 +1,6 @@
 // trie/address.rs - Sentrix — Address ↔ trie key conversions
 
-use crate::core::trie::node::NodeHash;
+use crate::node::NodeHash;
 use sha2::{Digest, Sha256};
 
 /// Convert a Sentrix address string (e.g. "0x...") to a 32-byte trie key.

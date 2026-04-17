@@ -36,7 +36,8 @@ allow = [
 [bans]
 # Warn on duplicate crate versions (common in large dep trees)
 multiple-versions = "warn"
-wildcards = "deny"
+# "allow" required for workspace path dependencies (path deps have wildcard version in Cargo.lock)
+wildcards = "allow"
 highlight = "all"
 
 # Hard-ban unsafe/legacy crypto
@@ -55,7 +56,7 @@ skip = [
     { name = "rand_chacha" },
     { name = "rand_core" },
     { name = "redox_syscall" },
-    { name = "socket2" },
+
     { name = "thiserror" },
     { name = "thiserror-impl" },
     { name = "tower" },
