@@ -70,6 +70,10 @@ pub enum SentrixRequest {
     BftPrevote { prevote: Prevote },
     /// BFT: precommit for a block (or nil)
     BftPrecommit { precommit: Precommit },
+    /// BFT: periodic round status announcement for round synchronization
+    BftRoundStatus {
+        status: crate::core::bft_messages::RoundStatus,
+    },
 }
 
 /// Responses returned by a peer for the above requests.

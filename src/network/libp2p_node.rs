@@ -164,6 +164,18 @@ impl LibP2pNode {
         let _ = self.cmd_tx.send(SwarmCommand::Broadcast(req)).await;
     }
 
+    /// Broadcast our current BFT round status so peers can sync rounds.
+    /// Called periodically (~5s) by the validator loop.
+    pub async fn broadcast_bft_round_status(
+        &self,
+        status: &crate::core::bft_messages::RoundStatus,
+    ) {
+        let req = SentrixRequest::BftRoundStatus {
+            status: status.clone(),
+        };
+        let _ = self.cmd_tx.send(SwarmCommand::Broadcast(req)).await;
+    }
+
     /// Re-dial bootstrap peers that may have disconnected.
     pub async fn reconnect_peers(&self, addrs: Vec<Multiaddr>) {
         let _ = self.cmd_tx.send(SwarmCommand::ReconnectPeers(addrs)).await;
@@ -904,6 +916,17 @@ async fn on_inbound_request(
                 .rr
                 .send_response(channel, SentrixResponse::Ack);
             let _ = event_tx.send(NodeEvent::BftPrecommit(precommit)).await;
+        }
+
+        // ── BFT RoundStatus ────────────────────────────
+        SentrixRequest::BftRoundStatus { status } => {
+            let _ = swarm
+                .behaviour_mut()
+                .rr
+                .send_response(channel, SentrixResponse::Ack);
+            let _ = event_tx
+                .send(NodeEvent::BftRoundStatus(status))
+                .await;
         }
     }
 }

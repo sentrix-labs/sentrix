@@ -99,6 +99,8 @@ pub enum NodeEvent {
     BftPrevote(crate::core::bft_messages::Prevote),
     /// BFT: received a precommit from the network
     BftPrecommit(crate::core::bft_messages::Precommit),
+    /// BFT: received a round-status announcement for round synchronization
+    BftRoundStatus(crate::core::bft_messages::RoundStatus),
 }
 
 // ── Node ─────────────────────────────────────────────────

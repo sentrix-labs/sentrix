@@ -825,6 +825,7 @@ async fn cmd_start(
             let mut evm_activated = false;
             // Persistent BFT state for Voyager mode
             let mut bft_engine: Option<BftEngine> = None;
+            let mut voyager_tick_count: u64 = 0;
             let mut proposed_block: Option<Block> = None;
 
             loop {
@@ -907,6 +908,18 @@ async fn cmd_start(
                 // Voyager mode: event-driven BFT consensus
                 // ════════════════════════════════════════════════
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+                // Periodically broadcast our BFT round status (~5s) so
+                // peers can catch up to our round via on_round_status.
+                // This is the ONLY round-sync mechanism now that
+                // vote-triggered catch-up has been removed.
+                voyager_tick_count += 1;
+                if voyager_tick_count.is_multiple_of(50)
+                    && let Some(ref bft) = bft_engine
+                {
+                    let status = bft.build_round_status();
+                    lp2p_clone.broadcast_bft_round_status(&status).await;
+                }
 
                 // Compute total active stake and current chain height (read lock)
                 let (current_height, total_active_stake) = {
@@ -1572,6 +1585,17 @@ async fn cmd_start(
                     );
                     let _ = bft_tx_clone
                         .send(sentrix::core::bft_messages::BftMessage::Precommit(c))
+                        .await;
+                }
+                NodeEvent::BftRoundStatus(s) => {
+                    tracing::debug!(
+                        "BFT round-status: height={} round={} from={}",
+                        s.height,
+                        s.round,
+                        &s.validator[..s.validator.len().min(12)]
+                    );
+                    let _ = bft_tx_clone
+                        .send(sentrix::core::bft_messages::BftMessage::RoundStatus(s))
                         .await;
                 }
             }
