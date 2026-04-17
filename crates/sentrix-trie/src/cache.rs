@@ -1,8 +1,8 @@
 // trie/cache.rs - Sentrix — LRU-cached trie node access
 
-use crate::core::trie::node::{NodeHash, TrieNode};
-use crate::core::trie::storage::TrieStorage;
-use crate::types::error::SentrixResult;
+use crate::node::{NodeHash, TrieNode};
+use crate::storage::TrieStorage;
+use sentrix_primitives::SentrixResult;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
@@ -34,7 +34,7 @@ impl TrieCache {
     /// Acquire the LRU lock, mapping a poison error to SentrixError::Internal.
     fn lock_lru(&self) -> SentrixResult<std::sync::MutexGuard<'_, LruCache<NodeHash, TrieNode>>> {
         self.lru.lock().map_err(|e| {
-            crate::types::error::SentrixError::Internal(format!("trie LRU lock poisoned: {e}"))
+            sentrix_primitives::SentrixError::Internal(format!("trie LRU lock poisoned: {e}"))
         })
     }
 
@@ -92,12 +92,12 @@ impl TrieCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::trie::node::TrieNode;
+    use crate::node::TrieNode;
 
     fn temp_cache(capacity: usize) -> (tempfile::TempDir, TrieCache) {
         let dir = tempfile::TempDir::new().unwrap();
         let db = sled::open(dir.path()).unwrap();
-        let storage = crate::core::trie::storage::TrieStorage::new(&db).unwrap();
+        let storage = crate::storage::TrieStorage::new(&db).unwrap();
         (dir, TrieCache::new(storage, capacity))
     }
 

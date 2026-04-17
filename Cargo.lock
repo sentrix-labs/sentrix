@@ -4760,6 +4760,7 @@ dependencies = [
  "revm",
  "secp256k1 0.29.1",
  "sentrix-primitives",
+ "sentrix-trie",
  "sentrix-wallet",
  "serde",
  "serde_json",
@@ -4785,6 +4786,22 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "sentrix-trie"
+version = "1.3.0"
+dependencies = [
+ "bincode",
+ "blake3",
+ "hex",
+ "lru",
+ "sentrix-primitives",
+ "serde",
+ "sha2",
+ "sled",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

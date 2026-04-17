@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/sentrix-primitives", "crates/sentrix-wallet"]
+members = [".", "crates/sentrix-primitives", "crates/sentrix-wallet", "crates/sentrix-trie"]
 
 [package]
 name = "sentrix"
@@ -36,6 +36,7 @@ missing_docs = "warn"
 # Workspace crates
 sentrix-primitives = { path = "crates/sentrix-primitives" }
 sentrix-wallet = { path = "crates/sentrix-wallet" }
+sentrix-trie = { path = "crates/sentrix-trie" }
 
 # Crypto
 secp256k1 = { version = "0.29", features = ["rand", "recovery", "serde"] }
