@@ -1,6 +1,6 @@
 // wallet.rs - Sentrix
 
-use crate::types::error::{SentrixError, SentrixResult};
+use sentrix_primitives::{SentrixError, SentrixResult};
 use secp256k1::rand::rngs::OsRng;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use sha3::Digest;
