@@ -202,6 +202,12 @@ enum ValidatorCommands {
         #[arg(long)]
         admin_key: Option<String>,
     },
+    /// Unjail a validator that was jailed for downtime/slashing.
+    /// Run while the node is STOPPED. Run on EACH validator's chain DB.
+    Unjail {
+        /// Validator address to unjail
+        address: String,
+    },
     /// Transfer the admin role to a new address (admin only).
     /// Use to rotate out a compromised admin key without a hard fork.
     /// Run on EACH validator's chain DB — the admin field is local node
@@ -379,6 +385,9 @@ async fn main() -> anyhow::Result<()> {
             } => {
                 let key = resolve_key(admin_key, "SENTRIX_ADMIN_KEY", "admin key")?;
                 cmd_validator_rename(&address, &new_name, &key)?;
+            }
+            ValidatorCommands::Unjail { address } => {
+                cmd_validator_unjail(&address)?;
             }
             ValidatorCommands::TransferAdmin {
                 new_admin,
@@ -635,6 +644,25 @@ fn cmd_validator_add(
 
     storage.save_blockchain(&bc)?;
     println!("Validator added: {} ({})", name, address);
+    Ok(())
+}
+
+fn cmd_validator_unjail(address: &str) -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    let mut bc = storage
+        .load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+
+    let height = bc.height();
+    bc.stake_registry.unjail(address, height)?;
+    bc.stake_registry.update_active_set();
+
+    storage.save_blockchain(&bc)?;
+    println!("Validator unjailed: {}", address);
+    println!(
+        "Active set: {} validators",
+        bc.stake_registry.active_count()
+    );
     Ok(())
 }
 
