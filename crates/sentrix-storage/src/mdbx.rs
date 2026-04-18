@@ -152,6 +152,12 @@ impl MdbxStorage {
         Ok(())
     }
 
+    /// Get approximate database size on disk.
+    pub fn db_size_bytes(&self) -> StorageResult<u64> {
+        let info = self.db.info()?;
+        Ok(info.map_size() as u64)
+    }
+
     /// Force sync to disk.
     pub fn sync(&self) -> StorageResult<()> {
         self.db.sync(true)?;

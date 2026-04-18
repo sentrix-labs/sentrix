@@ -20,10 +20,12 @@
 
 #![allow(missing_docs)]
 
+pub mod chain;
 pub mod error;
 pub mod mdbx;
 pub mod tables;
 
+pub use chain::ChainStorage;
 pub use error::{StorageError, StorageResult};
 pub use mdbx::{MdbxStorage, WriteBatch, height_key, key_to_height};
 pub use tables::*;
