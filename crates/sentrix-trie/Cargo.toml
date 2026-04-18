@@ -1,14 +1,14 @@
 [package]
 name = "sentrix-trie"
-version = "1.5.0"
+version = "2.0.0"
 edition = "2024"
 license = "BUSL-1.1"
-description = "Binary Sparse Merkle Tree (256-level) with sled persistence for Sentrix blockchain state"
+description = "Binary Sparse Merkle Tree (256-level) with MDBX persistence for Sentrix blockchain state"
 repository = "https://github.com/satyakwok/sentrix"
 
 [dependencies]
 sentrix-primitives = { path = "../sentrix-primitives" }
-sled = "0.34"
+sentrix-storage = { path = "../sentrix-storage" }
 lru = "0.17"
 sha2 = "0.10"
 blake3 = "1.5"

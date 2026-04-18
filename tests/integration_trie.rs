@@ -8,13 +8,15 @@ use sentrix::core::trie::{
     SentrixTrie, account_value_bytes, account_value_decode, address_to_key, empty_hash,
 };
 use sentrix::wallet::wallet::Wallet;
+use sentrix_storage::MdbxStorage;
+use std::sync::Arc;
 
 // ── Helpers ───────────────────────────────────────────────────
 
-fn temp_db() -> (tempfile::TempDir, sled::Db) {
+fn temp_mdbx() -> (tempfile::TempDir, Arc<MdbxStorage>) {
     let dir = tempfile::TempDir::new().unwrap();
-    let db = sled::open(dir.path()).unwrap();
-    (dir, db)
+    let mdbx = Arc::new(MdbxStorage::open(dir.path()).unwrap());
+    (dir, mdbx)
 }
 
 /// Generate a valid secp256k1 keypair and derive a Sentrix address.
@@ -43,13 +45,13 @@ const RECV_ADDR: &str = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
 /// Build a Blockchain with one real validator + trie initialized.
 /// Returns (bc, validator_address).
-fn setup(db: &sled::Db) -> (Blockchain, String) {
+fn setup(mdbx: Arc<MdbxStorage>) -> (Blockchain, String) {
     let (_sk, vaddr, vk_hex) = make_validator();
     let mut bc = Blockchain::new("admin".to_string());
     bc.authority
         .add_validator("admin", vaddr.clone(), "V1".to_string(), vk_hex)
         .unwrap();
-    bc.init_trie(db).unwrap();
+    bc.init_trie(mdbx).unwrap();
     (bc, vaddr)
 }
 
@@ -58,16 +60,16 @@ fn setup(db: &sled::Db) -> (Blockchain, String) {
 /// A freshly opened trie must equal the canonical empty-tree root.
 #[test]
 fn test_empty_trie_root() {
-    let (_dir, db) = temp_db();
-    let trie = SentrixTrie::open(&db, 0).unwrap();
+    let (_dir, mdbx) = temp_mdbx();
+    let trie = SentrixTrie::open(mdbx, 0).unwrap();
     assert_eq!(trie.root_hash(), empty_hash(0));
 }
 
-/// Insert a key, get it back — full roundtrip through sled + LRU.
+/// Insert a key, get it back — full roundtrip through MDBX + LRU.
 #[test]
 fn test_insert_get() {
-    let (_dir, db) = temp_db();
-    let mut trie = SentrixTrie::open(&db, 0).unwrap();
+    let (_dir, mdbx) = temp_mdbx();
+    let mut trie = SentrixTrie::open(mdbx, 0).unwrap();
     let key = address_to_key("0x1111111111111111111111111111111111111111");
     let val = account_value_bytes(9_999_999, 3);
     trie.insert(&key, &val).unwrap();
@@ -78,8 +80,8 @@ fn test_insert_get() {
 /// Membership proof must verify against the current root.
 #[test]
 fn test_proof_membership() {
-    let (_dir, db) = temp_db();
-    let mut trie = SentrixTrie::open(&db, 0).unwrap();
+    let (_dir, mdbx) = temp_mdbx();
+    let mut trie = SentrixTrie::open(mdbx, 0).unwrap();
     let key = address_to_key("0xaaaa");
     trie.insert(&key, &account_value_bytes(1_000, 0)).unwrap();
     let root = trie.root_hash();
@@ -94,8 +96,8 @@ fn test_proof_membership() {
 /// Non-membership proof must verify for a key that was never inserted.
 #[test]
 fn test_proof_nonmembership() {
-    let (_dir, db) = temp_db();
-    let mut trie = SentrixTrie::open(&db, 0).unwrap();
+    let (_dir, mdbx) = temp_mdbx();
+    let mut trie = SentrixTrie::open(mdbx, 0).unwrap();
     let present = address_to_key("0xaaaa");
     let absent = address_to_key("0xbbbb");
     trie.insert(&present, &account_value_bytes(1, 0)).unwrap();
@@ -111,8 +113,8 @@ fn test_proof_nonmembership() {
 /// Committed root at version v must survive further inserts + commits.
 #[test]
 fn test_versioned_checkout() {
-    let (_dir, db) = temp_db();
-    let mut trie = SentrixTrie::open(&db, 0).unwrap();
+    let (_dir, mdbx) = temp_mdbx();
+    let mut trie = SentrixTrie::open(mdbx, 0).unwrap();
     let k1 = address_to_key("0xaaaa");
     let k2 = address_to_key("0xbbbb");
     trie.insert(&k1, &account_value_bytes(100, 0)).unwrap();
@@ -131,8 +133,8 @@ fn test_versioned_checkout() {
 /// After init_trie + add_block, the block must carry a non-None state_root.
 #[test]
 fn test_state_root_in_block() {
-    let (_dir, db) = temp_db();
-    let (mut bc, vaddr) = setup(&db);
+    let (_dir, mdbx) = temp_mdbx();
+    let (mut bc, vaddr) = setup(Arc::clone(&mdbx));
 
     let block = bc.create_block(&vaddr).unwrap();
     bc.add_block(block).unwrap();
@@ -147,8 +149,8 @@ fn test_state_root_in_block() {
 /// Two consecutive blocks must produce different state_roots (validator earns rewards).
 #[test]
 fn test_state_root_changes_after_tx() {
-    let (_dir, db) = temp_db();
-    let (mut bc, vaddr) = setup(&db);
+    let (_dir, mdbx) = temp_mdbx();
+    let (mut bc, vaddr) = setup(Arc::clone(&mdbx));
 
     let b1 = bc.create_block(&vaddr).unwrap();
     bc.add_block(b1).unwrap();
@@ -169,8 +171,8 @@ fn test_state_root_changes_after_tx() {
 /// Total supply must increment by exactly BLOCK_REWARD per block with trie active.
 #[test]
 fn test_supply_invariant_with_trie() {
-    let (_dir, db) = temp_db();
-    let (mut bc, vaddr) = setup(&db);
+    let (_dir, mdbx) = temp_mdbx();
+    let (mut bc, vaddr) = setup(Arc::clone(&mdbx));
 
     let before = bc.total_minted();
     for _ in 0..3 {
@@ -184,8 +186,8 @@ fn test_supply_invariant_with_trie() {
 /// Root committed at each block height must be recoverable via trie_root_at().
 #[test]
 fn test_historical_state_query() {
-    let (_dir, db) = temp_db();
-    let (mut bc, vaddr) = setup(&db);
+    let (_dir, mdbx) = temp_mdbx();
+    let (mut bc, vaddr) = setup(Arc::clone(&mdbx));
 
     let mut roots: Vec<[u8; 32]> = Vec::new();
     for _ in 0..3 {
@@ -194,7 +196,6 @@ fn test_historical_state_query() {
         roots.push(bc.latest_block().unwrap().state_root.unwrap());
     }
 
-    // Each committed root must be retrievable
     for (i, &expected) in roots.iter().enumerate() {
         let version = (i + 1) as u64;
         let stored = bc.trie_root_at(version);
@@ -206,7 +207,6 @@ fn test_historical_state_query() {
         );
     }
 
-    // All roots are distinct (validator balance changes every block)
     assert_ne!(roots[0], roots[1]);
     assert_ne!(roots[1], roots[2]);
 }
@@ -214,19 +214,17 @@ fn test_historical_state_query() {
 /// Account state in the trie must match the AccountDB state after block execution.
 #[test]
 fn test_account_state_in_trie_matches_blockchain() {
-    let (_dir, db) = temp_db();
-    let (mut bc, vaddr) = setup(&db);
+    let (_dir, mdbx) = temp_mdbx();
+    let (mut bc, vaddr) = setup(Arc::clone(&mdbx));
 
     let block = bc.create_block(&vaddr).unwrap();
     bc.add_block(block).unwrap();
 
-    // Check validator's trie balance equals the AccountDB balance
     let expected_balance = bc.accounts.get_balance(&vaddr);
     let key = address_to_key(&vaddr);
     let root = bc.latest_block().unwrap().state_root.unwrap();
 
-    // Re-open a fresh trie view on the same DB to test persistence
-    let trie = SentrixTrie::open(&db, bc.height()).unwrap();
+    let trie = SentrixTrie::open(Arc::clone(&mdbx), bc.height()).unwrap();
     let proof = trie.prove(&key).unwrap();
 
     assert!(proof.found, "validator must be in trie");
@@ -243,8 +241,8 @@ fn test_account_state_in_trie_matches_blockchain() {
 /// Deleting an existing key must make it unreachable and change the root.
 #[test]
 fn test_delete_existing_key() {
-    let (_dir, db) = temp_db();
-    let mut trie = SentrixTrie::open(&db, 0).unwrap();
+    let (_dir, mdbx) = temp_mdbx();
+    let mut trie = SentrixTrie::open(mdbx, 0).unwrap();
     let key = address_to_key("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
     let val = account_value_bytes(1_000_000, 5);
 
@@ -253,14 +251,11 @@ fn test_delete_existing_key() {
 
     let root_after_delete = trie.delete(&key).unwrap();
 
-    // Key must be gone
     assert!(
         trie.get(&key).unwrap().is_none(),
         "key must be absent after delete"
     );
-    // Root must differ from inserted root
     assert_ne!(root_after_delete, root_after_insert);
-    // Root must equal empty trie (single item deleted)
     assert_eq!(
         root_after_delete,
         empty_hash(0),
@@ -271,8 +266,8 @@ fn test_delete_existing_key() {
 /// Deleting a key that was never inserted must be a no-op (same root, no error).
 #[test]
 fn test_delete_nonexistent_noop() {
-    let (_dir, db) = temp_db();
-    let mut trie = SentrixTrie::open(&db, 0).unwrap();
+    let (_dir, mdbx) = temp_mdbx();
+    let mut trie = SentrixTrie::open(mdbx, 0).unwrap();
     let present = address_to_key("0xaaaa");
     let absent = address_to_key("0xbbbb");
     trie.insert(&present, &account_value_bytes(100, 0)).unwrap();
@@ -284,15 +279,14 @@ fn test_delete_nonexistent_noop() {
         root_before, root_after,
         "delete of absent key must not change root"
     );
-    // Present key must still be there
     assert!(trie.get(&present).unwrap().is_some());
 }
 
 /// Deleting one of two keys must leave the other intact.
 #[test]
 fn test_delete_one_of_two_keys() {
-    let (_dir, db) = temp_db();
-    let mut trie = SentrixTrie::open(&db, 0).unwrap();
+    let (_dir, mdbx) = temp_mdbx();
+    let mut trie = SentrixTrie::open(mdbx, 0).unwrap();
     let k1 = address_to_key("0x1111111111111111111111111111111111111111");
     let k2 = address_to_key("0x2222222222222222222222222222222222222222");
     trie.insert(&k1, &account_value_bytes(111, 0)).unwrap();
@@ -308,8 +302,8 @@ fn test_delete_one_of_two_keys() {
 /// Re-inserting a deleted key must work and produce a fresh valid root.
 #[test]
 fn test_reinsert_after_delete() {
-    let (_dir, db) = temp_db();
-    let mut trie = SentrixTrie::open(&db, 0).unwrap();
+    let (_dir, mdbx) = temp_mdbx();
+    let mut trie = SentrixTrie::open(mdbx, 0).unwrap();
     let key = address_to_key("0xaaaa");
 
     trie.insert(&key, &account_value_bytes(100, 0)).unwrap();
@@ -332,17 +326,16 @@ fn test_trie_persists_after_restart() {
 
     // Session 1: insert + commit
     {
-        let db = sled::open(dir.path()).unwrap();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let mdbx = Arc::new(MdbxStorage::open(dir.path()).unwrap());
+        let mut trie = SentrixTrie::open(mdbx, 0).unwrap();
         trie.insert(&key, &val).unwrap();
         trie.commit(1).unwrap();
-        // db drops here — sled flushes on Drop
     }
 
     // Session 2: reopen and read
     {
-        let db = sled::open(dir.path()).unwrap();
-        let mut trie = SentrixTrie::open(&db, 1).unwrap();
+        let mdbx = Arc::new(MdbxStorage::open(dir.path()).unwrap());
+        let mut trie = SentrixTrie::open(mdbx, 1).unwrap();
         let got = trie.get(&key).unwrap();
         assert_eq!(
             got.as_deref(),
@@ -357,8 +350,8 @@ fn test_trie_persists_after_restart() {
 /// TX recipient (with positive balance) must appear in the trie after the block.
 #[test]
 fn test_tx_recipient_appears_in_trie() {
-    let (_dir, db) = temp_db();
-    let (mut bc, vaddr) = setup(&db);
+    let (_dir, mdbx) = temp_mdbx();
+    let (mut bc, vaddr) = setup(Arc::clone(&mdbx));
 
     let (sk, pk, _sender) = make_sender(&mut bc, 50_000_000 + MIN_TX_FEE);
 
@@ -382,7 +375,7 @@ fn test_tx_recipient_appears_in_trie() {
     let recv_key = address_to_key(RECV_ADDR);
     let root = bc.latest_block().unwrap().state_root.unwrap();
     let trie_height = bc.height();
-    let trie = SentrixTrie::open(&db, trie_height).unwrap();
+    let trie = SentrixTrie::open(Arc::clone(&mdbx), trie_height).unwrap();
     let proof = trie.prove(&recv_key).unwrap();
 
     assert!(
@@ -400,10 +393,9 @@ fn test_tx_recipient_appears_in_trie() {
 /// A sender whose balance reaches zero after a TX must be removed from the trie.
 #[test]
 fn test_zero_balance_sender_removed_from_trie() {
-    let (_dir, db) = temp_db();
-    let (mut bc, vaddr) = setup(&db);
+    let (_dir, mdbx) = temp_mdbx();
+    let (mut bc, vaddr) = setup(Arc::clone(&mdbx));
 
-    // Block 1: partially spend — sender stays in trie with residual balance
     let residual = 500_000u64;
     let total_funds = 10_000_000 + MIN_TX_FEE + residual + MIN_TX_FEE;
     let (sk, pk, sender) = make_sender(&mut bc, total_funds);
@@ -424,15 +416,13 @@ fn test_zero_balance_sender_removed_from_trie() {
     let b1 = bc.create_block(&vaddr).unwrap();
     bc.add_block(b1).unwrap();
 
-    // Sender should be in trie with residual balance
     let sender_key = address_to_key(&sender);
-    let mut trie = SentrixTrie::open(&db, bc.height()).unwrap();
+    let mut trie = SentrixTrie::open(Arc::clone(&mdbx), bc.height()).unwrap();
     assert!(
         trie.get(&sender_key).unwrap().is_some(),
         "sender must be in trie after block 1"
     );
 
-    // Block 2: drain remaining balance to zero
     let tx2 = Transaction::new(
         sender.clone(),
         RECV_ADDR.to_string(),
@@ -449,8 +439,7 @@ fn test_zero_balance_sender_removed_from_trie() {
     let b2 = bc.create_block(&vaddr).unwrap();
     bc.add_block(b2).unwrap();
 
-    // Sender balance is now 0 — must be deleted from trie
-    let mut trie2 = SentrixTrie::open(&db, bc.height()).unwrap();
+    let mut trie2 = SentrixTrie::open(Arc::clone(&mdbx), bc.height()).unwrap();
     let got = trie2.get(&sender_key).unwrap();
     assert!(
         got.is_none(),
@@ -461,15 +450,15 @@ fn test_zero_balance_sender_removed_from_trie() {
 /// Validator balance in trie must match the AccountDB balance after a block.
 #[test]
 fn test_trie_validator_balance_matches_after_block() {
-    let (_dir, db) = temp_db();
-    let (mut bc, vaddr) = setup(&db);
+    let (_dir, mdbx) = temp_mdbx();
+    let (mut bc, vaddr) = setup(Arc::clone(&mdbx));
 
     let block = bc.create_block(&vaddr).unwrap();
     bc.add_block(block).unwrap();
 
     let expected = bc.accounts.get_balance(&vaddr);
     let key = address_to_key(&vaddr);
-    let trie = SentrixTrie::open(&db, bc.height()).unwrap();
+    let trie = SentrixTrie::open(Arc::clone(&mdbx), bc.height()).unwrap();
     let proof = trie.prove(&key).unwrap();
 
     assert!(proof.found, "validator must be in trie");
@@ -484,8 +473,8 @@ fn test_trie_validator_balance_matches_after_block() {
 /// Merkle proof for a TX recipient verifies against the block's state_root.
 #[test]
 fn test_proof_verified_after_block_with_tx() {
-    let (_dir, db) = temp_db();
-    let (mut bc, vaddr) = setup(&db);
+    let (_dir, mdbx) = temp_mdbx();
+    let (mut bc, vaddr) = setup(Arc::clone(&mdbx));
 
     let (sk, pk, _) = make_sender(&mut bc, 5_000_000 + MIN_TX_FEE);
     let tx = Transaction::new(
@@ -507,7 +496,7 @@ fn test_proof_verified_after_block_with_tx() {
 
     let root = bc.latest_block().unwrap().state_root.unwrap();
     let key = address_to_key(RECV_ADDR);
-    let trie = SentrixTrie::open(&db, bc.height()).unwrap();
+    let trie = SentrixTrie::open(Arc::clone(&mdbx), bc.height()).unwrap();
     let proof = trie.prove(&key).unwrap();
 
     assert!(proof.found);
@@ -515,7 +504,6 @@ fn test_proof_verified_after_block_with_tx() {
         proof.verify_membership(&root),
         "proof must verify against block state_root"
     );
-    // Non-membership proof for a deleted account also verifies against the same root
     let absent_key = address_to_key("0x0000000000000000000000000000000000000001");
     let np = trie.prove(&absent_key).unwrap();
     assert!(!np.found);
@@ -525,11 +513,9 @@ fn test_proof_verified_after_block_with_tx() {
 /// After zero-balance deletion the state root must differ from the previous block.
 #[test]
 fn test_state_root_changes_on_zero_balance_deletion() {
-    let (_dir, db) = temp_db();
-    let (mut bc, vaddr) = setup(&db);
+    let (_dir, mdbx) = temp_mdbx();
+    let (mut bc, vaddr) = setup(Arc::clone(&mdbx));
 
-    // Block 1: give sender some balance (lands in trie)
-    // Initial: 2_000_000 + 2×fee → after tx1: 1_000_000 + fee → after tx2: 0
     let (sk, pk, sender) = make_sender(&mut bc, 2_000_000 + 2 * MIN_TX_FEE);
     let tx1 = Transaction::new(
         sender.clone(),
@@ -548,7 +534,6 @@ fn test_state_root_changes_on_zero_balance_deletion() {
     bc.add_block(b1).unwrap();
     let root1 = bc.latest_block().unwrap().state_root.unwrap();
 
-    // Block 2: drain sender to zero → deletion path (spends exact residual)
     let tx2 = Transaction::new(
         sender.clone(),
         RECV_ADDR.to_string(),
@@ -575,8 +560,8 @@ fn test_state_root_changes_on_zero_balance_deletion() {
 /// Every block must have a recoverable state root via trie_root_at().
 #[test]
 fn test_state_root_history_per_block() {
-    let (_dir, db) = temp_db();
-    let (mut bc, vaddr) = setup(&db);
+    let (_dir, mdbx) = temp_mdbx();
+    let (mut bc, vaddr) = setup(Arc::clone(&mdbx));
 
     let n = 5u64;
     let mut roots = Vec::new();

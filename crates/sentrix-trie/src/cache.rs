@@ -7,7 +7,7 @@ use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
-/// In-memory LRU cache sitting in front of persistent sled storage.
+/// In-memory LRU cache sitting in front of persistent MDBX storage.
 /// The LRU is wrapped in a Mutex to allow shared-reference access (V7-M-03).
 /// This enables `prove()` on SentrixTrie to take `&self` (read lock on blockchain
 /// is sufficient for proof generation — no write lock needed).
@@ -47,7 +47,7 @@ impl TrieCache {
                 return Ok(Some(node.clone()));
             }
         }
-        // Miss — load from sled (released lock above to avoid holding during I/O)
+        // Miss — load from MDBX (released lock above to avoid holding during I/O)
         let opt = self.storage.load_node(hash)?;
         if let Some(ref node) = opt {
             let mut lru = self.lock_lru()?;
@@ -96,8 +96,8 @@ mod tests {
 
     fn temp_cache(capacity: usize) -> (tempfile::TempDir, TrieCache) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = sled::open(dir.path()).unwrap();
-        let storage = crate::storage::TrieStorage::new(&db).unwrap();
+        let mdbx = std::sync::Arc::new(sentrix_storage::MdbxStorage::open(dir.path()).unwrap());
+        let storage = crate::storage::TrieStorage::new(mdbx).unwrap();
         (dir, TrieCache::new(storage, capacity))
     }
 

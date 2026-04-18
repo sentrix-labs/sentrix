@@ -2,7 +2,7 @@
 // integration_sliding_window.rs — Sliding window (CHAIN_WINDOW_SIZE) tests
 //
 // Sentrix keeps only the last CHAIN_WINDOW_SIZE (1_000) blocks in RAM.
-// Older blocks are evicted and only accessible via sled storage.
+// Older blocks are evicted and only accessible via MDBX storage.
 // This test verifies that:
 //  - height() returns the true chain height (not the window size)
 //  - chain_window_start() advances correctly as blocks are evicted

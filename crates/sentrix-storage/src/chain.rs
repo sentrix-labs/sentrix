@@ -9,13 +9,15 @@ use crate::tables::*;
 use sentrix_primitives::block::Block;
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
+use std::sync::Arc;
 
 /// High-level chain storage — wraps MdbxStorage with blockchain-specific methods.
 ///
-/// API mirrors the old sled-based `Storage` in sentrix-core so that migration
-/// is a near-drop-in replacement (change type + open call, methods stay the same).
+/// Clone is cheap — `Arc<MdbxStorage>` is reference-counted.
+/// Thread-safe: libmdbx `Database` supports concurrent read transactions.
+#[derive(Clone)]
 pub struct ChainStorage {
-    mdbx: MdbxStorage,
+    mdbx: Arc<MdbxStorage>,
 }
 
 impl ChainStorage {
@@ -45,7 +47,7 @@ impl ChainStorage {
             }
         }
 
-        let mdbx = MdbxStorage::open(Path::new(path))?;
+        let mdbx = Arc::new(MdbxStorage::open(Path::new(path))?);
 
         let storage = Self { mdbx };
         storage.ensure_hash_index()?;
@@ -174,6 +176,11 @@ impl ChainStorage {
     /// The trie backend needs direct table access for nodes/values/roots.
     pub fn mdbx(&self) -> &MdbxStorage {
         &self.mdbx
+    }
+
+    /// Get a cloneable Arc handle to MdbxStorage (for sharing with trie/blockchain).
+    pub fn mdbx_arc(&self) -> Arc<MdbxStorage> {
+        Arc::clone(&self.mdbx)
     }
 
     // ── Tx index ────────────────────────────────────────────

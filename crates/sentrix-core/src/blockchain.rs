@@ -10,16 +10,18 @@ use sentrix_trie::address::{account_value_bytes, address_to_key};
 use sentrix_trie::tree::SentrixTrie;
 use crate::vm::ContractRegistry;
 use sentrix_primitives::error::{SentrixError, SentrixResult};
+use sentrix_storage::{MdbxStorage, tables, height_key, key_to_height};
 use hex;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 // ── Chain constants ──────────────────────────────────────
 pub const MAX_SUPPLY: u64 = 210_000_000 * 100_000_000; // in sentri
 pub const BLOCK_REWARD: u64 = 100_000_000; // 1 SRX in sentri
 pub const HALVING_INTERVAL: u64 = 42_000_000; // blocks
-pub const BLOCK_TIME_SECS: u64 = 3;
-pub const MAX_TX_PER_BLOCK: usize = 100;
+pub const BLOCK_TIME_SECS: u64 = 1;
+pub const MAX_TX_PER_BLOCK: usize = 5000;
 pub const CHAIN_ID: u64 = 7119; // default; overridable via SENTRIX_CHAIN_ID env
 
 /// Default Voyager DPoS fork activation height.
@@ -63,7 +65,7 @@ pub const MAX_MEMPOOL_SIZE: usize = 10_000;
 pub const MAX_MEMPOOL_PER_SENDER: usize = 100;
 // Mempool TTL — transactions older than this are automatically pruned
 pub const MEMPOOL_MAX_AGE_SECS: u64 = 3_600; // 1 hour
-// Sliding window size — only last N blocks kept in RAM; older blocks stay in sled storage
+// Sliding window size — only last N blocks kept in RAM; older blocks stay in MDBX storage
 pub const CHAIN_WINDOW_SIZE: usize = 1_000;
 
 // Sentrix addresses are 42-char hex strings (0x + 40 hex digits)
@@ -87,7 +89,7 @@ pub const GENESIS_ALLOCATIONS: &[(&str, u64)] = &[
 pub const TOTAL_PREMINE: u64 = 63_000_000 * 100_000_000;
 
 // ── Blockchain struct ────────────────────────────────────
-// Chain field excluded from serde — blocks are saved individually in sled storage
+// Chain field excluded from serde — blocks are saved individually in MDBX storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Blockchain {
     // Critical chain-state fields use pub to enforce validated access:
@@ -105,22 +107,16 @@ pub struct Blockchain {
     pub total_minted: u64,
     pub chain_id: u64, // kept pub — read-only constant used by external clients
     /// Binary Sparse Merkle Tree for account state.
-    /// None until init_trie() is called; not persisted in sled "state" blob.
+    /// None until init_trie() is called; not persisted in MDBX state blob.
     #[serde(skip)]
     pub state_trie: Option<SentrixTrie>,
 
-    /// A5: sled tree mapping txid (hex string) → block_index (u64 LE bytes).
+    /// MDBX storage handle for txid_index lookups and on-demand block loading.
     /// Populated by `init_storage_handle()` at startup. Allows O(1) tx lookups
-    /// for blocks that have been evicted from the in-memory chain window
-    /// (CHAIN_WINDOW_SIZE = 1000). Without this index, `get_transaction()`
-    /// only sees the last ~1000 blocks and returns None for older txs.
+    /// for blocks that have been evicted from the in-memory chain window.
+    /// Cheap clone — `Arc<MdbxStorage>`.
     #[serde(skip)]
-    pub txid_index: Option<sled::Tree>,
-
-    /// A5: sled DB handle so `get_transaction()` can `load_block` on a cache
-    /// miss. Set by `init_storage_handle()`. Cheap clone — sled::Db is Arc.
-    #[serde(skip)]
-    pub storage_db: Option<sled::Db>,
+    pub mdbx_storage: Option<Arc<MdbxStorage>>,
 
     // ── Voyager DPoS state (Phase 2a) ────────────────────
     /// Staking registry for DPoS validator management
@@ -145,8 +141,7 @@ impl Blockchain {
             total_minted: 0,
             chain_id: get_chain_id(),
             state_trie: None,
-            txid_index: None,
-            storage_db: None,
+            mdbx_storage: None,
             stake_registry: sentrix_staking::staking::StakeRegistry::new(),
             epoch_manager: sentrix_staking::epoch::EpochManager::new(),
             slashing: sentrix_staking::slashing::SlashingEngine::new(),
@@ -180,65 +175,52 @@ impl Blockchain {
         self.chain.push(genesis);
     }
 
-    /// A5: Bind sled handles so `get_transaction()` can resolve txids that
-    /// fall outside the in-memory chain window. Opens the `txid_index`
-    /// named tree (txid hex bytes → block_index u64 LE) and stores a clone
-    /// of the Db handle (cheap — sled::Db is Arc internally) for on-demand
-    /// block loads.
-    pub fn init_storage_handle(&mut self, db: &sled::Db) -> SentrixResult<()> {
-        let tree = db
-            .open_tree("txid_index")
-            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
-        self.txid_index = Some(tree);
-        self.storage_db = Some(db.clone());
+    /// Bind MDBX storage handle so `get_transaction()` can resolve txids that
+    /// fall outside the in-memory chain window. Cheap clone — Arc<MdbxStorage>.
+    pub fn init_storage_handle(&mut self, mdbx: Arc<MdbxStorage>) -> SentrixResult<()> {
+        self.mdbx_storage = Some(mdbx);
         Ok(())
     }
 
-    /// A5: Record a tx → block_index mapping. Called by `add_block` for each
+    /// Record a tx → block_index mapping. Called by `add_block` for each
     /// tx in a freshly committed block. No-op if `init_storage_handle` was
-    /// never called (e.g. unit tests with no sled backing).
+    /// never called (e.g. unit tests with no storage backing).
     pub fn record_tx_in_index(&self, txid: &str, block_index: u64) {
-        if let Some(tree) = &self.txid_index {
-            let _ = tree.insert(txid.as_bytes(), &block_index.to_le_bytes());
+        if let Some(mdbx) = &self.mdbx_storage {
+            let _ = mdbx.put(tables::TABLE_TX_INDEX, txid.as_bytes(), &height_key(block_index));
         }
     }
 
-    /// A5: Resolve a txid to its containing (Block, block_index) by
-    /// consulting the sled txid_index then loading the block from sled.
+    /// Resolve a txid to its containing (Block, block_index) by
+    /// consulting the MDBX txid_index then loading the block.
     /// Returns None if the txid is unknown or the storage handle was never
     /// initialised.
     pub fn lookup_tx_in_storage(&self, txid: &str) -> Option<(Block, u64)> {
-        let tree = self.txid_index.as_ref()?;
-        let db = self.storage_db.as_ref()?;
-        let raw = tree.get(txid.as_bytes()).ok().flatten()?;
+        let mdbx = self.mdbx_storage.as_ref()?;
+        let raw = mdbx.get(tables::TABLE_TX_INDEX, txid.as_bytes()).ok().flatten()?;
         if raw.len() != 8 {
             return None;
         }
-        let mut buf = [0u8; 8];
-        buf.copy_from_slice(&raw);
-        let block_index = u64::from_le_bytes(buf);
+        let block_index = key_to_height(&raw);
         let key = format!("block:{}", block_index);
-        let bytes = db.get(key.as_bytes()).ok().flatten()?;
+        let bytes = mdbx.get(tables::TABLE_META, key.as_bytes()).ok().flatten()?;
         let block: Block = serde_json::from_slice(&bytes).ok()?;
         Some((block, block_index))
     }
 
-    /// A5: One-shot backfill — walk every sled-stored block from genesis to
-    /// the current height and populate the txid_index for any tx that does
-    /// not already have an entry. Idempotent. Called once at startup so
-    /// nodes upgrading to A5 don't lose lookup coverage on existing chain
-    /// history.
-    pub fn backfill_txid_index(&self, db: &sled::Db) -> SentrixResult<usize> {
-        let tree = match &self.txid_index {
-            Some(t) => t,
-            None => return Ok(0),
-        };
+    /// One-shot backfill — walk every stored block from genesis to the current
+    /// height and populate the txid_index for any tx that does not already
+    /// have an entry. Idempotent. Called once at startup.
+    pub fn backfill_txid_index(&self, mdbx: &MdbxStorage) -> SentrixResult<usize> {
+        if self.mdbx_storage.is_none() {
+            return Ok(0);
+        }
         let height = self.height();
         let mut written = 0usize;
         for i in 0..=height {
             let key = format!("block:{}", i);
-            let bytes = match db
-                .get(key.as_bytes())
+            let bytes = match mdbx
+                .get(tables::TABLE_META, key.as_bytes())
                 .map_err(|e| SentrixError::StorageError(e.to_string()))?
             {
                 Some(b) => b,
@@ -249,12 +231,12 @@ impl Blockchain {
                 Err(_) => continue,
             };
             for tx in &block.transactions {
-                if tree
-                    .get(tx.txid.as_bytes())
+                if mdbx
+                    .get(tables::TABLE_TX_INDEX, tx.txid.as_bytes())
                     .map_err(|e| SentrixError::StorageError(e.to_string()))?
                     .is_none()
                 {
-                    tree.insert(tx.txid.as_bytes(), &block.index.to_le_bytes())
+                    mdbx.put(tables::TABLE_TX_INDEX, tx.txid.as_bytes(), &height_key(block.index))
                         .map_err(|e| SentrixError::StorageError(e.to_string()))?;
                     written += 1;
                 }
@@ -272,7 +254,7 @@ impl Blockchain {
     }
 
     /// First block index currently held in the in-memory window.
-    /// Blocks with index < chain_window_start() are only in sled storage.
+    /// Blocks with index < chain_window_start() are only in MDBX storage.
     pub fn chain_window_start(&self) -> u64 {
         self.chain.first().map(|b| b.index).unwrap_or(0)
     }
@@ -438,15 +420,15 @@ impl Blockchain {
 
     // ── SentrixTrie (Step 5) ─────────────────────────────
 
-    /// Initialize the state trie from a sled database.
+    /// Initialize the state trie from MDBX storage.
     /// Loads the committed root for the current height, or starts from an empty trie.
     /// Call once at node startup, after loading blockchain state from storage.
     ///
     /// If no trie root exists for the current height but the chain has history,
     /// backfills all non-zero accounts from AccountDB (one-time migration on trie introduction).
-    pub fn init_trie(&mut self, db: &sled::Db) -> SentrixResult<()> {
+    pub fn init_trie(&mut self, mdbx: Arc<MdbxStorage>) -> SentrixResult<()> {
         let height = self.height();
-        let mut trie = SentrixTrie::open(db, height)?;
+        let mut trie = SentrixTrie::open(mdbx, height)?;
 
         // First-time trie init on a node whose AccountDB predates SentrixTrie:
         // AccountDB has correct state but the trie is empty — backfill now.
@@ -1718,10 +1700,10 @@ mod tests {
 
     // ── SentrixTrie unit tests ────────────────────────────
 
-    fn temp_db() -> (tempfile::TempDir, sled::Db) {
+    fn temp_mdbx() -> (tempfile::TempDir, Arc<MdbxStorage>) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = sled::open(dir.path()).unwrap();
-        (dir, db)
+        let mdbx = Arc::new(MdbxStorage::open(dir.path()).unwrap());
+        (dir, mdbx)
     }
 
     /// A freshly constructed Blockchain must have state_trie = None.
@@ -1745,9 +1727,9 @@ mod tests {
     /// After init_trie() + add_block(), trie_root_at(1) must return Some(root).
     #[test]
     fn test_trie_initialized_commits_root_per_block() {
-        let (_dir, db) = temp_db();
+        let (_dir, mdbx) = temp_mdbx();
         let mut bc = setup_chain();
-        bc.init_trie(&db).unwrap();
+        bc.init_trie(Arc::clone(&mdbx)).unwrap();
         assert!(bc.state_trie.is_some());
 
         let block = bc.create_block("validator1").unwrap();
@@ -1763,9 +1745,9 @@ mod tests {
     /// trie_root_at() must return None for a version that has not been committed yet.
     #[test]
     fn test_trie_root_at_uncommitted_version_returns_none() {
-        let (_dir, db) = temp_db();
+        let (_dir, mdbx) = temp_mdbx();
         let mut bc = setup_chain();
-        bc.init_trie(&db).unwrap();
+        bc.init_trie(Arc::clone(&mdbx)).unwrap();
         // No blocks added — version 1 has not been committed
         assert_eq!(
             bc.trie_root_at(1),
@@ -1777,9 +1759,9 @@ mod tests {
     /// Multiple blocks must each have a distinct committed root persisted in the trie.
     #[test]
     fn test_trie_multiple_blocks_all_roots_persisted() {
-        let (_dir, db) = temp_db();
+        let (_dir, mdbx) = temp_mdbx();
         let mut bc = setup_chain();
-        bc.init_trie(&db).unwrap();
+        bc.init_trie(Arc::clone(&mdbx)).unwrap();
 
         for i in 1u64..=3 {
             let block = bc.create_block("validator1").unwrap();
@@ -1805,9 +1787,9 @@ mod tests {
         );
 
         // With trie: state_root should be Some
-        let (_dir, db) = temp_db();
+        let (_dir, mdbx) = temp_mdbx();
         let mut bc_trie = setup_chain();
-        bc_trie.init_trie(&db).unwrap();
+        bc_trie.init_trie(Arc::clone(&mdbx)).unwrap();
         let b2 = bc_trie.create_block("validator1").unwrap();
         bc_trie.add_block(b2).unwrap();
         assert!(

@@ -76,7 +76,7 @@ const SNAPSHOT_VERSION: u32 = 1;
 
 impl Blockchain {
     /// Export the current chain state as a `StateSnapshot`.
-    /// Must be called while the node is STOPPED (no concurrent writes to sled).
+    /// Must be called while the node is STOPPED (no concurrent writes to MDBX).
     pub fn export_state(&self) -> SentrixResult<StateSnapshot> {
         let height = self.height();
         let latest = self.latest_block()?;

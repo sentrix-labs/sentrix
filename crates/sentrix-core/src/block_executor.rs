@@ -306,7 +306,7 @@ impl Blockchain {
         // Append block to chain
         self.chain.push(block);
 
-        // Sliding window: evict oldest blocks beyond CHAIN_WINDOW_SIZE; evicted blocks stay in sled
+        // Sliding window: evict oldest blocks beyond CHAIN_WINDOW_SIZE; evicted blocks stay in MDBX
         // Only the in-memory window shrinks — full history is always available on disk
         if self.chain.len() > CHAIN_WINDOW_SIZE {
             let excess = self.chain.len() - CHAIN_WINDOW_SIZE;
@@ -598,7 +598,7 @@ mod tests {
             "test assumes height < fork"
         );
 
-        // Init an in-memory trie (no sled — state_trie will be None without db)
+        // Init an in-memory trie (no MDBX — state_trie will be None without storage)
         // Without trie init, update_trie_for_block returns Ok(None) → state_root remains None
         let block = bc.create_block("v1").unwrap();
         let original_hash = block.hash.clone();

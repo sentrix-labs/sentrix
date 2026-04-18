@@ -5,7 +5,8 @@ use crate::node::{NodeHash, TrieNode, empty_hash, get_bit, hash_internal, hash_l
 use crate::proof::MerkleProof;
 use crate::storage::TrieStorage;
 use sentrix_primitives::{SentrixError, SentrixResult};
-use sled::Db;
+use sentrix_storage::MdbxStorage;
+use std::sync::Arc;
 
 /// Binary Sparse Merkle Tree with 256 levels.
 ///
@@ -14,7 +15,7 @@ use sled::Db;
 /// - Leaf hash:     BLAKE3(0x00 || key || value)
 /// - Internal hash: SHA-256(0x01 || left || right)
 /// - Short-circuit: a lone key in a subtree is stored as a leaf at that depth
-/// - Persistent:    all nodes/values stored in sled; LRU cache in front
+/// - Persistent:    all nodes/values stored in MDBX; LRU cache in front
 /// - Versioned:     each committed `version` (block height) maps to a root hash
 pub struct SentrixTrie {
     cache: TrieCache,
@@ -23,10 +24,10 @@ pub struct SentrixTrie {
 }
 
 impl SentrixTrie {
-    /// Open (or create) a trie backed by `db` at `version`.
+    /// Open (or create) a trie backed by MDBX storage at `version`.
     /// Loads the stored root for that version; uses the empty-tree root if none exists.
-    pub fn open(db: &Db, version: u64) -> SentrixResult<Self> {
-        let storage = TrieStorage::new(db)?;
+    pub fn open(mdbx: Arc<MdbxStorage>, version: u64) -> SentrixResult<Self> {
+        let storage = TrieStorage::new(mdbx)?;
         let root = storage.load_root(version)?.unwrap_or_else(|| empty_hash(0));
         let cache = TrieCache::new(storage, 10_000);
         Ok(Self {
@@ -513,7 +514,7 @@ impl std::fmt::Debug for SentrixTrie {
     }
 }
 
-/// Clone shares the same underlying sled trees (Arc-based) but starts with a fresh LRU cache.
+/// Clone shares the same underlying MDBX storage (Arc-based) but starts with a fresh LRU cache.
 /// Uses the original capacity from construction, not a hardcoded default.
 impl Clone for SentrixTrie {
     fn clone(&self) -> Self {
@@ -532,23 +533,23 @@ mod tests {
     use crate::address::{account_value_bytes, account_value_decode, address_to_key};
     use crate::node::NULL_HASH;
 
-    fn temp_db() -> (tempfile::TempDir, Db) {
+    fn temp_mdbx() -> (tempfile::TempDir, Arc<MdbxStorage>) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = sled::open(dir.path()).unwrap();
-        (dir, db)
+        let mdbx = Arc::new(MdbxStorage::open(dir.path()).unwrap());
+        (dir, mdbx)
     }
 
     #[test]
     fn test_empty_trie_root_is_canonical() {
-        let (_dir, db) = temp_db();
-        let trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let trie = SentrixTrie::open(mdbx, 0).unwrap();
         assert_eq!(trie.root_hash(), empty_hash(0));
     }
 
     #[test]
     fn test_insert_changes_root() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(mdbx, 0).unwrap();
         let key = address_to_key("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
         let val = account_value_bytes(1_000_000, 0);
         let new_root = trie.insert(&key, &val).unwrap();
@@ -558,8 +559,8 @@ mod tests {
 
     #[test]
     fn test_insert_and_get_roundtrip() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(mdbx, 0).unwrap();
         let key = address_to_key("0x1111111111111111111111111111111111111111");
         let val = account_value_bytes(42_000_000, 7);
         trie.insert(&key, &val).unwrap();
@@ -569,16 +570,16 @@ mod tests {
 
     #[test]
     fn test_get_absent_key_returns_none() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let key = address_to_key("0xdeadbeef00000000000000000000000000000000");
         assert!(trie.get(&key).unwrap().is_none());
     }
 
     #[test]
     fn test_update_existing_key() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let key = address_to_key("0xaaaa");
         trie.insert(&key, &account_value_bytes(100, 0)).unwrap();
         trie.insert(&key, &account_value_bytes(200, 1)).unwrap();
@@ -590,8 +591,8 @@ mod tests {
 
     #[test]
     fn test_multiple_keys_independent() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let k1 = address_to_key("0xaaaa");
         let k2 = address_to_key("0xbbbb");
         trie.insert(&k1, &account_value_bytes(100, 0)).unwrap();
@@ -604,8 +605,8 @@ mod tests {
 
     #[test]
     fn test_root_changes_per_insert() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let k1 = address_to_key("0xaaaa");
         let k2 = address_to_key("0xbbbb");
         let r0 = trie.root_hash();
@@ -619,8 +620,8 @@ mod tests {
 
     #[test]
     fn test_commit_and_versioned_root() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let key = address_to_key("0xabcd");
         trie.insert(&key, &account_value_bytes(500, 0)).unwrap();
         let root_v1 = trie.commit(1).unwrap();
@@ -632,8 +633,8 @@ mod tests {
 
     #[test]
     fn test_membership_proof_verifies() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let key = address_to_key("0x1234");
         let val = account_value_bytes(777, 3);
         trie.insert(&key, &val).unwrap();
@@ -645,8 +646,8 @@ mod tests {
 
     #[test]
     fn test_nonmembership_proof_verifies() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         // Insert one key, prove a different one is absent
         let key_present = address_to_key("0xaaaa");
         let key_absent = address_to_key("0xbbbb");
@@ -660,8 +661,8 @@ mod tests {
 
     #[test]
     fn test_empty_trie_nonmembership_proof() {
-        let (_dir, db) = temp_db();
-        let trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let key = address_to_key("0xffff");
         let root = trie.root_hash();
         let proof = trie.prove(&key).unwrap();
@@ -679,16 +680,16 @@ mod tests {
     /// T-B: updating an existing key must not grow the node count (old leaf is cleaned up).
     #[test]
     fn test_update_in_place_no_storage_leak() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let key = address_to_key("0xaaaa");
 
         trie.insert(&key, &account_value_bytes(100, 0)).unwrap();
-        let nodes_after_insert = db.open_tree("trie_nodes").unwrap().len();
+        let nodes_after_insert = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
 
         // Update same key — node count must stay the same (old leaf removed, new leaf added)
         trie.insert(&key, &account_value_bytes(200, 1)).unwrap();
-        let nodes_after_update = db.open_tree("trie_nodes").unwrap().len();
+        let nodes_after_update = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
 
         assert_eq!(
             nodes_after_insert, nodes_after_update,
@@ -699,10 +700,10 @@ mod tests {
     /// T-D: open with a custom LRU capacity (small cache, still functionally correct).
     #[test]
     fn test_custom_capacity_trie_functional() {
-        let (_dir, db) = temp_db();
+        let (_dir, mdbx) = temp_mdbx();
         // Use a tiny capacity to exercise LRU eviction; correctness must be preserved
-        let storage = crate::storage::TrieStorage::new(&db).unwrap();
-        let root = crate::storage::TrieStorage::new(&db)
+        let storage = crate::storage::TrieStorage::new(Arc::clone(&mdbx)).unwrap();
+        let root = crate::storage::TrieStorage::new(Arc::clone(&mdbx))
             .unwrap()
             .load_root(0)
             .unwrap()
@@ -731,8 +732,8 @@ mod tests {
     #[test]
     fn test_gc_removes_stale_nodes() {
         use std::collections::HashSet;
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let key = address_to_key("0x1234");
 
         trie.insert(&key, &account_value_bytes(500, 0)).unwrap();
@@ -752,18 +753,18 @@ mod tests {
     /// delete() cleans up both the leaf node and its associated value blob.
     #[test]
     fn test_delete_cleans_up_leaf_node_and_value() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let key = address_to_key("0x1111111111111111111111111111111111111111");
         let val = account_value_bytes(500, 0);
 
         trie.insert(&key, &val).unwrap();
-        let nodes_after_insert = db.open_tree("trie_nodes").unwrap().len();
-        let values_after_insert = db.open_tree("trie_values").unwrap().len();
+        let nodes_after_insert = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
+        let values_after_insert = mdbx.count(sentrix_storage::tables::TABLE_TRIE_VALUES).unwrap();
 
         trie.delete(&key).unwrap();
-        let nodes_after_delete = db.open_tree("trie_nodes").unwrap().len();
-        let values_after_delete = db.open_tree("trie_values").unwrap().len();
+        let nodes_after_delete = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
+        let values_after_delete = mdbx.count(sentrix_storage::tables::TABLE_TRIE_VALUES).unwrap();
 
         assert!(
             nodes_after_delete < nodes_after_insert,
@@ -784,22 +785,22 @@ mod tests {
     /// insert cleans up old internal nodes when a structural relink is required.
     #[test]
     fn test_insert_cleans_old_internal_nodes() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let k1 = address_to_key("0xaaaa");
         let k2 = address_to_key("0xbbbb");
 
         // Insert first key (creates leaf at root)
         trie.insert(&k1, &account_value_bytes(100, 0)).unwrap();
-        let nodes_1 = db.open_tree("trie_nodes").unwrap().len();
+        let nodes_1 = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
 
         // Insert second key (creates internal node, old root-leaf becomes sibling)
         trie.insert(&k2, &account_value_bytes(200, 0)).unwrap();
-        let nodes_2 = db.open_tree("trie_nodes").unwrap().len();
+        let nodes_2 = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
 
         // Update k1 (causes structural change — old internal nodes replaced)
         trie.insert(&k1, &account_value_bytes(300, 1)).unwrap();
-        let nodes_3 = db.open_tree("trie_nodes").unwrap().len();
+        let nodes_3 = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
 
         // Node count after update should not exceed count after two-key insert
         // (old internal nodes should be cleaned up)
@@ -823,8 +824,8 @@ mod tests {
     /// previously committed version, even when that root hash appears in old_internal_hashes.
     #[test]
     fn test_insert_does_not_delete_committed_root() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
 
         let k1 = address_to_key("0xaaaa");
         let k2 = address_to_key("0xbbbb");
@@ -857,8 +858,8 @@ mod tests {
     /// prove() only reads the trie — no mutable reference required.
     #[test]
     fn test_prove_works_with_shared_reference() {
-        let (_dir, db) = temp_db();
-        let mut trie = SentrixTrie::open(&db, 0).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let key = address_to_key("0x5555555555555555555555555555555555555555");
         trie.insert(&key, &account_value_bytes(999, 0)).unwrap();
         let root = trie.root_hash();
@@ -873,8 +874,8 @@ mod tests {
     /// Clone preserves the original capacity rather than using a hardcoded default.
     #[test]
     fn test_clone_preserves_capacity() {
-        let (_dir, db) = temp_db();
-        let storage = crate::storage::TrieStorage::new(&db).unwrap();
+        let (_dir, mdbx) = temp_mdbx();
+        let storage = crate::storage::TrieStorage::new(Arc::clone(&mdbx)).unwrap();
         let cache = crate::cache::TrieCache::new(storage, 42);
         let trie = SentrixTrie {
             cache,

@@ -67,9 +67,12 @@ ADDR_ALLOW_PATHS=(
   "^\\.githooks/pre-commit$"
   "^\\.github/"                       # CI workflows may reference docs paths
   "^CHANGELOG\\.md$"                  # historical / audit trail mentions
-  "^src/core/"                         # core modules contain genesis constants + test blocks with burn/genesis/random addrs
+  "^src/core/"                         # re-export layer references genesis constants
   "^src/api/"                          # API module tests reference genesis addresses via constants
   "^src/.*test.*\\.rs$"               # tests use generated random addrs
+  "^crates/sentrix-core/src/"          # core crate: genesis constants, test addresses
+  "^crates/sentrix-trie/src/"          # trie crate: test address_to_key patterns
+  "^crates/sentrix-rpc/src/"           # RPC crate: route tests with addresses
   "^tests/"                            # integration tests
   "^docs/.*\\.md$"                    # docs may show example addresses
   "^benchmark/.*\\.py$"               # benchmark scripts use env var by default

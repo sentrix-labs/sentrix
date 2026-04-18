@@ -1,8 +1,8 @@
-//! sentrix-trie — Binary Sparse Merkle Tree (256-level) with sled persistence.
+//! sentrix-trie — Binary Sparse Merkle Tree (256-level) with MDBX persistence.
 //!
 //! Provides:
 //! - `SentrixTrie` — the main tree API (insert, get, prove, commit)
-//! - `TrieStorage` — sled-backed persistent node storage
+//! - `TrieStorage` — MDBX-backed persistent node storage
 //! - `TrieCache` — LRU cache in front of TrieStorage
 //! - `MerkleProof` — inclusion proof generation + verification
 //! - Address helpers for account state encoding

@@ -4,7 +4,7 @@ members = [".", "crates/sentrix-primitives", "crates/sentrix-wallet", "crates/se
 
 [package]
 name = "sentrix"
-version = "1.5.0"
+version = "2.0.0"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Fast, secure Layer-1 blockchain built in Rust"
@@ -58,8 +58,8 @@ hex = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# Storage (pure Rust — no C deps, no libclang needed)
-sled = "0.34"
+# Storage (MDBX — high-performance memory-mapped storage)
+sentrix-storage = { path = "crates/sentrix-storage" }
 
 # Networking
 tokio = { version = "1.0", features = ["full"] }

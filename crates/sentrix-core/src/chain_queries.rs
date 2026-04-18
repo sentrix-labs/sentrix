@@ -22,7 +22,7 @@ impl Blockchain {
             }
         }
         // A5 fallback: txid lives in a block evicted from the window.
-        // Resolve via the sled txid_index then load the block from sled.
+        // Resolve via the MDBX txid_index then load the block from MDBX.
         let (block, _idx) = self.lookup_tx_in_storage(txid)?;
         for tx in &block.transactions {
             if tx.txid == txid {

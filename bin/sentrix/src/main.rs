@@ -1558,7 +1558,7 @@ async fn cmd_start(
         });
     }
 
-    // Event handler — persist P2P blocks to sled + forward BFT events
+    // Event handler — persist P2P blocks to MDBX + forward BFT events
     // Sync is handled inside the libp2p swarm task (Step 3d).
     let storage_for_p2p = storage.clone();
     let bft_tx_clone = bft_tx;

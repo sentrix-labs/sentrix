@@ -18,6 +18,12 @@ pub struct MdbxStorage {
     db: Database<NoWriteMap>,
 }
 
+impl std::fmt::Debug for MdbxStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MdbxStorage").finish_non_exhaustive()
+    }
+}
+
 impl MdbxStorage {
     /// Open (or create) the MDBX database at the given path.
     /// Pre-creates all Sentrix tables on first open.
