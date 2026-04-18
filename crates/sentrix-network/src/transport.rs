@@ -3,7 +3,7 @@
 // Builds a fully encrypted, multiplexed transport:
 //   TCP  →  Noise XX (mutual auth + forward secrecy)  →  Yamux (stream muxing)
 
-use crate::types::error::{SentrixError, SentrixResult};
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 use libp2p::{
     PeerId, Transport,
     core::{muxing::StreamMuxerBox, transport::Boxed, upgrade},

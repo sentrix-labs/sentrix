@@ -1,8 +1,8 @@
 // db.rs - Sentrix — Per-block persistent storage
 
-use crate::core::block::Block;
-use crate::core::blockchain::{Blockchain, CHAIN_WINDOW_SIZE};
-use crate::types::error::{SentrixError, SentrixResult};
+use sentrix_primitives::block::Block;
+use crate::blockchain::{Blockchain, CHAIN_WINDOW_SIZE};
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 use serde::{Serialize, de::DeserializeOwned};
 use sled::Db;
 
@@ -322,7 +322,7 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::blockchain::Blockchain;
+    use crate::blockchain::Blockchain;
 
     fn temp_db_path() -> String {
         let dir = std::env::temp_dir().join(format!("sentrix_test_{}", uuid::Uuid::new_v4()));

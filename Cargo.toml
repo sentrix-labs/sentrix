@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/sentrix-primitives", "crates/sentrix-wallet", "crates/sentrix-trie", "crates/sentrix-staking", "crates/sentrix-evm", "crates/sentrix-bft", "bin/sentrix"]
+members = [".", "crates/sentrix-primitives", "crates/sentrix-wallet", "crates/sentrix-trie", "crates/sentrix-staking", "crates/sentrix-evm", "crates/sentrix-bft", "crates/sentrix-core", "crates/sentrix-network", "crates/sentrix-rpc", "bin/sentrix"]
 
 [package]
 name = "sentrix"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Fast, secure Layer-1 blockchain built in Rust"
@@ -40,6 +40,9 @@ sentrix-trie = { path = "crates/sentrix-trie" }
 sentrix-staking = { path = "crates/sentrix-staking" }
 sentrix-evm = { path = "crates/sentrix-evm" }
 sentrix-bft = { path = "crates/sentrix-bft" }
+sentrix-core = { path = "crates/sentrix-core" }
+sentrix-network = { path = "crates/sentrix-network" }
+sentrix-rpc = { path = "crates/sentrix-rpc" }
 
 # Crypto
 secp256k1 = { version = "0.29", features = ["rand", "recovery", "serde"] }

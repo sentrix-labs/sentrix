@@ -1,6 +1,6 @@
 // authority.rs - Sentrix
 
-use crate::types::error::{SentrixError, SentrixResult};
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 use secp256k1::PublicKey;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -129,7 +129,7 @@ impl AuthorityManager {
         }
 
         // Validate address format before the expensive secp256k1 point check
-        if !crate::core::blockchain::is_valid_sentrix_address(&address) {
+        if !crate::blockchain::is_valid_sentrix_address(&address) {
             return Err(SentrixError::InvalidTransaction(format!(
                 "invalid validator address format: {}",
                 address
@@ -145,7 +145,7 @@ impl AuthorityManager {
                 "public_key: not a valid secp256k1 public key".to_string(),
             )
         })?;
-        let derived = crate::wallet::wallet::Wallet::derive_address(&pk);
+        let derived = sentrix_wallet::Wallet::derive_address(&pk);
         if derived != address {
             return Err(SentrixError::InvalidTransaction(format!(
                 "public_key does not correspond to address — derived {}, expected {}",
@@ -375,7 +375,7 @@ impl AuthorityManager {
                 caller
             )));
         }
-        if !crate::core::blockchain::is_valid_sentrix_address(&new_admin) {
+        if !crate::blockchain::is_valid_sentrix_address(&new_admin) {
             return Err(SentrixError::InvalidTransaction(format!(
                 "invalid new admin address format: {}",
                 new_admin
@@ -426,7 +426,7 @@ mod tests {
 
     /// Generate a (address, public_key_hex) pair for testing using a real secp256k1 wallet.
     fn gen_validator_keypair() -> (String, String) {
-        let wallet = crate::wallet::wallet::Wallet::generate(); // returns Wallet, not Result
+        let wallet = sentrix_wallet::Wallet::generate(); // returns Wallet, not Result
         let pk = wallet.get_public_key().unwrap();
         let pk_hex = hex::encode(pk.serialize_uncompressed());
         (wallet.address.clone(), pk_hex) // clone address since Wallet implements Drop (zeroize)

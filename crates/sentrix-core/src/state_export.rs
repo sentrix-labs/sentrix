@@ -1,7 +1,7 @@
 // state_export.rs — State snapshot export/import for backup, bootstrap, and migration.
 
-use crate::core::blockchain::Blockchain;
-use crate::types::error::{SentrixError, SentrixResult};
+use crate::blockchain::Blockchain;
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 use serde::{Deserialize, Serialize};
 
 /// Complete snapshot of chain state at a specific height. Includes account
@@ -227,7 +227,7 @@ impl Blockchain {
         self.authority.validators.clear();
         self.authority.admin_address = snapshot.admin_address.clone();
         for v in &snapshot.validators {
-            use crate::core::authority::Validator;
+            use crate::authority::Validator;
             let mut val = Validator::new(v.address.clone(), v.name.clone(), v.public_key.clone());
             val.is_active = v.is_active;
             val.blocks_produced = v.blocks_produced;
@@ -249,7 +249,7 @@ impl Blockchain {
 
         // Check account addresses are valid format
         for a in &snapshot.accounts {
-            if !crate::core::blockchain::is_valid_sentrix_address(&a.address) {
+            if !crate::blockchain::is_valid_sentrix_address(&a.address) {
                 return Err(SentrixError::Internal(format!(
                     "invalid account address: {}",
                     a.address
@@ -259,7 +259,7 @@ impl Blockchain {
 
         // Check validators
         for v in &snapshot.validators {
-            if !crate::core::blockchain::is_valid_sentrix_address(&v.address) {
+            if !crate::blockchain::is_valid_sentrix_address(&v.address) {
                 return Err(SentrixError::Internal(format!(
                     "invalid validator address: {}",
                     v.address
@@ -297,7 +297,7 @@ impl Blockchain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::blockchain::Blockchain;
+    use crate::blockchain::Blockchain;
 
     fn setup() -> Blockchain {
         // Use valid Sentrix-format addresses so verify_snapshot passes.

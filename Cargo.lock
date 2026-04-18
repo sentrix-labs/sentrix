@@ -4736,7 +4736,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",
@@ -4758,8 +4758,11 @@ dependencies = [
  "revm",
  "secp256k1 0.29.1",
  "sentrix-bft",
+ "sentrix-core",
  "sentrix-evm",
+ "sentrix-network",
  "sentrix-primitives",
+ "sentrix-rpc",
  "sentrix-staking",
  "sentrix-trie",
  "sentrix-wallet",
@@ -4781,7 +4784,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-bft"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "bincode",
  "secp256k1 0.29.1",
@@ -4795,8 +4798,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "sentrix-core"
+version = "1.5.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips 2.0.0",
+ "alloy-primitives",
+ "alloy-rlp",
+ "bincode",
+ "chrono",
+ "hex",
+ "revm",
+ "secp256k1 0.29.1",
+ "sentrix-bft",
+ "sentrix-evm",
+ "sentrix-primitives",
+ "sentrix-staking",
+ "sentrix-trie",
+ "sentrix-wallet",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sha3 0.11.0",
+ "sled",
+ "tempfile",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "sentrix-evm"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "alloy-primitives",
  "hex",
@@ -4807,8 +4839,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "sentrix-network"
+version = "1.5.0"
+dependencies = [
+ "async-trait",
+ "bincode",
+ "futures",
+ "libp2p",
+ "sentrix-bft",
+ "sentrix-core",
+ "sentrix-primitives",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "sentrix-node"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -4825,7 +4874,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-primitives"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "hex",
  "secp256k1 0.29.1",
@@ -4838,8 +4887,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "sentrix-rpc"
+version = "1.5.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips 2.0.0",
+ "alloy-primitives",
+ "alloy-rlp",
+ "axum",
+ "chrono",
+ "hex",
+ "revm",
+ "sentrix-core",
+ "sentrix-evm",
+ "sentrix-primitives",
+ "sentrix-trie",
+ "serde",
+ "serde_json",
+ "sha3 0.11.0",
+ "subtle",
+ "tokio",
+ "tower 0.4.13",
+ "tower-http",
+ "tracing",
+]
+
+[[package]]
 name = "sentrix-staking"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "sentrix-primitives",
  "serde",
@@ -4849,7 +4924,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-trie"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "bincode",
  "blake3",
@@ -4865,7 +4940,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-wallet"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "aes-gcm",
  "argon2",

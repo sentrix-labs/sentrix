@@ -1,6 +1,6 @@
 // explorer.rs - Sentrix — Block Explorer Web UI
 
-use crate::api::routes::SharedState;
+use crate::routes::SharedState;
 use axum::{
     Json,
     extract::{Path, State},
@@ -223,7 +223,7 @@ const CHART_SECTION: &str = r#"
 </script>"#;
 
 fn page(title: &str, body: &str) -> Html<String> {
-    let chain_id = crate::core::blockchain::get_chain_id();
+    let chain_id = sentrix_core::blockchain::get_chain_id();
     Html(format!(
         r#"<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>{title} — Sentrix Explorer</title>
@@ -573,9 +573,9 @@ pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<Str
                 let is_evm = data_str.starts_with("EVM:");
                 let is_token = !is_evm
                     && !data_str.is_empty()
-                    && crate::core::transaction::TokenOp::decode(data_str).is_some();
+                    && sentrix_primitives::transaction::TokenOp::decode(data_str).is_some();
                 let is_create =
-                    is_evm && tx.to_address == crate::core::transaction::TOKEN_OP_ADDRESS;
+                    is_evm && tx.to_address == sentrix_primitives::transaction::TOKEN_OP_ADDRESS;
 
                 let type_badge = if is_cb {
                     r#"<span class="badge badge-blue">COINBASE</span>"#
@@ -842,9 +842,9 @@ pub async fn explorer_tx(
             let is_evm = data_str.starts_with("EVM:");
             let is_token = !is_evm
                 && !data_str.is_empty()
-                && crate::core::transaction::TokenOp::decode(data_str).is_some();
+                && sentrix_primitives::transaction::TokenOp::decode(data_str).is_some();
             let is_coinbase = tx_from == "COINBASE";
-            let is_create = is_evm && tx_to == crate::core::transaction::TOKEN_OP_ADDRESS;
+            let is_create = is_evm && tx_to == sentrix_primitives::transaction::TOKEN_OP_ADDRESS;
 
             let (type_badge_class, type_label) = if is_coinbase {
                 ("badge-blue", "COINBASE")

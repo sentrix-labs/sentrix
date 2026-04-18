@@ -8,10 +8,10 @@
 // The TCP listener/handler functions below are NOT called by main.rs.
 // Do NOT re-enable raw TCP P2P without adding encryption.
 
-use crate::core::block::Block;
-use crate::core::blockchain::Blockchain;
-use crate::core::transaction::Transaction;
-use crate::types::error::{SentrixError, SentrixResult};
+use sentrix_primitives::block::Block;
+use sentrix_core::blockchain::Blockchain;
+use sentrix_primitives::transaction::Transaction;
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -94,13 +94,13 @@ pub enum NodeEvent {
         peer_height: u64,
     },
     /// BFT: received a proposal from the network
-    BftProposal(crate::core::bft_messages::Proposal),
+    BftProposal(sentrix_bft::messages::Proposal),
     /// BFT: received a prevote from the network
-    BftPrevote(crate::core::bft_messages::Prevote),
+    BftPrevote(sentrix_bft::messages::Prevote),
     /// BFT: received a precommit from the network
-    BftPrecommit(crate::core::bft_messages::Precommit),
+    BftPrecommit(sentrix_bft::messages::Precommit),
     /// BFT: received a round-status announcement for round synchronization
-    BftRoundStatus(crate::core::bft_messages::RoundStatus),
+    BftRoundStatus(sentrix_bft::messages::RoundStatus),
 }
 
 // ── Node ─────────────────────────────────────────────────
@@ -605,7 +605,7 @@ mod tests {
     #[tokio::test]
     async fn test_m02_chain_id_mismatch_rejected() {
         // Create two blockchains with different chain IDs
-        let bc1 = crate::core::blockchain::Blockchain::new("admin".to_string());
+        let bc1 = sentrix_core::blockchain::Blockchain::new("admin".to_string());
         let shared1: SharedBlockchain = Arc::new(RwLock::new(bc1));
 
         let (tx1, _rx1) = mpsc::channel(16);

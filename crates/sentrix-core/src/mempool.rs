@@ -1,11 +1,11 @@
 // mempool.rs - Sentrix — Mempool management
 
-use crate::core::blockchain::{
+use crate::blockchain::{
     Blockchain, MAX_MEMPOOL_PER_SENDER, MAX_MEMPOOL_SIZE, MEMPOOL_MAX_AGE_SECS,
     is_valid_sentrix_address,
 };
-use crate::core::transaction::{TOKEN_OP_ADDRESS, TokenOp, Transaction};
-use crate::types::error::{SentrixError, SentrixResult};
+use sentrix_primitives::transaction::{TOKEN_OP_ADDRESS, TokenOp, Transaction};
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 
 impl Blockchain {
     pub fn add_to_mempool(&mut self, tx: Transaction) -> SentrixResult<()> {
@@ -159,8 +159,8 @@ impl Blockchain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::blockchain::{Blockchain, CHAIN_ID};
-    use crate::core::transaction::{MIN_TX_FEE, Transaction};
+    use crate::blockchain::{Blockchain, CHAIN_ID};
+    use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
     use secp256k1::rand::rngs::OsRng;
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
@@ -170,7 +170,7 @@ mod tests {
     }
 
     fn derive_addr(pk: &PublicKey) -> String {
-        crate::wallet::wallet::Wallet::derive_address(pk)
+        sentrix_wallet::Wallet::derive_address(pk)
     }
 
     fn setup() -> Blockchain {

@@ -1,9 +1,9 @@
 // block_executor.rs - Sentrix — Block validation and commit (two-pass)
 
-use crate::core::block::{Block, STATE_ROOT_FORK_HEIGHT};
-use crate::core::blockchain::{Blockchain, CHAIN_WINDOW_SIZE, is_valid_sentrix_address};
-use crate::core::transaction::TokenOp;
-use crate::types::error::{SentrixError, SentrixResult};
+use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
+use crate::blockchain::{Blockchain, CHAIN_WINDOW_SIZE, is_valid_sentrix_address};
+use sentrix_primitives::transaction::TokenOp;
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 use hex;
 use std::collections::{HashMap, HashSet};
 
@@ -362,7 +362,7 @@ impl Blockchain {
     /// applies state changes (contract creation, storage updates, balance transfers).
     fn execute_evm_tx_in_block(
         &mut self,
-        tx: &crate::core::transaction::Transaction,
+        tx: &sentrix_primitives::transaction::Transaction,
     ) -> SentrixResult<()> {
         // Parse "EVM:gas_limit:hex_data" from data field
         let parts: Vec<&str> = tx.data.splitn(3, ':').collect();
@@ -389,9 +389,9 @@ impl Blockchain {
         let _sender = envelope.recover_signer().ok();
 
         // Build EVM tx
-        use crate::core::evm::database::parse_sentrix_address;
-        use crate::core::evm::executor::execute_tx;
-        use crate::core::evm::gas::INITIAL_BASE_FEE;
+        use sentrix_evm::database::parse_sentrix_address;
+        use sentrix_evm::executor::execute_tx;
+        use sentrix_evm::gas::INITIAL_BASE_FEE;
         use alloy_primitives::U256;
         use revm::context::TxEnv;
         use revm::database::InMemoryDB;
@@ -400,7 +400,7 @@ impl Blockchain {
 
         let from_addr =
             parse_sentrix_address(&tx.from_address).unwrap_or(alloy_primitives::Address::ZERO);
-        let to_addr_str = if tx.to_address == crate::core::transaction::TOKEN_OP_ADDRESS {
+        let to_addr_str = if tx.to_address == sentrix_primitives::transaction::TOKEN_OP_ADDRESS {
             None
         } else {
             parse_sentrix_address(&tx.to_address)
@@ -480,8 +480,8 @@ impl Blockchain {
 // ── Tests ─────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
-    use crate::core::blockchain::{Blockchain, CHAIN_ID};
-    use crate::core::transaction::{MIN_TX_FEE, TOKEN_OP_ADDRESS, TokenOp, Transaction};
+    use crate::blockchain::{Blockchain, CHAIN_ID};
+    use sentrix_primitives::transaction::{MIN_TX_FEE, TOKEN_OP_ADDRESS, TokenOp, Transaction};
     use secp256k1::rand::rngs::OsRng;
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
@@ -491,7 +491,7 @@ mod tests {
     }
 
     fn derive_addr(pk: &PublicKey) -> String {
-        crate::wallet::wallet::Wallet::derive_address(pk)
+        sentrix_wallet::Wallet::derive_address(pk)
     }
 
     fn setup() -> Blockchain {
@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn test_state_root_set_after_block_below_fork_height() {
         // Blocks below STATE_ROOT_FORK_HEIGHT: state_root set but hash unchanged.
-        use crate::core::block::STATE_ROOT_FORK_HEIGHT;
+        use sentrix_primitives::block::STATE_ROOT_FORK_HEIGHT;
         let mut bc = setup();
         assert!(
             bc.height() + 1 < STATE_ROOT_FORK_HEIGHT,

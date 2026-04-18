@@ -1,9 +1,9 @@
 // sync.rs - Sentrix — Chain synchronization
 
-use crate::core::block::Block;
-use crate::network::node::{Message, Node, SharedBlockchain};
-use crate::storage::db::Storage;
-use crate::types::error::{SentrixError, SentrixResult};
+use sentrix_primitives::block::Block;
+use crate::node::{Message, Node, SharedBlockchain};
+use sentrix_core::storage::Storage;
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 use std::sync::Arc;
 use tokio::net::TcpStream;
 

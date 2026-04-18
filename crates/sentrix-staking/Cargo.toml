@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-staking"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2024"
 license = "BUSL-1.1"
 description = "DPoS staking, epoch management, and slashing for Sentrix blockchain"

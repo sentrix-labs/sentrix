@@ -1,7 +1,7 @@
 // token_ops.rs - Sentrix — SRX-20 token operations
 
-use crate::core::blockchain::{Blockchain, ECOSYSTEM_FUND_ADDRESS};
-use crate::types::error::{SentrixError, SentrixResult};
+use crate::blockchain::{Blockchain, ECOSYSTEM_FUND_ADDRESS};
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 
 impl Blockchain {
     // ── SRX-20 Token Operations ────────────────────────────
@@ -177,7 +177,7 @@ impl Blockchain {
 // ── Tests ─────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
-    use crate::core::blockchain::Blockchain;
+    use crate::blockchain::Blockchain;
 
     fn setup() -> Blockchain {
         let mut bc = Blockchain::new("admin".to_string());
@@ -197,7 +197,7 @@ mod tests {
         let burned_before = bc.accounts.total_burned;
         let eco_before = bc
             .accounts
-            .get_balance(crate::core::blockchain::ECOSYSTEM_FUND_ADDRESS);
+            .get_balance(crate::blockchain::ECOSYSTEM_FUND_ADDRESS);
 
         bc.deploy_token(
             deployer,
@@ -213,7 +213,7 @@ mod tests {
         let burned_after = bc.accounts.total_burned;
         let eco_after = bc
             .accounts
-            .get_balance(crate::core::blockchain::ECOSYSTEM_FUND_ADDRESS);
+            .get_balance(crate::blockchain::ECOSYSTEM_FUND_ADDRESS);
 
         // burn_share = ceil(fee/2), eco_share = fee - burn_share
         let expected_burn = deploy_fee.div_ceil(2);

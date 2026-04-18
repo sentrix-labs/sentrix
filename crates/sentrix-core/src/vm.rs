@@ -1,6 +1,6 @@
 // vm.rs - Sentrix — SRX-20 Token Standard
 
-use crate::types::error::{SentrixError, SentrixResult};
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;

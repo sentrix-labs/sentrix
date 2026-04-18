@@ -1,15 +1,15 @@
 // blockchain.rs - Sentrix — Blockchain struct, constants, genesis, core state methods
 
-use crate::core::account::AccountDB;
-use crate::core::authority::AuthorityManager;
-use crate::core::block::Block;
-use crate::core::merkle::merkle_root;
-use crate::core::transaction::TOKEN_OP_ADDRESS;
-use crate::core::transaction::Transaction;
-use crate::core::trie::address::{account_value_bytes, address_to_key};
-use crate::core::trie::tree::SentrixTrie;
-use crate::core::vm::ContractRegistry;
-use crate::types::error::{SentrixError, SentrixResult};
+use sentrix_primitives::account::AccountDB;
+use crate::authority::AuthorityManager;
+use sentrix_primitives::block::Block;
+use sentrix_primitives::merkle::merkle_root;
+use sentrix_primitives::transaction::TOKEN_OP_ADDRESS;
+use sentrix_primitives::transaction::Transaction;
+use sentrix_trie::address::{account_value_bytes, address_to_key};
+use sentrix_trie::tree::SentrixTrie;
+use crate::vm::ContractRegistry;
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 use hex;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -90,24 +90,24 @@ pub const TOTAL_PREMINE: u64 = 63_000_000 * 100_000_000;
 // Chain field excluded from serde — blocks are saved individually in sled storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Blockchain {
-    // Critical chain-state fields use pub(crate) to enforce validated access:
+    // Critical chain-state fields use pub to enforce validated access:
     //   bc.chain.push(unvalidated_block) → use add_block() instead
     //   bc.total_minted += n             → only block execution should change this
     //   bc.mempool.push_back(invalid_tx) → use add_to_mempool() instead
     // authority / accounts / contracts stay pub — they have their own validation in their methods
     // and main.rs legitimately calls them for CLI operations.
     #[serde(skip, default)]
-    pub(crate) chain: Vec<Block>,
+    pub chain: Vec<Block>,
     pub accounts: AccountDB, // pub: main.rs uses accounts.get_balance() for CLI display
     pub authority: AuthorityManager, // pub: main.rs uses authority.* for validator management
-    pub(crate) contracts: ContractRegistry,
-    pub(crate) mempool: VecDeque<Transaction>,
-    pub(crate) total_minted: u64,
+    pub contracts: ContractRegistry,
+    pub mempool: VecDeque<Transaction>,
+    pub total_minted: u64,
     pub chain_id: u64, // kept pub — read-only constant used by external clients
     /// Binary Sparse Merkle Tree for account state.
     /// None until init_trie() is called; not persisted in sled "state" blob.
     #[serde(skip)]
-    pub(crate) state_trie: Option<SentrixTrie>,
+    pub state_trie: Option<SentrixTrie>,
 
     /// A5: sled tree mapping txid (hex string) → block_index (u64 LE bytes).
     /// Populated by `init_storage_handle()` at startup. Allows O(1) tx lookups
@@ -115,23 +115,23 @@ pub struct Blockchain {
     /// (CHAIN_WINDOW_SIZE = 1000). Without this index, `get_transaction()`
     /// only sees the last ~1000 blocks and returns None for older txs.
     #[serde(skip)]
-    pub(crate) txid_index: Option<sled::Tree>,
+    pub txid_index: Option<sled::Tree>,
 
     /// A5: sled DB handle so `get_transaction()` can `load_block` on a cache
     /// miss. Set by `init_storage_handle()`. Cheap clone — sled::Db is Arc.
     #[serde(skip)]
-    pub(crate) storage_db: Option<sled::Db>,
+    pub storage_db: Option<sled::Db>,
 
     // ── Voyager DPoS state (Phase 2a) ────────────────────
     /// Staking registry for DPoS validator management
     #[serde(default)]
-    pub stake_registry: crate::core::staking::StakeRegistry,
+    pub stake_registry: sentrix_staking::staking::StakeRegistry,
     /// Epoch manager for validator set rotation
-    #[serde(default = "crate::core::epoch::EpochManager::new")]
-    pub epoch_manager: crate::core::epoch::EpochManager,
+    #[serde(default = "sentrix_staking::epoch::EpochManager::new")]
+    pub epoch_manager: sentrix_staking::epoch::EpochManager,
     /// Slashing engine for liveness + double-sign tracking
     #[serde(default)]
-    pub slashing: crate::core::slashing::SlashingEngine,
+    pub slashing: sentrix_staking::slashing::SlashingEngine,
 }
 
 impl Blockchain {
@@ -147,9 +147,9 @@ impl Blockchain {
             state_trie: None,
             txid_index: None,
             storage_db: None,
-            stake_registry: crate::core::staking::StakeRegistry::new(),
-            epoch_manager: crate::core::epoch::EpochManager::new(),
-            slashing: crate::core::slashing::SlashingEngine::new(),
+            stake_registry: sentrix_staking::staking::StakeRegistry::new(),
+            epoch_manager: sentrix_staking::epoch::EpochManager::new(),
+            slashing: sentrix_staking::slashing::SlashingEngine::new(),
         };
         bc.initialize_genesis();
         bc
@@ -197,7 +197,7 @@ impl Blockchain {
     /// A5: Record a tx → block_index mapping. Called by `add_block` for each
     /// tx in a freshly committed block. No-op if `init_storage_handle` was
     /// never called (e.g. unit tests with no sled backing).
-    pub(crate) fn record_tx_in_index(&self, txid: &str, block_index: u64) {
+    pub fn record_tx_in_index(&self, txid: &str, block_index: u64) {
         if let Some(tree) = &self.txid_index {
             let _ = tree.insert(txid.as_bytes(), &block_index.to_le_bytes());
         }
@@ -207,7 +207,7 @@ impl Blockchain {
     /// consulting the sled txid_index then loading the block from sled.
     /// Returns None if the txid is unknown or the storage handle was never
     /// initialised.
-    pub(crate) fn lookup_tx_in_storage(&self, txid: &str) -> Option<(Block, u64)> {
+    pub fn lookup_tx_in_storage(&self, txid: &str) -> Option<(Block, u64)> {
         let tree = self.txid_index.as_ref()?;
         let db = self.storage_db.as_ref()?;
         let raw = tree.get(txid.as_bytes()).ok().flatten()?;
@@ -315,7 +315,7 @@ impl Blockchain {
     /// Called once when chain reaches VOYAGER_DPOS_HEIGHT.
     /// Migrates existing 7 Pioneer validators to DPoS with equal stake.
     pub fn activate_voyager(&mut self) -> SentrixResult<()> {
-        use crate::core::staking::MIN_SELF_STAKE;
+        use sentrix_staking::MIN_SELF_STAKE;
 
         // Migrate Pioneer validators → DPoS validators
         let validators: Vec<String> = self
@@ -542,7 +542,7 @@ impl Blockchain {
     /// Split into two phases to satisfy the borrow checker:
     ///   Phase 1 — immutable borrows of `chain` and `accounts` → collect owned data.
     ///   Phase 2 — mutable borrow of `state_trie` → insert + commit.
-    pub(crate) fn update_trie_for_block(&mut self) -> SentrixResult<Option<[u8; 32]>> {
+    pub fn update_trie_for_block(&mut self) -> SentrixResult<Option<[u8; 32]>> {
         if self.state_trie.is_none() {
             return Ok(None);
         }
@@ -616,7 +616,7 @@ impl Blockchain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::transaction::{MIN_TX_FEE, Transaction};
+    use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
     use secp256k1::rand::rngs::OsRng;
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
@@ -626,7 +626,7 @@ mod tests {
     }
 
     fn derive_addr(pk: &PublicKey) -> String {
-        crate::wallet::wallet::Wallet::derive_address(pk)
+        sentrix_wallet::Wallet::derive_address(pk)
     }
 
     // Valid-format test address for use as to_address in tests
@@ -1083,7 +1083,7 @@ mod tests {
 
     #[test]
     fn test_onchain_token_deploy_via_block() {
-        use crate::core::transaction::{TOKEN_OP_ADDRESS, TokenOp};
+        use sentrix_primitives::transaction::{TOKEN_OP_ADDRESS, TokenOp};
 
         let mut bc = setup_chain();
         let (sk, pk) = make_keypair();
@@ -1127,7 +1127,7 @@ mod tests {
 
     #[test]
     fn test_onchain_token_transfer_via_block() {
-        use crate::core::transaction::{TOKEN_OP_ADDRESS, TokenOp};
+        use sentrix_primitives::transaction::{TOKEN_OP_ADDRESS, TokenOp};
 
         let mut bc = setup_chain();
         let (sk, pk) = make_keypair();
@@ -1179,7 +1179,7 @@ mod tests {
 
     #[test]
     fn test_onchain_token_op_recorded_in_block() {
-        use crate::core::transaction::{TOKEN_OP_ADDRESS, TokenOp};
+        use sentrix_primitives::transaction::{TOKEN_OP_ADDRESS, TokenOp};
 
         let mut bc = setup_chain();
         let (sk, pk) = make_keypair();
@@ -1222,7 +1222,7 @@ mod tests {
 
     #[test]
     fn test_onchain_token_transfer_insufficient_rejected() {
-        use crate::core::transaction::{TOKEN_OP_ADDRESS, TokenOp};
+        use sentrix_primitives::transaction::{TOKEN_OP_ADDRESS, TokenOp};
 
         let mut bc = setup_chain();
         let (sk, pk) = make_keypair();

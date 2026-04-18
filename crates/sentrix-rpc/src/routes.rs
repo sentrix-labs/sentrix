@@ -12,11 +12,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 // tokio::sync::Mutex is async-safe — does not block Tokio worker threads.
 // std::sync::Mutex::lock() is a blocking syscall; holding it in async context
 // starves other tasks on the same thread under high load.
-use crate::api::explorer;
-use crate::api::jsonrpc::rpc_dispatcher;
-use crate::core::blockchain::Blockchain;
-use crate::core::transaction::{TokenOp, Transaction};
-use crate::core::trie::address::{account_value_decode, address_to_key};
+use crate::explorer;
+use crate::jsonrpc::rpc_dispatcher;
+use sentrix_core::blockchain::Blockchain;
+use sentrix_primitives::transaction::{TokenOp, Transaction};
+use sentrix_trie::address::{account_value_decode, address_to_key};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
@@ -386,7 +386,7 @@ fn explorer_router(_state: SharedState) -> Router<SharedState> {
 async fn root() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "name": "Sentrix",
-        "chain_id": crate::core::blockchain::get_chain_id(),
+        "chain_id": sentrix_core::blockchain::get_chain_id(),
         "version": env!("CARGO_PKG_VERSION"),
         "docs": {
             "chain_info": "/chain/info",
@@ -1159,7 +1159,7 @@ async fn get_address_proof(
 ) -> impl IntoResponse {
     // Validate address format before acquiring any lock — fail fast on bad input
     // Rejects obviously-invalid inputs early (no lock overhead, no trie traversal).
-    if !crate::core::blockchain::is_valid_sentrix_address(&address) {
+    if !sentrix_core::blockchain::is_valid_sentrix_address(&address) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -1357,7 +1357,7 @@ mod tests {
     #[test]
     fn test_l05_block_serializes_to_json_value() {
         // Verify Block can be serialized without panic — confirming map_err path is safe.
-        use crate::core::blockchain::Blockchain;
+        use sentrix_core::blockchain::Blockchain;
         let bc = Blockchain::new("admin".to_string());
         let block = &bc.chain[0];
         let result = serde_json::to_value(block);
@@ -1371,7 +1371,7 @@ mod tests {
     fn test_l05_no_unwrap_in_get_block_response_path() {
         // Ensure the fix compiles: serde_json::to_value(...).map(Json).map_err(...)
         // This test validates the fix by exercising serde serialization of a Block.
-        use crate::core::blockchain::Blockchain;
+        use sentrix_core::blockchain::Blockchain;
         let bc = Blockchain::new("admin".to_string());
         let block = bc.chain[0].clone();
 
@@ -1387,7 +1387,7 @@ mod tests {
     #[test]
     fn test_i03_admin_log_serializes_to_json() {
         // AdminEvent must serialize cleanly for the /admin/log endpoint
-        use crate::core::authority::AdminEvent;
+        use sentrix_core::authority::AdminEvent;
         let event = AdminEvent {
             operation: "add_validator".to_string(),
             caller: "admin".to_string(),
@@ -1406,7 +1406,7 @@ mod tests {
     #[test]
     fn test_i03_admin_log_in_blockchain_context() {
         // Verify admin_log is accessible on the blockchain state (used by /admin/log handler)
-        use crate::core::blockchain::Blockchain;
+        use sentrix_core::blockchain::Blockchain;
         let bc = Blockchain::new("admin".to_string());
         // Fresh blockchain has an empty admin log
         assert_eq!(bc.authority.admin_log.len(), 0);

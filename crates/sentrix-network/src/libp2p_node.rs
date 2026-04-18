@@ -30,14 +30,14 @@ use libp2p::{
 };
 use tokio::sync::mpsc;
 
-use crate::core::block::Block;
-use crate::core::transaction::Transaction;
-use crate::network::behaviour::{
+use sentrix_primitives::block::Block;
+use sentrix_primitives::transaction::Transaction;
+use crate::behaviour::{
     BLOCKS_TOPIC, GossipBlock, GossipTransaction, SentrixBehaviour, SentrixBehaviourEvent,
     SentrixRequest, SentrixResponse, TXS_TOPIC,
 };
-use crate::network::node::{NodeEvent, SharedBlockchain};
-use crate::types::error::{SentrixError, SentrixResult};
+use crate::node::{NodeEvent, SharedBlockchain};
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 
 // ── P2P protection constants ────────────────────────────
 /// Maximum number of verified (handshaked) peers.
@@ -141,7 +141,7 @@ impl LibP2pNode {
     }
 
     /// Broadcast a BFT proposal to all verified peers.
-    pub async fn broadcast_bft_proposal(&self, proposal: &crate::core::bft_messages::Proposal) {
+    pub async fn broadcast_bft_proposal(&self, proposal: &sentrix_bft::messages::Proposal) {
         let req = SentrixRequest::BftProposal {
             proposal: Box::new(proposal.clone()),
         };
@@ -149,7 +149,7 @@ impl LibP2pNode {
     }
 
     /// Broadcast a BFT prevote to all verified peers.
-    pub async fn broadcast_bft_prevote(&self, prevote: &crate::core::bft_messages::Prevote) {
+    pub async fn broadcast_bft_prevote(&self, prevote: &sentrix_bft::messages::Prevote) {
         let req = SentrixRequest::BftPrevote {
             prevote: prevote.clone(),
         };
@@ -157,7 +157,7 @@ impl LibP2pNode {
     }
 
     /// Broadcast a BFT precommit to all verified peers.
-    pub async fn broadcast_bft_precommit(&self, precommit: &crate::core::bft_messages::Precommit) {
+    pub async fn broadcast_bft_precommit(&self, precommit: &sentrix_bft::messages::Precommit) {
         let req = SentrixRequest::BftPrecommit {
             precommit: precommit.clone(),
         };
@@ -168,7 +168,7 @@ impl LibP2pNode {
     /// Called periodically (~5s) by the validator loop.
     pub async fn broadcast_bft_round_status(
         &self,
-        status: &crate::core::bft_messages::RoundStatus,
+        status: &sentrix_bft::messages::RoundStatus,
     ) {
         let req = SentrixRequest::BftRoundStatus {
             status: status.clone(),
@@ -1035,7 +1035,7 @@ async fn on_inbound_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::blockchain::Blockchain;
+    use sentrix_core::blockchain::Blockchain;
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -1238,7 +1238,7 @@ mod tests {
 
         let node = LibP2pNode::new(keypair, bc, etx).expect("node");
         // No peers — broadcast should silently do nothing
-        let block = crate::core::block::Block::new(0, "0".to_string(), vec![], "v1".to_string());
+        let block = sentrix_primitives::block::Block::new(0, "0".to_string(), vec![], "v1".to_string());
         node.broadcast_block(&block).await; // must not panic
     }
 }

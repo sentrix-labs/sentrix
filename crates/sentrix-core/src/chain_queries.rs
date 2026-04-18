@@ -1,7 +1,7 @@
 // chain_queries.rs - Sentrix — Chain query methods
 
-use crate::core::blockchain::{Blockchain, MAX_SUPPLY};
-use crate::core::transaction::TokenOp;
+use crate::blockchain::{Blockchain, MAX_SUPPLY};
+use sentrix_primitives::transaction::TokenOp;
 
 impl Blockchain {
     // ── Transaction queries ──────────────────────────────
@@ -219,8 +219,8 @@ impl Blockchain {
 // ── Tests ─────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
-    use crate::core::blockchain::{Blockchain, CHAIN_ID};
-    use crate::core::transaction::{MIN_TX_FEE, Transaction};
+    use crate::blockchain::{Blockchain, CHAIN_ID};
+    use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
     use secp256k1::rand::rngs::OsRng;
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
@@ -230,7 +230,7 @@ mod tests {
     }
 
     fn derive_addr(pk: &PublicKey) -> String {
-        crate::wallet::wallet::Wallet::derive_address(pk)
+        sentrix_wallet::Wallet::derive_address(pk)
     }
 
     fn setup() -> Blockchain {

@@ -22,9 +22,9 @@ use libp2p::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::core::bft_messages::{Precommit, Prevote, Proposal};
-use crate::core::block::Block;
-use crate::core::transaction::Transaction;
+use sentrix_bft::messages::{Precommit, Prevote, Proposal};
+use sentrix_primitives::block::Block;
+use sentrix_primitives::transaction::Transaction;
 
 // ── Protocol identifier ──────────────────────────────────
 /// Protocol version string — bumped to 2.0.0 for bincode wire format.
@@ -72,7 +72,7 @@ pub enum SentrixRequest {
     BftPrecommit { precommit: Precommit },
     /// BFT: periodic round status announcement for round synchronization
     BftRoundStatus {
-        status: crate::core::bft_messages::RoundStatus,
+        status: sentrix_bft::messages::RoundStatus,
     },
 }
 

@@ -1,0 +1,37 @@
+[package]
+name = "sentrix-core"
+version = "1.5.0"
+edition = "2024"
+license = "BUSL-1.1"
+description = "Sentrix blockchain core — Blockchain state, block execution, authority, mempool"
+publish = false
+
+[dependencies]
+sentrix-primitives = { path = "../sentrix-primitives" }
+sentrix-wallet = { path = "../sentrix-wallet" }
+sentrix-trie = { path = "../sentrix-trie" }
+sentrix-staking = { path = "../sentrix-staking" }
+sentrix-evm = { path = "../sentrix-evm" }
+sentrix-bft = { path = "../sentrix-bft" }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sled = "0.34"
+hex = "0.4"
+sha2 = "0.10"
+sha3 = "0.11"
+secp256k1 = { version = "0.29", features = ["rand", "recovery", "serde"] }
+tracing = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+uuid = { version = "1.0", features = ["v4"] }
+bincode = "1.3"
+
+# EVM deps used in block_executor
+revm = { version = "37", default-features = false, features = ["std", "serde", "optional_balance_check", "optional_no_base_fee"] }
+alloy-primitives = "1.5"
+alloy-consensus = { version = "2.0", default-features = false, features = ["std", "k256"] }
+alloy-eips = { version = "2.0", default-features = false, features = ["std"] }
+alloy-rlp = "0.3"
+
+[dev-dependencies]
+tempfile = "3"

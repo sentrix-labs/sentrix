@@ -1,7 +1,7 @@
 // jsonrpc.rs - Sentrix — Ethereum-compatible JSON-RPC 2.0
 
-use crate::api::routes::{ApiKey, SharedState};
-use crate::core::transaction::Transaction;
+use crate::routes::{ApiKey, SharedState};
+use sentrix_primitives::transaction::Transaction;
 use axum::{Json, extract::State};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -297,7 +297,7 @@ pub async fn jsonrpc_handler(
                     format!("0x{}", hex::encode(addr.as_slice()))
                 }
                 alloy_primitives::TxKind::Create => {
-                    crate::core::transaction::TOKEN_OP_ADDRESS.to_string()
+                    sentrix_primitives::transaction::TOKEN_OP_ADDRESS.to_string()
                 }
             };
 
@@ -309,7 +309,7 @@ pub async fn jsonrpc_handler(
                 from_address: sender_str,
                 to_address: to_str,
                 amount: amount_sentri,
-                fee: crate::core::transaction::MIN_TX_FEE,
+                fee: sentrix_primitives::transaction::MIN_TX_FEE,
                 nonce,
                 data: evm_data,
                 timestamp: std::time::SystemTime::now()
@@ -351,7 +351,7 @@ pub async fn jsonrpc_handler(
                 .unwrap_or(30_000_000);
 
             let bc = state.read().await;
-            use crate::core::evm::database::parse_sentrix_address;
+            use sentrix_evm::database::parse_sentrix_address;
 
             let from_addr =
                 parse_sentrix_address(from_str).unwrap_or(alloy_primitives::Address::ZERO);
@@ -373,7 +373,7 @@ pub async fn jsonrpc_handler(
                 .build()
                 .unwrap_or_default();
 
-            let base_fee = crate::core::evm::gas::INITIAL_BASE_FEE;
+            let base_fee = sentrix_evm::gas::INITIAL_BASE_FEE;
 
             // Populate InMemoryDB with sender account (so gas payment works).
             // Also load target contract if it has code.
@@ -416,7 +416,7 @@ pub async fn jsonrpc_handler(
             }
             drop(bc);
 
-            match crate::core::evm::executor::execute_call(in_mem_db, tx, base_fee) {
+            match sentrix_evm::executor::execute_call(in_mem_db, tx, base_fee) {
                 Ok(receipt) => {
                     let output_hex = format!("0x{}", hex::encode(&receipt.output));
                     Ok(json!(output_hex))
@@ -541,12 +541,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_m03_batch_too_large_rejected() {
-        use crate::core::blockchain::Blockchain;
+        use sentrix_core::blockchain::Blockchain;
         use std::sync::Arc;
         use tokio::sync::RwLock;
 
         let bc = Blockchain::new("admin".to_string());
-        let state: crate::api::routes::SharedState = Arc::new(RwLock::new(bc));
+        let state: crate::routes::SharedState = Arc::new(RwLock::new(bc));
 
         // Build a batch of 101 requests (exceeds MAX_BATCH_SIZE)
         let mut requests = Vec::new();

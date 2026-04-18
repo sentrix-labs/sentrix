@@ -1,9 +1,9 @@
 // block_producer.rs - Sentrix — Block creation (validator side)
 
-use crate::core::block::Block;
-use crate::core::blockchain::{Blockchain, MAX_TX_PER_BLOCK};
-use crate::core::transaction::Transaction;
-use crate::types::error::{SentrixError, SentrixResult};
+use sentrix_primitives::block::Block;
+use crate::blockchain::{Blockchain, MAX_TX_PER_BLOCK};
+use sentrix_primitives::transaction::Transaction;
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 
 impl Blockchain {
     // ── Block creation (validator calls this) ────────────
@@ -67,8 +67,8 @@ impl Blockchain {
 // ── Tests ─────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
-    use crate::core::blockchain::{Blockchain, CHAIN_ID};
-    use crate::core::transaction::{MIN_TX_FEE, Transaction};
+    use crate::blockchain::{Blockchain, CHAIN_ID};
+    use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
     use secp256k1::rand::rngs::OsRng;
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
@@ -78,7 +78,7 @@ mod tests {
     }
 
     fn derive_addr(pk: &PublicKey) -> String {
-        crate::wallet::wallet::Wallet::derive_address(pk)
+        sentrix_wallet::Wallet::derive_address(pk)
     }
 
     fn setup() -> Blockchain {

@@ -1,0 +1,35 @@
+[package]
+name = "sentrix-rpc"
+version = "1.5.0"
+edition = "2024"
+license = "BUSL-1.1"
+description = "Sentrix REST API, JSON-RPC, and block explorer"
+publish = false
+
+[dependencies]
+sentrix-primitives = { path = "../sentrix-primitives" }
+sentrix-core = { path = "../sentrix-core" }
+sentrix-evm = { path = "../sentrix-evm" }
+sentrix-trie = { path = "../sentrix-trie" }
+
+axum = "0.8"
+tokio = { version = "1.0", features = ["full"] }
+tower = { version = "0.4", features = ["limit"] }
+tower-http = { version = "0.6", features = ["cors"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hex = "0.4"
+tracing = "0.1"
+sha3 = "0.11"
+subtle = "2.5"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# EVM deps used in jsonrpc (eth_call, eth_sendRawTransaction)
+revm = { version = "37", default-features = false, features = ["std", "serde", "optional_balance_check", "optional_no_base_fee"] }
+alloy-primitives = "1.5"
+alloy-consensus = { version = "2.0", default-features = false, features = ["std", "k256"] }
+alloy-eips = { version = "2.0", default-features = false, features = ["std"] }
+alloy-rlp = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full", "test-util"] }
