@@ -1,0 +1,62 @@
+# Sentrix Mainnet genesis configuration.
+#
+# This file is embedded at compile time via `include_str!` and produces the
+# default genesis used by `Blockchain::new()`. The node operator can override
+# at runtime with `--genesis <path>`.
+#
+# CRITICAL INVARIANT
+# ------------------
+# Any change to `timestamp`, `parent_hash`, or the coinbase tx fields (they
+# are hardcoded in Genesis::build_block) will fork the chain on the next
+# restart. Do not edit those fields unless coordinating a hard fork. The
+# regression test `test_mainnet_genesis_block_hash_matches_hardcoded` guards
+# against accidental drift.
+
+[chain]
+chain_id = 7119
+name = "Sentrix Mainnet"
+
+[genesis]
+# 2024-04-09 00:00:00 UTC — the timestamp baked into the live chain's block 0.
+timestamp = 1712620800
+parent_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+# ── Validators ──────────────────────────────────────────────────────────
+#
+# Mainnet runs PoA via AuthorityManager (not the on-chain stake registry),
+# so this section is informational for Pioneer blocks. The Early Validator
+# address is listed so DPoS accounting has a bootstrap entry after the
+# Voyager hard fork. Pubkey left empty — mainnet v1 addresses are
+# authoritative; DPoS will resolve via keystore at activation.
+
+[[genesis.validators]]
+address = "0x328d56b8174697ef6c9e40e19b7663797e16fa47"
+stake = 1050000000000000  # 10_500_000 SRX (matches Early Validator premine)
+pubkey = ""
+
+# ── Genesis allocations ─────────────────────────────────────────────────
+#
+# All amounts are in sentri units (1 SRX = 100_000_000 sentri). These four
+# entries must match `GENESIS_ALLOCATIONS` in crates/sentrix-core/src/
+# blockchain.rs byte-for-byte — any drift will desync account state from
+# the live chain.
+
+# Founder — 21,000,000 SRX
+[[genesis.balances]]
+address = "0x252f8cfed5acfa9d00d99a65e2ac91f395a35d78"
+amount = 2100000000000000
+
+# Ecosystem Fund — 21,000,000 SRX
+[[genesis.balances]]
+address = "0xeb70fdefd00fdb768dec06c478f450c351499f14"
+amount = 2100000000000000
+
+# Early Validator — 10,500,000 SRX
+[[genesis.balances]]
+address = "0x328d56b8174697ef6c9e40e19b7663797e16fa47"
+amount = 1050000000000000
+
+# Reserve — 10,500,000 SRX
+[[genesis.balances]]
+address = "0x2578cad17e3e56c2970a5b5eab45952439f5ba97"
+amount = 1050000000000000

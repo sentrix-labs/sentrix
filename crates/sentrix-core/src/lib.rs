@@ -10,6 +10,7 @@ pub mod block_executor;
 pub mod block_producer;
 pub mod blockchain;
 pub mod chain_queries;
+pub mod genesis;
 pub mod mempool;
 pub mod state_export;
 pub mod storage;
@@ -18,4 +19,5 @@ pub mod vm;
 
 // Re-export key types at crate root for convenience
 pub use blockchain::Blockchain;
+pub use genesis::{Genesis, GenesisError};
 pub use storage::Storage;
