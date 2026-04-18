@@ -83,6 +83,10 @@ enum Commands {
         /// Admin address (controls validator set)
         #[arg(long)]
         admin: String,
+        /// Optional path to a genesis TOML. When absent, the embedded
+        /// canonical mainnet config is used (default for mainnet nodes).
+        #[arg(long)]
+        genesis: Option<String>,
     },
     /// Wallet commands
     Wallet {
@@ -344,7 +348,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { admin } => cmd_init(&admin)?,
+        Commands::Init { admin, genesis } => cmd_init(&admin, genesis.as_deref())?,
 
         Commands::Wallet { action } => match action {
             WalletCommands::Generate { password } => cmd_wallet_generate(password)?,
@@ -539,18 +543,41 @@ fn resolve_key(cli_arg: Option<String>, env_var: &str, label: &str) -> anyhow::R
 
 // ── Command implementations ──────────────────────────────
 
-fn cmd_init(admin: &str) -> anyhow::Result<()> {
+fn cmd_init(admin: &str, genesis_path: Option<&str>) -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
     if storage.has_blockchain() {
         println!("Chain already initialized.");
         return Ok(());
     }
-    let bc = Blockchain::new(admin.to_string());
+    // Load + validate genesis config up front so a malformed config aborts
+    // init before we touch storage. A custom --genesis path lets operators
+    // bootstrap non-mainnet chains (testnet, devnet) from TOML without
+    // rebuilding the binary.
+    let genesis = match genesis_path {
+        Some(path) => {
+            let g = sentrix::core::Genesis::from_path(path)?;
+            println!(
+                "Loaded genesis from {}: chain_id={} ({})",
+                path, g.chain.chain_id, g.chain.name
+            );
+            g
+        }
+        None => {
+            let g = sentrix::core::Genesis::mainnet()?;
+            println!(
+                "Using embedded mainnet genesis: chain_id={} ({})",
+                g.chain.chain_id, g.chain.name
+            );
+            g
+        }
+    };
+    let bc = Blockchain::new_with_genesis(admin.to_string(), &genesis);
     storage.save_blockchain(&bc)?;
+    let premine_srx = genesis.total_premine() / 100_000_000;
     println!("Chain initialized.");
     println!("Admin address: {}", admin);
     println!("Genesis block created. Height: 0");
-    println!("Total premine: 63,000,000 SRX");
+    println!("Total premine: {} SRX", premine_srx);
     Ok(())
 }
 

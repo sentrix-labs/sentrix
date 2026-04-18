@@ -79,19 +79,20 @@ pub fn is_valid_sentrix_address(addr: &str) -> bool {
     addr.len() == 42 && addr.starts_with("0x") && addr[2..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
-// ── Genesis addresses (v2 — rotated 2026-04-17, private keys in Bitwarden) ──
-pub const FOUNDER_ADDRESS: &str = "0x252f8cfed5acfa9d00d99a65e2ac91f395a35d78";
+// ── Genesis addresses ────────────────────────────────────
+// The canonical premine allocations now live in `genesis/mainnet.toml` and
+// are loaded via [`crate::Genesis`]. Only constants still referenced at
+// runtime (outside of initialisation) remain here.
+
+/// Ecosystem Fund receives the ecosystem share of token-operation fees
+/// (see `token_ops.rs`). Kept as a const because it is a compiled-in
+/// protocol parameter, not just a premine recipient.
 pub const ECOSYSTEM_FUND_ADDRESS: &str = "0xeb70fdefd00fdb768dec06c478f450c351499f14";
-pub const EARLY_VALIDATOR_ADDRESS: &str = "0x328d56b8174697ef6c9e40e19b7663797e16fa47";
-pub const RESERVE_ADDRESS: &str = "0x2578cad17e3e56c2970a5b5eab45952439f5ba97";
 
-pub const GENESIS_ALLOCATIONS: &[(&str, u64)] = &[
-    (FOUNDER_ADDRESS, 21_000_000 * 100_000_000),
-    (ECOSYSTEM_FUND_ADDRESS, 21_000_000 * 100_000_000),
-    (EARLY_VALIDATOR_ADDRESS, 10_500_000 * 100_000_000),
-    (RESERVE_ADDRESS, 10_500_000 * 100_000_000),
-];
-
+/// Total premine across all genesis allocations, in sentri units. This is
+/// an economic invariant of the mainnet spec and is still exposed for
+/// tests / tooling. Drift against `genesis/mainnet.toml` is caught by
+/// `test_total_premine_matches_hardcoded` in `genesis.rs`.
 pub const TOTAL_PREMINE: u64 = 63_000_000 * 100_000_000;
 
 // ── Blockchain struct ────────────────────────────────────
@@ -137,7 +138,24 @@ pub struct Blockchain {
 }
 
 impl Blockchain {
+    /// Construct a blockchain initialised from the embedded canonical mainnet
+    /// genesis. Thin wrapper over [`Blockchain::new_with_genesis`].
+    ///
+    /// The embedded genesis parses and validates at compile time (enforced
+    /// by `test_mainnet_embedded_parses_and_validates`). A parse failure
+    /// here means the binary is fundamentally broken, in the same class as
+    /// a corrupt `include_str!` target; we fail loud rather than silently.
     pub fn new(admin_address: String) -> Self {
+        #[allow(clippy::expect_used)]
+        let genesis = crate::Genesis::mainnet()
+            .expect("embedded mainnet genesis must parse and validate");
+        Self::new_with_genesis(admin_address, &genesis)
+    }
+
+    /// Construct a blockchain from an arbitrary [`Genesis`] config. Used by
+    /// the `sentrix start --genesis <path>` flag to boot non-mainnet chains
+    /// (testnets, devnets) from TOML without rebuilding the binary.
+    pub fn new_with_genesis(admin_address: String, genesis: &crate::Genesis) -> Self {
         let mut bc = Self {
             chain: Vec::new(),
             accounts: AccountDB::new(),
@@ -145,40 +163,56 @@ impl Blockchain {
             contracts: ContractRegistry::new(),
             mempool: VecDeque::new(),
             total_minted: 0,
-            chain_id: get_chain_id(),
+            // Prefer the TOML's declared chain_id, but defer to the
+            // SENTRIX_CHAIN_ID env var when set (matches previous semantics
+            // so live operators can keep using env-based overrides).
+            chain_id: std::env::var("SENTRIX_CHAIN_ID")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(genesis.chain.chain_id),
             state_trie: None,
             mdbx_storage: None,
             stake_registry: sentrix_staking::staking::StakeRegistry::new(),
             epoch_manager: sentrix_staking::epoch::EpochManager::new(),
             slashing: sentrix_staking::slashing::SlashingEngine::new(),
         };
-        bc.initialize_genesis();
+        bc.initialize_genesis(genesis);
         bc
     }
 
-    fn initialize_genesis(&mut self) {
-        // A1: Apply genesis premine allocations.
-        // credit() can only fail on u64 overflow; with 63M SRX premine vs u64::MAX
-        // (~184B SRX) there is no realistic overflow path. A failure here means
-        // the program is fundamentally broken and the chain cannot start, so we
-        // log a fatal error and abort cleanly via process::exit instead of silently
-        // discarding the result.
-        for (address, amount) in GENESIS_ALLOCATIONS {
-            if let Err(e) = self.accounts.credit(address, *amount) {
+    /// Credit premine balances and seat block 0 on the chain. Staking
+    /// registry is intentionally left empty — PoA Pioneer chains track
+    /// validators via `AuthorityManager`; the `[[genesis.validators]]`
+    /// section is informational until the Voyager DPoS fork activates.
+    /// Keeping this path unchanged preserves the state-root identity with
+    /// chains that were initialised by the pre-Genesis-TOML code path.
+    fn initialize_genesis(&mut self, genesis: &crate::Genesis) {
+        // Apply premine allocations in the order declared in the TOML.
+        // HashMap iteration order inside AccountDB is not observable at
+        // genesis (state_root starts being stamped at STATE_ROOT_FORK_HEIGHT
+        // = 100_000), but we still iterate a Vec here for determinism and
+        // to match the historical order from the hardcoded constants.
+        //
+        // credit() can only fail on u64 overflow; with ~63M SRX premine vs
+        // u64::MAX (~184B SRX) the overflow path is unreachable in practice.
+        // A failure here means the program is fundamentally broken and the
+        // chain cannot start — abort cleanly rather than silently discard.
+        for balance in &genesis.genesis.balances {
+            if let Err(e) = self.accounts.credit(&balance.address, balance.amount) {
                 tracing::error!(
                     "FATAL: genesis premine credit failed for {} ({}): {}",
-                    address,
-                    amount,
+                    balance.address,
+                    balance.amount,
                     e
                 );
                 std::process::exit(1);
             }
         }
-        self.total_minted = TOTAL_PREMINE;
+        self.total_minted = genesis.total_premine();
 
-        // Create genesis block
-        let genesis = Block::genesis();
-        self.chain.push(genesis);
+        // Genesis block is produced from the same Genesis config so the
+        // block hash is fully derived from declared state.
+        self.chain.push(genesis.build_block());
     }
 
     /// Bind MDBX storage handle so `get_transaction()` can resolve txids that
@@ -638,6 +672,48 @@ mod tests {
         assert_eq!(bc.height(), 0);
         assert_eq!(bc.total_minted, TOTAL_PREMINE);
         assert!(bc.is_valid_chain_window());
+    }
+
+    // REGRESSION BARRIER — the live chain's genesis block was produced by
+    // the pre-TOML hardcoded code path. Wiring Blockchain::new through
+    // Genesis::mainnet() must yield bit-identical block 0; any drift here
+    // forks the chain on next restart.
+    #[test]
+    fn test_blockchain_new_genesis_block_hash_stable() {
+        let bc = Blockchain::new("admin".to_string());
+        let block0 = bc
+            .chain
+            .first()
+            .expect("genesis block must exist after Blockchain::new");
+        let reference = sentrix_primitives::block::Block::genesis();
+        assert_eq!(
+            block0.hash, reference.hash,
+            "genesis block hash drift detected — TOML wiring broke invariant"
+        );
+        assert_eq!(block0.timestamp, reference.timestamp);
+        assert_eq!(block0.merkle_root, reference.merkle_root);
+        assert_eq!(block0.previous_hash, reference.previous_hash);
+        assert_eq!(block0.validator, reference.validator);
+        // total_minted must equal TOTAL_PREMINE exactly (no drift from the
+        // sum of genesis balances).
+        assert_eq!(bc.total_minted, TOTAL_PREMINE);
+    }
+
+    // Every premine address from mainnet.toml must end up in AccountDB
+    // with the exact declared balance. Guards against silent credit
+    // failures or reordering that would skip entries.
+    #[test]
+    fn test_blockchain_new_premine_balances_match_toml() {
+        let bc = Blockchain::new("admin".to_string());
+        let genesis = crate::Genesis::mainnet().expect("mainnet.toml");
+        for balance in &genesis.genesis.balances {
+            assert_eq!(
+                bc.accounts.get_balance(&balance.address),
+                balance.amount,
+                "balance for {} diverges from TOML",
+                balance.address
+            );
+        }
     }
 
     #[test]
