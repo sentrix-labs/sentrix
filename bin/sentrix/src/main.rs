@@ -807,20 +807,6 @@ fn cmd_validator_rename(address: &str, new_name: &str, admin_key: &str) -> anyho
     Ok(())
 }
 
-/// C-01 gap 2: does `addr` belong to the active validator set?
-///
-/// A valid signature proves the sender *owns* the key, but a non-validator
-/// could still spam syntactically-correct signed BFT messages and pollute
-/// the channel. This check enforces that signers are registered validators,
-/// consulting both the DPoS active set (post-Voyager) and the PoA
-/// authority roster (Pioneer) so PoA and DPoS chains are both covered.
-fn is_active_validator(bc: &Blockchain, addr: &str) -> bool {
-    if bc.stake_registry.is_active(addr) {
-        return true;
-    }
-    bc.authority.is_active_validator(addr)
-}
-
 async fn cmd_start(
     validator_key: Option<String>,
     port: u16,
@@ -1283,24 +1269,11 @@ async fn cmd_start(
                                 if proposal.round != bft.round() {
                                     continue;
                                 }
-                                if !proposal.verify_sig() {
-                                    tracing::warn!(
-                                        "Invalid proposal signature from {}",
-                                        &proposal.proposer
-                                    );
-                                    continue;
-                                }
-                                // C-01 gap 2: reject proposals from non-validators.
-                                {
-                                    let bc = shared_clone.read().await;
-                                    if !is_active_validator(&bc, &proposal.proposer) {
-                                        tracing::warn!(
-                                            "BFT proposal from non-validator {}",
-                                            &proposal.proposer
-                                        );
-                                        continue;
-                                    }
-                                }
+                                // Signature + validator-set membership are
+                                // now enforced at the libp2p network boundary
+                                // (see `is_active_bft_signer` in libp2p_node.rs);
+                                // by construction every proposal reaching this
+                                // point has already passed both checks.
                                 if let Ok(block) =
                                     bincode::deserialize::<Block>(&proposal.block_data)
                                 {
@@ -1318,24 +1291,11 @@ async fn cmd_start(
                                     continue;
                                 }
                             }
+                            // Messages reaching this point have already been
+                                // signature-verified AND membership-checked at the
+                                // libp2p network boundary (C-01 gaps 1/2/3).
                             BftMessage::Prevote(prevote) => {
-                                if !prevote.verify_sig() {
-                                    tracing::warn!(
-                                        "Invalid prevote signature from {}",
-                                        &prevote.validator
-                                    );
-                                    continue;
-                                }
                                 let bc = shared_clone.read().await;
-                                // C-01 gap 2: reject prevotes from non-validators.
-                                if !is_active_validator(&bc, &prevote.validator) {
-                                    drop(bc);
-                                    tracing::warn!(
-                                        "BFT prevote from non-validator {}",
-                                        &prevote.validator
-                                    );
-                                    continue;
-                                }
                                 let stake = bc
                                     .stake_registry
                                     .get_validator(&prevote.validator)
@@ -1345,23 +1305,7 @@ async fn cmd_start(
                                 bft.on_prevote_weighted(&prevote, stake)
                             }
                             BftMessage::Precommit(precommit) => {
-                                if !precommit.verify_sig() {
-                                    tracing::warn!(
-                                        "Invalid precommit signature from {}",
-                                        &precommit.validator
-                                    );
-                                    continue;
-                                }
                                 let bc = shared_clone.read().await;
-                                // C-01 gap 2: reject precommits from non-validators.
-                                if !is_active_validator(&bc, &precommit.validator) {
-                                    drop(bc);
-                                    tracing::warn!(
-                                        "BFT precommit from non-validator {}",
-                                        &precommit.validator
-                                    );
-                                    continue;
-                                }
                                 let stake = bc
                                     .stake_registry
                                     .get_validator(&precommit.validator)
@@ -1370,29 +1314,7 @@ async fn cmd_start(
                                 drop(bc);
                                 bft.on_precommit_weighted(&precommit, stake)
                             }
-                            BftMessage::RoundStatus(status) => {
-                                // C-01 gap 1+2: verify signature AND reject statuses
-                                // from non-validators. Unsigned / forged statuses
-                                // would otherwise advance rounds without votes.
-                                if !status.verify_sig() {
-                                    tracing::warn!(
-                                        "Invalid RoundStatus signature from {}",
-                                        &status.validator
-                                    );
-                                    continue;
-                                }
-                                {
-                                    let bc = shared_clone.read().await;
-                                    if !is_active_validator(&bc, &status.validator) {
-                                        tracing::warn!(
-                                            "BFT RoundStatus from non-validator {}",
-                                            &status.validator
-                                        );
-                                        continue;
-                                    }
-                                }
-                                bft.on_round_status(&status)
-                            }
+                            BftMessage::RoundStatus(status) => bft.on_round_status(&status),
                         };
 
                         // Cascading BFT action loop for peer messages

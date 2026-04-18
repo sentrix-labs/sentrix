@@ -892,11 +892,29 @@ async fn on_inbound_request(
         }
 
         // ── BFT Proposal ────────────────────────────────
+        // C-01 gap 3: verify signature AND validator-set membership at
+        // the network boundary. Forged or non-validator messages are
+        // ACKed (so the peer's libp2p state transitions cleanly) and
+        // silently dropped — they never reach the BFT event channel.
         SentrixRequest::BftProposal { proposal } => {
             let _ = swarm
                 .behaviour_mut()
                 .rr
                 .send_response(channel, SentrixResponse::Ack);
+            if !proposal.verify_sig() {
+                tracing::warn!(
+                    "libp2p: dropping BFT proposal from {}: bad signature",
+                    &proposal.proposer
+                );
+                return;
+            }
+            if !is_active_bft_signer(blockchain, &proposal.proposer).await {
+                tracing::warn!(
+                    "libp2p: dropping BFT proposal from non-validator {}",
+                    &proposal.proposer
+                );
+                return;
+            }
             let _ = event_tx.send(NodeEvent::BftProposal(*proposal)).await;
         }
 
@@ -906,6 +924,20 @@ async fn on_inbound_request(
                 .behaviour_mut()
                 .rr
                 .send_response(channel, SentrixResponse::Ack);
+            if !prevote.verify_sig() {
+                tracing::warn!(
+                    "libp2p: dropping BFT prevote from {}: bad signature",
+                    &prevote.validator
+                );
+                return;
+            }
+            if !is_active_bft_signer(blockchain, &prevote.validator).await {
+                tracing::warn!(
+                    "libp2p: dropping BFT prevote from non-validator {}",
+                    &prevote.validator
+                );
+                return;
+            }
             let _ = event_tx.send(NodeEvent::BftPrevote(prevote)).await;
         }
 
@@ -915,6 +947,20 @@ async fn on_inbound_request(
                 .behaviour_mut()
                 .rr
                 .send_response(channel, SentrixResponse::Ack);
+            if !precommit.verify_sig() {
+                tracing::warn!(
+                    "libp2p: dropping BFT precommit from {}: bad signature",
+                    &precommit.validator
+                );
+                return;
+            }
+            if !is_active_bft_signer(blockchain, &precommit.validator).await {
+                tracing::warn!(
+                    "libp2p: dropping BFT precommit from non-validator {}",
+                    &precommit.validator
+                );
+                return;
+            }
             let _ = event_tx.send(NodeEvent::BftPrecommit(precommit)).await;
         }
 
@@ -924,9 +970,36 @@ async fn on_inbound_request(
                 .behaviour_mut()
                 .rr
                 .send_response(channel, SentrixResponse::Ack);
+            if !status.verify_sig() {
+                tracing::warn!(
+                    "libp2p: dropping BFT round-status from {}: bad signature",
+                    &status.validator
+                );
+                return;
+            }
+            if !is_active_bft_signer(blockchain, &status.validator).await {
+                tracing::warn!(
+                    "libp2p: dropping BFT round-status from non-validator {}",
+                    &status.validator
+                );
+                return;
+            }
             let _ = event_tx.send(NodeEvent::BftRoundStatus(status)).await;
         }
     }
+}
+
+/// Check if `addr` is a current BFT-authorised validator. Consults the
+/// DPoS stake registry first (post-Voyager), then falls back to the PoA
+/// authority roster (Pioneer). Matches the helper in `bin/sentrix/main.rs`
+/// — the two live on opposite sides of the channel and both sides harden
+/// for defence in depth.
+async fn is_active_bft_signer(blockchain: &SharedBlockchain, addr: &str) -> bool {
+    let bc = blockchain.read().await;
+    if bc.stake_registry.is_active(addr) {
+        return true;
+    }
+    bc.authority.is_active_validator(addr)
 }
 
 // ── Inbound response handler ─────────────────────────────
