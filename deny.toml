@@ -6,9 +6,22 @@
 # vulnerability/unmaintained/yanked keys were removed in v0.16 (PR #611).
 # All advisories are denied by default; use ignore[] for known exceptions.
 [advisories]
-# RUSTSEC-2020-0105 (net2) — cargo-deny v0.19.x has a parse bug on this advisory file.
-# The crate is not in our dependency tree; safe to ignore for CI.
-ignore = ["RUSTSEC-2020-0105"]
+ignore = [
+    # RUSTSEC-2020-0105 (net2) — cargo-deny v0.19.x has a parse bug on this
+    # advisory file. The crate is not in our dependency tree; safe to ignore.
+    "RUSTSEC-2020-0105",
+
+    # GHSA-vxx9-2994-q338 / CVE-2026-32314 — yamux 0.12.1 remote-panic via
+    # malformed Data frame (SYN, len=262145). Fix is in yamux 0.13.10,
+    # which IS in our tree — `libp2p-yamux 0.47` pulls both 0.12.1 and
+    # 0.13.10 unconditionally and the default `yamux::Config::default()`
+    # constructs the `Config013` variant at connection setup, so the
+    # vulnerable 0.12 decoder is never wired to a live socket at runtime.
+    # Remove this ignore once libp2p-yamux 0.48+ drops v0.12 compat and
+    # the 0.12.1 package disappears from Cargo.lock.
+    # Dependabot alert: https://github.com/satyakwok/sentrix/security/dependabot/3
+    "GHSA-vxx9-2994-q338",
+]
 
 # ── Licenses ────────────────────────────────────────────────
 [licenses]
