@@ -1,20 +1,18 @@
 # Validators
 
-3 validators across 3 VPS, round-robin PoA.
+3 validators across 3 VPS, round-robin PoA (v2.0.0).
 
 ## Current Set
 
-| Slot | Name | Address prefix | VPS |
-|------|------|---------------|-----|
-| 0 | Sentrix Treasury | `0x0804...` | 2 |
-| 1 | Sentrix Foundation | `0x753f...` | 1 |
-| 2 | BlockForge Asia | `0x7be6...` | 2 |
-| 3 | PacificStake | `0x7dcc...` | 2 |
-| 4 | Sentrix Core | `0x87c9...` | 3 |
-| 5 | Archipelago Network | `0xd211...` | 2 |
-| 6 | Nusantara Node | `0xdd3c...` | 2 |
+| Slot | Name | Address prefix | VPS | Service |
+|------|------|---------------|-----|---------|
+| 0 | Sentrix Treasury | `0x0804...` | VPS2 | sentrix-val5 |
+| 1 | Sentrix Foundation | `0x753f...` | VPS1 | sentrix-node |
+| 2 | Sentrix Core | `0x87c9...` | VPS3 | sentrix-core |
 
-Sorted by address. Block producer = `height % 7`.
+Sorted by address. Block producer = `height % 3`.
+
+(Nusantara, BlockForge Asia, PacificStake, Archipelago — decommissioned during v2.0.0 reset; services stopped, NOT on chain.)
 
 ## Adding a Validator
 
@@ -64,7 +62,7 @@ curl -H "X-API-Key: <key>" http://[NODE_IP]:8545/admin/log
 
 ## Economics
 
-Each validator produces ~28,800 blocks/day (with 3 validators, 1s blocks). That's ~28,800 SRX/day from rewards alone, plus `floor(fee/2)` from each included transaction.
+Each validator produces ~28,800 blocks/day (3 validators × 1s blocks ÷ 3 slots). That's ~28,800 SRX/day per validator from rewards alone, plus `floor(fee/2)` from each included transaction.
 
 ## Voyager
 

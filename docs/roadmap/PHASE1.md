@@ -4,7 +4,7 @@ Done. Live in production.
 
 ## What's Running
 
-- PoA consensus, round-robin, 3s blocks
+- PoA consensus, round-robin, 1s blocks (v2.0.0; was 3s in v1.x)
 - 3 validators on 3 VPS (v2.0.0), full mesh peering
 - Account model with Ethereum-style addresses
 - Two-pass atomic block validation
@@ -24,8 +24,8 @@ Done. Live in production.
 
 | | |
 |-|-|
-| Tests | 525+ |
-| PRs merged | #1–#94 |
+| Tests | 551 |
+| PRs merged | #1–#111 |
 | Audit rounds | 11 (116 findings, 78+ fixed) |
 | Chain height | 141,000+ |
 | Pentest | 6/6 passed on live node |

@@ -28,8 +28,8 @@ du -sh /opt/sentrix/data/chain.db/
 
 | Metric | Healthy |
 |--------|---------|
-| Chain height | Increasing every ~3s |
-| Active validators | 7 |
+| Chain height | Increasing every ~1s |
+| Active validators | 3 (mainnet) / 4 (testnet BFT+DPoS) |
 | Mempool | < 10,000 |
 | Service status | Active (running) |
 
@@ -39,7 +39,7 @@ du -sh /opt/sentrix/data/chain.db/
 
 Height not moving for 30+ seconds.
 
-Validator offline: Check which slot is expected (`height % 7`). Bring that validator back up.
+Validator offline: Check which slot is expected (`height % 3`). Bring that validator back up.
 
 Network partition: Check logs for peer connections (`journalctl -u sentrix-node | grep peer`). Check firewall (`ufw status`).
 

@@ -129,7 +129,7 @@ Network Name:     Sentrix Testnet
 RPC URL:          https://testnet-rpc.sentriscloud.com/rpc
 Chain ID:         7120
 Currency Symbol:  SRX
-Block Explorer:   https://testnet-explorer.sentriscloud.com
+Block Explorer:   https://sentrixscan.sentriscloud.com
 ```
 
 ## Known Limitations

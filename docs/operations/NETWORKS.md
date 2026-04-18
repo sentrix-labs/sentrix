@@ -9,8 +9,8 @@
 | Explorer | https://sentrixscan.sentriscloud.com |
 | P2P port | 30303 |
 | API port | 8545 |
-| Block time | 3s |
-| Validators | 7 (PoA round-robin) |
+| Block time | 1s |
+| Validators | 3 (PoA round-robin: Foundation, Treasury, Core) |
 | Native coin | SRX |
 
 ## Testnet
@@ -19,12 +19,11 @@
 |-|-|
 | Chain ID | 7120 (0x1bd0) |
 | RPC | https://testnet-rpc.sentriscloud.com/rpc |
-| Explorer | https://testnet-explorer.sentriscloud.com |
-| Scan | https://testnet-scan.sentriscloud.com |
+| Explorer | https://sentrixscan.sentriscloud.com (unified UI, toggle Testnet) |
 | API | https://testnet-api.sentriscloud.com |
 | P2P port | 31303–31306 |
 | API port | 9545 |
-| Block time | 3s |
+| Block time | 1s |
 | Validators | 4 (DPoS + BFT, 3/4 fault tolerance) |
 | EVM | Active — Solidity contracts, MetaMask compatible |
 | Voyager fork height | 10 |
@@ -44,7 +43,7 @@ Add network manually:
 | RPC URL | https://sentrix-rpc.sentriscloud.com | https://testnet-rpc.sentriscloud.com/rpc |
 | Chain ID | 7119 | 7120 |
 | Symbol | SRX | SRX |
-| Explorer | https://sentrixscan.sentriscloud.com | https://testnet-explorer.sentriscloud.com |
+| Explorer | https://sentrixscan.sentriscloud.com | https://sentrixscan.sentriscloud.com (toggle Testnet) |
 
 ### ethers.js
 

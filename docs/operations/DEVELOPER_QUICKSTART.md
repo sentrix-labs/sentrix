@@ -10,7 +10,7 @@ Build on Sentrix in 10 minutes. Deploy a smart contract, read chain state, and s
 |---|---|
 | RPC URL | `https://testnet-rpc.sentriscloud.com/rpc` |
 | Chain ID | `7120` |
-| Explorer | `https://testnet-explorer.sentriscloud.com` |
+| Explorer | `https://sentrixscan.sentriscloud.com` |
 | Faucet | `https://faucet.sentriscloud.com` |
 
 ### MetaMask setup
@@ -23,7 +23,7 @@ Settings → Networks → Add network manually:
 | RPC URL | `https://testnet-rpc.sentriscloud.com/rpc` |
 | Chain ID | `7120` |
 | Symbol | `SRX` |
-| Block Explorer | `https://testnet-explorer.sentriscloud.com` |
+| Block Explorer | `https://sentrixscan.sentriscloud.com` |
 
 Get test SRX from the [faucet](https://faucet.sentriscloud.com).
 
@@ -56,7 +56,7 @@ contract MyToken {
 
 3. Compile → Solidity 0.8.20+
 4. Deploy → Environment: "Injected Provider — MetaMask" → Deploy
-5. Confirm in MetaMask → mined in ~3s
+5. Confirm in MetaMask → mined in ~1s
 
 ## ethers.js / viem
 
