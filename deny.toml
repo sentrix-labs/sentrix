@@ -19,7 +19,7 @@ ignore = [
     # vulnerable 0.12 decoder is never wired to a live socket at runtime.
     # Remove this ignore once libp2p-yamux 0.48+ drops v0.12 compat and
     # the 0.12.1 package disappears from Cargo.lock.
-    # Dependabot alert: https://github.com/satyakwok/sentrix/security/dependabot/3
+    # Dependabot alert: https://github.com/sentrix-labs/sentrix/security/dependabot/3
     "GHSA-vxx9-2994-q338",
 ]
 

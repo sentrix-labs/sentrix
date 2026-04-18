@@ -2,9 +2,9 @@
 
 Fast, secure Layer-1 blockchain built in Rust.
 
-[![CI/CD](https://github.com/satyakwok/sentrix/actions/workflows/ci.yml/badge.svg)](https://github.com/satyakwok/sentrix/actions)
-[![Release](https://img.shields.io/github/v/release/satyakwok/sentrix)](https://github.com/satyakwok/sentrix/releases/latest)
-[![Tests](https://img.shields.io/badge/tests-551%20passing-brightgreen)](https://github.com/satyakwok/sentrix/actions)
+[![CI/CD](https://github.com/sentrix-labs/sentrix/actions/workflows/ci.yml/badge.svg)](https://github.com/sentrix-labs/sentrix/actions)
+[![Release](https://img.shields.io/github/v/release/sentrix-labs/sentrix)](https://github.com/sentrix-labs/sentrix/releases/latest)
+[![Tests](https://img.shields.io/badge/tests-551%20passing-brightgreen)](https://github.com/sentrix-labs/sentrix/actions)
 [![Rust](https://img.shields.io/badge/rust-stable-orange)](Cargo.toml)
 [![Chain ID](https://img.shields.io/badge/chain%20ID-7119-blue)](docs/operations/NETWORKS.md)
 [![License](https://img.shields.io/badge/license-BUSL--1.1-purple)](LICENSE)
@@ -39,7 +39,7 @@ Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, i
 
 ```bash
 # Build
-git clone https://github.com/satyakwok/sentrix.git
+git clone https://github.com/sentrix-labs/sentrix.git
 cd sentrix
 cargo build --release
 

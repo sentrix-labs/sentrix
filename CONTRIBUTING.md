@@ -16,7 +16,7 @@ Thank you for considering contributing to Sentrix! We welcome contributions from
 
 ```bash
 # Clone the repository
-git clone https://github.com/satyakwok/sentrix.git
+git clone https://github.com/sentrix-labs/sentrix.git
 cd sentrix-chain
 
 # Build
@@ -76,7 +76,7 @@ tests/
 
 ### Reporting Bugs
 
-1. Check [existing issues](https://github.com/satyakwok/sentrix/issues) to avoid duplicates
+1. Check [existing issues](https://github.com/sentrix-labs/sentrix/issues) to avoid duplicates
 2. Open a new issue with:
    - Clear title describing the bug
    - Steps to reproduce

@@ -1,6 +1,6 @@
 services:
   sentrix-node:
-    image: ghcr.io/satyakwok/sentrix:latest
+    image: ghcr.io/sentrix-labs/sentrix:latest
     container_name: sentrix-node
     restart: unless-stopped
     ports:

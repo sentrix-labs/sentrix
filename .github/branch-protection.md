@@ -17,7 +17,7 @@ Configure at: GitHub → Settings → Branches → Add rule → Branch name patt
 
 ### Setup steps
 
-1. Go to https://github.com/satyakwok/sentrix/settings/branches
+1. Go to https://github.com/sentrix-labs/sentrix/settings/branches
 2. Click "Add branch protection rule"
 3. Branch name pattern: `main`
 4. Enable the rules listed above

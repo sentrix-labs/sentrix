@@ -4,7 +4,7 @@ version = "2.0.0"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Binary Sparse Merkle Tree (256-level) with MDBX persistence for Sentrix blockchain state"
-repository = "https://github.com/satyakwok/sentrix"
+repository = "https://github.com/sentrix-labs/sentrix"
 
 [dependencies]
 sentrix-primitives = { path = "../sentrix-primitives" }

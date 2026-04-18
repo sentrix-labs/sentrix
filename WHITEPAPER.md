@@ -383,7 +383,7 @@ See [SECURITY.md](SECURITY.md) for responsible disclosure policy.
 - Explorer: sentrixscan.sentriscloud.com
 - API: sentrix-api.sentriscloud.com
 - RPC: sentrix-rpc.sentriscloud.com
-- GitHub: github.com/satyakwok/sentrix
+- GitHub: github.com/sentrix-labs/sentrix
 - Email: sentriscloud@gmail.com
 
 ---

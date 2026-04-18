@@ -18,13 +18,13 @@ Run a Sentrix validator node and participate in block production.
 
 ```bash
 # Option A: build from source
-git clone https://github.com/satyakwok/sentrix.git
+git clone https://github.com/sentrix-labs/sentrix.git
 cd sentrix
 cargo build --release
 cp target/release/sentrix /opt/sentrix/sentrix
 
 # Option B: download from latest release
-curl -L https://github.com/satyakwok/sentrix/releases/latest/download/sentrix -o /opt/sentrix/sentrix
+curl -L https://github.com/sentrix-labs/sentrix/releases/latest/download/sentrix -o /opt/sentrix/sentrix
 chmod +x /opt/sentrix/sentrix
 ```
 

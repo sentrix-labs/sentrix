@@ -14,7 +14,7 @@ How to deploy a Sentrix node on a Linux server.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 
-git clone https://github.com/satyakwok/sentrix.git
+git clone https://github.com/sentrix-labs/sentrix.git
 cd sentrix
 cargo build --release
 # → target/release/sentrix
@@ -23,7 +23,7 @@ cargo build --release
 ## Docker
 
 ```bash
-git clone https://github.com/satyakwok/sentrix.git && cd sentrix
+git clone https://github.com/sentrix-labs/sentrix.git && cd sentrix
 docker compose up -d --build
 ```
 

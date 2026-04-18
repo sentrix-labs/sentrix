@@ -9,7 +9,7 @@ edition = "2024"
 license = "BUSL-1.1"
 description = "Fast, secure Layer-1 blockchain built in Rust"
 homepage = "https://sentrix.sentriscloud.com"
-repository = "https://github.com/satyakwok/sentrix"
+repository = "https://github.com/sentrix-labs/sentrix"
 keywords = ["blockchain", "layer1", "poa", "dpos", "bft"]
 categories = ["cryptography::cryptocurrencies"]
 

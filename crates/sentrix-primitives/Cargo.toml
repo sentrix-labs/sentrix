@@ -4,7 +4,7 @@ version = "2.0.0"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Core types and error handling for Sentrix blockchain"
-repository = "https://github.com/satyakwok/sentrix"
+repository = "https://github.com/sentrix-labs/sentrix"
 keywords = ["blockchain", "sentrix", "types"]
 
 [dependencies]
