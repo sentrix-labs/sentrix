@@ -9,7 +9,7 @@ repository = "https://github.com/satyakwok/sentrix"
 [dependencies]
 sentrix-primitives = { path = "../sentrix-primitives" }
 sled = "0.34"
-lru = "0.12"
+lru = "0.17"
 sha2 = "0.10"
 blake3 = "1.5"
 hex = "0.4"

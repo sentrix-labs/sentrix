@@ -90,7 +90,7 @@ tracing = "0.1"
 zeroize = "1.7"
 subtle = "2.5"
 blake3 = "1.5"
-lru = "0.12"
+lru = "0.17"
 bincode = "1.3"
 
 [dev-dependencies]
