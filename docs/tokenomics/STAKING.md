@@ -35,9 +35,9 @@ Slash split: 50% burned, 50% to Ecosystem Fund. Delegators not directly slashed 
 
 ## Economics
 
-With 100 validators, 3s blocks:
-- ~288 blocks/day per validator
-- ~288+ SRX/day from rewards (Era 0)
+With 100 validators, 1s blocks:
+- ~864 blocks/day per validator (86,400 ÷ 100)
+- ~864 SRX/day from rewards (Era 0, pre-halving)
 - Plus fee revenue
 
 Cost to attack (51%): 51 validators × 15K SRX = 765K SRX minimum, plus 20% slash risk.

@@ -20,7 +20,7 @@ In MetaMask → **Networks → Add network manually**:
 | New RPC URL | `https://testnet-rpc.sentriscloud.com/rpc` |
 | Chain ID | `7120` |
 | Currency symbol | `SRX` |
-| Block explorer URL | `https://testnet-explorer.sentriscloud.com` |
+| Block explorer URL | `https://sentrixscan.sentriscloud.com` |
 
 Save and switch to Sentrix Testnet. You should see your SRX balance.
 
@@ -82,7 +82,7 @@ Expand the deployed contract and call any function:
 You can also verify the deployment via the explorer:
 
 ```
-https://testnet-explorer.sentriscloud.com/explorer/tx/<your-tx-hash>
+https://sentrixscan.sentriscloud.com/tx/<your-tx-hash>
 ```
 
 ## Hardhat / Foundry

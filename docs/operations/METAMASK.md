@@ -13,7 +13,7 @@ Sentrix Testnet is fully MetaMask-compatible (chain ID 7120). Mainnet (chain ID 
    | **New RPC URL** | `https://testnet-rpc.sentriscloud.com/rpc` |
    | **Chain ID** | `7120` |
    | **Currency Symbol** | `SRX` |
-   | **Block Explorer URL** | `https://testnet-explorer.sentriscloud.com` |
+   | **Block Explorer URL** | `https://sentrixscan.sentriscloud.com` |
 
 3. Save. Switch to "Sentrix Testnet" in the network dropdown.
 
@@ -69,7 +69,7 @@ curl -X POST https://testnet-rpc.sentriscloud.com/rpc \
 
 **Transaction stuck pending:**
 - Check `eth_getTransactionReceipt` directly via curl — receipt may already exist
-- Block time is 3s; expect confirmation within 1-2 blocks
+- Block time is 1s; expect confirmation within 1-2 blocks
 
 **eth_call returns "0x":**
 - The call executed but returned no data, or the call reverted silently

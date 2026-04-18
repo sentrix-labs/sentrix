@@ -12,7 +12,7 @@ sorted_validators[block_height % validator_count]
 
 Deterministic — every node computes the same result independently. No communication needed.
 
-With 3 validators, each one produces a block every 3 seconds.
+With 3 validators and 1s blocks, each one produces a block every 3 seconds (1s × 3 slots).
 
 ## Block Production
 
@@ -20,7 +20,7 @@ When it's your turn (`block_producer.rs`):
 
 1. Check `height % count` matches your slot
 2. Build coinbase tx (1 SRX reward)
-3. Clone mempool, take up to 100 txs sorted by fee (highest first)
+3. Clone mempool, take up to 5,000 txs sorted by fee (highest first)
 4. Assemble block: index, prev hash, timestamp, txs, merkle root
 
 Mempool is cloned not drained — if the block gets rejected, txs survive.
@@ -67,7 +67,7 @@ block.timestamp <= now + 15s             (not too far ahead)
 
 ## Known Limitations
 
-- No fork choice. First block at a height wins. Network partitions can cause permanent splits. Fine for 7 controlled validators, needs fixing before scaling.
+- No fork choice. First block at a height wins. Network partitions can cause permanent splits. Fine for 3 controlled validators, needs fixing before scaling.
 - No block skip. If expected validator is offline, chain waits. No timeout.
 - No block signatures. Block has validator address but isn't signed. Auth is via round-robin schedule check. Signing needed for Voyager.
 

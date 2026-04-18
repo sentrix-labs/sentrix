@@ -41,7 +41,7 @@
 | | |
 |-|-|
 | Chain ID | 7119 |
-| Block time | 3s |
+| Block time | 1s |
 | Coin | SRX (1 SRX = 100M sentri) |
 | Max supply | 210M SRX |
 | Reward | 1 SRX/block, halving every 42M blocks |

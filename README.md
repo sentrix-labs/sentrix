@@ -61,7 +61,7 @@ curl http://localhost:8545/health
 | RPC URL | `https://testnet-rpc.sentriscloud.com/rpc` |
 | Chain ID | `7120` |
 | Symbol | `SRX` |
-| Explorer | `https://testnet-scan.sentriscloud.com/explorer` |
+| Explorer | `https://sentrixscan.sentriscloud.com` (toggle to Testnet in UI) |
 
 Full guide: [docs/operations/METAMASK.md](docs/operations/METAMASK.md). Deploy a smart contract via Remix: [docs/operations/SMART_CONTRACT_GUIDE.md](docs/operations/SMART_CONTRACT_GUIDE.md). EVM internals: [docs/architecture/EVM.md](docs/architecture/EVM.md).
 
@@ -93,7 +93,7 @@ bin/sentrix/              CLI binary
 | **Consensus** | PoA (3 validators) | DPoS + BFT (4 validators) |
 | **Block time** | 1 second | 1 second |
 | **EVM** | Disabled | Active — MetaMask compatible |
-| **Explorer** | [sentrixscan.sentriscloud.com](https://sentrixscan.sentriscloud.com/explorer) | [testnet-scan.sentriscloud.com](https://testnet-scan.sentriscloud.com/explorer) |
+| **Explorer** | [sentrixscan.sentriscloud.com](https://sentrixscan.sentriscloud.com) | [sentrixscan.sentriscloud.com](https://sentrixscan.sentriscloud.com) (same unified UI, toggle Testnet) |
 
 **Wallet:** [sentrix-wallet.sentriscloud.com](https://sentrix-wallet.sentriscloud.com)
 **Faucet:** [faucet.sentriscloud.com](https://faucet.sentriscloud.com)
