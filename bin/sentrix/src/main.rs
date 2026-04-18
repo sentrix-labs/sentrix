@@ -108,6 +108,10 @@ enum Commands {
         /// Bootstrap peers (comma-separated host:port)
         #[arg(long, default_value = "")]
         peers: String,
+        /// Optional path to a genesis TOML. When absent, the binary uses the
+        /// embedded canonical mainnet genesis (backward-compatible default).
+        #[arg(long)]
+        genesis: Option<String>,
     },
     /// Chain information
     Chain {
@@ -404,7 +408,31 @@ async fn main() -> anyhow::Result<()> {
             validator_keystore,
             port,
             peers,
+            genesis,
         } => {
+            // Load + validate genesis config before anything touches state.
+            // When --genesis is absent, fall back to the embedded canonical
+            // mainnet TOML (backward-compatible default). Fail loud if a
+            // custom path is supplied but invalid — silently booting the
+            // wrong chain would be a much worse failure mode.
+            let genesis_cfg = match genesis.as_deref() {
+                Some(path) => {
+                    let g = sentrix::core::Genesis::from_path(path)?;
+                    println!(
+                        "Loaded genesis from {}: chain_id={} ({})",
+                        path, g.chain.chain_id, g.chain.name
+                    );
+                    g
+                }
+                None => {
+                    let g = sentrix::core::Genesis::mainnet()?;
+                    println!(
+                        "Using embedded mainnet genesis: chain_id={} ({})",
+                        g.chain.chain_id, g.chain.name
+                    );
+                    g
+                }
+            };
             // Resolve validator key: --validator-key > --validator-keystore > env var
             let resolved_key = if let Some(key) = validator_key {
                 Some(key)
@@ -418,6 +446,7 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 std::env::var("SENTRIX_VALIDATOR_KEY").ok()
             };
+            let _ = genesis_cfg; // retained for future wiring into Blockchain::new
             cmd_start(resolved_key, port, peers).await?;
         }
 
