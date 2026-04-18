@@ -519,9 +519,14 @@ impl BftEngine {
                 peer_height: status.height,
             };
         }
-        // Same or lower height: purely informational. Round convergence
-        // happens naturally via deterministic timeouts (all validators
-        // have identical timeout durations → advance rounds in lockstep).
+        // Same height: if peer is 2+ rounds ahead, catch up to peer_round - 1.
+        // This fixes the round desync stall where validators advance at slightly
+        // different times and never converge. Catching up to peer_round - 1 (not
+        // peer_round) avoids the leapfrog problem from vote-triggered catch-up.
+        // Only RoundStatus triggers this — votes do NOT trigger catch-up.
+        if status.height == self.state.height && status.round > self.state.round + 1 {
+            self.catch_up_round(status.round - 1);
+        }
         BftAction::Wait
     }
 
@@ -849,12 +854,13 @@ mod tests {
     }
 
     #[test]
-    fn test_round_status_no_catch_up() {
-        // RoundStatus no longer triggers round catch-up — only timeouts
-        // advance rounds to prevent vote-wipe cascades.
+    fn test_round_status_catch_up_when_2_ahead() {
+        // RoundStatus triggers catch-up to peer_round - 1 when peer is 2+ ahead.
+        // This prevents the round desync stall without causing leapfrog.
         let (mut engine, _) = setup();
         assert_eq!(engine.round(), 0);
 
+        // Peer at round 5 → we catch up to round 4 (peer_round - 1)
         let status = RoundStatus {
             height: 100,
             round: 5,
@@ -862,7 +868,23 @@ mod tests {
         };
         let action = engine.on_round_status(&status);
         assert!(matches!(action, BftAction::Wait));
-        assert_eq!(engine.round(), 0); // NOT caught up — stays at 0
+        assert_eq!(engine.round(), 4); // caught up to peer - 1
+    }
+
+    #[test]
+    fn test_round_status_no_catch_up_when_only_1_ahead() {
+        // Peer only 1 round ahead → no catch-up (normal timeout will sync)
+        let (mut engine, _) = setup();
+        assert_eq!(engine.round(), 0);
+
+        let status = RoundStatus {
+            height: 100,
+            round: 1, // only 1 ahead
+            validator: "0xval001".into(),
+        };
+        let action = engine.on_round_status(&status);
+        assert!(matches!(action, BftAction::Wait));
+        assert_eq!(engine.round(), 0); // stays at 0
     }
 
     #[test]
@@ -938,24 +960,29 @@ mod tests {
     }
 
     #[test]
-    fn test_partition_recovery_no_catchup() {
-        // RoundStatus no longer triggers round catch-up (prevents vote-wipe
-        // cascades). Round advancement only happens via deterministic timeouts.
+    fn test_partition_recovery_catches_up_via_round_status() {
+        // RoundStatus from peers 2+ rounds ahead triggers catch-up to
+        // peer_round - 1. This fixes the round desync stall.
         let (mut engine, _) = setup();
         assert_eq!(engine.round(), 0);
 
-        // Receive round status from 3 peers all at round 3
-        for i in 1..=3 {
-            let status = RoundStatus {
-                height: 100,
-                round: 3,
-                validator: format!("0xval{:03}", i),
-            };
-            engine.on_round_status(&status);
-        }
-        // Round stays at 0 — catch-up is disabled. Validator will advance
-        // to round 3 naturally via 3 timeout cycles (~30s with 10s propose).
-        assert_eq!(engine.round(), 0);
+        // Receive round status from peer at round 3 → catch up to round 2
+        let status = RoundStatus {
+            height: 100,
+            round: 3,
+            validator: "0xval001".into(),
+        };
+        engine.on_round_status(&status);
+        assert_eq!(engine.round(), 2); // caught up to peer - 1
+
+        // Second peer also at round 3 → no further catch-up (already at 2)
+        let status2 = RoundStatus {
+            height: 100,
+            round: 3,
+            validator: "0xval002".into(),
+        };
+        engine.on_round_status(&status2);
+        assert_eq!(engine.round(), 2); // stays at 2
     }
 
     #[test]
