@@ -1,7 +1,6 @@
 // wallet.rs - Sentrix
 
 use sentrix_primitives::{SentrixError, SentrixResult};
-use secp256k1::rand::rngs::OsRng;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use sha3::Digest;
 use sha3::Keccak256;
@@ -22,7 +21,8 @@ impl Wallet {
     // Generate a new random wallet
     pub fn generate() -> Self {
         let secp = Secp256k1::new();
-        let (secret_key, public_key) = secp.generate_keypair(&mut OsRng);
+        let mut rng = rand::rng();
+        let (secret_key, public_key) = secp.generate_keypair(&mut rng);
         Self::from_keypair(&secret_key, &public_key)
     }
 
@@ -41,8 +41,12 @@ impl Wallet {
     // Import from private key hex
     pub fn from_private_key(private_key_hex: &str) -> SentrixResult<Self> {
         let bytes = hex::decode(private_key_hex).map_err(|_| SentrixError::InvalidPrivateKey)?;
+        let key_bytes: [u8; 32] = bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| SentrixError::InvalidPrivateKey)?;
         let secret_key =
-            SecretKey::from_slice(&bytes).map_err(|_| SentrixError::InvalidPrivateKey)?;
+            SecretKey::from_byte_array(key_bytes).map_err(|_| SentrixError::InvalidPrivateKey)?;
         let secp = Secp256k1::new();
         let public_key = PublicKey::from_secret_key(&secp, &secret_key);
         Ok(Self::from_keypair(&secret_key, &public_key))
@@ -70,7 +74,8 @@ impl Wallet {
     }
 
     pub fn get_secret_key(&self) -> SentrixResult<SecretKey> {
-        SecretKey::from_slice(&*self.secret_key_bytes).map_err(|_| SentrixError::InvalidPrivateKey)
+        SecretKey::from_byte_array(*self.secret_key_bytes)
+            .map_err(|_| SentrixError::InvalidPrivateKey)
     }
 
     pub fn get_public_key(&self) -> SentrixResult<PublicKey> {

@@ -1,7 +1,7 @@
 #![allow(missing_docs, clippy::expect_used, clippy::unwrap_used)]
 // tests/integration_trie.rs - Sentrix — SentrixTrie integration tests
 
-use secp256k1::{Secp256k1, rand::rngs::OsRng};
+use secp256k1::Secp256k1;
 use sentrix::core::blockchain::{BLOCK_REWARD, Blockchain, CHAIN_ID};
 use sentrix::core::transaction::{MIN_TX_FEE, Transaction};
 use sentrix::core::trie::{
@@ -22,7 +22,8 @@ fn temp_mdbx() -> (tempfile::TempDir, Arc<MdbxStorage>) {
 /// Generate a valid secp256k1 keypair and derive a Sentrix address.
 fn make_validator() -> (secp256k1::SecretKey, String, String) {
     let secp = Secp256k1::new();
-    let (sk, pk) = secp.generate_keypair(&mut OsRng);
+    let mut rng = secp256k1::rand::rng();
+    let (sk, pk) = secp.generate_keypair(&mut rng);
     let addr = Wallet::derive_address(&pk);
     let pk_hex = hex::encode(pk.serialize());
     (sk, addr, pk_hex)
@@ -34,7 +35,8 @@ fn make_sender(
     balance: u64,
 ) -> (secp256k1::SecretKey, secp256k1::PublicKey, String) {
     let secp = Secp256k1::new();
-    let (sk, pk) = secp.generate_keypair(&mut OsRng);
+    let mut rng = secp256k1::rand::rng();
+    let (sk, pk) = secp.generate_keypair(&mut rng);
     let addr = Wallet::derive_address(&pk);
     bc.accounts.credit(&addr, balance).unwrap();
     (sk, pk, addr)

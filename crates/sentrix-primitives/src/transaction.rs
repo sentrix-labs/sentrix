@@ -159,7 +159,7 @@ impl Transaction {
         let payload = tx.signing_payload();
         let secp = Secp256k1::signing_only();
         let msg = Self::payload_to_message(&payload)?;
-        let sig = secp.sign_ecdsa(&msg, secret_key);
+        let sig = secp.sign_ecdsa(msg, secret_key);
         tx.signature = hex::encode(sig.serialize_compact());
         tx.txid = tx.compute_txid();
 
@@ -225,9 +225,8 @@ impl Transaction {
     fn payload_to_message(payload: &str) -> SentrixResult<Message> {
         let mut hasher = Sha256::new();
         hasher.update(payload.as_bytes());
-        let hash = hasher.finalize();
-        Message::from_digest_slice(&hash)
-            .map_err(|e| SentrixError::InvalidTransaction(e.to_string()))
+        let hash: [u8; 32] = hasher.finalize().into();
+        Ok(Message::from_digest(hash))
     }
 
     pub fn verify(&self) -> SentrixResult<()> {
@@ -269,7 +268,7 @@ impl Transaction {
 
         let payload = self.signing_payload();
         let msg = Self::payload_to_message(&payload)?;
-        secp.verify_ecdsa(&msg, &sig, &public_key)
+        secp.verify_ecdsa(msg, &sig, &public_key)
             .map_err(|_| SentrixError::InvalidSignature)?;
 
         Ok(())
@@ -318,13 +317,13 @@ impl Transaction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secp256k1::rand::rngs::OsRng;
 
     const TEST_CHAIN_ID: u64 = 7119;
 
     fn make_keypair() -> (SecretKey, PublicKey) {
         let secp = Secp256k1::new();
-        secp.generate_keypair(&mut OsRng)
+        let mut rng = secp256k1::rand::rng();
+        secp.generate_keypair(&mut rng)
     }
 
     fn derive_addr(pk: &PublicKey) -> String {

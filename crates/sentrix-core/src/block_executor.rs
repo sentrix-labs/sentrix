@@ -482,12 +482,12 @@ impl Blockchain {
 mod tests {
     use crate::blockchain::{Blockchain, CHAIN_ID};
     use sentrix_primitives::transaction::{MIN_TX_FEE, TOKEN_OP_ADDRESS, TokenOp, Transaction};
-    use secp256k1::rand::rngs::OsRng;
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
     fn make_keypair() -> (SecretKey, PublicKey) {
         let secp = Secp256k1::new();
-        secp.generate_keypair(&mut OsRng)
+        let mut rng = secp256k1::rand::rng();
+        secp.generate_keypair(&mut rng)
     }
 
     fn derive_addr(pk: &PublicKey) -> String {

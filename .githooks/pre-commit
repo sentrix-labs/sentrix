@@ -73,6 +73,7 @@ ADDR_ALLOW_PATHS=(
   "^src/api/"                          # API module tests reference genesis addresses via constants
   "^src/.*test.*\\.rs$"               # tests use generated random addrs
   "^crates/sentrix-core/src/"          # core crate: genesis constants, test addresses
+  "^crates/sentrix-primitives/src/"    # primitives: TOKEN_OP_ADDRESS/STAKING_ADDRESS constants + test addrs
   "^crates/sentrix-trie/src/"          # trie crate: test address_to_key patterns
   "^crates/sentrix-rpc/src/"           # RPC crate: route tests with addresses
   "^tests/"                            # integration tests

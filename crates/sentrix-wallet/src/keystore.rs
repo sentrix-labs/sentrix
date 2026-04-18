@@ -9,7 +9,6 @@ use aes_gcm::{
 use argon2::{Algorithm, Argon2, Params, Version};
 use pbkdf2::pbkdf2_hmac;
 use rand::RngCore;
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
@@ -57,8 +56,9 @@ impl Keystore {
     pub fn encrypt(wallet: &Wallet, password: &str) -> SentrixResult<Self> {
         let mut salt = [0u8; SALT_SIZE];
         let mut nonce_bytes = [0u8; NONCE_SIZE];
-        OsRng.fill_bytes(&mut salt);
-        OsRng.fill_bytes(&mut nonce_bytes);
+        let mut rng = rand::rng();
+        rng.fill_bytes(&mut salt);
+        rng.fill_bytes(&mut nonce_bytes);
 
         // Derive encryption key using Argon2id
         let mut key_bytes = [0u8; KEY_SIZE];
@@ -300,8 +300,9 @@ mod tests {
         // Build a v1 keystore manually using the old PBKDF2 path
         let mut salt = [0u8; SALT_SIZE];
         let mut nonce_bytes = [0u8; NONCE_SIZE];
-        OsRng.fill_bytes(&mut salt);
-        OsRng.fill_bytes(&mut nonce_bytes);
+        let mut rng = rand::rng();
+        rng.fill_bytes(&mut salt);
+        rng.fill_bytes(&mut nonce_bytes);
 
         let mut key_bytes = [0u8; KEY_SIZE];
         pbkdf2_hmac::<Sha256>(
@@ -355,8 +356,9 @@ mod tests {
         // Create v1 keystore using PBKDF2
         let mut salt = [0u8; SALT_SIZE];
         let mut nonce_bytes = [0u8; NONCE_SIZE];
-        OsRng.fill_bytes(&mut salt);
-        OsRng.fill_bytes(&mut nonce_bytes);
+        let mut rng = rand::rng();
+        rng.fill_bytes(&mut salt);
+        rng.fill_bytes(&mut nonce_bytes);
 
         let mut key_bytes = [0u8; KEY_SIZE];
         pbkdf2_hmac::<Sha256>(

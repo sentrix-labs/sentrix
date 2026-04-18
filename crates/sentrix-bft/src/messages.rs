@@ -128,14 +128,12 @@ pub enum BftMessage {
 /// Returns 65-byte recoverable signature (64-byte compact + 1-byte recovery_id).
 pub fn sign_payload(payload: &[u8], secret_key: &SecretKey) -> Vec<u8> {
     let secp = Secp256k1::signing_only();
-    let hash = Sha256::digest(payload);
-    // SHA-256 always produces 32 bytes — from_digest_slice cannot fail
-    #[allow(clippy::expect_used)]
-    let msg = Message::from_digest_slice(&hash).expect("SHA-256 always 32 bytes");
-    let sig = secp.sign_ecdsa_recoverable(&msg, secret_key);
+    let hash: [u8; 32] = Sha256::digest(payload).into();
+    let msg = Message::from_digest(hash);
+    let sig = secp.sign_ecdsa_recoverable(msg, secret_key);
     let (rec_id, compact) = sig.serialize_compact();
     let mut out = compact.to_vec(); // 64 bytes
-    out.push(rec_id.to_i32() as u8); // 1 byte recovery id
+    out.push(i32::from(rec_id) as u8); // 1 byte recovery id
     out
 }
 
@@ -146,14 +144,14 @@ pub fn recover_signer(payload: &[u8], signature: &[u8]) -> SentrixResult<String>
         return Err(SentrixError::InvalidSignature);
     }
     let secp = Secp256k1::verification_only();
-    let hash = Sha256::digest(payload);
-    let msg = Message::from_digest_slice(&hash).map_err(|_| SentrixError::InvalidSignature)?;
-    let rec_id =
-        RecoveryId::from_i32(signature[64] as i32).map_err(|_| SentrixError::InvalidSignature)?;
+    let hash: [u8; 32] = Sha256::digest(payload).into();
+    let msg = Message::from_digest(hash);
+    let rec_id = RecoveryId::try_from(signature[64] as i32)
+        .map_err(|_| SentrixError::InvalidSignature)?;
     let sig = RecoverableSignature::from_compact(&signature[..64], rec_id)
         .map_err(|_| SentrixError::InvalidSignature)?;
     let pubkey = secp
-        .recover_ecdsa(&msg, &sig)
+        .recover_ecdsa(msg, &sig)
         .map_err(|_| SentrixError::InvalidSignature)?;
     Ok(sentrix_wallet::Wallet::derive_address(&pubkey))
 }
