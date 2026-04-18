@@ -49,7 +49,7 @@ Explorer: `/explorer/tokens` and `/explorer/token/{contract}`.
 
 ## SNTX
 
-First SRX-20 token. Sentrix Utility.
+First SRC-20 token (ERC-20 via Sentrix EVM). Sentrix Utility.
 
 | | |
 |-|-|

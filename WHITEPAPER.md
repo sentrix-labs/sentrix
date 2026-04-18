@@ -246,8 +246,8 @@ Sentrix operates a three-token model:
 | Token | Type | Supply | Role |
 |---|---|---|---|
 | **SRX** | Native coin | 210,000,000 (fixed) | Gas fees, validator rewards, base currency, store of value |
-| **SNTX** | SRX-20 | 10,000,000,000 | Utility — ecosystem rewards, governance voting, staking incentives |
-| **SRTX** | SRX-20 | TBD | Payment — stablecoin for daily transactions |
+| **SNTX** | SRC-20 | 10,000,000,000 | Utility — ecosystem rewards, governance voting, staking incentives |
+| **SRTX** | SRC-20 | TBD | Payment — stablecoin for daily transactions |
 
 **Flywheel effect:** Every SNTX and SRTX transaction requires SRX for gas. As token usage grows, more SRX is burned, increasing scarcity and value of SRX. This creates a positive feedback loop where ecosystem growth directly benefits the native coin holders.
 
