@@ -46,15 +46,25 @@ impl Blockchain {
             ));
         }
 
-        // Validate coinbase amount
+        // C-04: validate coinbase amount AND recipient. Amount must equal the
+        // current era's block reward exactly (no silent underpay, no inflation).
+        // Recipient must equal block.validator so that if credit() is ever
+        // refactored to use coinbase.to_address instead of block.validator,
+        // the two cannot diverge and redirect the subsidy to an attacker.
         let reward = self.get_block_reward();
         let coinbase = block
             .coinbase()
             .ok_or_else(|| SentrixError::InvalidBlock("missing coinbase".to_string()))?;
-        if coinbase.amount > reward {
+        if coinbase.amount != reward {
             return Err(SentrixError::InvalidBlock(format!(
-                "coinbase {} exceeds reward {}",
+                "coinbase amount {} must equal block reward {}",
                 coinbase.amount, reward
+            )));
+        }
+        if coinbase.to_address != block.validator {
+            return Err(SentrixError::InvalidBlock(format!(
+                "coinbase recipient {} must equal block validator {}",
+                coinbase.to_address, block.validator
             )));
         }
 
@@ -517,6 +527,72 @@ mod tests {
         // State must not change
         assert_eq!(bc.height(), height_before);
         assert_eq!(bc.accounts.get_balance("v1"), balance_before);
+    }
+
+    // C-04: coinbase amount must equal the exact block reward (no silent
+    // underpay, no inflation). Previously `coinbase.amount > reward` only
+    // guarded against inflation; a block with 0 amount was accepted, wasting
+    // the subsidy.
+    #[test]
+    fn test_c04_coinbase_amount_too_high_rejected() {
+        use sentrix_primitives::block::Block;
+
+        let mut bc = setup();
+        let reward = bc.get_block_reward();
+        let prev = bc.latest_block().unwrap().hash.clone();
+        let ts = bc.latest_block().unwrap().timestamp + 1;
+
+        // Inflated coinbase: amount > reward
+        let bad = Transaction::new_coinbase("v1".to_string(), reward + 1, 1, ts);
+        let block = Block::new(1, prev, vec![bad], "v1".to_string());
+
+        let err = bc.add_block(block).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("coinbase amount"),
+            "expected amount-mismatch rejection, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_c04_coinbase_amount_too_low_rejected() {
+        use sentrix_primitives::block::Block;
+
+        let mut bc = setup();
+        let prev = bc.latest_block().unwrap().hash.clone();
+        let ts = bc.latest_block().unwrap().timestamp + 1;
+
+        // Underpaid coinbase: amount < reward
+        let bad = Transaction::new_coinbase("v1".to_string(), 0, 1, ts);
+        let block = Block::new(1, prev, vec![bad], "v1".to_string());
+
+        let err = bc.add_block(block).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("coinbase amount"),
+            "expected amount-mismatch rejection, got: {err:?}"
+        );
+    }
+
+    // C-04: coinbase.to_address must match block.validator. Enforced so that
+    // a future refactor of credit() to use coinbase.to_address instead of
+    // block.validator cannot redirect the subsidy to an attacker-chosen address.
+    #[test]
+    fn test_c04_coinbase_recipient_must_equal_validator() {
+        use sentrix_primitives::block::Block;
+
+        let mut bc = setup();
+        let reward = bc.get_block_reward();
+        let prev = bc.latest_block().unwrap().hash.clone();
+        let ts = bc.latest_block().unwrap().timestamp + 1;
+
+        // Coinbase paid to attacker while block is signed by authorized v1
+        let bad = Transaction::new_coinbase("attacker".to_string(), reward, 1, ts);
+        let block = Block::new(1, prev, vec![bad], "v1".to_string());
+
+        let err = bc.add_block(block).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("coinbase recipient"),
+            "expected recipient-mismatch rejection, got: {err:?}"
+        );
     }
 
     // Contract address must be deterministic — same txid on any node produces the same address

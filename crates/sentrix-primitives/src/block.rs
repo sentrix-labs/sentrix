@@ -179,6 +179,18 @@ impl Block {
             ));
         }
 
+        // C-04: no subsequent transaction may be a coinbase. A forged block
+        // with duplicate coinbase txs is otherwise only blocked incidentally
+        // by the COINBASE-account balance check in the executor; enforce it
+        // structurally so the guarantee can't be lost by later refactors.
+        for tx in self.transactions.iter().skip(1) {
+            if tx.is_coinbase() {
+                return Err(SentrixError::InvalidBlock(
+                    "only the first transaction may be coinbase".to_string(),
+                ));
+            }
+        }
+
         // Verify merkle root
         let txids: Vec<String> = self.transactions.iter().map(|tx| tx.txid.clone()).collect();
         let computed_merkle = merkle_root(&txids);
@@ -243,6 +255,27 @@ mod tests {
     fn test_validate_structure_wrong_prev_hash() {
         let genesis = Block::genesis();
         assert!(genesis.validate_structure(0, "wronghash").is_err());
+    }
+
+    #[test]
+    fn test_c04_duplicate_coinbase_rejected() {
+        // C-04: any tx at index > 0 with from=COINBASE must be rejected
+        // by validate_structure. Previously only blocked by the incidental
+        // balance check in the executor (COINBASE account has 0 balance).
+        let genesis = Block::genesis();
+        let cb1 = Transaction::new_coinbase("v1".to_string(), 100_000_000, 1, 1_712_620_801);
+        let cb2 = Transaction::new_coinbase("attacker".to_string(), 999_999_999, 1, 1_712_620_801);
+        let block1 = Block::new(
+            1,
+            genesis.hash.clone(),
+            vec![cb1, cb2],
+            "v1".to_string(),
+        );
+        let err = block1.validate_structure(1, &genesis.hash).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("only the first transaction may be coinbase"),
+            "expected duplicate-coinbase rejection, got: {err:?}"
+        );
     }
 
     #[test]
