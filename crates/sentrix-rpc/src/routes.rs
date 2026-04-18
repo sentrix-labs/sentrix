@@ -927,7 +927,6 @@ async fn get_token_trades_list(
 }
 
 async fn get_richlist(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    const TOTAL_SUPPLY_SENTRI: u64 = 210_000_000 * 100_000_000;
     let bc = state.read().await;
     let mut holders: Vec<serde_json::Value> = bc
         .accounts
@@ -935,7 +934,7 @@ async fn get_richlist(State(state): State<SharedState>) -> Json<serde_json::Valu
         .iter()
         .filter(|(_, a)| a.balance > 0)
         .map(|(addr, a)| {
-            let pct = a.balance as f64 / TOTAL_SUPPLY_SENTRI as f64 * 100.0;
+            let pct = a.balance as f64 / sentrix_core::blockchain::MAX_SUPPLY as f64 * 100.0;
             serde_json::json!({
                 "address": addr,
                 "balance_sentri": a.balance,

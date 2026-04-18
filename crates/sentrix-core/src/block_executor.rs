@@ -446,7 +446,7 @@ impl Blockchain {
             .build()
             .unwrap_or_default();
 
-        match execute_tx(in_mem_db, evm_tx, INITIAL_BASE_FEE) {
+        match execute_tx(in_mem_db, evm_tx, INITIAL_BASE_FEE, self.chain_id) {
             Ok(receipt) => {
                 tracing::info!(
                     "EVM tx {}: success={} gas_used={} contract={:?}",

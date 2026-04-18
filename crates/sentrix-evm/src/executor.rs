@@ -29,13 +29,33 @@ pub struct TxReceipt {
 /// Execute a single EVM transaction against an in-memory database.
 ///
 /// The db is consumed. Returns the receipt and the accumulated state changes.
-pub fn execute_tx(db: InMemoryDB, tx: TxEnv, block_base_fee: u64) -> Result<TxReceipt, String> {
-    execute_tx_inner(db, tx, block_base_fee, false)
+///
+/// # Arguments
+/// * `chain_id` — active chain ID for EIP-155 replay protection. If the tx
+///   carries its own `chain_id` (EIP-155 signed), it MUST equal this value
+///   or execution is rejected. Caller is authoritative — this function has
+///   no default/fallback.
+pub fn execute_tx(
+    db: InMemoryDB,
+    tx: TxEnv,
+    block_base_fee: u64,
+    chain_id: u64,
+) -> Result<TxReceipt, String> {
+    execute_tx_inner(db, tx, block_base_fee, false, chain_id)
 }
 
 /// Read-only variant — disables balance/nonce checks for eth_call.
-pub fn execute_call(db: InMemoryDB, tx: TxEnv, block_base_fee: u64) -> Result<TxReceipt, String> {
-    execute_tx_inner(db, tx, block_base_fee, true)
+///
+/// # Arguments
+/// * `chain_id` — active chain ID for EIP-155 replay protection (see
+///   [`execute_tx`] for semantics).
+pub fn execute_call(
+    db: InMemoryDB,
+    tx: TxEnv,
+    block_base_fee: u64,
+    chain_id: u64,
+) -> Result<TxReceipt, String> {
+    execute_tx_inner(db, tx, block_base_fee, true, chain_id)
 }
 
 fn execute_tx_inner(
@@ -43,10 +63,21 @@ fn execute_tx_inner(
     tx: TxEnv,
     block_base_fee: u64,
     read_only: bool,
+    chain_id: u64,
 ) -> Result<TxReceipt, String> {
     use revm::Context;
 
-    let chain_id = tx.chain_id.unwrap_or(7119);
+    // EIP-155 replay protection: reject tx whose embedded chain_id doesn't
+    // match the executor's configured chain_id. `None` (pre-EIP-155 legacy
+    // tx) is allowed through; revm will enforce its own rules.
+    if let Some(tx_chain_id) = tx.chain_id
+        && tx_chain_id != chain_id
+    {
+        return Err(format!(
+            "chain_id mismatch: tx signed for chain {}, executor configured for chain {}",
+            tx_chain_id, chain_id
+        ));
+    }
     let ctx = Context::mainnet()
         .modify_cfg_chained(|cfg| {
             cfg.chain_id = chain_id;
@@ -131,7 +162,7 @@ mod tests {
             .build()
             .unwrap_or_default();
 
-        let result = execute_tx(db, tx, INITIAL_BASE_FEE);
+        let result = execute_tx(db, tx, INITIAL_BASE_FEE, 7119);
         assert!(result.is_ok(), "execute_tx failed: {:?}", result.err());
         let r = result.unwrap();
         assert!(r.success);
@@ -170,11 +201,85 @@ mod tests {
             .build()
             .unwrap_or_default();
 
-        let result = execute_tx(db, tx, INITIAL_BASE_FEE);
+        let result = execute_tx(db, tx, INITIAL_BASE_FEE, 7119);
         assert!(result.is_ok(), "deploy failed: {:?}", result.err());
         let r = result.unwrap();
         assert!(r.success);
         assert!(r.contract_address.is_some());
         assert!(r.gas_used > 21_000);
+    }
+
+    fn funded_sender_db() -> (InMemoryDB, Address) {
+        let mut db = InMemoryDB::default();
+        let sender = Address::from([0x01u8; 20]);
+        db.insert_account_info(
+            sender,
+            AccountInfo {
+                balance: U256::from(1_000_000_000_000_000_000u128),
+                nonce: 0,
+                code_hash: revm::primitives::KECCAK_EMPTY,
+                account_id: None,
+                code: None,
+            },
+        );
+        (db, sender)
+    }
+
+    // EIP-155: if the tx declares a chain_id, executor MUST reject when it
+    // doesn't match the configured chain_id (replay-attack guard).
+    #[test]
+    fn test_chain_id_mismatch_rejected() {
+        let (db, sender) = funded_sender_db();
+        let receiver = Address::from([0x02u8; 20]);
+
+        let tx = TxEnv::builder()
+            .caller(sender)
+            .kind(TxKind::Call(receiver))
+            .value(U256::from(100_000u64))
+            .gas_limit(21_000)
+            .gas_price((INITIAL_BASE_FEE + 1_000) as u128)
+            .nonce(0)
+            .chain_id(Some(9999)) // tx signed for different chain
+            .build()
+            .unwrap_or_default();
+
+        let result = execute_tx(db, tx, INITIAL_BASE_FEE, 7119);
+        assert!(result.is_err(), "mismatch should be rejected");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("chain_id mismatch"),
+            "expected chain_id mismatch error, got: {}",
+            err
+        );
+    }
+
+    // Pre-EIP-155 legacy transactions carry no chain_id; the executor should
+    // still accept them (revm itself enforces downstream rules).
+    #[test]
+    fn test_chain_id_none_allowed() {
+        let (db, sender) = funded_sender_db();
+        let receiver = Address::from([0x02u8; 20]);
+
+        let tx = TxEnv::builder()
+            .caller(sender)
+            .kind(TxKind::Call(receiver))
+            .value(U256::from(100_000u64))
+            .gas_limit(21_000)
+            .gas_price((INITIAL_BASE_FEE + 1_000) as u128)
+            .nonce(0)
+            .chain_id(None) // legacy pre-EIP-155 tx
+            .build()
+            .unwrap_or_default();
+
+        let result = execute_tx(db, tx, INITIAL_BASE_FEE, 7119);
+        // Must not trip the chain_id check. If revm itself fails for another
+        // reason that's fine — we only care that the mismatch path isn't taken.
+        if let Err(e) = &result {
+            assert!(
+                !e.contains("chain_id mismatch"),
+                "None chain_id must not be rejected as mismatch: {}",
+                e
+            );
+        }
     }
 }

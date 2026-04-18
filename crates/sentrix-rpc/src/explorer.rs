@@ -1029,7 +1029,6 @@ pub async fn explorer_tokens(State(state): State<SharedState>) -> Html<String> {
 
 // ── Rich List ─────────────────────────────────────────────
 pub async fn explorer_richlist(State(state): State<SharedState>) -> Html<String> {
-    const TOTAL_SUPPLY: f64 = 210_000_000.0; // SRX
     const RICHLIST_TTL: Duration = Duration::from_secs(30);
     let cache = RICHLIST_CACHE.get_or_init(|| TokioMutex::new(None));
     {
@@ -1056,7 +1055,7 @@ pub async fn explorer_richlist(State(state): State<SharedState>) -> Html<String>
     let mut rows = String::new();
     for (rank, (address, balance_sentri)) in holders.iter().enumerate() {
         let balance_srx = *balance_sentri as f64 / 100_000_000.0;
-        let pct = balance_srx / TOTAL_SUPPLY * 100.0;
+        let pct = balance_srx / sentrix_core::blockchain::max_supply_srx() * 100.0;
         rows.push_str(&format!(
             r#"<tr>
             <td style="color:#6b7280">#{}</td>

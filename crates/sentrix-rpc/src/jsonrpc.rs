@@ -353,6 +353,9 @@ pub async fn jsonrpc_handler(
             let bc = state.read().await;
             use sentrix_evm::database::parse_sentrix_address;
 
+            // Snapshot chain_id before bc is dropped — execute_call below needs it.
+            let chain_id = bc.chain_id;
+
             let from_addr =
                 parse_sentrix_address(from_str).unwrap_or(alloy_primitives::Address::ZERO);
             let to_addr = parse_sentrix_address(to_str);
@@ -369,7 +372,7 @@ pub async fn jsonrpc_handler(
                 .gas_limit(gas_limit)
                 .gas_price(0)
                 .nonce(bc.accounts.get_nonce(from_str))
-                .chain_id(Some(bc.chain_id))
+                .chain_id(Some(chain_id))
                 .build()
                 .unwrap_or_default();
 
@@ -416,7 +419,7 @@ pub async fn jsonrpc_handler(
             }
             drop(bc);
 
-            match sentrix_evm::executor::execute_call(in_mem_db, tx, base_fee) {
+            match sentrix_evm::executor::execute_call(in_mem_db, tx, base_fee, chain_id) {
                 Ok(receipt) => {
                     let output_hex = format!("0x{}", hex::encode(&receipt.output));
                     Ok(json!(output_hex))
