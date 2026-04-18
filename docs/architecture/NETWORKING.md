@@ -25,7 +25,7 @@ Two mechanisms:
 2. **Manual** — pass `--peers` on startup as fallback:
 
 ```bash
-sentrix start --validator-key <key> --peers [NODE_IP]:30303,[NODE_IP]:30303
+SENTRIX_VALIDATOR_KEY=<key> sentrix start --peers [NODE_IP]:30303,[NODE_IP]:30303
 ```
 
 Peers go through chain_id verification before being added to `verified_peers`. Wrong chain_id = disconnected immediately.

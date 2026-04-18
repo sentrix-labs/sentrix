@@ -41,8 +41,13 @@ sentrix init --admin-address 0x<your_address>
 # Add validator
 sentrix validator add --address 0x<addr> --public-key 04<pubkey> --name "Name"
 
-# Start
-sentrix start --validator-key <key> --peers [PEER_IP]:30303
+# Start (preferred: encrypted keystore)
+SENTRIX_WALLET_PASSWORD=<pass> \
+  sentrix start --validator-keystore /opt/sentrix/data/wallets/<addr>.json \
+                --peers [PEER_IP]:30303
+
+# Or via env var (raw hex private key)
+SENTRIX_VALIDATOR_KEY=<key> sentrix start --peers [PEER_IP]:30303
 ```
 
 ## Systemd
@@ -58,12 +63,15 @@ Type=simple
 User=sentrix
 WorkingDirectory=/opt/sentrix
 ExecStart=/opt/sentrix/sentrix start \
-  --validator-key <key> \
+  --validator-keystore /opt/sentrix/data/wallets/validator.json \
   --peers [PEER_IP]:30303 \
   --data-dir /opt/sentrix/data
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
+# Wallet password — sourced from EnvironmentFile so it never appears in
+# `systemctl show` output, journalctl, or `ps aux`.
+EnvironmentFile=/etc/sentrix/wallet.env  # contains: SENTRIX_WALLET_PASSWORD=...
 Environment=SENTRIX_API_KEY=<key>
 Environment=RUST_LOG=info
 
@@ -115,8 +123,10 @@ Validator registration needs admin auth — contact the network admin.
 Different ports + data dirs per validator:
 
 ```bash
-sentrix start --validator-key <key1> --port 8545 --p2p-port 30303 --data-dir data1
-sentrix start --validator-key <key2> --port 8546 --p2p-port 30304 --data-dir data2
+SENTRIX_VALIDATOR_KEY=<key1> SENTRIX_DATA_DIR=data1 \
+  sentrix start --port 8545 --p2p-port 30303
+SENTRIX_VALIDATOR_KEY=<key2> SENTRIX_DATA_DIR=data2 \
+  sentrix start --port 8546 --p2p-port 30304
 ```
 
 Each needs its own systemd service file and firewall rules.
@@ -138,8 +148,8 @@ sentrix init --admin 0x<testnet_admin_address>
 export SENTRIX_ADMIN_KEY=<admin_private_key>
 sentrix validator add <address> "Testnet Validator" <public_key>
 
-# Start
-sentrix start --validator-key <key> --port 31303
+# Start (env var; or use --validator-keystore + SENTRIX_WALLET_PASSWORD)
+SENTRIX_VALIDATOR_KEY=<key> sentrix start --port 31303
 ```
 
 Systemd service example:
@@ -154,9 +164,10 @@ After=network.target
 Type=simple
 User=sentrix
 WorkingDirectory=/opt/sentrix-testnet
-ExecStart=/opt/sentrix/sentrix start --validator-key <key> --port 31303
+ExecStart=/opt/sentrix/sentrix start --validator-keystore /opt/sentrix-testnet/data/wallets/validator.json --port 31303
 Restart=on-failure
 RestartSec=5
+EnvironmentFile=/etc/sentrix/testnet-wallet.env  # SENTRIX_WALLET_PASSWORD=...
 Environment=SENTRIX_DATA_DIR=/opt/sentrix-testnet/data
 Environment=SENTRIX_CHAIN_ID=7120
 Environment=SENTRIX_API_PORT=9545

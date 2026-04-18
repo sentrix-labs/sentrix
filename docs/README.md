@@ -56,5 +56,6 @@ cargo build --release
 cargo test
 sentrix wallet generate
 sentrix init --admin-address 0x<addr>
-sentrix start --validator-key <key> --peers [PEER]:30303
+SENTRIX_VALIDATOR_KEY=<key> sentrix start --peers [PEER]:30303
+# (Or: sentrix start --validator-keystore /path/to/validator.json)
 ```

@@ -159,7 +159,13 @@ See [docs/tokenomics/STAKING.md](../tokenomics/STAKING.md) for full staking mech
 ## Security
 
 - **Never share your private key or keystore password.**
-- Use `--validator-keystore` instead of `--validator-key` (the latter exposes your key in `ps aux`).
+- Always load the validator key via `--validator-keystore <path>` or the
+  `SENTRIX_VALIDATOR_KEY` env var. The legacy `--validator-key <hex>` CLI
+  flag was removed in v2.0.1 (audit C-06) — CLI args leak via `ps aux`,
+  shell history, and process snapshots.
+- Source `SENTRIX_WALLET_PASSWORD` from a systemd `EnvironmentFile=` (or
+  equivalent secret store) so it never appears in `systemctl show` output
+  or `journalctl` logs.
 - `chmod 600` all systemd unit files that contain passwords.
 - Enable disk encryption on the validator host (`SENTRIX_ENCRYPTED_DISK=true`).
 - See [SECURITY.md](../../SECURITY.md) for the vulnerability disclosure policy.
