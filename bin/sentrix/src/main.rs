@@ -1002,7 +1002,10 @@ async fn cmd_start(
                 if voyager_tick_count.is_multiple_of(20)
                     && let Some(ref bft) = bft_engine
                 {
-                    let status = bft.build_round_status();
+                    // C-01: sign RoundStatus before broadcast. Unsigned statuses
+                    // are rejected at the network boundary.
+                    let mut status = bft.build_round_status();
+                    status.sign(&validator_secret_key);
                     lp2p_clone.broadcast_bft_round_status(&status).await;
                 }
 
@@ -1266,13 +1269,11 @@ async fn cmd_start(
                                 if proposal.round != bft.round() {
                                     continue;
                                 }
-                                if !proposal.verify_sig() {
-                                    tracing::warn!(
-                                        "Invalid proposal signature from {}",
-                                        &proposal.proposer
-                                    );
-                                    continue;
-                                }
+                                // Signature + validator-set membership are
+                                // now enforced at the libp2p network boundary
+                                // (see `is_active_bft_signer` in libp2p_node.rs);
+                                // by construction every proposal reaching this
+                                // point has already passed both checks.
                                 if let Ok(block) =
                                     bincode::deserialize::<Block>(&proposal.block_data)
                                 {
@@ -1290,14 +1291,10 @@ async fn cmd_start(
                                     continue;
                                 }
                             }
+                            // Messages reaching this point have already been
+                                // signature-verified AND membership-checked at the
+                                // libp2p network boundary (C-01 gaps 1/2/3).
                             BftMessage::Prevote(prevote) => {
-                                if !prevote.verify_sig() {
-                                    tracing::warn!(
-                                        "Invalid prevote signature from {}",
-                                        &prevote.validator
-                                    );
-                                    continue;
-                                }
                                 let bc = shared_clone.read().await;
                                 let stake = bc
                                     .stake_registry
@@ -1308,13 +1305,6 @@ async fn cmd_start(
                                 bft.on_prevote_weighted(&prevote, stake)
                             }
                             BftMessage::Precommit(precommit) => {
-                                if !precommit.verify_sig() {
-                                    tracing::warn!(
-                                        "Invalid precommit signature from {}",
-                                        &precommit.validator
-                                    );
-                                    continue;
-                                }
                                 let bc = shared_clone.read().await;
                                 let stake = bc
                                     .stake_registry

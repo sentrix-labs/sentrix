@@ -107,6 +107,18 @@ impl AuthorityManager {
         Ok(expected.address == address)
     }
 
+    /// Is this address in the registered-and-active validator set?
+    ///
+    /// Unlike `is_authorized`, this is not round-specific — it answers
+    /// "is the caller a known validator at all?". Used at the BFT network
+    /// boundary to reject consensus messages from non-validator peers
+    /// (C-01 gap 2). Admin-toggled-off validators return `false`.
+    pub fn is_active_validator(&self, address: &str) -> bool {
+        self.validators
+            .get(address)
+            .is_some_and(|v| v.is_active)
+    }
+
     // Admin operations
     pub fn add_validator(
         &mut self,
@@ -494,6 +506,33 @@ mod tests {
         let expected = mgr.expected_validator(0).unwrap().address.clone();
         assert!(mgr.is_authorized(&expected, 0).unwrap());
         assert!(!mgr.is_authorized("wrong_address", 0).unwrap());
+    }
+
+    // C-01 gap 2: is_active_validator must recognise registered+active
+    // addresses, reject unknown ones, and reject toggled-off ones.
+    #[test]
+    fn test_is_active_validator_membership() {
+        let mut mgr = setup_4();
+        let active_addrs: Vec<String> = mgr
+            .active_validators()
+            .iter()
+            .map(|v| v.address.clone())
+            .collect();
+        assert!(!active_addrs.is_empty());
+        for addr in &active_addrs {
+            assert!(mgr.is_active_validator(addr), "{} should be active", addr);
+        }
+        assert!(
+            !mgr.is_active_validator("0xunknown"),
+            "unknown address must be rejected"
+        );
+        // Toggle one off — it must stop returning true.
+        let off = active_addrs[0].clone();
+        mgr.toggle_validator("admin", &off).unwrap();
+        assert!(
+            !mgr.is_active_validator(&off),
+            "toggled-off validator must be rejected"
+        );
     }
 
     #[test]
