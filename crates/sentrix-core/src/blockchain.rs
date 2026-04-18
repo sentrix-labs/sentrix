@@ -19,6 +19,12 @@ use std::sync::Arc;
 // ── Chain constants ──────────────────────────────────────
 pub const MAX_SUPPLY: u64 = 210_000_000 * 100_000_000; // in sentri
 pub const BLOCK_REWARD: u64 = 100_000_000; // 1 SRX in sentri
+
+/// MAX_SUPPLY expressed in whole SRX as f64 — used by RPC/explorer display paths.
+/// Single source of truth; do NOT redefine as a local constant.
+pub fn max_supply_srx() -> f64 {
+    (MAX_SUPPLY / 100_000_000) as f64
+}
 pub const HALVING_INTERVAL: u64 = 42_000_000; // blocks
 pub const BLOCK_TIME_SECS: u64 = 1;
 pub const MAX_TX_PER_BLOCK: usize = 5000;
