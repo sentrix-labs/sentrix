@@ -70,7 +70,7 @@ Risk: MEDIUM long-term.
 
 ### 3.2 Storage Exhaustion
 
-Blocks never deleted (by design). sled grows linearly. At current block size and 3s intervals, this is manageable for years. `db_size_bytes()` available for monitoring.
+Blocks never deleted (by design). MDBX grows linearly. At current block size and 1s intervals, this is manageable for years. `db_size_bytes()` available for monitoring.
 
 ### 3.3 Trie Manipulation
 

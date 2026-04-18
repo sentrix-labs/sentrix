@@ -62,7 +62,7 @@ The `mempool clear` command is useful after a stuck-mempool incident (e.g. batch
 
 ## Notes
 
-- Export must run while the node is **stopped** (sled uses an exclusive lock).
+- Export must run while the node is **stopped** (MDBX uses an exclusive lock).
 - Import is **destructive** — all current accounts/validators/contracts are replaced.
 - Block history is NOT exported — only the latest state. The node will resync history from peers after restart.
 - Snapshot files can be large for chains with many contracts. Use gzip for archival: `gzip backup.json`.

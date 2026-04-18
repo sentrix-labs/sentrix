@@ -7,7 +7,7 @@
 
 ## Abstract
 
-Sentrix is a Layer-1 Proof-of-Authority blockchain engineered for fast, deterministic settlement. Built from scratch in Rust, it delivers 3-second block finality, Ethereum-compatible addressing, and a native fungible token standard (SRX-20). The chain is designed to evolve from a permissioned PoA network into a fully decentralized public chain through a phased transition to Delegated Proof of Stake.
+Sentrix is a Layer-1 Proof-of-Authority blockchain engineered for fast, deterministic settlement. Built from scratch in Rust, it delivers 1-second block finality, Ethereum-compatible addressing, and a native fungible token standard (SRX-20). The chain is designed to evolve from a permissioned PoA network into a fully decentralized public chain through a phased transition to Delegated Proof of Stake.
 
 ---
 
@@ -55,7 +55,7 @@ Validators are sorted by address (ascending) to ensure all nodes agree on the sc
 
 ### 2.3 Block Time
 
-Target block time is **3 seconds**. Each validator produces one block per round. With N validators, each validator produces a block every 3N seconds.
+Target block time is **1 second**. Each validator produces one block per round. With N validators, each validator produces a block every N seconds.
 
 ### 2.4 Finality
 
@@ -307,7 +307,7 @@ This prevents accepting invalid or malicious chains.
 
 ## 10. Storage
 
-Sentrix uses **sled**, a pure-Rust embedded key-value database.
+Sentrix uses **libmdbx**, a memory-mapped B+ tree database (used by Reth/Erigon).
 
 ### 10.1 Schema
 

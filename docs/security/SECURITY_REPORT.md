@@ -51,4 +51,4 @@ Next: Block skip mechanism, peer reputation, sync randomization, block-level sig
 
 ## Context
 
-The chain currently runs on 3 VPS with 7 validators under founder control. In this environment, actual risk from all findings is LOW. Risk increases as the chain opens to public validators and external traffic.
+The chain currently runs on 3 VPS with 3 validators under founder control. In this environment, actual risk from all findings is LOW. Risk increases as the chain opens to public validators and external traffic.

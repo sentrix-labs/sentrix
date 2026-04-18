@@ -1,6 +1,6 @@
 # Validators
 
-7 validators across 3 VPS, round-robin PoA.
+3 validators across 3 VPS, round-robin PoA.
 
 ## Current Set
 
@@ -64,7 +64,7 @@ curl -H "X-API-Key: <key>" http://[NODE_IP]:8545/admin/log
 
 ## Economics
 
-Each validator produces ~4,114 blocks/day (with 7 validators, 3s blocks). That's ~4,114 SRX/day from rewards alone, plus `floor(fee/2)` from each included transaction.
+Each validator produces ~28,800 blocks/day (with 3 validators, 1s blocks). That's ~28,800 SRX/day from rewards alone, plus `floor(fee/2)` from each included transaction.
 
 ## Voyager
 

@@ -1,6 +1,6 @@
 # Consensus
 
-Sentrix runs PoA consensus. Validators take turns producing blocks in round-robin order, one block every 3 seconds.
+Sentrix runs PoA consensus. Validators take turns producing blocks in round-robin order, one block every second.
 
 ## Round-Robin
 
@@ -12,7 +12,7 @@ sorted_validators[block_height % validator_count]
 
 Deterministic — every node computes the same result independently. No communication needed.
 
-With 7 validators, each one produces a block every 21 seconds.
+With 3 validators, each one produces a block every 3 seconds.
 
 ## Block Production
 
@@ -31,7 +31,7 @@ Every received block goes through `add_block()`:
 
 Pass 1 (read-only): Check structure, validator auth, all tx signatures/nonces/balances, merkle root. If anything fails → reject entire block. No state changes.
 
-Pass 2 (commit): Credit coinbase, execute transfers, distribute fees (ceil/2 burn, floor/2 validator), run token ops, update trie, persist to sled.
+Pass 2 (commit): Credit coinbase, execute transfers, distribute fees (ceil/2 burn, floor/2 validator), run token ops, update trie, persist to MDBX.
 
 All-or-nothing. No partial state changes.
 

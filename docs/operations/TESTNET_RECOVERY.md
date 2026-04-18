@@ -40,7 +40,7 @@ If the mempool has stale/bad-nonce transactions that prevent block inclusion:
 # Stop affected validator
 sudo systemctl stop sentrix-testnet-val1
 
-# Clear mempool (requires sled exclusive access)
+# Clear mempool (requires MDBX exclusive access)
 SENTRIX_DATA_DIR=/opt/sentrix-testnet/data SENTRIX_ENCRYPTED_DISK=true \
   sentrix mempool clear
 

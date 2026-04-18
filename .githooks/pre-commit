@@ -67,6 +67,8 @@ ADDR_ALLOW_PATHS=(
   "^\\.githooks/pre-commit$"
   "^\\.github/"                       # CI workflows may reference docs paths
   "^CHANGELOG\\.md$"                  # historical / audit trail mentions
+  "^WHITEPAPER\\.md$"                 # example addresses + contact email
+  "^CONTRIBUTING\\.md$"               # may reference example addresses
   "^src/core/"                         # re-export layer references genesis constants
   "^src/api/"                          # API module tests reference genesis addresses via constants
   "^src/.*test.*\\.rs$"               # tests use generated random addrs
@@ -127,6 +129,13 @@ for f in "${SCAN[@]}"; do
     # Pattern 0: broad 64-hex — skip allow-listed paths.
     if [ "$i" = "0" ]; then
       if path_in_allowlist "$f" "${HEX_ALLOW_PATHS[@]}"; then
+        continue
+      fi
+    fi
+
+    # Pattern 10: personal gmail — allowed in WHITEPAPER (contact section)
+    if [ "$i" = "10" ]; then
+      if path_in_allowlist "$f" "${ADDR_ALLOW_PATHS[@]}"; then
         continue
       fi
     fi

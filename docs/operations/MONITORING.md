@@ -63,7 +63,7 @@ Fork: Compare block hashes at same height. If different, stop the forked node â†
 
 ### DB corruption
 
-sled is crash-safe, so this is rare. If it happens:
+MDBX is crash-safe, so this is rare. If it happens:
 
 ```bash
 sudo systemctl stop sentrix-node

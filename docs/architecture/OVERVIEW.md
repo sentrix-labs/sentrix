@@ -16,7 +16,7 @@ Sentrix is a Layer-1 blockchain written in Rust. PoA consensus, account-based mo
 │ Trie    │ Sync    │        │        │
 │ VM      │         │        │        │
 ├─────────┴─────────┴────────┴────────┤
-│           Storage (sled)            │
+│           Storage (MDBX)            │
 └──────────────────────────────────────┘
 ```
 
@@ -42,7 +42,7 @@ src/api/routes.rs            REST (25+ endpoints), rate limiting
 src/api/jsonrpc.rs           JSON-RPC 2.0 (20 methods)
 src/api/explorer.rs          12-page block explorer
 src/wallet/                  Keygen, keystore (Argon2id)
-src/storage/db.rs            sled persistence, hash index
+src/storage/db.rs            MDBX persistence, hash index
 src/types/error.rs           SentrixError (14 variants)
 ```
 
@@ -59,9 +59,9 @@ src/types/error.rs           SentrixError (14 variants)
 
 **Account model, not UTXO.** Simpler, natural fit for tokens and future smart contracts.
 
-**sled for storage.** Pure Rust, crash-safe, no C deps. Blocks stored as `block:{index}`, hash index for O(1) lookup.
+**MDBX for storage.** Memory-mapped B+ tree (used by Reth/Erigon), ACID transactions. Blocks stored as `block:{index}`, hash index for O(1) lookup.
 
-**Sliding window.** Only last 1,000 blocks in RAM (~2 MB cap). Older blocks read from sled on demand.
+**Sliding window.** Only last 1,000 blocks in RAM (~2 MB cap). Older blocks read from MDBX on demand.
 
 **Integer-only balances.** Everything in sentri (1 SRX = 100M sentri). No floats, no rounding bugs.
 

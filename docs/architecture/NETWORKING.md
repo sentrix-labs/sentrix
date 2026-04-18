@@ -67,7 +67,7 @@ Every 30 seconds, check if any peer is ahead. If yes:
 
 1. Request blocks from `local_height + 1` in batches of 50
 2. Validate each block via `add_block()` (same two-pass as locally produced blocks)
-3. Save to sled immediately after each accepted block
+3. Save to MDBX immediately after each accepted block
 4. Repeat until caught up
 
 Sync and block processing run in `tokio::spawn()` tasks — they don't block the swarm event loop.

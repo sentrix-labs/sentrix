@@ -13,7 +13,7 @@ sudo systemctl stop sentrix-node  # or sentrix-core, sentrix-val1, etc.
 ls -lt /opt/sentrix/releases/
 
 # 3. Restore the previous binary
-sudo cp /opt/sentrix/releases/sentrix-v1.2.0-20260418120000 /opt/sentrix/sentrix
+sudo cp /opt/sentrix/releases/sentrix-v2.0.0-<timestamp> /opt/sentrix/sentrix
 
 # 4. Restart
 sudo systemctl start sentrix-node
@@ -23,7 +23,7 @@ For all validators on a VPS:
 
 ```bash
 sudo systemctl stop sentrix-val{1..5}
-sudo cp /opt/sentrix/releases/sentrix-v1.2.0-20260418120000 /opt/sentrix/sentrix
+sudo cp /opt/sentrix/releases/sentrix-v2.0.0-<timestamp> /opt/sentrix/sentrix
 sudo systemctl start sentrix-val{1..5}
 ```
 
@@ -33,7 +33,7 @@ Force-push a known-good tag to `main` and let CI rebuild:
 
 ```bash
 git checkout main
-git reset --hard v1.2.0   # or pre-refactor-v1.2.0 tag
+git reset --hard v2.0.0
 git push --force origin main
 ```
 

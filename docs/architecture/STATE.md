@@ -1,6 +1,6 @@
 # State Management
 
-Two storage layers: in-memory sliding window (fast, last 1000 blocks) and sled (durable, everything since genesis). Account state goes through a Binary Sparse Merkle Tree that produces a verifiable root per block.
+Two storage layers: in-memory sliding window (fast, last 1000 blocks) and MDBX (durable, everything since genesis). Account state goes through a Binary Sparse Merkle Tree that produces a verifiable root per block.
 
 ## Sliding Window
 
@@ -8,9 +8,9 @@ Two storage layers: in-memory sliding window (fast, last 1000 blocks) and sled (
 const CHAIN_WINDOW_SIZE: usize = 1000;
 ```
 
-Only the last 1,000 blocks live in `Vec<Block>`. Older blocks are in sled. RAM stays at ~2 MB regardless of chain height.
+Only the last 1,000 blocks live in `Vec<Block>`. Older blocks are in MDBX. RAM stays at ~2 MB regardless of chain height.
 
-## sled
+## MDBX
 
 Pure Rust embedded DB. Crash-safe, atomic writes, no external dependencies.
 
@@ -44,7 +44,7 @@ The `0x00`/`0x01` prefix + different hash algorithms = a leaf can never collide 
 
 ### Storage
 
-4 sled named trees:
+4 MDBX tables:
 
 | Tree | Contents |
 |------|----------|
@@ -53,7 +53,7 @@ The `0x00`/`0x01` prefix + different hash algorithms = a leaf can never collide 
 | `trie_roots` | State root per block height |
 | `trie_committed_roots` | Reverse index for fast committed root lookup |
 
-LRU cache sits on top of sled. Configurable capacity.
+LRU cache sits on top of MDBX. Configurable capacity.
 
 ### Committed Root Protection
 

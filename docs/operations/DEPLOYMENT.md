@@ -94,7 +94,7 @@ sudo ufw allow 22/tcp && sudo ufw allow 8545/tcp && sudo ufw allow 30303/tcp && 
 
 ```
 data/
-├── chain.db/         # sled (blocks, state, index)
+├── chain.db/         # MDBX (blocks, state, index)
 ├── identity/
 │   └── node_keypair  # Ed25519 for libp2p PeerId
 └── wallets/          # encrypted keystores

@@ -5,7 +5,7 @@
 - [Overview](architecture/OVERVIEW.md) — components, module map, data flow
 - [Consensus](architecture/CONSENSUS.md) — PoA round-robin, block production
 - [Networking](architecture/NETWORKING.md) — libp2p, peer management, sync
-- [State](architecture/STATE.md) — trie, sled, state roots, merkle proofs
+- [State](architecture/STATE.md) — trie, MDBX, state roots, merkle proofs
 - [Transactions](architecture/TRANSACTIONS.md) — tx lifecycle, fees, nonce, mempool
 
 ## Security

@@ -70,7 +70,7 @@ Deploy & Run Transactions tab:
 4. Click **Deploy**
 5. MetaMask popup → confirm gas → sign
 
-Once mined (~3 seconds), the deployed contract appears under **Deployed Contracts**.
+Once mined (~1 second), the deployed contract appears under **Deployed Contracts**.
 
 ## 5. Interact
 

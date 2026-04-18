@@ -53,7 +53,7 @@ src/
 │   ├── behaviour.rs       # libp2p SentrixBehaviour
 │   └── libp2p_node.rs     # libp2p node runner
 ├── wallet/                # Key generation, Argon2id keystore
-├── storage/               # sled per-block persistence
+├── storage/               # MDBX per-block persistence
 ├── api/                   # REST API, JSON-RPC, block explorer
 ├── types/                 # Shared error types
 ├── lib.rs                 # Library root

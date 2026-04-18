@@ -5,7 +5,7 @@ Done. Live in production.
 ## What's Running
 
 - PoA consensus, round-robin, 3s blocks
-- 7 validators on 3 VPS, full mesh peering
+- 3 validators on 3 VPS (v2.0.0), full mesh peering
 - Account model with Ethereum-style addresses
 - Two-pass atomic block validation
 - ECDSA secp256k1 signing with chain_id replay protection
@@ -15,7 +15,7 @@ Done. Live in production.
 - REST API (25+ endpoints) + JSON-RPC 2.0 (20 methods)
 - Block explorer (12 pages, dark theme)
 - Encrypted keystore (AES-256-GCM, Argon2id)
-- sled storage with 1000-block sliding window + disk pruning
+- MDBX storage with 1000-block sliding window + disk pruning
 - CI/CD: GitHub Actions → test → build → 3-VPS deploy
 - Branch protection on main (PR + CI required)
 - Pentest 6/6 passed on live production node
