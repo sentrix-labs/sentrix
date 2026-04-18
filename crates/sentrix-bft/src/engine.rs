@@ -530,12 +530,15 @@ impl BftEngine {
         BftAction::Wait
     }
 
-    /// Build a RoundStatus message for gossiping to peers
+    /// Build an UNSIGNED RoundStatus for gossiping. Callers must invoke
+    /// [`RoundStatus::sign`] before broadcasting — unsigned statuses are
+    /// rejected at the network boundary (see C-01 fix).
     pub fn build_round_status(&self) -> RoundStatus {
         RoundStatus {
             height: self.state.height,
             round: self.state.round,
             validator: self.our_address.clone(),
+            signature: Vec::new(),
         }
     }
 
@@ -865,6 +868,7 @@ mod tests {
             height: 100,
             round: 5,
             validator: "0xval001".into(),
+            signature: Vec::new(),
         };
         let action = engine.on_round_status(&status);
         assert!(matches!(action, BftAction::Wait));
@@ -881,6 +885,7 @@ mod tests {
             height: 100,
             round: 1, // only 1 ahead
             validator: "0xval001".into(),
+            signature: Vec::new(),
         };
         let action = engine.on_round_status(&status);
         assert!(matches!(action, BftAction::Wait));
@@ -896,6 +901,7 @@ mod tests {
             height: 200,
             round: 0,
             validator: "0xval001".into(),
+            signature: Vec::new(),
         };
         let action = engine.on_round_status(&status);
         match action {
@@ -914,6 +920,7 @@ mod tests {
             height: 50,
             round: 10,
             validator: "0xval001".into(),
+            signature: Vec::new(),
         };
         let action = engine.on_round_status(&status);
         assert!(matches!(action, BftAction::Wait));
@@ -929,6 +936,7 @@ mod tests {
             height: 100,
             round: 3,
             validator: "0xval001".into(),
+            signature: Vec::new(),
         };
         let action = engine.on_round_status(&status);
         assert!(matches!(action, BftAction::Wait));
@@ -944,6 +952,7 @@ mod tests {
             height: 100,
             round: 2,
             validator: "0xval001".into(),
+            signature: Vec::new(),
         };
         let action = engine.on_round_status(&status);
         assert!(matches!(action, BftAction::Wait));
@@ -971,6 +980,7 @@ mod tests {
             height: 100,
             round: 3,
             validator: "0xval001".into(),
+            signature: Vec::new(),
         };
         engine.on_round_status(&status);
         assert_eq!(engine.round(), 2); // caught up to peer - 1
@@ -980,6 +990,7 @@ mod tests {
             height: 100,
             round: 3,
             validator: "0xval002".into(),
+            signature: Vec::new(),
         };
         engine.on_round_status(&status2);
         assert_eq!(engine.round(), 2); // stays at 2

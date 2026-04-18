@@ -105,11 +105,54 @@ pub use sentrix_primitives::justification::{
 
 /// Periodically gossiped by validators so that peers returning from partition
 /// can learn the current (height, round) without waiting for a vote.
+///
+/// Signed with the validator's secp256k1 key to close audit finding C-01:
+/// an unsigned RoundStatus lets an attacker advance `self.state.round` or
+/// trigger `SyncNeeded` with arbitrary heights, enabling round-manipulation
+/// and block-sync-hijack attacks. `signature` is `#[serde(default)]` so
+/// legacy encodings deserialize (as empty), but `verify_sig` rejects an
+/// empty signature.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoundStatus {
     pub height: u64,
     pub round: u32,
     pub validator: String,
+    #[serde(default)]
+    pub signature: Vec<u8>,
+}
+
+impl RoundStatus {
+    /// Canonical signing payload — domain-separated to prevent cross-type
+    /// signature reuse (proposal=0x01, prevote=0x02, precommit=0x03, this=0x04).
+    pub fn signing_payload(height: u64, round: u32, validator: &str) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&height.to_le_bytes());
+        payload.extend_from_slice(&round.to_le_bytes());
+        payload.extend_from_slice(validator.as_bytes());
+        payload.push(0x04); // domain separator: round_status
+        payload
+    }
+
+    /// Sign this status in place with the given secret key.
+    pub fn sign(&mut self, secret_key: &SecretKey) {
+        let payload = Self::signing_payload(self.height, self.round, &self.validator);
+        self.signature = sign_payload(&payload, secret_key);
+    }
+
+    /// Verify the signature matches the claimed validator. An empty signature
+    /// always fails — this is the C-01 barrier that stops legacy/forged
+    /// RoundStatus messages from manipulating consensus state.
+    pub fn verify_sig(&self) -> bool {
+        if self.signature.is_empty() {
+            tracing::warn!(
+                "BFT: unsigned RoundStatus from {} — rejected (C-01)",
+                &self.validator[..12.min(self.validator.len())]
+            );
+            return false;
+        }
+        let payload = Self::signing_payload(self.height, self.round, &self.validator);
+        verify_vote_signature(&payload, &self.signature, &self.validator)
+    }
 }
 
 // ── BFT Network Message Wrapper ─────────────────────────────
@@ -507,5 +550,105 @@ mod tests {
         let sig = sign_payload(payload, &sk);
         let recovered = recover_signer(payload, &sig).unwrap();
         assert_eq!(recovered, wallet.address);
+    }
+
+    // ── RoundStatus signature tests (C-01) ──────────────────
+
+    #[test]
+    fn test_round_status_sign_verify_positive() {
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let mut status = RoundStatus {
+            height: 42,
+            round: 3,
+            validator: wallet.address.clone(),
+            signature: Vec::new(),
+        };
+        status.sign(&sk);
+        assert!(status.verify_sig());
+    }
+
+    #[test]
+    fn test_round_status_unsigned_rejected() {
+        // C-01 barrier: empty signature must fail — this is what stops
+        // pre-upgrade nodes from injecting unsigned round manipulations.
+        let status = RoundStatus {
+            height: 42,
+            round: 3,
+            validator: "0xsome_address".into(),
+            signature: Vec::new(),
+        };
+        assert!(!status.verify_sig());
+    }
+
+    #[test]
+    fn test_round_status_tampered_height_rejected() {
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let mut status = RoundStatus {
+            height: 42,
+            round: 3,
+            validator: wallet.address.clone(),
+            signature: Vec::new(),
+        };
+        status.sign(&sk);
+        status.height = 999_999; // attacker rewrites height after signing
+        assert!(!status.verify_sig());
+    }
+
+    #[test]
+    fn test_round_status_tampered_round_rejected() {
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let mut status = RoundStatus {
+            height: 42,
+            round: 3,
+            validator: wallet.address.clone(),
+            signature: Vec::new(),
+        };
+        status.sign(&sk);
+        status.round = 50; // attacker rewrites round to force catch-up
+        assert!(!status.verify_sig());
+    }
+
+    #[test]
+    fn test_round_status_wrong_validator_rejected() {
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let mut status = RoundStatus {
+            height: 42,
+            round: 3,
+            validator: wallet.address.clone(),
+            signature: Vec::new(),
+        };
+        status.sign(&sk);
+        status.validator = "0xwrongaddress0000000000000000000000000000".into();
+        assert!(!status.verify_sig());
+    }
+
+    #[test]
+    fn test_round_status_domain_separation_prevents_reuse() {
+        // Ensure a signature over a Prevote-shaped payload does NOT verify
+        // as a RoundStatus signature (cross-type reuse attack).
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        // Sign a prevote-domain payload
+        let mut pv = Prevote {
+            height: 42,
+            round: 3,
+            block_hash: Some(wallet.address.clone()), // shape of validator field
+            validator: wallet.address.clone(),
+            signature: vec![],
+        };
+        pv.sign(&sk);
+        // Plug the prevote signature into a RoundStatus with matching fields
+        let status = RoundStatus {
+            height: 42,
+            round: 3,
+            validator: wallet.address.clone(),
+            signature: pv.signature,
+        };
+        // Domain separator byte (0x02 vs 0x04) makes these incompatible.
+        assert!(!status.verify_sig());
     }
 }

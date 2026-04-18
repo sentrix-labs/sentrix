@@ -1002,7 +1002,10 @@ async fn cmd_start(
                 if voyager_tick_count.is_multiple_of(20)
                     && let Some(ref bft) = bft_engine
                 {
-                    let status = bft.build_round_status();
+                    // C-01: sign RoundStatus before broadcast. Unsigned statuses
+                    // are rejected at the network boundary.
+                    let mut status = bft.build_round_status();
+                    status.sign(&validator_secret_key);
                     lp2p_clone.broadcast_bft_round_status(&status).await;
                 }
 
