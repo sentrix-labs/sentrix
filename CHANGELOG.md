@@ -20,10 +20,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   snapshots. Validators must now use `--validator-keystore <path>`
   (encrypted Argon2id v2 keystore) or `SENTRIX_VALIDATOR_KEY` env var.
   **Breaking change for validator operators.**
-- **C-06 hardening — Genesis-address-match validation.** Node startup
-  now refuses to launch in validator mode if the loaded key's derived
-  address is not declared in `genesis.validators`. Catches the
-  operator-error case of mounting the wrong keystore at the wrong chain.
 - **C-06 hardening — Wallet zeroize plumbed through startup.** The
   validator key no longer round-trips through an unzeroed heap `String`
   inside `cmd_start`; the `Wallet`'s `Zeroizing<[u8; 32]>` field is the
