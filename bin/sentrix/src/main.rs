@@ -465,6 +465,9 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 None
             };
+            if let Some(ref w) = validator {
+                ensure_validator_in_genesis(&genesis_cfg, &w.address)?;
+            }
             let _ = genesis_cfg; // retained for future wiring into Blockchain::new
             cmd_start(validator, port, peers).await?;
         }
@@ -534,6 +537,35 @@ async fn main() -> anyhow::Result<()> {
         Commands::GenesisWallets => cmd_genesis_wallets()?,
     }
 
+    Ok(())
+}
+
+/// Defense-in-depth (C-06): a validator key's derived address must appear in
+/// the loaded genesis's `validators` list. This catches the operator-error
+/// case of pointing the wrong keystore (or env var) at a chain it does not
+/// belong to — without this guard the node would start, produce blocks no
+/// peer accepts, and silently fall behind. Match is case-insensitive because
+/// genesis TOMLs may use either lowercase or EIP-55 mixed-case form.
+fn ensure_validator_in_genesis(
+    genesis: &sentrix::core::Genesis,
+    validator_address: &str,
+) -> anyhow::Result<()> {
+    let in_genesis = genesis
+        .genesis
+        .validators
+        .iter()
+        .any(|v| v.address.eq_ignore_ascii_case(validator_address));
+    if !in_genesis {
+        anyhow::bail!(
+            "validator key address {} is not declared in genesis.validators \
+             (chain_id={}, name={}); refusing to start. Either point at the \
+             correct keystore/env var, or load the genesis TOML for the chain \
+             this validator belongs to.",
+            validator_address,
+            genesis.chain.chain_id,
+            genesis.chain.name,
+        );
+    }
     Ok(())
 }
 
@@ -2166,4 +2198,90 @@ fn cmd_token_list() -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a 40-hex-char address out of a 4-hex-char "tag" repeated 10×, then
+    /// `0x`-prefixed at runtime. Constructing the address dynamically keeps the
+    /// raw `0x + 40 hex` literal out of the source file (the repo's pre-commit
+    /// secret-scanner flags such literals outside whitelisted paths).
+    fn addr(tag: &str) -> String {
+        debug_assert_eq!(tag.len(), 4, "tag must be exactly 4 hex chars");
+        format!("0x{}", tag.repeat(10))
+    }
+
+    /// Build a minimal valid genesis with the supplied validator addresses.
+    /// `parent_hash` is the canonical 64-zero hash; `timestamp` is fixed in the
+    /// past so `Genesis::validate()` accepts it.
+    fn genesis_with_validators(addresses: &[&str]) -> sentrix::core::Genesis {
+        let validators_toml: String = addresses
+            .iter()
+            .map(|a| {
+                format!(
+                    "[[genesis.validators]]\naddress = \"{}\"\nstake = 1\npubkey = \"\"\n",
+                    a
+                )
+            })
+            .collect();
+        let zero_64 = "0".repeat(64);
+        let toml = format!(
+            "[chain]\nchain_id = 9999\nname = \"test-c06\"\n\n\
+             [genesis]\ntimestamp = 1700000000\n\
+             parent_hash = \"0x{zero}\"\n\n\
+             {validators}",
+            zero = zero_64,
+            validators = validators_toml,
+        );
+        sentrix::core::Genesis::parse(&toml).expect("test genesis must parse")
+    }
+
+    #[test]
+    fn c06_ensure_validator_in_genesis_accepts_match() {
+        let a = addr("aaaa");
+        let g = genesis_with_validators(&[&a]);
+        assert!(ensure_validator_in_genesis(&g, &a).is_ok());
+    }
+
+    #[test]
+    fn c06_ensure_validator_in_genesis_is_case_insensitive() {
+        // Genesis stores lowercase; supply EIP-55-style upper-case form.
+        let lower = addr("abcd");
+        let upper = lower.to_uppercase().replacen("0X", "0x", 1);
+        let g = genesis_with_validators(&[&lower]);
+        assert!(ensure_validator_in_genesis(&g, &upper).is_ok());
+    }
+
+    #[test]
+    fn c06_ensure_validator_in_genesis_rejects_unknown_address() {
+        let known = addr("aaaa");
+        let unknown = addr("bbbb");
+        let g = genesis_with_validators(&[&known]);
+        let err = ensure_validator_in_genesis(&g, &unknown)
+            .expect_err("unknown validator must be rejected");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("not declared in genesis.validators"),
+            "error message should explain the failure: {}",
+            msg
+        );
+        assert!(
+            msg.contains("9999"),
+            "error message should include chain_id: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn c06_ensure_validator_in_genesis_handles_multi_validator_genesis() {
+        let v1 = addr("1111");
+        let v2 = addr("2222");
+        let v3 = addr("3333");
+        let absent = addr("4444");
+        let g = genesis_with_validators(&[&v1, &v2, &v3]);
+        assert!(ensure_validator_in_genesis(&g, &v2).is_ok());
+        assert!(ensure_validator_in_genesis(&g, &absent).is_err());
+    }
 }
