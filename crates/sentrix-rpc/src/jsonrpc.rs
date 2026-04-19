@@ -60,6 +60,41 @@ fn to_hex_u128(n: u128) -> String {
     format!("0x{:x}", n)
 }
 
+/// M-11: validate a JSON-RPC address parameter before it is used as a
+/// trie/DB lookup key. Accepts exactly `0x` + 40 hex lowercase and
+/// returns the normalised string, or `Err` with an error message suitable
+/// for JSON-RPC -32602 (Invalid params). Prevents oddly-shaped strings
+/// (empty, too-long, non-hex) from reaching the account store where
+/// they are merely a silent miss, wasting compute per malformed request
+/// under adversarial load.
+fn normalize_rpc_address(s: &str) -> Result<String, &'static str> {
+    if s.len() != 42 {
+        return Err("address must be 42 chars (0x + 40 hex)");
+    }
+    let lower = s.to_lowercase();
+    if !lower.starts_with("0x") {
+        return Err("address must start with 0x");
+    }
+    if !lower[2..].chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("address must be lowercase hex after 0x");
+    }
+    Ok(lower)
+}
+
+/// M-11: validate a JSON-RPC 32-byte hash parameter (tx hash, block
+/// hash). Same rationale as `normalize_rpc_address` — keeps malformed
+/// hex out of DB lookups.
+fn normalize_rpc_hash(s: &str) -> Result<String, &'static str> {
+    let stripped = s.strip_prefix("0x").unwrap_or(s);
+    if stripped.len() != 64 {
+        return Err("hash must be 32 bytes (64 hex chars)");
+    }
+    if !stripped.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("hash must be hex");
+    }
+    Ok(stripped.to_lowercase())
+}
+
 // ── Main handler ─────────────────────────────────────────
 pub async fn jsonrpc_handler(
     State(state): State<SharedState>,
@@ -95,14 +130,21 @@ pub async fn jsonrpc_handler(
             }
         }
         "eth_getBalance" => {
-            let address = params[0].as_str().unwrap_or("").to_lowercase();
+            // M-11: validate address before DB lookup.
+            let address = match normalize_rpc_address(params[0].as_str().unwrap_or("")) {
+                Ok(a) => a,
+                Err(e) => return Json(JsonRpcResponse::err(id, -32602, e)),
+            };
             let bc = state.read().await;
             let balance = bc.accounts.get_balance(&address);
             let wei = balance as u128 * 10_000_000_000u128;
             Ok(json!(to_hex_u128(wei)))
         }
         "eth_getTransactionCount" => {
-            let address = params[0].as_str().unwrap_or("").to_lowercase();
+            let address = match normalize_rpc_address(params[0].as_str().unwrap_or("")) {
+                Ok(a) => a,
+                Err(e) => return Json(JsonRpcResponse::err(id, -32602, e)),
+            };
             let bc = state.read().await;
             let nonce = bc.accounts.get_nonce(&address);
             Ok(json!(to_hex(nonce)))
@@ -160,11 +202,11 @@ pub async fn jsonrpc_handler(
             }
         }
         "eth_getTransactionByHash" => {
-            let txid = params[0]
-                .as_str()
-                .unwrap_or("")
-                .trim_start_matches("0x")
-                .to_string();
+            // M-11: validate tx hash format before DB lookup.
+            let txid = match normalize_rpc_hash(params[0].as_str().unwrap_or("")) {
+                Ok(h) => h,
+                Err(e) => return Json(JsonRpcResponse::err(id, -32602, e)),
+            };
             let bc = state.read().await;
             match bc.get_transaction(&txid) {
                 Some(tx_data) => Ok(tx_data),
@@ -172,11 +214,10 @@ pub async fn jsonrpc_handler(
             }
         }
         "eth_getTransactionReceipt" => {
-            let txid = params[0]
-                .as_str()
-                .unwrap_or("")
-                .trim_start_matches("0x")
-                .to_string();
+            let txid = match normalize_rpc_hash(params[0].as_str().unwrap_or("")) {
+                Ok(h) => h,
+                Err(e) => return Json(JsonRpcResponse::err(id, -32602, e)),
+            };
             let bc = state.read().await;
             match bc.get_transaction(&txid) {
                 Some(tx_data) => {
@@ -514,27 +555,31 @@ pub async fn rpc_dispatcher(
         Err(_) => return Json(JsonRpcResponse::err(None, -32700, "Parse error")).into_response(),
     };
 
-    if value.is_array() {
-        let requests: Vec<JsonRpcRequest> = match serde_json::from_value(value) {
-            Ok(r) => r,
-            Err(_) => {
-                return Json(JsonRpcResponse::err(None, -32600, "Invalid Request")).into_response();
-            }
-        };
-
-        // Reject oversized batches before deserializing individual requests
-        if requests.len() > MAX_BATCH_SIZE {
+    if let Some(arr) = value.as_array() {
+        // M-03: reject oversize batches BEFORE the per-element typed
+        // deserialisation allocates a second copy. The raw `Value` parse
+        // above is bounded by axum's body-size limit; this guard closes
+        // the second amplification where 100 MB of arbitrary JSON would
+        // round-trip through `Vec<JsonRpcRequest>` before being rejected.
+        if arr.len() > MAX_BATCH_SIZE {
             return Json(JsonRpcResponse::err(
                 None,
                 -32600,
                 &format!(
                     "batch too large: max {} requests, got {}",
                     MAX_BATCH_SIZE,
-                    requests.len()
+                    arr.len()
                 ),
             ))
             .into_response();
         }
+
+        let requests: Vec<JsonRpcRequest> = match serde_json::from_value(value) {
+            Ok(r) => r,
+            Err(_) => {
+                return Json(JsonRpcResponse::err(None, -32600, "Invalid Request")).into_response();
+            }
+        };
 
         let mut responses = Vec::new();
         for req in requests {
