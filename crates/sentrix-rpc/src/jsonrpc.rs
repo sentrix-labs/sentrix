@@ -497,82 +497,138 @@ pub async fn jsonrpc_handler(
         }
         "sentrix_getValidatorSet" => {
             let bc = state.read().await;
-            let active: std::collections::HashSet<String> =
-                bc.stake_registry.active_set.iter().cloned().collect();
             let epoch = &bc.epoch_manager.current_epoch;
             let epoch_span = epoch
                 .end_height
                 .saturating_sub(epoch.start_height)
                 .max(1);
-            let total_active_stake: u128 = bc
-                .stake_registry
-                .active_set
-                .iter()
-                .filter_map(|a| bc.stake_registry.get_validator(a))
-                .map(|v| v.total_stake() as u128)
-                .sum();
 
-            let validators: Vec<serde_json::Value> = bc
-                .stake_registry
-                .validators
-                .values()
-                .map(|v| {
-                    let name = bc
-                        .authority
-                        .validators
-                        .get(&v.address)
-                        .map(|a| a.name.clone())
-                        .unwrap_or_default();
-                    let total_stake = v.total_stake();
-                    let stake_wei = (total_stake as u128).saturating_mul(10_000_000_000u128);
-                    let commission = f64::from(v.commission_rate) / 10_000.0;
-                    let is_active = active.contains(&v.address);
-                    let status = if v.is_tombstoned {
-                        "tombstoned"
-                    } else if v.is_jailed {
-                        "jailed"
-                    } else if is_active {
-                        "active"
-                    } else {
-                        "unbonding"
-                    };
-                    let signed = v.blocks_signed;
-                    let attempted = signed.saturating_add(v.blocks_missed);
-                    let uptime = if attempted == 0 {
-                        1.0
-                    } else {
-                        signed as f64 / attempted as f64
-                    };
-                    // The registry tracks lifetime blocks_signed only. For the
-                    // "epoch" count we expose the portion signed since epoch
-                    // start — clamped to epoch_span so a fresh validator can't
-                    // report > 100 % of the current epoch.
-                    let blocks_produced_epoch = signed.min(epoch_span);
-                    let voting_power_wei = if total_active_stake == 0 {
-                        0u128
-                    } else {
-                        (total_stake as u128).saturating_mul(10_000_000_000u128)
-                    };
-                    serde_json::json!({
-                        "address": v.address,
-                        "name": name,
-                        "stake": to_hex_u128(stake_wei),
-                        "commission": commission,
-                        "status": status,
-                        "blocks_produced_epoch": blocks_produced_epoch,
-                        "uptime": uptime,
-                        "voting_power": to_hex_u128(voting_power_wei),
+            // On a PoA chain (mainnet pre-Voyager) the DPoS stake_registry
+            // is empty by design — validators live in AuthorityManager.
+            // Without the fallback below this method returned [] on
+            // mainnet even though 3 validators (Foundation / Treasury /
+            // Core) are actively producing blocks. "Consensus mode"
+            // detection: if the next block lands post-Voyager, use the
+            // DPoS path; otherwise use PoA.
+            let next_height = bc.latest_block().map(|b| b.index + 1).unwrap_or(1);
+            let is_dpos = sentrix_core::blockchain::Blockchain::is_voyager_height(next_height)
+                && !bc.stake_registry.validators.is_empty();
+
+            if is_dpos {
+                let active: std::collections::HashSet<String> =
+                    bc.stake_registry.active_set.iter().cloned().collect();
+                let total_active_stake: u128 = bc
+                    .stake_registry
+                    .active_set
+                    .iter()
+                    .filter_map(|a| bc.stake_registry.get_validator(a))
+                    .map(|v| v.total_stake() as u128)
+                    .sum();
+
+                let validators: Vec<serde_json::Value> = bc
+                    .stake_registry
+                    .validators
+                    .values()
+                    .map(|v| {
+                        let name = bc
+                            .authority
+                            .validators
+                            .get(&v.address)
+                            .map(|a| a.name.clone())
+                            .unwrap_or_default();
+                        let total_stake = v.total_stake();
+                        let stake_wei =
+                            (total_stake as u128).saturating_mul(10_000_000_000u128);
+                        let commission = f64::from(v.commission_rate) / 10_000.0;
+                        let is_active = active.contains(&v.address);
+                        let status = if v.is_tombstoned {
+                            "tombstoned"
+                        } else if v.is_jailed {
+                            "jailed"
+                        } else if is_active {
+                            "active"
+                        } else {
+                            "unbonding"
+                        };
+                        let signed = v.blocks_signed;
+                        let attempted = signed.saturating_add(v.blocks_missed);
+                        let uptime = if attempted == 0 {
+                            1.0
+                        } else {
+                            signed as f64 / attempted as f64
+                        };
+                        let blocks_produced_epoch = signed.min(epoch_span);
+                        let voting_power_wei = if total_active_stake == 0 {
+                            0u128
+                        } else {
+                            (total_stake as u128).saturating_mul(10_000_000_000u128)
+                        };
+                        serde_json::json!({
+                            "address": v.address,
+                            "name": name,
+                            "stake": to_hex_u128(stake_wei),
+                            "commission": commission,
+                            "status": status,
+                            "blocks_produced_epoch": blocks_produced_epoch,
+                            "uptime": uptime,
+                            "voting_power": to_hex_u128(voting_power_wei),
+                        })
                     })
-                })
-                .collect();
+                    .collect();
 
-            Ok(json!({
-                "active_count": bc.stake_registry.active_count(),
-                "total_count": bc.stake_registry.validators.len(),
-                "total_active_stake": to_hex_u128(total_active_stake),
-                "epoch_number": epoch.epoch_number,
-                "validators": validators,
-            }))
+                Ok(json!({
+                    "consensus": "DPoS",
+                    "active_count": bc.stake_registry.active_count(),
+                    "total_count": bc.stake_registry.validators.len(),
+                    "total_active_stake": to_hex_u128(total_active_stake),
+                    "epoch_number": epoch.epoch_number,
+                    "validators": validators,
+                }))
+            } else {
+                // PoA path: equal weight, zero commission, zero stake.
+                // voting_power is a flat 1/N across the active set so
+                // clients rendering a weight chart still get something
+                // meaningful.
+                let active: Vec<_> = bc
+                    .authority
+                    .validators
+                    .values()
+                    .filter(|v| v.is_active)
+                    .collect();
+                let active_count = active.len();
+                let flat_weight = if active_count > 0 {
+                    1_000_000_000u128 / active_count as u128
+                } else {
+                    0
+                };
+                let validators: Vec<serde_json::Value> = bc
+                    .authority
+                    .validators
+                    .values()
+                    .map(|v| {
+                        let status = if v.is_active { "active" } else { "unbonding" };
+                        serde_json::json!({
+                            "address": v.address,
+                            "name": v.name,
+                            "stake": "0x0",
+                            "commission": 0.0,
+                            "status": status,
+                            "blocks_produced_epoch": v.blocks_produced.min(epoch_span),
+                            "uptime": 1.0,
+                            "voting_power": to_hex_u128(if v.is_active { flat_weight } else { 0 }),
+                        })
+                    })
+                    .collect();
+
+                Ok(json!({
+                    "consensus": "PoA",
+                    "active_count": active_count,
+                    "total_count": bc.authority.validators.len(),
+                    "total_active_stake": "0x0",
+                    "epoch_number": epoch.epoch_number,
+                    "validators": validators,
+                }))
+            }
         }
         "sentrix_getDelegations" => {
             let address = match params[0].as_str() {

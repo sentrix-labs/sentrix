@@ -126,19 +126,20 @@ Response:
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
+    "consensus": "PoA",
     "active_count": 3,
     "total_count": 3,
-    "total_active_stake": "0x...",
+    "total_active_stake": "0x0",
     "epoch_number": 0,
     "validators": [
       {
         "address": "0x...",
         "name": "Foundation",
-        "stake": "0x...",
-        "commission": 0.1,
+        "stake": "0x0",
+        "commission": 0.0,
         "status": "active",
         "blocks_produced_epoch": 1234,
-        "uptime": 0.99,
+        "uptime": 1.0,
         "voting_power": "0x..."
       }
     ]
@@ -146,9 +147,17 @@ Response:
 }
 ```
 
-`status` ∈ `"active" | "jailed" | "tombstoned" | "unbonding"`.
-`commission` is a float 0..1 (basis points ÷ 10 000).
-`uptime` = `blocks_signed / (blocks_signed + blocks_missed)`.
+`consensus` ∈ `"PoA" | "DPoS"`. The DPoS branch populates real stakes,
+commissions, slashing state (`jailed`, `tombstoned`); the PoA branch
+returns a flat voting power split equally across active validators
+and zeroes for stake/commission — those fields become meaningful
+post-Voyager when the DPoS registry takes over.
+
+`status` ∈ `"active" | "jailed" | "tombstoned" | "unbonding"` (DPoS)
+or `"active" | "unbonding"` (PoA).
+`commission` is a float 0..1 (basis points ÷ 10 000 in DPoS mode).
+`uptime` = `blocks_signed / (blocks_signed + blocks_missed)` in DPoS,
+always `1.0` in PoA (the manager tracks `is_active` only).
 
 #### `sentrix_getDelegations`
 

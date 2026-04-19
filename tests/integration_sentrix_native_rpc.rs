@@ -84,11 +84,21 @@ async fn test_sentrix_get_validator_set_shape() {
     let (state, _, _, _, _) = setup_chain_with_dpos();
     let resp = jsonrpc_handler(State(state), Json(make_request("sentrix_getValidatorSet", json!([])))).await;
     let result = resp.0.result.expect("result");
+    assert_eq!(
+        result["consensus"].as_str().unwrap(),
+        "PoA",
+        "default chain (no VOYAGER_FORK_HEIGHT env) is PoA — empty stake_registry must fall back to AuthorityManager"
+    );
     assert!(result.get("validators").and_then(|v| v.as_array()).is_some(), "validators array");
     assert!(result.get("active_count").is_some());
     assert!(result.get("total_count").is_some());
     assert!(result.get("total_active_stake").is_some());
-    let first = &result["validators"][0];
+    let validators = result["validators"].as_array().unwrap();
+    assert!(
+        !validators.is_empty(),
+        "Sprint 1.1 fallback: PoA path must not return empty when AuthorityManager has entries"
+    );
+    let first = &validators[0];
     for field in [
         "address",
         "name",
