@@ -7,7 +7,7 @@
 
 ## Abstract
 
-Sentrix is a Layer-1 Proof-of-Authority blockchain engineered for fast, deterministic settlement. Built from scratch in Rust, it delivers 1-second block finality, Ethereum-compatible addressing, and a native fungible token standard (SRX-20). The chain is designed to evolve from a permissioned PoA network into a fully decentralized public chain through a phased transition to Delegated Proof of Stake.
+Sentrix is a Layer-1 Proof-of-Authority blockchain engineered for fast, deterministic settlement. Built from scratch in Rust, it delivers 1-second block finality, Ethereum-compatible addressing, and a native fungible token standard (SRC-20). The chain is designed to evolve from a permissioned PoA network into a fully decentralized public chain through a phased transition to Delegated Proof of Stake.
 
 ---
 
@@ -209,9 +209,9 @@ As network activity grows, burn rate increases. Eventually, burn rate exceeds bl
 
 ---
 
-## 7. SRX-20 Token Standard
+## 7. SRC-20 Token Standard
 
-SRX-20 is Sentrix's native fungible token standard, modeled after ERC-20.
+SRC-20 is Sentrix's native fungible token standard, modeled after ERC-20.
 
 ### 7.1 Interface
 
@@ -338,7 +338,7 @@ Chain ID `7119` (`0x1bcf`) is registered for Sentrix.
 
 | Phase | Target | Key Features |
 |---|---|---|
-| **1** ✅ | 2026 Q2 | PoA engine, wallets, SRX-20, explorer, JSON-RPC |
+| **1** ✅ | 2026 Q2 | PoA engine, wallets, SRC-20, explorer, JSON-RPC |
 | **2** ✅ | 2026 Q2 | Full P2P, security audit, three-token model, block explorer |
 | **3** | 2026 Q3-Q4 | Public mainnet, multi-node deployment, wallet web UI |
 | **4** | 2027 | DPoS transition, staking, governance |

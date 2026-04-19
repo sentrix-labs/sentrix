@@ -1,4 +1,4 @@
-// vm.rs - Sentrix — SRX-20 Token Standard
+// vm.rs - Sentrix — SRC-20 Token Standard
 
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 use serde::{Deserialize, Serialize};
@@ -11,12 +11,12 @@ use std::collections::HashMap;
 fn compute_contract_address(deployer: &str, seed: &str) -> String {
     let payload = format!("{}|{}", deployer, seed);
     let hash = Sha256::digest(payload.as_bytes());
-    format!("SRX20_{}", hex::encode(&hash[..20]))
+    format!("SRC20_{}", hex::encode(&hash[..20]))
 }
 
-// ── SRX-20 Contract ──────────────────────────────────────
+// ── SRC-20 Contract ──────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SRX20Contract {
+pub struct SRC20Contract {
     pub contract_address: String,
     pub name: String,
     pub symbol: String,
@@ -30,7 +30,7 @@ pub struct SRX20Contract {
     pub allowances: HashMap<String, HashMap<String, u64>>,
 }
 
-impl SRX20Contract {
+impl SRC20Contract {
     pub fn new(
         contract_address: String,
         name: String,
@@ -309,7 +309,7 @@ impl SRX20Contract {
 // ── Contract Registry ────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ContractRegistry {
-    pub contracts: HashMap<String, SRX20Contract>,
+    pub contracts: HashMap<String, SRC20Contract>,
 }
 
 impl ContractRegistry {
@@ -354,7 +354,7 @@ impl ContractRegistry {
             addr = compute_contract_address(deployer, &format!("{}|{}", seed, counter));
         }
 
-        let mut contract = SRX20Contract::new(
+        let mut contract = SRC20Contract::new(
             addr.clone(),
             name.to_string(),
             symbol.to_string(),
@@ -368,11 +368,11 @@ impl ContractRegistry {
         Ok(addr)
     }
 
-    pub fn get_contract(&self, address: &str) -> Option<&SRX20Contract> {
+    pub fn get_contract(&self, address: &str) -> Option<&SRC20Contract> {
         self.contracts.get(address)
     }
 
-    pub fn get_contract_mut(&mut self, address: &str) -> Option<&mut SRX20Contract> {
+    pub fn get_contract_mut(&mut self, address: &str) -> Option<&mut SRC20Contract> {
         self.contracts.get_mut(address)
     }
 
@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn test_deploy_contract() {
         let (reg, addr) = setup_registry();
-        assert!(addr.starts_with("SRX20_"));
+        assert!(addr.starts_with("SRC20_"));
         assert_eq!(reg.contract_count(), 1);
         let c = reg.get_contract(&addr).unwrap();
         assert_eq!(c.name, "FastPoint Token");
@@ -684,7 +684,7 @@ mod tests {
     #[test]
     fn test_unknown_contract() {
         let mut reg = ContractRegistry::new();
-        let result = reg.call("SRX20_fake", "transfer", "caller", &serde_json::json!({}));
+        let result = reg.call("SRC20_fake", "transfer", "caller", &serde_json::json!({}));
         assert!(result.is_err());
     }
 
@@ -773,7 +773,7 @@ mod tests {
         let (mut reg, addr) = setup_registry();
         let c = reg.get_contract_mut(&addr).unwrap();
 
-        // Direct call to SRX20Contract::mint() with non-owner must be rejected
+        // Direct call to SRC20Contract::mint() with non-owner must be rejected
         let result = c.mint("not_owner", "alice", 1_000);
         assert!(result.is_err());
         let err_str = result.unwrap_err().to_string();

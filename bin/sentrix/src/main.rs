@@ -133,7 +133,7 @@ enum Commands {
     Balance { address: String },
     /// Transaction history for an address
     History { address: String },
-    /// Token operations (SRX-20)
+    /// Token operations (SRC-20)
     Token {
         #[command(subcommand)]
         action: TokenCommands,
@@ -240,7 +240,7 @@ enum ValidatorCommands {
 
 #[derive(Subcommand)]
 enum TokenCommands {
-    /// Deploy a new SRX-20 token
+    /// Deploy a new SRC-20 token
     Deploy {
         #[arg(long)]
         name: String,

@@ -1,6 +1,6 @@
 # Token Standards
 
-## SRX-20
+## SRC-20
 
 Fungible token standard, like ERC-20. Anyone can deploy.
 
@@ -10,13 +10,13 @@ Fungible token standard, like ERC-20. Anyone can deploy.
 sentrix token deploy --name "My Token" --symbol "MTK" --supply 1000000 --decimals 18 --deployer-key <key> --fee 100000
 ```
 
-Creates contract at `SRX20_<sha256(txid)>`. Full supply minted to deployer. Fee: 50% burn, 50% ecosystem.
+Creates contract at `SRC20_<sha256(txid)>`. Full supply minted to deployer. Fee: 50% burn, 50% ecosystem.
 
 ### Operations
 
-Transfer: `sentrix token transfer --contract SRX20_... --to 0x... --amount 1000 --from-key <key> --gas 10000`
+Transfer: `sentrix token transfer --contract SRC20_... --to 0x... --amount 1000 --from-key <key> --gas 10000`
 
-Burn: `sentrix token burn --contract SRX20_... --amount 500 --from-key <key> --gas 10000`
+Burn: `sentrix token burn --contract SRC20_... --amount 500 --from-key <key> --gas 10000`
 
 Approve: Allow a third party to spend your tokens. Must reset to 0 before setting a new allowance (prevents the classic ERC-20 front-running attack).
 
@@ -39,10 +39,10 @@ Explorer: `/explorer/tokens` and `/explorer/token/{contract}`.
 
 ### vs ERC-20
 
-| | ERC-20 | SRX-20 |
+| | ERC-20 | SRC-20 |
 |-|--------|--------|
 | Gas token | ETH | SRX |
-| Contract address | EVM deployment | `SRX20_` + deterministic hash |
+| Contract address | EVM deployment | `SRC20_` + deterministic hash |
 | Approve front-run | Vulnerable | Mitigated (reset to 0 first) |
 | Max supply | Optional | Built-in, enforced in mint() |
 | VM | EVM | Native engine (Pioneer), revm (Voyager) |

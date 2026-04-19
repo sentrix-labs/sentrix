@@ -9,6 +9,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **refactor(token): rename SRX-20 → SRC-20 across code + docs for
+  naming consistency.** Address prefix `SRX20_` → `SRC20_`. **BREAKING:**
+  contract address prefix changed. Safe — zero native tokens deployed
+  pre-rename. Matches industry pattern (ERC-20 / BEP-20 / TRC-20 —
+  Sentrix Request for Comments).
+
 ### Planned
 - Mainnet hard fork to Voyager (DPoS + BFT + EVM)
 - Parallel tx execution (rayon)
@@ -387,7 +394,7 @@ Pioneer release. PoA chain live with 7 validators across 3 VPS, 141K+ blocks, 11
 - Deterministic backfill from AccountDB on first trie initialization (one-time migration)
 - `sentrix chain reset-trie` command for recovery scenarios
 
-**SRX-20 Token Standard**
+**SRC-20 Token Standard**
 - Deploy fungible tokens in one CLI command; contract address derived deterministically from txid
 - Full ERC-20-compatible interface: transfer, burn, mint, approve, balance_of, allowance
 - Deploy fee: 50% burned, 50% to ecosystem fund
@@ -409,7 +416,7 @@ Pioneer release. PoA chain live with 7 validators across 3 VPS, 141K+ blocks, 11
 - Account balance, nonce, transaction history, address summary
 - Mempool contents
 - Validator set and stats
-- SRX-20 token operations: deploy, transfer, burn, balance, info, list, holders, trades
+- SRC-20 token operations: deploy, transfer, burn, balance, info, list, holders, trades
 - Rich list (top SRX holders)
 - State root by block height
 - Merkle state proof by address
