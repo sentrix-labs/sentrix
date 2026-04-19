@@ -9,6 +9,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **fix(bft): stake-weighted f+1 round skipping (issue #143)** — the
+  legacy `on_round_status` only triggered catch-up when a single peer
+  was 2+ rounds ahead, which could not resolve a persistent 1-round
+  drift between validator clusters. Testnet reproduced this repeatedly
+  (rounds climbed past 140, 2/4 validators always lagging). The engine
+  now tracks each peer's highest-observed round + their stake at the
+  current height, and skips to the largest round where f+1 stake
+  (strictly > 1/3 of `total_active_stake`) of distinct peers have
+  converged. Matches standard Tendermint round-skip. Back-compat
+  `on_round_status` wrapper retained for call sites that lack peer
+  stake; main validator loop uses the new `on_round_status_weighted`.
+  9 new tests cover the f+1 path, single-peer anti-trigger, stake
+  refresh on epoch rotation, and cache reset on height advance.
+
 ### Changed
 - **refactor(token): rename SRX-20 → SRC-20 across code + docs for
   naming consistency.** Address prefix `SRX20_` → `SRC20_`. **BREAKING:**
