@@ -223,6 +223,19 @@ enum ValidatorCommands {
         /// Validator address to unjail
         address: String,
     },
+    /// Operator-only recovery: unjail + restore self_stake to
+    /// MIN_SELF_STAKE when slashing has knocked the validator below
+    /// the eligibility floor. Skips the jail-period cooldown.
+    ///
+    /// Use this when the chain is stuck because all validators were
+    /// auto-slashed (BFT `active_set` empty → can't mine blocks →
+    /// can't submit unjail/stake TXs). Run while the node is STOPPED,
+    /// and run on EACH validator's chain DB for every jailed address
+    /// so all peers agree on the recovered state before BFT resumes.
+    ForceUnjail {
+        /// Validator address to force-unjail
+        address: String,
+    },
     /// Transfer the admin role to a new address (admin only).
     /// Use to rotate out a compromised admin key without a hard fork.
     /// Run on EACH validator's chain DB — the admin field is local node
@@ -431,6 +444,9 @@ async fn main() -> anyhow::Result<()> {
             } => {
                 let key = resolve_key(admin_key, "SENTRIX_ADMIN_KEY", "admin key")?;
                 cmd_validator_rename(&address, &new_name, &key)?;
+            }
+            ValidatorCommands::ForceUnjail { address } => {
+                cmd_validator_force_unjail(&address)?;
             }
             ValidatorCommands::Unjail { address } => {
                 cmd_validator_unjail(&address)?;
@@ -761,6 +777,46 @@ fn cmd_validator_unjail(address: &str) -> anyhow::Result<()> {
 
     storage.save_blockchain(&bc)?;
     println!("Validator unjailed: {}", address);
+    println!(
+        "Active set: {} validators",
+        bc.stake_registry.active_count()
+    );
+    Ok(())
+}
+
+fn cmd_validator_force_unjail(address: &str) -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    let mut bc = storage
+        .load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+
+    let before = bc
+        .stake_registry
+        .get_validator(address)
+        .map(|v| (v.self_stake, v.is_jailed, v.jail_until));
+    bc.stake_registry.force_unjail(address)?;
+    bc.stake_registry.update_active_set();
+    let after = bc
+        .stake_registry
+        .get_validator(address)
+        .map(|v| (v.self_stake, v.is_jailed, v.jail_until));
+
+    storage.save_blockchain(&bc)?;
+    println!("Validator force-unjailed: {}", address);
+    if let (Some(b), Some(a)) = (before, after) {
+        println!(
+            "  self_stake: {} → {}",
+            b.0, a.0,
+        );
+        println!(
+            "  is_jailed:  {} → {}",
+            b.1, a.1,
+        );
+        println!(
+            "  jail_until: {} → {}",
+            b.2, a.2,
+        );
+    }
     println!(
         "Active set: {} validators",
         bc.stake_registry.active_count()

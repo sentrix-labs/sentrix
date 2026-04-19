@@ -10,6 +10,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **feat(cli): `validator force-unjail` operator-recovery command**
+  (backlog #1b) — unlocks the chicken-and-egg state where every
+  validator has been auto-slashed below `MIN_SELF_STAKE` and the
+  normal `unjail` refuses. Bumps `self_stake` back to
+  `MIN_SELF_STAKE` if below, clears `is_jailed` + `jail_until`,
+  skips the cooldown. Tombstoned validators are still rejected.
+  Operator-only: bypasses consensus, so operator must run it on
+  every peer's chain DB before BFT resumes so all peers agree on
+  the recovered state. Backed by `StakeRegistry::force_unjail` +
+  4 unit tests (stake restore, stake preservation when already
+  above min, tombstone refusal, cooldown skip).
 - **feat(rpc): `eth_getBlockReceipts`** (backlog #8) — batch receipt
   query matching the Ethereum JSON-RPC spec. Input: block tag
   (`latest` / `earliest` / `pending` / `safe` / `finalized` / hex

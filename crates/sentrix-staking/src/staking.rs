@@ -542,6 +542,43 @@ impl StakeRegistry {
         Ok(())
     }
 
+    /// Operator-only recovery path for validators that have been jailed
+    /// AND slashed below `MIN_SELF_STAKE`, leaving them unable to clear
+    /// the jail via the normal `unjail()` path and unable to stake up
+    /// because the chain is stuck (BFT refuses to start while
+    /// `active_set` is empty). This is the chicken-and-egg case observed
+    /// on testnet after the pre-#147 BFT livelock auto-slashed all 4
+    /// validators.
+    ///
+    /// Semantics differ from `unjail()` in two places: the jail-period
+    /// cooldown (`jail_until`) is skipped, and if the validator's
+    /// `self_stake` is below `MIN_SELF_STAKE` it is bumped back up to
+    /// exactly `MIN_SELF_STAKE` so they clear the eligibility check.
+    /// Tombstoned validators are still rejected — tombstone is
+    /// permanent by design.
+    ///
+    /// Callers are responsible for running this only on an operator-
+    /// owned chain DB (it bypasses consensus) and then propagating the
+    /// same edit to every peer's DB before consensus resumes, otherwise
+    /// peers will disagree on the stake_registry state.
+    pub fn force_unjail(&mut self, validator: &str) -> SentrixResult<()> {
+        let val = self
+            .validators
+            .get_mut(validator)
+            .ok_or_else(|| SentrixError::InvalidTransaction("validator not found".into()))?;
+        if val.is_tombstoned {
+            return Err(SentrixError::InvalidTransaction(
+                "tombstoned validators cannot unjail".into(),
+            ));
+        }
+        if val.self_stake < MIN_SELF_STAKE {
+            val.self_stake = MIN_SELF_STAKE;
+        }
+        val.is_jailed = false;
+        val.jail_until = 0;
+        Ok(())
+    }
+
     // ── Active Set ───────────────────────────────────────────
 
     pub fn compute_active_set(&self) -> Vec<String> {
@@ -1203,6 +1240,75 @@ mod tests {
         reg.slash("0xval1", 5000).unwrap(); // 50%
         // Can't unjail because self-stake below minimum
         assert!(reg.unjail("0xval1", 200).is_err());
+    }
+
+    #[test]
+    fn test_force_unjail_restores_stake_and_clears_flags() {
+        // Operator-only recovery for the chicken-and-egg state the
+        // testnet hit on 2026-04-19: pre-#147 livelock auto-slashed
+        // every validator below MIN_SELF_STAKE, so the normal
+        // `unjail()` path refused and BFT could not restart.
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        reg.jail("0xval1", 100, 1000).unwrap();
+        reg.slash("0xval1", 5000).unwrap(); // 50%, drops below min
+
+        assert!(reg.validators["0xval1"].is_jailed);
+        assert!(reg.validators["0xval1"].self_stake < MIN_SELF_STAKE);
+        // Sanity: the normal path can't recover this one.
+        assert!(reg.unjail("0xval1", 200).is_err());
+
+        reg.force_unjail("0xval1").unwrap();
+
+        let v = &reg.validators["0xval1"];
+        assert!(!v.is_jailed, "force_unjail must clear is_jailed");
+        assert_eq!(v.jail_until, 0, "force_unjail must clear jail_until");
+        assert_eq!(
+            v.self_stake, MIN_SELF_STAKE,
+            "force_unjail must restore self_stake to MIN_SELF_STAKE",
+        );
+    }
+
+    #[test]
+    fn test_force_unjail_preserves_stake_when_already_above_min() {
+        // If stake is already ≥ MIN_SELF_STAKE, force_unjail must not
+        // overwrite it — only jail flags are cleared.
+        let mut reg = new_registry();
+        let bigger = MIN_SELF_STAKE.saturating_add(12_345);
+        register_val(&mut reg, "0xval1", bigger);
+        reg.jail("0xval1", 100, 9999).unwrap();
+
+        reg.force_unjail("0xval1").unwrap();
+
+        let v = &reg.validators["0xval1"];
+        assert!(!v.is_jailed);
+        assert_eq!(v.jail_until, 0);
+        assert_eq!(v.self_stake, bigger, "stake should not be touched");
+    }
+
+    #[test]
+    fn test_force_unjail_rejects_tombstoned() {
+        // Tombstone is permanent by design — force_unjail must still
+        // refuse, same as `unjail`.
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        reg.validators.get_mut("0xval1").unwrap().is_tombstoned = true;
+
+        assert!(reg.force_unjail("0xval1").is_err());
+    }
+
+    #[test]
+    fn test_force_unjail_skips_cooldown() {
+        // Unlike `unjail`, `force_unjail` does not honor the
+        // jail_until cooldown — operator override is the whole point.
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        reg.jail("0xval1", 100, 50_000).unwrap();
+
+        reg.force_unjail("0xval1").unwrap();
+        let v = &reg.validators["0xval1"];
+        assert!(!v.is_jailed);
+        assert_eq!(v.jail_until, 0);
     }
 
     #[test]
