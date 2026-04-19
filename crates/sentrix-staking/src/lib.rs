@@ -13,4 +13,4 @@ pub mod staking;
 
 pub use epoch::EpochManager;
 pub use slashing::SlashingEngine;
-pub use staking::{StakeRegistry, MIN_SELF_STAKE};
+pub use staking::{MIN_BFT_VALIDATORS, MIN_SELF_STAKE, StakeRegistry};
