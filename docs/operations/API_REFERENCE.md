@@ -102,7 +102,154 @@ POST to `/rpc` with `Content-Type: application/json`.
 | Method | Description |
 |--------|-------------|
 | `sentrix_sendTransaction` | Submit a pre-signed Sentrix native transaction |
-| `sentrix_getBalance` | Balance in SRX (float string) |
+| `sentrix_getBalance` | Balance in wei (hex, × 10^10 conversion from sentri) |
+
+### Sentrix Native Methods (Sprint 1 — 2026-04-19)
+
+Methods that expose chain features MetaMask / `eth_*` cannot represent:
+DPoS validator set, delegation ledger, BFT finality, staking rewards.
+All amounts returned in **wei hex** (`sentri × 10^10`) so the same
+bignum libraries used for `eth_*` work here too.
+
+#### `sentrix_getValidatorSet`
+
+Returns the current DPoS validator set plus voting power distribution.
+
+Request:
+```json
+{"jsonrpc":"2.0","method":"sentrix_getValidatorSet","params":[],"id":1}
+```
+
+Response:
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "active_count": 3,
+    "total_count": 3,
+    "total_active_stake": "0x...",
+    "epoch_number": 0,
+    "validators": [
+      {
+        "address": "0x...",
+        "name": "Foundation",
+        "stake": "0x...",
+        "commission": 0.1,
+        "status": "active",
+        "blocks_produced_epoch": 1234,
+        "uptime": 0.99,
+        "voting_power": "0x..."
+      }
+    ]
+  }
+}
+```
+
+`status` ∈ `"active" | "jailed" | "tombstoned" | "unbonding"`.
+`commission` is a float 0..1 (basis points ÷ 10 000).
+`uptime` = `blocks_signed / (blocks_signed + blocks_missed)`.
+
+#### `sentrix_getDelegations`
+
+Returns the delegations made by one address. Active delegations plus
+entries currently unbonding. Params: `[address: string]`.
+
+```json
+{"jsonrpc":"2.0","method":"sentrix_getDelegations","params":["0xdel..."],"id":1}
+```
+
+Each row:
+
+```json
+{
+  "validator": "0xval...",
+  "validator_name": "Foundation",
+  "amount": "0x... (wei)",
+  "pending_reward": "0x... (wei, estimate)",
+  "delegated_at_epoch": 12,
+  "status": "active",
+  "unbonding_complete_epoch": null
+}
+```
+
+`pending_reward` is a stake-weighted estimate against the validator's
+pending pool — per-delegator reward accounting is not yet persisted
+(tracked for a later sprint).
+
+#### `sentrix_getStakingRewards`
+
+Returns reward accrual for a delegator. Params:
+`[address: string, { from_epoch?: u64, to_epoch?: u64 }]`. Default window
+is the last 30 epochs.
+
+```json
+{
+  "total_lifetime": "0x... (wei)",
+  "pending_claimable": "0x... (wei)",
+  "from_epoch": 14,
+  "to_epoch": 44,
+  "by_epoch": [
+    { "epoch": 44, "validator": "0xval...", "reward": "0x...", "claimed": false }
+  ]
+}
+```
+
+Historical per-epoch per-delegator rewards are not persisted in the
+current chain state; the response returns the current epoch's
+stake-weighted share. Exact per-claim history requires the
+reward-ledger follow-up.
+
+#### `sentrix_getBftStatus`
+
+Returns consensus mode + finality view.
+
+PoA (mainnet today):
+
+```json
+{
+  "consensus": "PoA",
+  "current_leader": "0x...",
+  "last_finalized_height": 44700,
+  "last_finalized_hash": "..."
+}
+```
+
+BFT (post-Voyager / testnet):
+
+```json
+{
+  "consensus": "BFT",
+  "current_round": null,
+  "current_view": null,
+  "current_leader": "0xproposer_for_next_round_0",
+  "phase": null,
+  "rounds_since_last_block": 0,
+  "last_finalized_height": 21300,
+  "last_finalized_hash": "..."
+}
+```
+
+Live `current_round` / `phase` require the validator-loop `BftEngine`
+snapshot to be published into shared state — tracked as a Sprint 2
+dependency. Chain-side fields (leader, finality) are always populated.
+
+#### `sentrix_getFinalizedHeight`
+
+Shortcut to the finality view from `sentrix_getBftStatus`.
+
+```json
+{
+  "finalized_height": 44700,
+  "finalized_hash": "...",
+  "latest_height": 44700,
+  "blocks_behind_finality": 0
+}
+```
+
+PoA: `finalized_height == latest_height` (instant finality per
+round-robin signer). BFT: `latest - finalized` = number of blocks
+still in the pipeline.
 
 ### Batch requests
 

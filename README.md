@@ -30,7 +30,7 @@ Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, i
 | **State** | Binary Sparse Merkle Tree (BLAKE3 + SHA-256) with proofs |
 | **Tokens** | SRX-20 native + SRC-20 (ERC-20 via EVM) |
 | **Network** | libp2p + Noise XX + Kademlia + Gossipsub |
-| **API** | REST (25+ endpoints) + JSON-RPC 2.0 (20 methods) |
+| **API** | REST (60+ endpoints) + JSON-RPC 2.0 (25 methods, incl. `sentrix_*` native namespace) |
 | **Explorer** | Built-in dark-themed block explorer |
 | **Wallet** | AES-256-GCM keystore (Argon2id KDF) |
 | **Fee model** | 50% burn / 50% validator (deflationary) |
