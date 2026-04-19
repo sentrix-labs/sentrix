@@ -346,6 +346,7 @@ pub fn create_router(state: SharedState) -> Router {
         // ── Public GET routes ────────────────────────────────────
         .route("/", get(root))
         .route("/health", get(health))
+        .route("/sentrix_status", get(sentrix_status))
         .route("/metrics", get(metrics))
         .route("/chain/info", get(chain_info))
         .route("/chain/blocks", get(get_blocks))
@@ -496,6 +497,7 @@ async fn root() -> Json<serde_json::Value> {
             },
             "ops": {
                 "health": "/health",
+                "status": "/sentrix_status",
                 "metrics": "/metrics",
                 "explorer_builtin": "/explorer"
             }
@@ -511,6 +513,59 @@ async fn root() -> Json<serde_json::Value> {
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok", "node": "sentrix-chain" }))
+}
+
+/// Structured node status (NEAR-style).
+///
+/// Distinct from `/` (which advertises the API surface) and `/chain/info`
+/// (which describes the chain itself): this is the operator-facing
+/// "is my node healthy and on the right fork" snapshot.
+///
+/// Returns version/build, consensus mode, sync info (head block,
+/// earliest-retained block, syncing flag), active validator count, and
+/// process uptime in seconds.
+pub async fn sentrix_status(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let uptime = START_TIME
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs();
+    let bc = state.read().await;
+    let chain_id = bc.chain_id;
+    let consensus = if chain_id == 7119 { "PoA" } else { "BFT" };
+    let latest = bc.latest_block().ok().cloned();
+    let (latest_height, latest_hash, latest_timestamp) = latest
+        .as_ref()
+        .map(|b| (b.index, b.hash.clone(), b.timestamp))
+        .unwrap_or((0, String::new(), 0));
+    // Window start = earliest block we can answer from RAM. Useful for
+    // clients deciding whether to use this node as a history source.
+    let earliest_height = bc.chain.first().map(|b| b.index).unwrap_or(0);
+    let active_validators = bc.stake_registry.active_count();
+    // "Syncing" here means we are behind any known peer. Without a peer
+    // view here, we approximate `syncing = false` (operators watching this
+    // should cross-check with /chain/info window_is_partial).
+    let syncing = false;
+
+    Json(serde_json::json!({
+        "version": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "build": option_env!("SENTRIX_BUILD_SHA").unwrap_or("unknown"),
+        },
+        "chain_id": chain_id,
+        "consensus": consensus,
+        "native_token": "SRX",
+        "sync_info": {
+            "latest_block_height": latest_height,
+            "latest_block_hash": latest_hash,
+            "latest_block_time": latest_timestamp,
+            "earliest_block_height": earliest_height,
+            "syncing": syncing,
+        },
+        "validators": {
+            "active_count": active_validators,
+        },
+        "uptime_seconds": uptime,
+    }))
 }
 
 /// Prometheus-format metrics endpoint. Returns plain text `text/plain;

@@ -9,6 +9,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **feat(rpc): `/sentrix_status` endpoint** (backlog #13) — NEAR-style
+  structured node-status snapshot for operators. Returns version/build,
+  chain_id, consensus tag, `sync_info` (latest block height/hash/time,
+  earliest retained block, syncing flag), active validator count, and
+  process uptime in seconds. Distinct from `/` (API surface) and
+  `/chain/info` (chain-wide stats) — this is the "is my node healthy
+  and on the right fork" one-shot. Advertised from the root handler.
+  4 integration tests.
+
 ### Fixed
 - **fix(bft): stake-weighted f+1 round skipping (issue #143)** — the
   legacy `on_round_status` only triggered catch-up when a single peer
