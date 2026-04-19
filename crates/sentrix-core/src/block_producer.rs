@@ -49,9 +49,35 @@ impl Blockchain {
         // Take up to MAX_TX_PER_BLOCK from mempool (snapshot — do NOT drain here).
         // Clone mempool transactions into the block — do NOT drain before add_block succeeds.
         // add_block() removes mined txs from mempool via retain() after a successful commit.
+        //
+        // P1: additionally bound the block by total EVM gas. The tx-count
+        // limit (MAX_TX_PER_BLOCK) is an upper bound on batch size but
+        // says nothing about compute cost — a 5000-tx block of
+        // contract-heavy EVM calls could exceed BLOCK_GAS_LIMIT and
+        // stall validators. For each EVM tx we parse the per-tx
+        // gas_limit from its `EVM:{gas_limit}:{calldata}` data field
+        // and stop including once the running total would exceed the
+        // block ceiling. Native Sentrix txs are charged a nominal
+        // 21_000 so they still participate in the accumulator.
         let take = self.mempool.len().min(MAX_TX_PER_BLOCK - 1);
-        let mempool_txs: Vec<Transaction> = self.mempool.iter().take(take).cloned().collect();
-        transactions.extend(mempool_txs);
+        let mut current_gas_used: u64 = 0;
+        for tx in self.mempool.iter().take(take) {
+            let tx_gas = if tx.is_evm_tx() {
+                tx.data
+                    .split(':')
+                    .nth(1)
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(sentrix_evm::gas::BLOCK_GAS_LIMIT)
+                    .min(sentrix_evm::gas::BLOCK_GAS_LIMIT)
+            } else {
+                21_000
+            };
+            if !sentrix_evm::gas::fits_in_block(current_gas_used, tx_gas) {
+                break;
+            }
+            current_gas_used = current_gas_used.saturating_add(tx_gas);
+            transactions.push(tx.clone());
+        }
 
         let block = Block::new(
             next_height,
