@@ -994,13 +994,35 @@ async fn cmd_start(
                     };
 
                     if let Some((height, Some(block_to_save))) = result {
-                        println!("Block {} produced by {}", height, wallet.address);
-                        let _ = storage_clone.save_block(&block_to_save);
-                        {
-                            let bc = shared_clone.read().await;
-                            let _ = storage_clone.save_blockchain(&bc);
+                        // H-09: only broadcast after the block is durably
+                        // persisted. A broadcast of a block we can't recover
+                        // on restart is a fork risk — peers would accept
+                        // blocks extending ours, but after our next restart
+                        // we would rewind to the last saved block and
+                        // diverge from the chain we just helped produce.
+                        if let Err(e) = storage_clone.save_block(&block_to_save) {
+                            tracing::error!(
+                                "H-09: failed to persist block {} produced by {}: {}; \
+                                 skipping broadcast to prevent fork",
+                                height,
+                                wallet.address,
+                                e
+                            );
+                        } else {
+                            println!("Block {} produced by {}", height, wallet.address);
+                            {
+                                let bc = shared_clone.read().await;
+                                if let Err(e) = storage_clone.save_blockchain(&bc) {
+                                    tracing::warn!(
+                                        "save_blockchain snapshot failed at height {}: {} \
+                                         (block already persisted, continuing)",
+                                        height,
+                                        e
+                                    );
+                                }
+                            }
+                            lp2p_clone.broadcast_block(&block_to_save).await;
                         }
-                        lp2p_clone.broadcast_block(&block_to_save).await;
                     }
                     continue;
                 }
@@ -1216,19 +1238,41 @@ async fn cmd_start(
 
                                                         drop(bc);
                                                         if let Some(ref saved_block) = updated {
-                                                            println!(
-                                                                "Block {} produced by {}",
-                                                                height, proposer
-                                                            );
-                                                            let _ = storage_clone
-                                                                .save_block(saved_block);
-                                                            let bc = shared_clone.read().await;
-                                                            let _ =
-                                                                storage_clone.save_blockchain(&bc);
-                                                            drop(bc);
-                                                            lp2p_clone
-                                                                .broadcast_block(saved_block)
-                                                                .await;
+                                                            // H-09: persist before broadcast.
+                                                            if let Err(e) = storage_clone
+                                                                .save_block(saved_block)
+                                                            {
+                                                                tracing::error!(
+                                                                    "H-09: failed to persist \
+                                                                     BFT block {} by {}: {}; \
+                                                                     skipping broadcast",
+                                                                    height,
+                                                                    proposer,
+                                                                    e
+                                                                );
+                                                            } else {
+                                                                println!(
+                                                                    "Block {} produced by {}",
+                                                                    height, proposer
+                                                                );
+                                                                let bc =
+                                                                    shared_clone.read().await;
+                                                                if let Err(e) = storage_clone
+                                                                    .save_blockchain(&bc)
+                                                                {
+                                                                    tracing::warn!(
+                                                                        "save_blockchain \
+                                                                         snapshot failed at \
+                                                                         {}: {}",
+                                                                        height,
+                                                                        e
+                                                                    );
+                                                                }
+                                                                drop(bc);
+                                                                lp2p_clone
+                                                                    .broadcast_block(saved_block)
+                                                                    .await;
+                                                            }
                                                         }
                                                     }
                                                     Err(e) => tracing::warn!(
@@ -1242,6 +1286,46 @@ async fn cmd_start(
                                         BftAction::TimeoutAdvanceRound => {
                                             bft.advance_round();
                                             tracing::info!("BFT timeout — round {}", bft.round());
+                                            // P1: re-propose if we are the proposer for the
+                                            // new round. Without this the testnet stalls at
+                                            // a height indefinitely: the proposer for the
+                                            // new round never emits a proposal, peers prevote
+                                            // nil, precommit nil, skip-round, and loop.
+                                            let bc_r = shared_clone.read().await;
+                                            let we_propose =
+                                                bft.is_proposer(&bc_r.stake_registry);
+                                            drop(bc_r);
+                                            if we_propose {
+                                                let mut bc = shared_clone.write().await;
+                                                if let Ok(block) =
+                                                    bc.create_block_voyager(&wallet.address)
+                                                {
+                                                    let block_hash = block.hash.clone();
+                                                    let block_data =
+                                                        bincode::serialize(&block)
+                                                            .unwrap_or_default();
+                                                    let mut proposal = Proposal {
+                                                        height: bft.height(),
+                                                        round: bft.round(),
+                                                        block_hash: block_hash.clone(),
+                                                        block_data,
+                                                        proposer: wallet.address.clone(),
+                                                        signature: vec![],
+                                                    };
+                                                    proposal.sign(&validator_secret_key);
+                                                    drop(bc);
+                                                    lp2p_clone
+                                                        .broadcast_bft_proposal(&proposal)
+                                                        .await;
+                                                    proposed_block = Some(block);
+                                                    let _ = bft.on_own_proposal(&block_hash);
+                                                    tracing::info!(
+                                                        "BFT: proposed block after timeout \
+                                                         at round {}",
+                                                        bft.round()
+                                                    );
+                                                }
+                                            }
                                             break;
                                         }
                                         BftAction::SkipRound => {
@@ -1252,6 +1336,43 @@ async fn cmd_start(
                                                 bft.round(),
                                                 bft.height()
                                             );
+                                            // P1: re-propose on skip-round if we are the new
+                                            // round's proposer. Same stall pattern as above.
+                                            let bc_r = shared_clone.read().await;
+                                            let we_propose =
+                                                bft.is_proposer(&bc_r.stake_registry);
+                                            drop(bc_r);
+                                            if we_propose {
+                                                let mut bc = shared_clone.write().await;
+                                                if let Ok(block) =
+                                                    bc.create_block_voyager(&wallet.address)
+                                                {
+                                                    let block_hash = block.hash.clone();
+                                                    let block_data =
+                                                        bincode::serialize(&block)
+                                                            .unwrap_or_default();
+                                                    let mut proposal = Proposal {
+                                                        height: bft.height(),
+                                                        round: bft.round(),
+                                                        block_hash: block_hash.clone(),
+                                                        block_data,
+                                                        proposer: wallet.address.clone(),
+                                                        signature: vec![],
+                                                    };
+                                                    proposal.sign(&validator_secret_key);
+                                                    drop(bc);
+                                                    lp2p_clone
+                                                        .broadcast_bft_proposal(&proposal)
+                                                        .await;
+                                                    proposed_block = Some(block);
+                                                    let _ = bft.on_own_proposal(&block_hash);
+                                                    tracing::info!(
+                                                        "BFT: proposed block after skip-round \
+                                                         at round {}",
+                                                        bft.round()
+                                                    );
+                                                }
+                                            }
                                             break;
                                         }
                                         BftAction::SyncNeeded { .. } => {
@@ -1455,15 +1576,38 @@ async fn cmd_start(
 
                                                 drop(bc);
                                                 if let Some(ref saved_block) = updated {
-                                                    println!(
-                                                        "Block {} produced by {}",
-                                                        height, proposer
-                                                    );
-                                                    let _ = storage_clone.save_block(saved_block);
-                                                    let bc = shared_clone.read().await;
-                                                    let _ = storage_clone.save_blockchain(&bc);
-                                                    drop(bc);
-                                                    lp2p_clone.broadcast_block(saved_block).await;
+                                                    // H-09: persist before broadcast.
+                                                    if let Err(e) =
+                                                        storage_clone.save_block(saved_block)
+                                                    {
+                                                        tracing::error!(
+                                                            "H-09: failed to persist BFT block \
+                                                             {} by {}: {}; skipping broadcast",
+                                                            height,
+                                                            proposer,
+                                                            e
+                                                        );
+                                                    } else {
+                                                        println!(
+                                                            "Block {} produced by {}",
+                                                            height, proposer
+                                                        );
+                                                        let bc = shared_clone.read().await;
+                                                        if let Err(e) =
+                                                            storage_clone.save_blockchain(&bc)
+                                                        {
+                                                            tracing::warn!(
+                                                                "save_blockchain snapshot \
+                                                                 failed at {}: {}",
+                                                                height,
+                                                                e
+                                                            );
+                                                        }
+                                                        drop(bc);
+                                                        lp2p_clone
+                                                            .broadcast_block(saved_block)
+                                                            .await;
+                                                    }
                                                 }
                                             }
                                             Err(e) => tracing::warn!("BFT add_block failed: {}", e),
@@ -1599,6 +1743,42 @@ async fn cmd_start(
                                         "BFT timeout — advanced to round {}",
                                         bft.round()
                                     );
+                                    // P1: re-propose if we are the new-round proposer.
+                                    // Without this the testnet stalls indefinitely —
+                                    // the new round has no proposal, peers prevote nil,
+                                    // precommit nil, skip-round, and loop.
+                                    let bc_r = shared_clone.read().await;
+                                    let we_propose = bft.is_proposer(&bc_r.stake_registry);
+                                    drop(bc_r);
+                                    if we_propose {
+                                        let mut bc = shared_clone.write().await;
+                                        if let Ok(block) =
+                                            bc.create_block_voyager(&wallet.address)
+                                        {
+                                            let block_hash = block.hash.clone();
+                                            let block_data = bincode::serialize(&block)
+                                                .unwrap_or_default();
+                                            let mut proposal = Proposal {
+                                                height: bft.height(),
+                                                round: bft.round(),
+                                                block_hash: block_hash.clone(),
+                                                block_data,
+                                                proposer: wallet.address.clone(),
+                                                signature: vec![],
+                                            };
+                                            proposal.sign(&validator_secret_key);
+                                            drop(bc);
+                                            lp2p_clone
+                                                .broadcast_bft_proposal(&proposal)
+                                                .await;
+                                            proposed_block = Some(block);
+                                            let _ = bft.on_own_proposal(&block_hash);
+                                            tracing::info!(
+                                                "BFT: proposed block after timeout at round {}",
+                                                bft.round()
+                                            );
+                                        }
+                                    }
                                     break;
                                 }
                                 BftAction::SkipRound => {
@@ -1610,6 +1790,41 @@ async fn cmd_start(
                                         bft.round(),
                                         bft.height()
                                     );
+                                    // P1: re-propose on skip-round if we are the new
+                                    // round's proposer.
+                                    let bc_r = shared_clone.read().await;
+                                    let we_propose = bft.is_proposer(&bc_r.stake_registry);
+                                    drop(bc_r);
+                                    if we_propose {
+                                        let mut bc = shared_clone.write().await;
+                                        if let Ok(block) =
+                                            bc.create_block_voyager(&wallet.address)
+                                        {
+                                            let block_hash = block.hash.clone();
+                                            let block_data = bincode::serialize(&block)
+                                                .unwrap_or_default();
+                                            let mut proposal = Proposal {
+                                                height: bft.height(),
+                                                round: bft.round(),
+                                                block_hash: block_hash.clone(),
+                                                block_data,
+                                                proposer: wallet.address.clone(),
+                                                signature: vec![],
+                                            };
+                                            proposal.sign(&validator_secret_key);
+                                            drop(bc);
+                                            lp2p_clone
+                                                .broadcast_bft_proposal(&proposal)
+                                                .await;
+                                            proposed_block = Some(block);
+                                            let _ = bft.on_own_proposal(&block_hash);
+                                            tracing::info!(
+                                                "BFT: proposed block after skip-round at \
+                                                 round {}",
+                                                bft.round()
+                                            );
+                                        }
+                                    }
                                     break;
                                 }
                                 _ => break,
