@@ -20,13 +20,32 @@ Sentrix follows [Semantic Versioning](https://semver.org/):
 
 ## Deployment
 
-Deployment is fully automated via CI/CD (GitHub Actions). **Never deploy manually via SSH.**
+Primary path: **`scripts/fast-deploy.sh`** (runs from VPS4). Builds
+inside a `rust:1.95-bullseye` container (glibc 2.31, compatible with
+both 22.04 and 24.04 targets), uploads the binary to VPS1/VPS2/VPS3
+via wg1 SCP, and does a rolling restart with a bounded health check.
+~3–5 minutes end-to-end.
 
-Pipeline: Push to `main` → Test → Build → Upload binary → Stop VPS3/VPS2/VPS1 → Replace → Start VPS1/VPS2/VPS3 → Health check
+```bash
+./scripts/fast-deploy.sh mainnet          # asks for confirmation
+./scripts/fast-deploy.sh testnet          # silent
+SENTRIX_ROLLBACK=/opt/sentrix/releases/<prev> \
+  ./scripts/fast-deploy.sh mainnet        # instant rollback
+```
+
+CI still runs tests on every PR (for audit trail) but the GitHub
+Actions `deploy` job is disabled — `fast-deploy.sh` is the only path
+that ships a binary to prod. This avoids the race where both CI and
+`fast-deploy` would redeploy the same commit.
+
+Break-glass: **`scripts/emergency-deploy.sh`** skips the preflight
+test gate and requires a strict confirmation phrase. Use only when
+GitHub Actions is down, chain has halted, or an exploit needs a
+bypass of the normal regression gate.
 
 ## Hotfix Process
 
 1. Branch from `main`
 2. Fix + test
-3. PR with `fix(scope):` commit message
-4. Merge triggers auto-deploy
+3. PR with `fix(scope):` commit message — auto-merge on green CI
+4. Run `./scripts/fast-deploy.sh mainnet` from VPS4 after merge
