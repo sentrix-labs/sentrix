@@ -76,6 +76,7 @@ ADDR_ALLOW_PATHS=(
   "^crates/sentrix-primitives/src/"    # primitives: TOKEN_OP_ADDRESS/STAKING_ADDRESS constants + test addrs
   "^crates/sentrix-trie/src/"          # trie crate: test address_to_key patterns
   "^crates/sentrix-rpc/src/"           # RPC crate: route tests with addresses
+  "^crates/sentrix-evm/src/"           # EVM crate: sentri→wei conversion tests use fixed addrs
   "^genesis/"                          # externalised genesis TOML (validators + premine allocations)
   "^tests/"                            # integration tests
   "^docs/.*\\.md$"                    # docs may show example addresses
