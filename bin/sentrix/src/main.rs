@@ -1191,6 +1191,26 @@ async fn cmd_start(
                                                 blk.justification = Some(justification.clone());
                                                 let proposer = blk.validator.clone();
 
+                                                // P1 (write-lock split): pre-validate under
+                                                // a read lock so an invalid finalized block
+                                                // is rejected without blocking RPC readers
+                                                // behind the write lock for the ~50ms of
+                                                // signature verification + state lookups.
+                                                {
+                                                    let bc_read = shared_clone.read().await;
+                                                    if let Err(e) = bc_read.validate_block(&blk)
+                                                    {
+                                                        drop(bc_read);
+                                                        tracing::warn!(
+                                                            "BFT finalize: pre-validate \
+                                                             rejected block {}: {}",
+                                                            blk.index,
+                                                            e
+                                                        );
+                                                        break;
+                                                    }
+                                                }
+
                                                 let mut bc = shared_clone.write().await;
                                                 match bc.add_block(blk) {
                                                     Ok(()) => {
@@ -1531,6 +1551,22 @@ async fn cmd_start(
                                         blk.round = round;
                                         blk.justification = Some(justification.clone());
                                         let proposer = blk.validator.clone();
+
+                                        // P1: pre-validate under read lock (see P1-A
+                                        // path above for rationale).
+                                        {
+                                            let bc_read = shared_clone.read().await;
+                                            if let Err(e) = bc_read.validate_block(&blk) {
+                                                drop(bc_read);
+                                                tracing::warn!(
+                                                    "BFT finalize: pre-validate rejected \
+                                                     block {}: {}",
+                                                    blk.index,
+                                                    e
+                                                );
+                                                break;
+                                            }
+                                        }
 
                                         let mut bc = shared_clone.write().await;
                                         match bc.add_block(blk) {

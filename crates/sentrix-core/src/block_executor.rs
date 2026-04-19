@@ -29,6 +29,208 @@ pub(crate) struct BlockchainSnapshot {
 }
 
 impl Blockchain {
+    /// P1 (write-lock scope split): pure read-only validation of a block
+    /// against the current chain state. Safe to call under a shared
+    /// `RwLock::read()` guard — performs no mutations. Mirrors Pass 1 of
+    /// `add_block` so that callers can reject obviously-invalid blocks
+    /// (wrong height, bad signature, insufficient balance, duplicate
+    /// nonce, etc.) WITHOUT needing the write lock that would starve
+    /// RPC readers for the duration of the check. On success the
+    /// caller takes the write lock and calls `add_block` for the
+    /// commit; `add_block` re-runs Pass 1 internally as the single
+    /// source of truth for safety, so this pre-flight is an
+    /// optimisation only — never a correctness substitute.
+    #[allow(clippy::cognitive_complexity)]
+    pub fn validate_block(&self, block: &Block) -> SentrixResult<()> {
+        let expected_index = self.height() + 1;
+        let expected_prev = self.latest_block()?.hash.clone();
+
+        block.validate_structure(expected_index, &expected_prev)?;
+
+        if !Blockchain::is_voyager_height(expected_index)
+            && !self
+                .authority
+                .is_authorized(&block.validator, expected_index)?
+        {
+            return Err(SentrixError::UnauthorizedValidator(format!(
+                "validator {} not authorized for block {}",
+                block.validator, expected_index
+            )));
+        }
+
+        let prev_timestamp = self.latest_block()?.timestamp;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if block.timestamp < prev_timestamp {
+            return Err(SentrixError::InvalidBlock(
+                "block timestamp is before previous block".to_string(),
+            ));
+        }
+        if block.timestamp > now + 15 {
+            return Err(SentrixError::InvalidBlock(
+                "block timestamp too far in the future".to_string(),
+            ));
+        }
+
+        let reward = self.get_block_reward();
+        let coinbase = block
+            .coinbase()
+            .ok_or_else(|| SentrixError::InvalidBlock("missing coinbase".to_string()))?;
+        if coinbase.amount != reward {
+            return Err(SentrixError::InvalidBlock(format!(
+                "coinbase amount {} must equal block reward {}",
+                coinbase.amount, reward
+            )));
+        }
+        if coinbase.to_address != block.validator {
+            return Err(SentrixError::InvalidBlock(format!(
+                "coinbase recipient {} must equal block validator {}",
+                coinbase.to_address, block.validator
+            )));
+        }
+
+        let mut working_balances: HashMap<String, u64> = HashMap::new();
+        let mut working_nonces: HashMap<String, u64> = HashMap::new();
+        let mut seen_sender_nonce: HashSet<(String, u64)> = HashSet::new();
+
+        for tx in block.transactions.iter().skip(1) {
+            if !seen_sender_nonce.insert((tx.from_address.clone(), tx.nonce)) {
+                return Err(SentrixError::InvalidBlock(format!(
+                    "duplicate (sender, nonce) pair for {} nonce {} in block",
+                    tx.from_address, tx.nonce
+                )));
+            }
+
+            let balance = working_balances
+                .get(&tx.from_address)
+                .copied()
+                .unwrap_or_else(|| self.accounts.get_balance(&tx.from_address));
+
+            let nonce = working_nonces
+                .get(&tx.from_address)
+                .copied()
+                .unwrap_or_else(|| self.accounts.get_nonce(&tx.from_address));
+
+            tx.validate(nonce, self.chain_id)?;
+
+            let needed = tx.amount.checked_add(tx.fee).ok_or_else(|| {
+                SentrixError::InvalidTransaction("amount + fee overflow".to_string())
+            })?;
+            if balance < needed {
+                return Err(SentrixError::InsufficientBalance {
+                    have: balance,
+                    need: needed,
+                });
+            }
+
+            if let Some(token_op) = TokenOp::decode(&tx.data) {
+                match &token_op {
+                    TokenOp::Transfer {
+                        contract,
+                        to,
+                        amount,
+                    } => {
+                        if !self.contracts.exists(contract) {
+                            return Err(SentrixError::InvalidTransaction(format!(
+                                "token contract {} not found",
+                                contract
+                            )));
+                        }
+                        if !is_spendable_sentrix_address(to) {
+                            return Err(SentrixError::InvalidTransaction(format!(
+                                "invalid token transfer target address: '{}' \
+                                 (zero address rejected — use Burn op to destroy tokens)",
+                                to
+                            )));
+                        }
+                        let token_bal =
+                            self.contracts.get_token_balance(contract, &tx.from_address);
+                        if token_bal < *amount {
+                            return Err(SentrixError::InsufficientBalance {
+                                have: token_bal,
+                                need: *amount,
+                            });
+                        }
+                    }
+                    TokenOp::Burn { contract, amount } => {
+                        if !self.contracts.exists(contract) {
+                            return Err(SentrixError::InvalidTransaction(format!(
+                                "token contract {} not found",
+                                contract
+                            )));
+                        }
+                        let token_bal =
+                            self.contracts.get_token_balance(contract, &tx.from_address);
+                        if token_bal < *amount {
+                            return Err(SentrixError::InsufficientBalance {
+                                have: token_bal,
+                                need: *amount,
+                            });
+                        }
+                    }
+                    TokenOp::Mint { contract, to, .. } => {
+                        if !self.contracts.exists(contract) {
+                            return Err(SentrixError::InvalidTransaction(format!(
+                                "token contract {} not found",
+                                contract
+                            )));
+                        }
+                        if !is_spendable_sentrix_address(to) {
+                            return Err(SentrixError::InvalidTransaction(format!(
+                                "invalid token mint target address: '{}' (zero \
+                                 address rejected)",
+                                to
+                            )));
+                        }
+                    }
+                    TokenOp::Approve {
+                        contract, spender, ..
+                    } => {
+                        if !self.contracts.exists(contract) {
+                            return Err(SentrixError::InvalidTransaction(format!(
+                                "token contract {} not found",
+                                contract
+                            )));
+                        }
+                        if !is_valid_sentrix_address(spender) {
+                            return Err(SentrixError::InvalidTransaction(format!(
+                                "invalid token approve spender address: '{}'",
+                                spender
+                            )));
+                        }
+                    }
+                    TokenOp::Deploy { name, symbol, .. } => {
+                        if name.is_empty() || name.len() > 64 {
+                            return Err(SentrixError::InvalidTransaction(
+                                "token name must be 1–64 characters".to_string(),
+                            ));
+                        }
+                        if symbol.is_empty()
+                            || symbol.len() > 10
+                            || !symbol.chars().all(|c| c.is_ascii_alphanumeric())
+                        {
+                            return Err(SentrixError::InvalidTransaction(
+                                "token symbol must be 1–10 ASCII alphanumeric characters"
+                                    .to_string(),
+                            ));
+                        }
+                    }
+                }
+            }
+
+            *working_balances
+                .entry(tx.from_address.clone())
+                .or_insert(balance) -= needed;
+            *working_nonces
+                .entry(tx.from_address.clone())
+                .or_insert(nonce) += 1;
+        }
+
+        Ok(())
+    }
+
     // ── Block application (two-pass atomic) ─────────────
     pub fn add_block(&mut self, block: Block) -> SentrixResult<()> {
         let expected_index = self.height() + 1;
