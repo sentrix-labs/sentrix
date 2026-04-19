@@ -212,6 +212,90 @@ pub async fn jsonrpc_handler(
                 None => Ok(json!(null)),
             }
         }
+        "eth_getBlockReceipts" => {
+            // Batch receipt query. Input is a block tag (latest/earliest/
+            // 0x-hex) OR a block hash. Returns an array of receipt objects
+            // with the same shape as eth_getTransactionReceipt. Explorers
+            // that today fan out N single-receipt calls per block can
+            // collapse them to one round trip.
+            let bc = state.read().await;
+            let block = if let Some(s) = params[0].as_str() {
+                // Block hash path: 32-byte hex (with or without 0x).
+                if s.strip_prefix("0x").unwrap_or(s).len() == 64 {
+                    let hash = s.trim_start_matches("0x").to_lowercase();
+                    bc.get_block_by_hash(&hash).cloned()
+                } else {
+                    // Block tag path (latest / earliest / pending / hex).
+                    let latest = bc.height();
+                    let height = match resolve_block_tag(Some(&params[0]), latest) {
+                        Ok(h) => h,
+                        Err(e) => return Json(JsonRpcResponse::err(id, -32602, e)),
+                    };
+                    bc.get_block(height).cloned()
+                }
+            } else if let Some(obj) = params[0].as_object() {
+                // Object form: { "blockHash": "0x..." } OR
+                // { "blockNumber": "0x..." } (for geth-compat).
+                if let Some(h) = obj.get("blockHash").and_then(|v| v.as_str()) {
+                    let hash = h.trim_start_matches("0x").to_lowercase();
+                    bc.get_block_by_hash(&hash).cloned()
+                } else if let Some(n) = obj.get("blockNumber") {
+                    let latest = bc.height();
+                    let height = match resolve_block_tag(Some(n), latest) {
+                        Ok(h) => h,
+                        Err(e) => return Json(JsonRpcResponse::err(id, -32602, e)),
+                    };
+                    bc.get_block(height).cloned()
+                } else {
+                    return Json(JsonRpcResponse::err(
+                        id,
+                        -32602,
+                        "expected blockHash or blockNumber",
+                    ));
+                }
+            } else {
+                return Json(JsonRpcResponse::err(
+                    id,
+                    -32602,
+                    "expected block tag, block hash, or { blockHash | blockNumber } object",
+                ));
+            };
+
+            let block = match block {
+                Some(b) => b,
+                None => return Json(JsonRpcResponse::ok(id, json!(null))),
+            };
+
+            let mut receipts = Vec::with_capacity(block.transactions.len());
+            let mut cumulative: u64 = 0;
+            for (idx, tx) in block.transactions.iter().enumerate() {
+                let status = if bc.accounts.is_evm_tx_failed(&tx.txid) {
+                    "0x0"
+                } else {
+                    "0x1"
+                };
+                let (logs, bloom_hex) = load_logs_for_tx(&bc, block.index, &tx.txid);
+                // Flat 21k per tx matches eth_getTransactionReceipt today.
+                // Real gas accounting comes in with EIP-1559 dynamic fee
+                // (backlog #9).
+                let gas_used: u64 = 21_000;
+                cumulative = cumulative.saturating_add(gas_used);
+                receipts.push(json!({
+                    "transactionHash": format!("0x{}", tx.txid),
+                    "transactionIndex": to_hex(idx as u64),
+                    "blockNumber": to_hex(block.index),
+                    "blockHash": format!("0x{}", block.hash),
+                    "from": tx.from_address,
+                    "to": tx.to_address,
+                    "status": status,
+                    "gasUsed": to_hex(gas_used),
+                    "cumulativeGasUsed": to_hex(cumulative),
+                    "logs": logs,
+                    "logsBloom": bloom_hex,
+                }));
+            }
+            Ok(json!(receipts))
+        }
         "sentrix_sendTransaction" => {
             // JSON-RPC token operations accept signed transactions only — no private_key in params.
             // params[0] must be a pre-signed Transaction object (same fields as POST /transactions).
