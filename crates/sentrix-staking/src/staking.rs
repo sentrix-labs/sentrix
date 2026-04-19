@@ -11,6 +11,14 @@ use std::collections::{BTreeMap, HashMap};
 
 pub const MIN_SELF_STAKE: u64 = 15_000 * 100_000_000; // 15,000 SRX in sentri
 pub const MAX_ACTIVE_VALIDATORS: usize = 21;
+/// P1: minimum active validator count for BFT safety. A BFT round
+/// requires ⌈2N/3⌉+1 stake-weighted votes for finality, and byzantine
+/// tolerance `f = ⌊(N-1)/3⌋` is only non-zero at N ≥ 4. Below four
+/// validators the network still produces blocks under PoA round-robin
+/// but cannot mathematically tolerate a single byzantine actor under
+/// BFT, so the validator loop must refuse to start Voyager mode until
+/// the active set meets this size.
+pub const MIN_BFT_VALIDATORS: usize = 4;
 pub const MAX_CANDIDATES: usize = 100;
 pub const UNBONDING_PERIOD: u64 = 201_600; // 7 days at 3s blocks
 pub const MAX_DELEGATIONS_PER_ACCOUNT: usize = 10;
