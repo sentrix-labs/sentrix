@@ -25,6 +25,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   refresh on epoch rotation, and cache reset on height advance.
 
 ### Changed
+- **perf(validator): Pioneer-mode poll 3s → 200ms + `BLOCK_TIME_SECS`
+  gate** — the Pioneer/PoA validator loop previously slept a fixed 3s
+  between block attempts, so the effective mainnet block time
+  oscillated around 3s instead of the configured 1s. The loop now
+  polls every 200ms and only attempts to build a block when at least
+  `BLOCK_TIME_SECS` has elapsed since the last one, giving a
+  consistent ~1s cadence with at most 200ms jitter. No change to
+  block validation rules.
 - **refactor(token): rename SRX-20 → SRC-20 across code + docs for
   naming consistency.** Address prefix `SRX20_` → `SRC20_`. **BREAKING:**
   contract address prefix changed. Safe — zero native tokens deployed
