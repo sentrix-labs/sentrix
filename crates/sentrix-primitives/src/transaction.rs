@@ -211,8 +211,20 @@ impl Transaction {
         map.insert("nonce", serde_json::Value::from(self.nonce));
         map.insert("timestamp", serde_json::Value::from(self.timestamp));
         map.insert("to", serde_json::Value::from(self.to_address.as_str()));
-        // unwrap_or_else avoids panic in production if signing fails unexpectedly
-        serde_json::to_string(&map).unwrap_or_else(|_| String::from("{}"))
+        // M-06: the previous `unwrap_or_else(|_| "{}")` silently replaced
+        // a serialisation failure with an empty JSON object. That would
+        // have made every such tx share the identical txid (hash of "{}")
+        // and identical signing payload, which is a replay-protection
+        // nightmare. The BTreeMap here is a fixed set of owned, serde-
+        // clean values — `to_string` can only fail on OOM or programmer
+        // error, and both warrant a loud crash rather than a
+        // silently-wrong payload. `expect` is deliberately chosen over
+        // `unwrap_or_default` because "" would be equally broken.
+        #[allow(clippy::expect_used)]
+        {
+            serde_json::to_string(&map)
+                .expect("signing_payload: BTreeMap of scalar fields must always serialise")
+        }
     }
 
     pub fn compute_txid(&self) -> String {

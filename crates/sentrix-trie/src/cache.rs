@@ -40,17 +40,25 @@ impl TrieCache {
 
     /// Fetch a node by hash — LRU first, then persistent storage.
     /// Takes `&self` to allow shared access (V7-M-03).
+    ///
+    /// P1 (trie cache race): the miss path holds the LRU lock across
+    /// the MDBX read so a concurrent `delete_node` cannot finish
+    /// between our initial miss and our fill. Without this, the
+    /// sequence `reader LRU miss → reader MDBX found → writer MDBX
+    /// delete + LRU pop → reader LRU insert` would leave a stale
+    /// resurrection in the cache indefinitely. Hits still take the
+    /// lock only momentarily; only the rare miss path pays the
+    /// serialisation cost.
     pub fn get_node(&self, hash: &NodeHash) -> SentrixResult<Option<TrieNode>> {
-        {
-            let mut lru = self.lock_lru()?;
-            if let Some(node) = lru.get(hash) {
-                return Ok(Some(node.clone()));
-            }
+        let mut lru = self.lock_lru()?;
+        if let Some(node) = lru.get(hash) {
+            return Ok(Some(node.clone()));
         }
-        // Miss — load from MDBX (released lock above to avoid holding during I/O)
+        // Miss — load from MDBX while still holding the lock. This
+        // serialises miss fills against concurrent deletes, preventing
+        // the stale-resurrection race documented above.
         let opt = self.storage.load_node(hash)?;
         if let Some(ref node) = opt {
-            let mut lru = self.lock_lru()?;
             lru.put(*hash, node.clone());
         }
         Ok(opt)
@@ -75,12 +83,22 @@ impl TrieCache {
     }
 
     /// T-B: Evict a node from the LRU cache and remove it from persistent storage.
+    ///
+    /// P1 (trie cache race): MDBX delete happens FIRST, LRU pop happens
+    /// SECOND — under the SAME lock that get_node's miss-fill takes. The
+    /// prior ordering (pop then delete) allowed a concurrent reader that
+    /// had just hit MDBX (finding the about-to-be-deleted node) to
+    /// insert it back into the cache AFTER our pop, leaving a stale
+    /// resurrection. Ordering MDBX-first guarantees that once our MDBX
+    /// delete returns, no further reader can observe the node in MDBX;
+    /// holding the LRU lock across the pop ensures any get_node that
+    /// observed the node in MDBX BEFORE our delete and is now waiting
+    /// to insert it cannot race past our pop.
     pub fn delete_node(&self, hash: &NodeHash) -> SentrixResult<()> {
-        {
-            let mut lru = self.lock_lru()?;
-            lru.pop(hash);
-        }
-        self.storage.delete_node(hash)
+        let mut lru = self.lock_lru()?;
+        self.storage.delete_node(hash)?;
+        lru.pop(hash);
+        Ok(())
     }
 
     /// T-B: Remove a value blob from persistent storage.

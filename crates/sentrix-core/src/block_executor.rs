@@ -5,7 +5,9 @@ use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::transaction::{TokenOp, Transaction};
 use crate::authority::AuthorityManager;
-use crate::blockchain::{Blockchain, CHAIN_WINDOW_SIZE, is_valid_sentrix_address};
+use crate::blockchain::{
+    Blockchain, CHAIN_WINDOW_SIZE, is_spendable_sentrix_address, is_valid_sentrix_address,
+};
 use crate::vm::ContractRegistry;
 use hex;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -147,10 +149,16 @@ impl Blockchain {
                                 contract
                             )));
                         }
-                        // Validate token transfer target is a well-formed Sentrix address
-                        if !is_valid_sentrix_address(to) {
+                        // M-02: token transfer target must be valid AND not
+                        // the zero address. Zero-address targets would
+                        // otherwise silently increase the zero account's
+                        // token balance, acting as an unaccounted burn that
+                        // doesn't update `total_burned`. Use the dedicated
+                        // burn op if the intent was to destroy tokens.
+                        if !is_spendable_sentrix_address(to) {
                             return Err(SentrixError::InvalidTransaction(format!(
-                                "invalid token transfer target address: '{}'",
+                                "invalid token transfer target address: '{}' \
+                                 (zero address rejected — use Burn op to destroy tokens)",
                                 to
                             )));
                         }
@@ -186,10 +194,11 @@ impl Blockchain {
                                 contract
                             )));
                         }
-                        // Validate token mint target is a well-formed Sentrix address
-                        if !is_valid_sentrix_address(to) {
+                        // M-02: mint target must not be zero address.
+                        if !is_spendable_sentrix_address(to) {
                             return Err(SentrixError::InvalidTransaction(format!(
-                                "invalid token mint target address: '{}'",
+                                "invalid token mint target address: '{}' (zero \
+                                 address rejected)",
                                 to
                             )));
                         }

@@ -79,6 +79,20 @@ pub fn is_valid_sentrix_address(addr: &str) -> bool {
     addr.len() == 42 && addr.starts_with("0x") && addr[2..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// Canonical zero address. Used as a burn sink by AuthorityManager and
+/// as an invalid target for value-bearing token operations (M-02).
+pub const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
+
+/// Sentrix address that is valid-format AND not the burn sentinel. Use
+/// this for value-bearing targets (token transfers, mints, SRX sends)
+/// where the zero address would silently burn tokens without setting
+/// the protocol's `total_burned` counter. `is_valid_sentrix_address`
+/// alone remains the right guard for addresses that legitimately
+/// include the zero sentinel (e.g. internal tracking fields).
+pub fn is_spendable_sentrix_address(addr: &str) -> bool {
+    is_valid_sentrix_address(addr) && addr != ZERO_ADDRESS
+}
+
 // ── Genesis addresses ────────────────────────────────────
 // The canonical premine allocations now live in `genesis/mainnet.toml` and
 // are loaded via [`crate::Genesis`]. Only constants still referenced at
