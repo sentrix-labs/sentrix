@@ -21,6 +21,16 @@ ignore = [
     # the 0.12.1 package disappears from Cargo.lock.
     # Dependabot alert: https://github.com/sentrix-labs/sentrix/security/dependabot/3
     "GHSA-vxx9-2994-q338",
+
+    # RUSTSEC-2026-0097 — `rand 0.8.5` unsound with a custom logger when
+    # `rand::rng()` is called from inside a `log!()` macro. Reaches us
+    # only transitively via `yamux 0.12.1` → `libp2p-yamux 0.47.0`, the
+    # same crate path whose 0.12 decoder we've already demonstrated is
+    # never wired up at runtime (see GHSA-vxx9-2994-q338 note above).
+    # We don't call into yamux 0.12 at all, so the advisory code path is
+    # unreachable. Remove this ignore together with the GHSA one once
+    # libp2p-yamux 0.48+ drops v0.12 compat.
+    "RUSTSEC-2026-0097",
 ]
 
 # ── Licenses ────────────────────────────────────────────────
