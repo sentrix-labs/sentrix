@@ -1,11 +1,30 @@
 // block_executor.rs - Sentrix — Block validation and commit (two-pass)
 
+use sentrix_primitives::account::AccountDB;
 use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
-use crate::blockchain::{Blockchain, CHAIN_WINDOW_SIZE, is_valid_sentrix_address};
-use sentrix_primitives::transaction::TokenOp;
 use sentrix_primitives::error::{SentrixError, SentrixResult};
+use sentrix_primitives::transaction::{TokenOp, Transaction};
+use crate::authority::AuthorityManager;
+use crate::blockchain::{Blockchain, CHAIN_WINDOW_SIZE, is_valid_sentrix_address};
+use crate::vm::ContractRegistry;
 use hex;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+
+/// C-03: snapshot of the mutable Blockchain state taken immediately
+/// before Pass 2 of `add_block`. If any step in Pass 2 returns `Err`,
+/// the snapshot is restored so the chain never observes a partial
+/// block-commit on disk-cache or in memory. The snapshot is scoped to
+/// the fields Pass 2 actually mutates; `state_trie` self-heals on the
+/// next successful `update_trie_for_block` because the trie is rebuilt
+/// from `accounts` (which is included here) on each subsequent call.
+pub(crate) struct BlockchainSnapshot {
+    accounts: AccountDB,
+    contracts: ContractRegistry,
+    authority: AuthorityManager,
+    mempool: VecDeque<Transaction>,
+    total_minted: u64,
+    chain_len: usize,
+}
 
 impl Blockchain {
     // ── Block application (two-pass atomic) ─────────────
@@ -221,10 +240,53 @@ impl Blockchain {
                 .or_insert(nonce) += 1;
         }
 
-        // ── Pass 2: commit ───────────────────────────────
+        // ── Pass 2: commit (atomic via snapshot rollback on Err) ────
+        // C-03: snapshot pre-Pass-2 state. If any mutation below returns
+        // `Err`, the snapshot is restored before propagating the error,
+        // so the chain never observes a partial commit (half-applied
+        // transactions, fee credit without fee debit, contract state
+        // updated without the tx that triggered it, etc.). The trie is
+        // not snapshotted: it is rebuilt from `accounts` on the next
+        // successful `update_trie_for_block`, so a failed trie commit
+        // self-heals when the same or a later block succeeds.
+        let snap = BlockchainSnapshot {
+            accounts: self.accounts.clone(),
+            contracts: self.contracts.clone(),
+            authority: self.authority.clone(),
+            mempool: self.mempool.clone(),
+            total_minted: self.total_minted,
+            chain_len: self.chain.len(),
+        };
+
+        match self.apply_block_pass2(block) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.accounts = snap.accounts;
+                self.contracts = snap.contracts;
+                self.authority = snap.authority;
+                self.mempool = snap.mempool;
+                self.total_minted = snap.total_minted;
+                self.chain.truncate(snap.chain_len);
+                Err(e)
+            }
+        }
+    }
+
+    /// C-03 Pass 2: applies all block mutations. Must only be called
+    /// from `add_block` after Pass 1 has validated the block and the
+    /// caller has taken a `BlockchainSnapshot` for rollback.
+    fn apply_block_pass2(&mut self, block: Block) -> SentrixResult<()> {
+        // Coinbase was validated in Pass 1; re-extract for mutation.
+        let (coinbase_amount, coinbase_validator) = {
+            let coinbase = block
+                .coinbase()
+                .ok_or_else(|| SentrixError::InvalidBlock("missing coinbase".to_string()))?;
+            (coinbase.amount, block.validator.clone())
+        };
+
         // Apply coinbase reward
-        self.accounts.credit(&block.validator, coinbase.amount)?;
-        self.total_minted += coinbase.amount;
+        self.accounts.credit(&coinbase_validator, coinbase_amount)?;
+        self.total_minted += coinbase_amount;
 
         // Apply all transactions
         let mut total_fee: u64 = 0;
@@ -304,12 +366,12 @@ impl Blockchain {
         let validator_fee_share = total_fee - burn_fee_share;
         if validator_fee_share > 0 {
             self.accounts
-                .credit(&block.validator, validator_fee_share)?;
+                .credit(&coinbase_validator, validator_fee_share)?;
         }
 
         // Record validator stats
         self.authority
-            .record_block_produced(&block.validator, block.timestamp);
+            .record_block_produced(&coinbase_validator, block.timestamp);
 
         // Remove mined transactions from mempool
         let mined_txids: HashSet<String> = block
@@ -793,6 +855,55 @@ mod tests {
         assert!(
             format!("{err:?}").contains("duplicate txid"),
             "expected duplicate-txid rejection, got: {err:?}"
+        );
+    }
+
+    // C-03: if Pass 2 fails mid-commit, all state mutations must roll
+    // back so the chain never observes a partial block-commit. Triggered
+    // here by pre-funding the validator to the point where crediting
+    // one block reward overflows u64; Pass 1 does not check the
+    // validator's SRX balance against the coinbase reward, so the
+    // failure surfaces inside Pass 2 at the very first mutation.
+    #[test]
+    fn test_c03_pass2_failure_rolls_back_state() {
+        use sentrix_primitives::block::Block;
+
+        let mut bc = setup();
+        let reward = bc.get_block_reward();
+        // Credit the validator to the ceiling so the next reward credit
+        // (checked_add inside AccountDB::credit) will overflow.
+        bc.accounts
+            .credit("v1", u64::MAX - reward.saturating_sub(1))
+            .unwrap();
+
+        // Snapshot expected-invariant values from the pre-call state.
+        let height_before = bc.height();
+        let v1_balance_before = bc.accounts.get_balance("v1");
+        let total_minted_before = bc.total_minted;
+        let chain_len_before = bc.chain.len();
+
+        let prev = bc.latest_block().unwrap().hash.clone();
+        let ts = bc.latest_block().unwrap().timestamp + 1;
+        let cb = Transaction::new_coinbase("v1".to_string(), reward, 1, ts);
+        let block = Block::new(1, prev, vec![cb], "v1".to_string());
+
+        let err = bc.add_block(block).unwrap_err();
+        assert!(
+            format!("{err:?}").to_lowercase().contains("overflow"),
+            "expected overflow Err from Pass 2 coinbase credit, got: {err:?}"
+        );
+
+        // Rollback: every mutable field Pass 2 touches must be restored.
+        assert_eq!(bc.height(), height_before, "chain len must be unchanged");
+        assert_eq!(bc.chain.len(), chain_len_before);
+        assert_eq!(
+            bc.accounts.get_balance("v1"),
+            v1_balance_before,
+            "validator balance must not retain the partial credit"
+        );
+        assert_eq!(
+            bc.total_minted, total_minted_before,
+            "total_minted must not advance on failed Pass 2"
         );
     }
 
