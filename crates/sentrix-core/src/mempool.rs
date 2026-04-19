@@ -146,6 +146,13 @@ impl Blockchain {
     }
 
     fn mempool_pending_spend(&self, address: &str) -> u64 {
+        // M-13 note: the saturating_adds here are safe under the
+        // add_to_mempool invariants — any single tx with amount+fee
+        // overflow is already rejected, and thousands of near-max-value
+        // txs reaching the same sender would require bypassing the
+        // MAX_MEMPOOL_PER_SENDER cap. Saturating at u64::MAX in the
+        // pathological case is the conservative answer anyway: new-tx
+        // admission will reject because `available < needed`.
         self.mempool
             .iter()
             .filter(|tx| tx.from_address == address)
