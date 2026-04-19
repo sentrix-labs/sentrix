@@ -349,6 +349,37 @@ enum MempoolCommands {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
+
+    // P1 (panic supervisor): escalate every panic — whether on the main
+    // thread or inside a tokio::spawn'd task — to a loud log line plus
+    // process abort. Without this, a tokio task can panic, have its
+    // unwind payload stored in its JoinHandle, and then the runtime
+    // keeps scheduling other tasks indefinitely: the validator loop
+    // silently stops producing, consensus gossip silently stops being
+    // forwarded, and the only signal is that the chain height freezes.
+    // Aborting here lets systemd (`Restart=always` on the sentrix-*
+    // units) bring the process back in a clean state; the next peer
+    // re-syncs any block we were in the middle of.
+    //
+    // The existing tracing subscriber is already installed above, so
+    // the `tracing::error!` call is captured by journalctl before the
+    // abort. `std::process::abort()` is used (not `exit(1)`) to skip
+    // destructors — any locked Tokio primitives would otherwise hang
+    // shutdown for the graceful-shutdown timeout.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Delegate to the default hook first so the panic message and
+        // backtrace land on stderr in the normal Rust format.
+        default_hook(info);
+        tracing::error!(
+            target: "panic_supervisor",
+            "FATAL panic in tokio task or main thread: {} — aborting so \
+             systemd restarts the node cleanly",
+            info
+        );
+        std::process::abort();
+    }));
+
     std::fs::create_dir_all(get_data_dir())?;
     std::fs::create_dir_all(get_wallets_dir())?;
 
