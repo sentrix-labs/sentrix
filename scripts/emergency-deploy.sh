@@ -160,11 +160,21 @@ BINARY_HASH=$(sha256sum "$BINARY" | cut -c1-16)
 echo "  Binary: $BINARY ($BINARY_SIZE bytes, sha256=$BINARY_HASH...)"
 echo
 
-# ── Phase 1: upload binary to all hosts (none restarted yet) ─
-echo "  $(blue '=>') Phase 1: uploading binary to all hosts..."
+# Build the set of unique "user@host" endpoints — on testnet, all
+# four services live on the same VPS, so we must upload + swap the
+# binary once per HOST rather than once per service. Without this
+# de-dup the second iteration finds /tmp/sentrix_new already moved
+# out by the first and aborts.
+declare -A UNIQUE_USERHOSTS=()
 for h in "${!HOSTS[@]}"; do
-    IFS=':' read -r userhost service port <<< "${HOSTS[$h]}"
-    printf "    %-20s " "$h"
+    IFS=':' read -r userhost _ _ <<< "${HOSTS[$h]}"
+    UNIQUE_USERHOSTS["$userhost"]=1
+done
+
+# ── Phase 1: upload binary to every unique userhost ─────────
+echo "  $(blue '=>') Phase 1: uploading binary to all hosts..."
+for userhost in "${!UNIQUE_USERHOSTS[@]}"; do
+    printf "    %-32s " "$userhost"
     if scp $SSH_OPTS "$BINARY" "$userhost:/tmp/sentrix_new" 2>&1 | tail -1; then
         echo "$(green 'OK')"
     else
@@ -174,11 +184,10 @@ for h in "${!HOSTS[@]}"; do
 done
 echo
 
-# ── Phase 2: archive + replace binary (process keeps running) ─
+# ── Phase 2: archive + replace binary (once per unique host) ─
 echo "  $(blue '=>') Phase 2: archiving previous binary + replacing on disk..."
-for h in "${!HOSTS[@]}"; do
-    IFS=':' read -r userhost service port <<< "${HOSTS[$h]}"
-    printf "    %-20s " "$h"
+for userhost in "${!UNIQUE_USERHOSTS[@]}"; do
+    printf "    %-32s " "$userhost"
     ssh $SSH_OPTS "$userhost" "
         set -e
         sudo mkdir -p /opt/sentrix/releases
