@@ -9,10 +9,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Sentrix native JSON-RPC namespace (Sprint 1)** — five new methods
+  that expose chain features the `eth_*` namespace cannot represent:
+  `sentrix_getValidatorSet`, `sentrix_getDelegations`,
+  `sentrix_getStakingRewards`, `sentrix_getBftStatus`,
+  `sentrix_getFinalizedHeight`. Amounts returned in wei hex so
+  existing bignum libraries keep working. See
+  `docs/operations/API_REFERENCE.md` for the full payload spec.
+
 ### Planned
 - Mainnet hard fork to Voyager (DPoS + BFT + EVM)
 - Parallel tx execution (rayon)
 - Light client justification verification
+- `sentrix_getBftStatus` live round/phase (needs BftEngine snapshot
+  plumbed from validator loop into SharedState — Sprint 2)
+- Per-delegator per-epoch reward ledger (turns
+  `sentrix_getStakingRewards` history into exact claim records —
+  Sprint 2)
 
 ### Security
 - **C-06 — Removed `--validator-key <hex>` CLI flag.** Private keys passed
