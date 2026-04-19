@@ -30,6 +30,15 @@ pub const TABLE_TRIE_COMMITTED: &str = "trie_committed_roots";
 /// Chain metadata: key string → value bytes (height, hash_index_complete, etc.)
 pub const TABLE_META: &str = "meta";
 
+/// EVM event logs: key = height (u64 BE) || tx_index (u32 BE) || log_index (u32 BE)
+/// value = StoredLog (bincode). Ordered range scan by (height, tx, log) is the
+/// Ethereum-canonical sort eth_getLogs must return.
+pub const TABLE_LOGS: &str = "logs";
+
+/// Per-block bloom filter: key = height (u64 BE) → value = [u8; 256] bloom.
+/// Prefilter for eth_getLogs so we skip blocks that definitely have no match.
+pub const TABLE_BLOOM: &str = "bloom";
+
 /// All table names for pre-creation during environment open.
 pub const ALL_TABLES: &[&str] = &[
     TABLE_BLOCKS,
@@ -41,4 +50,6 @@ pub const ALL_TABLES: &[&str] = &[
     TABLE_TRIE_ROOTS,
     TABLE_TRIE_COMMITTED,
     TABLE_META,
+    TABLE_LOGS,
+    TABLE_BLOOM,
 ];

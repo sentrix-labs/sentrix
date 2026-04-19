@@ -222,15 +222,12 @@ pub async fn jsonrpc_handler(
             match bc.get_transaction(&txid) {
                 Some(tx_data) => {
                     let block_index = tx_data["block_index"].as_u64().unwrap_or(0);
-                    // A2: failed EVM tx → status=0x0 (reverted), success → 0x1.
-                    // Native (non-EVM) txs that reach a block always succeeded — they are
-                    // validated atomically in Pass 1 and only committed if Pass 2 succeeds,
-                    // so they are never recorded as failed.
                     let status = if bc.accounts.is_evm_tx_failed(&txid) {
                         "0x0"
                     } else {
                         "0x1"
                     };
+                    let (logs, bloom_hex) = load_logs_for_tx(&bc, block_index, &txid);
                     Ok(json!({
                         "transactionHash": format!("0x{}", txid),
                         "blockNumber": to_hex(block_index),
@@ -238,8 +235,8 @@ pub async fn jsonrpc_handler(
                         "status": status,
                         "gasUsed": to_hex(21_000),
                         "cumulativeGasUsed": to_hex(21_000),
-                        "logs": [],
-                        "logsBloom": "0x00",
+                        "logs": logs,
+                        "logsBloom": bloom_hex,
                     }))
                 }
                 None => Ok(json!(null)),
@@ -873,6 +870,70 @@ pub async fn jsonrpc_handler(
                 "blocks_behind_finality": latest.index.saturating_sub(finalized_height),
             }))
         }
+        "eth_getLogs" => {
+            let filter = match params.get(0) {
+                Some(v) if v.is_object() => v,
+                _ => return Json(JsonRpcResponse::err(id, -32602, "filter object required")),
+            };
+            let bc = state.read().await;
+            let latest = bc.height();
+            let from_block = match resolve_block_tag(filter.get("fromBlock"), latest) {
+                Ok(h) => h,
+                Err(e) => return Json(JsonRpcResponse::err(id, -32602, e)),
+            };
+            let to_block = match resolve_block_tag(filter.get("toBlock"), latest) {
+                Ok(h) => h,
+                Err(e) => return Json(JsonRpcResponse::err(id, -32602, e)),
+            };
+            if to_block < from_block {
+                return Json(JsonRpcResponse::err(id, -32602, "toBlock < fromBlock"));
+            }
+            if to_block.saturating_sub(from_block) >= 10_000 {
+                return Json(JsonRpcResponse::err(id, -32005, "query returned more than 10000 results"));
+            }
+            let address_filter = parse_address_filter(filter.get("address"));
+            let topic_filter = parse_topic_filter(filter.get("topics"));
+            let logs = collect_logs(&bc, from_block, to_block, &address_filter, &topic_filter);
+            Ok(json!(logs))
+        }
+        "eth_feeHistory" => {
+            let block_count = params
+                .get(0)
+                .and_then(parse_hex_u64)
+                .unwrap_or(1)
+                .min(1024);
+            let bc = state.read().await;
+            let latest = bc.height();
+            let newest = params
+                .get(1)
+                .and_then(|v| resolve_block_tag(Some(v), latest).ok())
+                .unwrap_or(latest);
+            let percentiles: Vec<f64> = params
+                .get(2)
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|x| x.as_f64()).collect())
+                .unwrap_or_default();
+            let base = sentrix_evm::INITIAL_BASE_FEE;
+            let oldest = newest.saturating_sub(block_count.saturating_sub(1));
+            let mut base_fees = Vec::with_capacity((block_count + 1) as usize);
+            for _ in 0..=block_count {
+                base_fees.push(to_hex(base));
+            }
+            let mut gas_used_ratios = Vec::with_capacity(block_count as usize);
+            let mut rewards: Vec<Vec<String>> = Vec::with_capacity(block_count as usize);
+            for h in oldest..=newest {
+                let ratio = block_gas_used_ratio(&bc, h);
+                gas_used_ratios.push(ratio);
+                rewards.push(percentiles.iter().map(|_| to_hex(base)).collect());
+            }
+            Ok(json!({
+                "oldestBlock": to_hex(oldest),
+                "baseFeePerGas": base_fees,
+                "gasUsedRatio": gas_used_ratios,
+                "reward": rewards,
+            }))
+        }
+        "eth_maxPriorityFeePerGas" => Ok(json!(to_hex(sentrix_evm::INITIAL_BASE_FEE))),
         "eth_syncing" => Ok(json!(false)),
         "eth_accounts" => Ok(json!([])),
         "eth_getCode" => {
@@ -976,6 +1037,222 @@ pub async fn rpc_dispatcher(
             .await
             .into_response()
     }
+}
+
+// ── Sprint 2 helpers: eth_getLogs, eth_feeHistory, receipt logs ──
+
+fn parse_hex_u64(v: &Value) -> Option<u64> {
+    match v {
+        Value::String(s) => {
+            let s = s.trim_start_matches("0x");
+            u64::from_str_radix(s, 16).ok()
+        }
+        Value::Number(n) => n.as_u64(),
+        _ => None,
+    }
+}
+
+fn resolve_block_tag(v: Option<&Value>, latest: u64) -> Result<u64, &'static str> {
+    match v {
+        None => Ok(latest),
+        Some(Value::String(s)) => match s.as_str() {
+            "latest" | "pending" | "safe" | "finalized" => Ok(latest),
+            "earliest" => Ok(0),
+            hex if hex.starts_with("0x") => u64::from_str_radix(&hex[2..], 16)
+                .map_err(|_| "invalid hex block number"),
+            _ => Err("invalid block tag"),
+        },
+        Some(Value::Number(n)) => n.as_u64().ok_or("invalid block number"),
+        _ => Err("invalid block parameter"),
+    }
+}
+
+/// Address filter accepts either a single string or an array. Normalizes to
+/// lowercase 20-byte arrays; unparseable entries are silently skipped so
+/// malformed filters still work against the rest of the query.
+fn parse_address_filter(v: Option<&Value>) -> Vec<[u8; 20]> {
+    let mut out = Vec::new();
+    let push = |s: &str, out: &mut Vec<[u8; 20]>| {
+        let s = s.trim_start_matches("0x");
+        if let Ok(bytes) = hex::decode(s)
+            && bytes.len() == 20
+        {
+            let mut arr = [0u8; 20];
+            arr.copy_from_slice(&bytes);
+            out.push(arr);
+        }
+    };
+    match v {
+        None | Some(Value::Null) => {}
+        Some(Value::String(s)) => push(s, &mut out),
+        Some(Value::Array(arr)) => {
+            for item in arr {
+                if let Some(s) = item.as_str() {
+                    push(s, &mut out);
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// Topics filter: outer index is position (topic0..topic3). Inner vec is the
+/// OR-set for that position — empty means wildcard. `None` in topics[i]
+/// means the position is omitted entirely (also wildcard).
+type TopicFilter = Vec<Option<Vec<[u8; 32]>>>;
+
+fn parse_topic_filter(v: Option<&Value>) -> TopicFilter {
+    let mut out: TopicFilter = Vec::new();
+    let parse_one = |s: &str| -> Option<[u8; 32]> {
+        let s = s.trim_start_matches("0x");
+        let bytes = hex::decode(s).ok()?;
+        if bytes.len() != 32 {
+            return None;
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Some(arr)
+    };
+    let arr = match v {
+        Some(Value::Array(a)) => a,
+        _ => return out,
+    };
+    for slot in arr {
+        match slot {
+            Value::Null => out.push(None),
+            Value::String(s) => out.push(Some(parse_one(s).into_iter().collect())),
+            Value::Array(inner) => {
+                let set: Vec<[u8; 32]> = inner
+                    .iter()
+                    .filter_map(|x| x.as_str().and_then(parse_one))
+                    .collect();
+                out.push(Some(set));
+            }
+            _ => out.push(None),
+        }
+    }
+    out
+}
+
+fn log_matches(log: &sentrix_evm::StoredLog, addrs: &[[u8; 20]], topics: &TopicFilter) -> bool {
+    if !addrs.is_empty() && !addrs.iter().any(|a| a == &log.address) {
+        return false;
+    }
+    for (i, slot) in topics.iter().enumerate() {
+        let Some(set) = slot else { continue };
+        if set.is_empty() {
+            continue;
+        }
+        let topic = match log.topics.get(i) {
+            Some(t) => t,
+            None => return false,
+        };
+        if !set.iter().any(|s| s == topic) {
+            return false;
+        }
+    }
+    true
+}
+
+fn collect_logs(
+    bc: &sentrix_core::blockchain::Blockchain,
+    from: u64,
+    to: u64,
+    addrs: &[[u8; 20]],
+    topics: &TopicFilter,
+) -> Vec<Value> {
+    let storage = match bc.mdbx_storage.as_ref() {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let all = match storage.iter(sentrix_storage::tables::TABLE_LOGS) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for (k, v) in all {
+        if k.len() < 16 {
+            continue;
+        }
+        let mut h_bytes = [0u8; 8];
+        h_bytes.copy_from_slice(&k[..8]);
+        let height = u64::from_be_bytes(h_bytes);
+        if height < from || height > to {
+            continue;
+        }
+        if let Some(bloom_bytes) = storage
+            .get(sentrix_storage::tables::TABLE_BLOOM, &h_bytes)
+            .ok()
+            .flatten()
+            && bloom_bytes.len() == 256
+            && !addrs.is_empty()
+        {
+            let mut bloom = [0u8; 256];
+            bloom.copy_from_slice(&bloom_bytes);
+            let any_hit = addrs.iter().any(|a| sentrix_evm::bloom_contains(&bloom, a));
+            if !any_hit {
+                continue;
+            }
+        }
+        let Ok(log) = bincode::deserialize::<sentrix_evm::StoredLog>(&v) else {
+            continue;
+        };
+        if log_matches(&log, addrs, topics) {
+            out.push(log.to_rpc_json());
+        }
+    }
+    out
+}
+
+fn load_logs_for_tx(
+    bc: &sentrix_core::blockchain::Blockchain,
+    block_height: u64,
+    txid: &str,
+) -> (Vec<Value>, String) {
+    let mut target_hash = [0u8; 32];
+    if let Ok(decoded) = hex::decode(txid.trim_start_matches("0x")) {
+        let n = decoded.len().min(32);
+        target_hash[..n].copy_from_slice(&decoded[..n]);
+    }
+    let storage = match bc.mdbx_storage.as_ref() {
+        Some(s) => s,
+        None => return (Vec::new(), "0x".to_string() + &"00".repeat(256)),
+    };
+    let prefix = block_height.to_be_bytes();
+    let entries = match storage.iter(sentrix_storage::tables::TABLE_LOGS) {
+        Ok(v) => v,
+        Err(_) => return (Vec::new(), "0x".to_string() + &"00".repeat(256)),
+    };
+    let mut logs = Vec::new();
+    let mut bloom = sentrix_evm::empty_bloom();
+    for (k, v) in entries {
+        if k.len() < 8 || k[..8] != prefix {
+            continue;
+        }
+        let Ok(log) = bincode::deserialize::<sentrix_evm::StoredLog>(&v) else {
+            continue;
+        };
+        if log.tx_hash == target_hash {
+            sentrix_evm::add_log_to_bloom(&mut bloom, &log.address, &log.topics);
+            logs.push(log.to_rpc_json());
+        }
+    }
+    (logs, format!("0x{}", hex::encode(bloom)))
+}
+
+fn block_gas_used_ratio(bc: &sentrix_core::blockchain::Blockchain, height: u64) -> f64 {
+    let block = match bc.chain.iter().find(|b| b.index == height) {
+        Some(b) => b,
+        None => return 0.0,
+    };
+    let total_gas: u64 = block
+        .transactions
+        .iter()
+        .filter(|t| t.is_evm_tx())
+        .map(|_| 21_000u64)
+        .sum();
+    (total_gas as f64) / (sentrix_evm::gas::BLOCK_GAS_LIMIT as f64)
 }
 
 #[cfg(test)]

@@ -96,6 +96,9 @@ POST to `/rpc` with `Content-Type: application/json`.
 | `eth_getBlockByHash` | Block by hash |
 | `net_version` | Network ID (string) |
 | `net_listening` | Always `true` |
+| `eth_getLogs` | Query event logs by filter (see [eth_getLogs](#eth_getlogs)) |
+| `eth_feeHistory` | Historical base fee + gas-used ratio + percentile rewards |
+| `eth_maxPriorityFeePerGas` | Recommended priority fee (flat — Sentrix no priority market yet) |
 
 ### Sentrix-specific
 
@@ -259,6 +262,70 @@ Shortcut to the finality view from `sentrix_getBftStatus`.
 PoA: `finalized_height == latest_height` (instant finality per
 round-robin signer). BFT: `latest - finalized` = number of blocks
 still in the pipeline.
+
+### eth_getLogs
+
+Query event logs emitted during EVM transaction execution.
+
+Request:
+```json
+{"jsonrpc":"2.0","method":"eth_getLogs","params":[{
+  "fromBlock": "0x0",
+  "toBlock": "latest",
+  "address": "0x...",
+  "topics": ["0xddf252ad..."]
+}],"id":1}
+```
+
+Filter fields:
+- `fromBlock` / `toBlock` — `"earliest"`, `"latest"`, `"pending"`, `"safe"`, `"finalized"`, or a hex block number. Range is capped at **10 000 blocks** — a wider range returns `-32005 query returned more than 10000 results`.
+- `address` — single address string or array of addresses (OR). Omit for wildcard.
+- `topics` — array of up to 4 slots. Each slot is `null` (wildcard), a single topic string (exact match), or an array of strings (OR within the slot). AND across slots.
+
+Response: array of log objects in canonical Ethereum order (`blockNumber` ASC, then `transactionIndex`, then `logIndex`). Each log:
+```json
+{
+  "removed": false,
+  "logIndex": "0x0",
+  "transactionIndex": "0x1",
+  "transactionHash": "0x...",
+  "blockHash": "0x...",
+  "blockNumber": "0x1a2b",
+  "address": "0x...",
+  "data": "0x...",
+  "topics": ["0x..."]
+}
+```
+
+A per-block bloom filter (2048 bits, yellow-paper §4.4.3) pre-filters the scan: blocks whose bloom cannot contain any requested address are skipped without loading logs from MDBX.
+
+### eth_feeHistory
+
+Historical fee data for gas-price estimation. Params: `[blockCount, newestBlock, rewardPercentiles[]]`.
+
+```json
+{"jsonrpc":"2.0","method":"eth_feeHistory","params":["0x4","latest",[25,50,75]],"id":1}
+```
+
+Response:
+```json
+{
+  "oldestBlock": "0x1",
+  "baseFeePerGas": ["0x2710","0x2710","0x2710","0x2710","0x2710"],
+  "gasUsedRatio": [0.0, 0.1, 0.3, 0.25],
+  "reward": [["0x2710","0x2710","0x2710"], ...]
+}
+```
+
+Sentrix uses a flat `INITIAL_BASE_FEE` — EIP-1559 dynamic base-fee is not live yet, so every `baseFeePerGas` entry equals the initial base fee and every `reward` percentile equals the base fee. `gasUsedRatio` reflects real per-block EVM gas consumption.
+
+### eth_maxPriorityFeePerGas
+
+Returns the recommended priority fee per gas as a hex wei string. Sentrix has no priority fee market, so this always equals `INITIAL_BASE_FEE`.
+
+```json
+{"jsonrpc":"2.0","method":"eth_maxPriorityFeePerGas","params":[],"id":1}
+```
 
 ### Batch requests
 
