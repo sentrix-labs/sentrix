@@ -227,6 +227,16 @@ enum ValidatorCommands {
     /// MIN_SELF_STAKE when slashing has knocked the validator below
     /// the eligibility floor. Skips the jail-period cooldown.
     ///
+    /// PHANTOM STAKE WARNING: restoring self_stake via direct DB edit
+    /// does NOT mint SRX. The supply invariant
+    /// `sum(balances) + sum(stakes + delegations) == circulating_supply`
+    /// gets violated by the shortfall. Safe on testnet (no real value);
+    /// on mainnet (chain_id 7119) this command refuses to run unless
+    /// `--i-understand-phantom-stake` is passed. Mainnet operators
+    /// should prefer a real self-delegate TX from the validator's own
+    /// wallet whenever possible, and use this break-glass only when
+    /// the chain is so stuck that no TX can be mined.
+    ///
     /// Use this when the chain is stuck because all validators were
     /// auto-slashed (BFT `active_set` empty → can't mine blocks →
     /// can't submit unjail/stake TXs). Run while the node is STOPPED,
@@ -235,6 +245,11 @@ enum ValidatorCommands {
     ForceUnjail {
         /// Validator address to force-unjail
         address: String,
+        /// Required on mainnet to acknowledge the supply-invariant
+        /// violation this command introduces. Testnet does not require
+        /// the flag.
+        #[arg(long)]
+        i_understand_phantom_stake: bool,
     },
     /// Transfer the admin role to a new address (admin only).
     /// Use to rotate out a compromised admin key without a hard fork.
@@ -445,8 +460,11 @@ async fn main() -> anyhow::Result<()> {
                 let key = resolve_key(admin_key, "SENTRIX_ADMIN_KEY", "admin key")?;
                 cmd_validator_rename(&address, &new_name, &key)?;
             }
-            ValidatorCommands::ForceUnjail { address } => {
-                cmd_validator_force_unjail(&address)?;
+            ValidatorCommands::ForceUnjail {
+                address,
+                i_understand_phantom_stake,
+            } => {
+                cmd_validator_force_unjail(&address, i_understand_phantom_stake)?;
             }
             ValidatorCommands::Unjail { address } => {
                 cmd_validator_unjail(&address)?;
@@ -784,11 +802,32 @@ fn cmd_validator_unjail(address: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_validator_force_unjail(address: &str) -> anyhow::Result<()> {
+fn cmd_validator_force_unjail(
+    address: &str,
+    acknowledged_phantom_stake: bool,
+) -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
     let mut bc = storage
         .load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+
+    const MAINNET_CHAIN_ID: u64 = 7119;
+    if bc.chain_id == MAINNET_CHAIN_ID && !acknowledged_phantom_stake {
+        anyhow::bail!(
+            "mainnet (chain_id 7119) detected: force-unjail creates phantom \
+             stake (restores self_stake without minting SRX), which violates \
+             the supply invariant. Prefer a real self-delegate TX from the \
+             validator's wallet. If the chain is genuinely stuck and this is \
+             the last option, re-run with `--i-understand-phantom-stake`."
+        );
+    }
+    if bc.chain_id == MAINNET_CHAIN_ID {
+        eprintln!(
+            "WARNING: force-unjail on mainnet. Phantom stake will be created \
+             if self_stake < MIN_SELF_STAKE. Document the recovery decision \
+             before proceeding."
+        );
+    }
 
     let before = bc
         .stake_registry
