@@ -74,11 +74,20 @@ jobs:
           path: target/release/sentrix
           retention-days: 1
 
+  # Deploy job is disabled — deploys are now primary-pathed through
+  # `scripts/fast-deploy.sh` on VPS4, which builds locally (warm cargo
+  # cache, ~1 min), pushes the branch to GitHub (this workflow picks
+  # up the push as a test-only gate), and SCPs the binary across wg1
+  # directly to VPS1/2/3. Running this CI deploy in parallel would
+  # double-restart every validator per push, which is harmless under
+  # PoA but wastes time + GitHub Actions minutes. Re-enable by
+  # removing the `if: false` guard below if the operator needs a
+  # GitHub-Actions-native deploy path (e.g. VPS4 unavailable).
   deploy:
-    name: Deploy to VPS
+    name: Deploy to VPS (disabled — see fast-deploy.sh)
     needs: test
     runs-on: ubuntu-22.04
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: false && github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
       - name: Download binary
         uses: actions/download-artifact@v5
