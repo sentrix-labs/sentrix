@@ -7,12 +7,33 @@ use crate::blockchain::{
 use sentrix_primitives::transaction::{TOKEN_OP_ADDRESS, TokenOp, Transaction};
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 
+/// M-10: per-transaction size ceiling. Bounds worst-case memory impact
+/// of a single accepted mempool entry and caps block bloat from any
+/// single author. 128 KiB is generous for SRX transfers (< 1 KB each)
+/// and realistic SRC-20 ops (~2–4 KB) while well below the point where
+/// bincode deserialisation would become a parking lot for a slow peer.
+pub const MAX_TX_SIZE: usize = 128 * 1024;
+
 impl Blockchain {
     pub fn add_to_mempool(&mut self, tx: Transaction) -> SentrixResult<()> {
         if tx.is_coinbase() {
             return Err(SentrixError::InvalidTransaction(
                 "cannot manually add coinbase to mempool".to_string(),
             ));
+        }
+
+        // M-10: reject oversize txs at mempool boundary. The size estimate
+        // uses `bincode::serialized_size` so it matches what libp2p would
+        // actually ship over the wire, avoiding the trap where a tx looks
+        // small in Rust-struct form but serialises to megabytes after
+        // signatures + data expand.
+        if let Ok(size) = bincode::serialized_size(&tx)
+            && (size as usize) > MAX_TX_SIZE
+        {
+            return Err(SentrixError::InvalidTransaction(format!(
+                "tx size {} bytes exceeds limit {}",
+                size, MAX_TX_SIZE
+            )));
         }
 
         // Global mempool size limit prevents RAM exhaustion under high transaction load
