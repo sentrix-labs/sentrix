@@ -908,8 +908,11 @@ async fn cmd_start(
     let (bft_tx, bft_rx) =
         tokio::sync::mpsc::channel::<sentrix::core::bft_messages::BftMessage>(256);
 
-    // Validator loop
-    if let Some(wallet) = validator {
+    // Validator loop — capture the JoinHandle so the graceful-shutdown
+    // path (C-08) can await the task's exit before save_blockchain
+    // snapshots state. Without the handle the process could exit mid
+    // add_block / trie.commit, tearing state between memory and disk.
+    let validator_handle: Option<tokio::task::JoinHandle<()>> = if let Some(wallet) = validator {
         println!("Validator mode: {}", wallet.address);
         let shared_clone = shared.clone();
         let storage_clone = storage.clone();
@@ -917,7 +920,7 @@ async fn cmd_start(
         let shutdown_flag_clone = shutdown_flag.clone();
         let mut bft_rx = bft_rx; // move receiver into this task
         let validator_secret_key = wallet.get_secret_key()?;
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             use sentrix::core::bft::{BftAction, BftEngine};
             use sentrix::core::bft_messages::{BftMessage, Proposal};
             use sentrix::core::block::Block;
@@ -1833,8 +1836,10 @@ async fn cmd_start(
                     }
                 }
             }
-        });
-    }
+        }))
+    } else {
+        None
+    };
 
     // Event handler — persist P2P blocks to MDBX + forward BFT events
     // Sync is handled inside the libp2p swarm task (Step 3d).
@@ -1858,7 +1863,15 @@ async fn cmd_start(
                 } => {
                     tracing::info!("Sync needed from {} (height: {})", peer_addr, peer_height);
                 }
-                // BFT events — forward to validator loop for multi-validator consensus
+                // BFT events — forward to validator loop for multi-validator consensus.
+                //
+                // C-07: do not swallow SendError. `send` returns Err only if
+                // the receiver has been dropped (i.e. the validator loop has
+                // exited), so every BFT message after that point is
+                // unreachable and consensus on this node is effectively
+                // halted. Log at ERROR so the failure is visible in
+                // journalctl and operators can restart the node instead of
+                // silently dropping votes/proposals.
                 NodeEvent::BftProposal(p) => {
                     tracing::info!(
                         "BFT proposal: height={} round={} proposer={}",
@@ -1866,9 +1879,15 @@ async fn cmd_start(
                         p.round,
                         &p.proposer[..p.proposer.len().min(12)]
                     );
-                    let _ = bft_tx_clone
+                    if let Err(e) = bft_tx_clone
                         .send(sentrix::core::bft_messages::BftMessage::Propose(p))
-                        .await;
+                        .await
+                    {
+                        tracing::error!(
+                            "C-07: BFT proposal forward failed (validator loop gone): {}",
+                            e
+                        );
+                    }
                 }
                 NodeEvent::BftPrevote(v) => {
                     tracing::info!(
@@ -1877,9 +1896,15 @@ async fn cmd_start(
                         v.round,
                         &v.validator[..v.validator.len().min(12)]
                     );
-                    let _ = bft_tx_clone
+                    if let Err(e) = bft_tx_clone
                         .send(sentrix::core::bft_messages::BftMessage::Prevote(v))
-                        .await;
+                        .await
+                    {
+                        tracing::error!(
+                            "C-07: BFT prevote forward failed (validator loop gone): {}",
+                            e
+                        );
+                    }
                 }
                 NodeEvent::BftPrecommit(c) => {
                     tracing::info!(
@@ -1888,9 +1913,15 @@ async fn cmd_start(
                         c.round,
                         &c.validator[..c.validator.len().min(12)]
                     );
-                    let _ = bft_tx_clone
+                    if let Err(e) = bft_tx_clone
                         .send(sentrix::core::bft_messages::BftMessage::Precommit(c))
-                        .await;
+                        .await
+                    {
+                        tracing::error!(
+                            "C-07: BFT precommit forward failed (validator loop gone): {}",
+                            e
+                        );
+                    }
                 }
                 NodeEvent::BftRoundStatus(s) => {
                     tracing::debug!(
@@ -1899,9 +1930,15 @@ async fn cmd_start(
                         s.round,
                         &s.validator[..s.validator.len().min(12)]
                     );
-                    let _ = bft_tx_clone
+                    if let Err(e) = bft_tx_clone
                         .send(sentrix::core::bft_messages::BftMessage::RoundStatus(s))
-                        .await;
+                        .await
+                    {
+                        tracing::debug!(
+                            "C-07: BFT round-status forward failed (validator loop gone): {}",
+                            e
+                        );
+                    }
                 }
             }
         }
@@ -1992,6 +2029,41 @@ async fn cmd_start(
         //    to finish before we take a snapshot — guarantees the trie root is committed.
         tracing::info!("Graceful shutdown: waiting for in-progress block to complete...");
         drop(shutdown_shared.write().await);
+
+        // 2b. C-08: await the validator task's full exit before saving. The
+        //     shutdown flag + write-lock drain above together cover an
+        //     in-progress add_block, but a task that is between block
+        //     cycles (waiting on bft_rx, inside a BFT message handler, or
+        //     just looping) can still mutate `self.accounts` /
+        //     `self.contracts` after we snapshot and before the process
+        //     dies. Holding the JoinHandle and awaiting it here guarantees
+        //     the task is no longer observing shared state when we call
+        //     save_blockchain.
+        //
+        //     Bounded by a timeout so a stuck validator loop can't block
+        //     shutdown indefinitely. If the timeout fires we log and fall
+        //     through — the state snapshot will still be more consistent
+        //     than a SIGKILL mid-commit because step 2 drained the write
+        //     lock.
+        if let Some(handle) = validator_handle {
+            tracing::info!("Graceful shutdown: awaiting validator task exit...");
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                handle,
+            )
+            .await
+            {
+                Ok(Ok(())) => tracing::info!("Validator task exited cleanly"),
+                Ok(Err(join_err)) => tracing::warn!(
+                    "C-08: validator task joined with panic: {}",
+                    join_err
+                ),
+                Err(_) => tracing::warn!(
+                    "C-08: validator task did not exit within 10s; \
+                     proceeding to save state snapshot anyway"
+                ),
+            }
+        }
 
         // 3. Save state under a read lock so API requests can still be served
         //    until axum finishes its own graceful drain.
