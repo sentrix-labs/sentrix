@@ -20,7 +20,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   every peer's chain DB before BFT resumes so all peers agree on
   the recovered state. Backed by `StakeRegistry::force_unjail` +
   4 unit tests (stake restore, stake preservation when already
-  above min, tombstone refusal, cooldown skip).
+  above min, tombstone refusal, cooldown skip). **Mainnet gate**
+  (PR #157): on `chain_id == 7119` the command refuses unless
+  `--i-understand-phantom-stake` is passed — restoring `self_stake`
+  via direct DB edit creates phantom stake (SRX is not minted, but
+  the stake counter goes up) and violates the supply invariant.
+  Safe on testnet; break-glass on mainnet.
 - **feat(rpc): `eth_getBlockReceipts`** (backlog #8) — batch receipt
   query matching the Ethereum JSON-RPC spec. Input: block tag
   (`latest` / `earliest` / `pending` / `safe` / `finalized` / hex
