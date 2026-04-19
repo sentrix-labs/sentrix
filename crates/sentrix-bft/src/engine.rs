@@ -339,6 +339,53 @@ impl BftEngine {
     }
 
     fn accept_proposal(&mut self, block_hash: &str) -> BftAction {
+        // M-15: semantic reference for the lock state machine.
+        //
+        // Sentrix's BFT lock is set in `on_prevote_weighted` when a
+        // 2/3+ stake-weighted prevote supermajority is observed for a
+        // concrete (non-nil) hash — that call path also pins
+        // `locked_round`. On the next round:
+        //
+        //   * advance_round() resets prevotes/precommits/our_cast flags
+        //     but PERSISTS locked_hash and locked_round. This is
+        //     intentional: the lock is a SAFETY commitment — once
+        //     we have evidence that 2/3+ might have committed this
+        //     block, we must not prevote a conflicting value without
+        //     proof that the network has moved on (Proof of Lock
+        //     Change, a.k.a. PoLC in Tendermint literature).
+        //
+        //   * If a new proposal arrives for a different hash and we
+        //     observe a new 2/3+ prevote supermajority for THAT hash
+        //     in the current round, `on_prevote_weighted` updates
+        //     `locked_hash` to the new value — the implicit PoLC.
+        //
+        // Known gap (tracked as M-15 follow-up):
+        //
+        //   1. We do not re-propose the locked block when WE become
+        //      proposer of a new round while locked — Tendermint says
+        //      we must. Current behaviour: build a fresh block, which
+        //      peers prevote-nil on because they observe a lock
+        //      conflict, and the round times out. Ultimately not
+        //      unsafe (eventually someone else proposes the locked
+        //      value or the lock shifts via fresh PoLC) but reduces
+        //      liveness.
+        //
+        //   2. We do not persist per-round prevote history, so an
+        //      explicit PoLC object carrying the 2/3 signatures is
+        //      not produced — the unlock is triggered by observing a
+        //      new supermajority at the same node, not by replaying
+        //      a signed PoLC from a peer. This is safe under the
+        //      assumption that all validators follow the same lock
+        //      rules; it would be exploitable if a byzantine leader
+        //      could synthesise a phantom supermajority in his own
+        //      collector state, which this code does not allow
+        //      (collector keys on validator address + stake from
+        //      StakeRegistry — no self-inflation path).
+        //
+        // The guard below implements the "prevote nil on lock
+        // conflict" part correctly; a proper fix for (1) above
+        // belongs in block_producer.rs (cache the proposed block and
+        // re-use when locked).
         self.state.proposed_hash = Some(block_hash.to_string());
         self.state.phase = BftPhase::Prevote;
         self.phase_start = Instant::now();
@@ -347,9 +394,22 @@ impl BftEngine {
         if !self.state.our_prevote_cast {
             self.state.our_prevote_cast = true;
 
-            // If we're locked on a different hash, prevote nil
+            // If we're locked on a different hash, prevote nil.
+            // Proper Tendermint says we can prevote the locked value
+            // instead of nil — Sentrix prevotes nil because the locked
+            // block is not re-broadcast by us and peers without it
+            // cannot verify the prevote. This is correct under our
+            // current "proposer re-broadcasts on timeout" flow; see
+            // gap (1) in the lock-semantic note above.
             let vote_hash = if let Some(ref locked) = self.state.locked_hash {
                 if locked != block_hash {
+                    tracing::debug!(
+                        target: "bft_lock",
+                        "prevote nil: locked on {} at round {:?}, proposal is {}",
+                        &locked[..locked.len().min(12)],
+                        self.state.locked_round,
+                        &block_hash[..block_hash.len().min(12)]
+                    );
                     None // locked on different hash
                 } else {
                     Some(block_hash.to_string())
