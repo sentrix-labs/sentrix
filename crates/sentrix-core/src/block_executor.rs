@@ -293,7 +293,13 @@ impl Blockchain {
         for tx in block.transactions.iter().skip(1) {
             self.accounts
                 .transfer(&tx.from_address, &tx.to_address, tx.amount, tx.fee)?;
-            total_fee += tx.fee;
+            // P1: checked_add — 5000 tx × max fee is far below u64::MAX
+            // in practice, but the guard is cheap and prevents a silent
+            // wrap if MAX_TX_PER_BLOCK or MIN_TX_FEE are ever tuned
+            // upward past the implicit ceiling.
+            total_fee = total_fee.checked_add(tx.fee).ok_or_else(|| {
+                SentrixError::Internal("block total_fee overflow".to_string())
+            })?;
 
             // Execute token operation if present in data field
             if let Some(token_op) = TokenOp::decode(&tx.data) {
