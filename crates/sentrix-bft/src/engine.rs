@@ -236,10 +236,27 @@ impl BftEngine {
     }
 
     /// Round catch-up: if peers are at a higher round, fast-forward.
-    /// Returns true if we advanced (caller should re-check proposer).
-    pub fn catch_up_round(&mut self, target_round: u32) -> bool {
+    /// Returns `Some(Prevote)` (nil block_hash) if we advanced — the caller
+    /// MUST sign and broadcast this prevote so peers observe our
+    /// participation in the caught-up round.
+    ///
+    /// Issue #133: without the nil-prevote, a validator that restarts
+    /// mid-consensus catches up to the peers' round and then sits
+    /// silently in `BftPhase::Propose` forever — gossipsub does not
+    /// replay the round's original proposal and the catching-up
+    /// validator is rarely the proposer for the round it just caught
+    /// up to. The chain then runs on 3-of-4 quorum and any timing
+    /// drift stalls the height.
+    ///
+    /// Nil prevote is Tendermint-legal: it represents "I participate in
+    /// this round but have no valid proposal to vote for". It cannot be
+    /// a double-vote because `advance_round` above cleared
+    /// `our_prevote_cast`, and `accept_proposal` respects
+    /// `our_prevote_cast`, so a proposal arriving later in the same
+    /// round does not cause us to re-vote.
+    pub fn catch_up_round(&mut self, target_round: u32) -> Option<Prevote> {
         if target_round <= self.state.round {
-            return false;
+            return None;
         }
         tracing::info!(
             "BFT round catch-up: round {} → {} at height {}",
@@ -252,7 +269,19 @@ impl BftEngine {
             self.collector.reset();
         }
         self.phase_start = Instant::now();
-        true
+
+        // Enter Prevote phase with a nil vote so we contribute to quorum
+        // immediately instead of waiting (forever) for a proposal that
+        // gossipsub will not re-deliver.
+        self.state.phase = BftPhase::Prevote;
+        self.state.our_prevote_cast = true;
+        Some(Prevote {
+            height: self.state.height,
+            round: self.state.round,
+            block_hash: None,
+            validator: self.our_address.clone(),
+            signature: vec![], // caller signs before broadcast
+        })
     }
 
     /// Are we the proposer for current height+round?
@@ -524,8 +553,15 @@ impl BftEngine {
         // different times and never converge. Catching up to peer_round - 1 (not
         // peer_round) avoids the leapfrog problem from vote-triggered catch-up.
         // Only RoundStatus triggers this — votes do NOT trigger catch-up.
-        if status.height == self.state.height && status.round > self.state.round + 1 {
-            self.catch_up_round(status.round - 1);
+        //
+        // Issue #133: when catch_up_round advances, it emits a nil prevote so
+        // peers observe our participation in the caught-up round. Surface it
+        // to the caller via BroadcastPrevote so the validator loop signs and
+        // gossips it.
+        if status.height == self.state.height && status.round > self.state.round + 1
+            && let Some(prevote) = self.catch_up_round(status.round - 1)
+        {
+            return BftAction::BroadcastPrevote(prevote);
         }
         BftAction::Wait
     }
@@ -860,6 +896,12 @@ mod tests {
     fn test_round_status_catch_up_when_2_ahead() {
         // RoundStatus triggers catch-up to peer_round - 1 when peer is 2+ ahead.
         // This prevents the round desync stall without causing leapfrog.
+        //
+        // Issue #133: after catch_up, the engine now emits a nil prevote
+        // (BftAction::BroadcastPrevote with block_hash = None) so peers
+        // observe our participation in the caught-up round — otherwise
+        // a restarted validator sits silent and 4-of-4 quorum drops to
+        // 3-of-4.
         let (mut engine, _) = setup();
         assert_eq!(engine.round(), 0);
 
@@ -871,8 +913,38 @@ mod tests {
             signature: Vec::new(),
         };
         let action = engine.on_round_status(&status);
-        assert!(matches!(action, BftAction::Wait));
+        match action {
+            BftAction::BroadcastPrevote(p) => {
+                assert_eq!(p.round, 4, "prevote must be for caught-up round");
+                assert_eq!(p.block_hash, None, "must be nil prevote — we have no proposal");
+            }
+            other => panic!("expected BroadcastPrevote(nil), got {other:?}"),
+        }
         assert_eq!(engine.round(), 4); // caught up to peer - 1
+    }
+
+    // Issue #133: after catch_up, our_prevote_cast must be set so a late
+    // proposal for this round does NOT trigger a double-vote.
+    #[test]
+    fn test_133_catch_up_sets_our_prevote_cast_prevents_double_vote() {
+        let (mut engine, reg) = setup();
+        let status = RoundStatus {
+            height: 100,
+            round: 5,
+            validator: "0xval001".into(),
+            signature: Vec::new(),
+        };
+        let _ = engine.on_round_status(&status);
+        assert!(engine.state.our_prevote_cast, "catch_up must mark our prevote cast");
+        assert_eq!(engine.state.phase, BftPhase::Prevote);
+
+        // Late proposal for the same round must NOT cause a second prevote.
+        let proposer = reg.weighted_proposer(engine.height(), 4).unwrap();
+        let action = engine.on_proposal("late_hash", &proposer, &reg);
+        assert!(
+            matches!(action, BftAction::Wait),
+            "late proposal must not trigger second prevote when our_prevote_cast is set; got {action:?}"
+        );
     }
 
     #[test]
