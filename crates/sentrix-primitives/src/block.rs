@@ -5,6 +5,7 @@ use crate::transaction::Transaction;
 use crate::error::{SentrixError, SentrixResult};
 use hex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// Block height at which `state_root` is included in `calculate_hash()`.
 ///
@@ -191,6 +192,27 @@ impl Block {
             }
         }
 
+        // C-05: reject duplicate txids. The current merkle construction
+        // duplicates the last element when a level has odd length, so
+        // a tree [A, B, C] and a tree [A, B, C, C] hash to the same root
+        // (Bitcoin CVE-2012-2459). Without this check, a proposer could
+        // submit a block whose `transactions` vec contains duplicate leaves
+        // and still pass merkle verification against either the 3-leaf or
+        // 4-leaf root, enabling a block-validity bypass. Rejecting
+        // duplicate txids at the structural layer closes that vector
+        // independently of the merkle implementation, so the primitive
+        // does not need a consensus-breaking switch to RFC 6962 on the
+        // live chain.
+        let mut seen_txids: HashSet<&str> = HashSet::with_capacity(self.transactions.len());
+        for tx in &self.transactions {
+            if !seen_txids.insert(tx.txid.as_str()) {
+                return Err(SentrixError::InvalidBlock(format!(
+                    "duplicate txid {} in block",
+                    tx.txid
+                )));
+            }
+        }
+
         // Verify merkle root
         let txids: Vec<String> = self.transactions.iter().map(|tx| tx.txid.clone()).collect();
         let computed_merkle = merkle_root(&txids);
@@ -255,6 +277,46 @@ mod tests {
     fn test_validate_structure_wrong_prev_hash() {
         let genesis = Block::genesis();
         assert!(genesis.validate_structure(0, "wronghash").is_err());
+    }
+
+    // C-05: duplicate txids in a block must be rejected before merkle
+    // verification is reached. Without this guard, the CVE-2012-2459
+    // odd-duplication merkle property (see merkle.rs) would let a
+    // malicious proposer pass merkle verification with a duplicated-leaf
+    // block while the non-duplicated leaf set would have the same root.
+    #[test]
+    fn test_c05_duplicate_txids_rejected_at_block_layer() {
+        let genesis = Block::genesis();
+        let coinbase =
+            Transaction::new_coinbase("v1".to_string(), 100_000_000, 1, 1_712_620_800);
+        // Two structurally-identical tx records share a txid by construction
+        // (Transaction::new_coinbase is deterministic for given inputs).
+        let dup_a = Transaction::new_coinbase("v2".to_string(), 1, 2, 1_712_620_800);
+        let dup_b = dup_a.clone();
+
+        // Note: the dup_* leaves are themselves coinbase txs, so the
+        // "only-first-coinbase" check fires first with this particular
+        // fixture. Recreate them as non-coinbase clones by swapping the
+        // sender field — we only need two txs with identical txids to
+        // exercise the seen_txids guard.
+        let mut tx_a = dup_a;
+        tx_a.from_address = "0x1111111111111111111111111111111111111111".to_string();
+        tx_a.txid = "deadbeef".to_string();
+        let mut tx_b = dup_b;
+        tx_b.from_address = "0x1111111111111111111111111111111111111111".to_string();
+        tx_b.txid = "deadbeef".to_string(); // same as tx_a
+
+        let block = Block::new(
+            1,
+            genesis.hash.clone(),
+            vec![coinbase, tx_a, tx_b],
+            "v1".to_string(),
+        );
+        let err = block.validate_structure(1, &genesis.hash).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("duplicate txid"),
+            "expected duplicate-txid rejection, got: {err:?}"
+        );
     }
 
     #[test]
