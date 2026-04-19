@@ -87,6 +87,23 @@ impl Storage {
         }
         bc.chain = blocks;
 
+        // M-05: validate the in-memory chain window on load so a
+        // corrupted DB is surfaced instead of silently serving stale
+        // data via eth_getBlock* / get_transaction until a peer gossip
+        // later discovers the divergence. Only warn (do not fail
+        // start-up) because live nodes can recover via P2P sync; a
+        // hard failure would keep an otherwise functional validator
+        // offline when its peers could re-populate the chain window.
+        if !bc.is_valid_chain_window() {
+            tracing::error!(
+                "M-05: loaded chain window failed integrity check (height={}, window_len={}). \
+                 Node will continue but is likely to re-sync from peers; investigate \
+                 the underlying DB corruption before this recurs.",
+                height,
+                bc.chain.len()
+            );
+        }
+
         // Restore state trie from MDBX
         let mdbx = self.mdbx_arc();
         if let Err(e) = bc.init_trie(mdbx.clone()) {
