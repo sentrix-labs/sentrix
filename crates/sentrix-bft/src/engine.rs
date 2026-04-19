@@ -209,6 +209,11 @@ pub struct BftEngine {
     pub collector: VoteCollector,
     pub our_address: String,
     phase_start: Instant,
+    /// Per-peer highest observed round at current height (validator → (round, stake)).
+    /// Used for f+1 stake-weighted round skipping to close the persistent
+    /// 1-round-drift livelock (issue #143) that the legacy single-peer
+    /// "2+ rounds ahead" trigger could not resolve.
+    peer_rounds: HashMap<String, (u32, u64)>,
 }
 
 impl BftEngine {
@@ -218,6 +223,7 @@ impl BftEngine {
             collector: VoteCollector::new(),
             our_address,
             phase_start: Instant::now(),
+            peer_rounds: HashMap::new(),
         }
     }
 
@@ -226,6 +232,7 @@ impl BftEngine {
         self.state.advance_height(height, total_active_stake);
         self.collector.reset();
         self.phase_start = Instant::now();
+        self.peer_rounds.clear();
     }
 
     /// Advance to next round (timeout or nil)
@@ -597,33 +604,109 @@ impl BftEngine {
         }
     }
 
-    /// Handle a RoundStatus gossip from a peer.
-    /// If peer is at a higher height → signal that block sync is needed.
-    /// Round differences at the same height are handled by deterministic
-    /// timeouts — no round catch-up. This prevents vote-wipe cascades
-    /// where catching up clears collected votes.
+    /// Handle a RoundStatus gossip from a peer (stake-weighted, issue #143).
+    ///
+    /// Behaviour:
+    /// * Peer at higher height → `SyncNeeded` (block sync required first).
+    /// * Peer at same height → record `peer_rounds[validator] = (round, stake)`.
+    ///   Then, if f+1 stake (>1/3 of `total_active_stake`) is at rounds
+    ///   strictly greater than our current round, catch up to the highest
+    ///   such round. This is the standard Tendermint round-skip rule.
+    ///
+    /// The legacy trigger was "single peer 2+ rounds ahead → catch up to
+    /// peer_round − 1", which could not close a persistent 1-round drift
+    /// between two validator clusters (observed on testnet, issue #143 —
+    /// rounds climbed past 140 with 2/4 always lagging). The stake-weighted
+    /// f+1 rule resolves this: once the lagging cluster sees f+1 peers at a
+    /// higher round, it jumps directly instead of waiting for its own
+    /// timeout to fire.
+    ///
+    /// Catch-up emits a nil prevote in the new round (issue #133 fix, see
+    /// `catch_up_round`) so we participate in quorum immediately.
+    pub fn on_round_status_weighted(&mut self, status: &RoundStatus, stake: u64) -> BftAction {
+        if status.height > self.state.height {
+            return BftAction::SyncNeeded {
+                peer_height: status.height,
+            };
+        }
+        if status.height < self.state.height {
+            return BftAction::Wait;
+        }
+        // Track peer's highest-seen round. Keep the max round; refresh the
+        // stake snapshot on every update (the peer's stake can change across
+        // epoch boundaries).
+        let entry = self
+            .peer_rounds
+            .entry(status.validator.clone())
+            .or_insert((0, stake));
+        if status.round >= entry.0 {
+            entry.0 = status.round;
+            entry.1 = stake;
+        }
+
+        if let Some(target) = self.f_plus_one_round()
+            && target > self.state.round
+            && let Some(prevote) = self.catch_up_round(target)
+        {
+            return BftAction::BroadcastPrevote(prevote);
+        }
+        BftAction::Wait
+    }
+
+    /// Back-compat wrapper for the legacy single-peer RoundStatus path. Call
+    /// sites that have the peer's stake should prefer `on_round_status_weighted`.
+    /// This wrapper preserves the pre-#143 behaviour (trigger only on 2+ rounds
+    /// ahead from a single peer, catch up to peer_round − 1) so existing
+    /// integrations compile unchanged.
     pub fn on_round_status(&mut self, status: &RoundStatus) -> BftAction {
         if status.height > self.state.height {
             return BftAction::SyncNeeded {
                 peer_height: status.height,
             };
         }
-        // Same height: if peer is 2+ rounds ahead, catch up to peer_round - 1.
-        // This fixes the round desync stall where validators advance at slightly
-        // different times and never converge. Catching up to peer_round - 1 (not
-        // peer_round) avoids the leapfrog problem from vote-triggered catch-up.
-        // Only RoundStatus triggers this — votes do NOT trigger catch-up.
-        //
-        // Issue #133: when catch_up_round advances, it emits a nil prevote so
-        // peers observe our participation in the caught-up round. Surface it
-        // to the caller via BroadcastPrevote so the validator loop signs and
-        // gossips it.
-        if status.height == self.state.height && status.round > self.state.round + 1
+        if status.height == self.state.height
+            && status.round > self.state.round + 1
             && let Some(prevote) = self.catch_up_round(status.round - 1)
         {
             return BftAction::BroadcastPrevote(prevote);
         }
         BftAction::Wait
+    }
+
+    /// Largest round R such that f+1 stake of distinct peers are at round >= R,
+    /// where f+1 is the minimum stake strictly exceeding one third of
+    /// `total_active_stake`. Returns None if no such R exists or if
+    /// `total_active_stake` is zero.
+    ///
+    /// Only peers with round strictly greater than our own round are counted —
+    /// we ourselves don't trigger a skip for our own round.
+    fn f_plus_one_round(&self) -> Option<u32> {
+        if self.state.total_active_stake == 0 {
+            return None;
+        }
+        // `f` = floor(total / 3); `f+1` stake = any stake total > f.
+        // Minimum stake exceeding 1/3 is `total/3 + 1` for integer math.
+        let f_plus_one_threshold = self.state.total_active_stake / 3 + 1;
+
+        let mut peers: Vec<(u32, u64)> = self
+            .peer_rounds
+            .values()
+            .filter(|(r, _)| *r > self.state.round)
+            .copied()
+            .collect();
+        // Sort by round descending so we accumulate from the highest round
+        // downward. The first round at which cumulative stake crosses the
+        // f+1 threshold is the largest round that f+1 peers have reached.
+        peers.sort_by_key(|p| std::cmp::Reverse(p.0));
+
+        let mut accumulated: u64 = 0;
+        for (round, stake) in peers {
+            accumulated = accumulated.saturating_add(stake);
+            if accumulated >= f_plus_one_threshold {
+                return Some(round);
+            }
+        }
+        None
     }
 
     /// Build an UNSIGNED RoundStatus for gossiping. Callers must invoke
@@ -1264,5 +1347,174 @@ mod tests {
             }
             _ => panic!("expected FinalizeBlock, got {:?}", action),
         }
+    }
+
+    // ── Issue #143: stake-weighted round skipping ───────────────
+
+    /// Shared fixture for issue-#143 tests: a 4-validator engine with
+    /// equal stake (250 each, total 1000). f+1 threshold is 334 stake
+    /// (= 1000/3 + 1), i.e. 2 validators crossing the one-third boundary.
+    fn setup_143() -> BftEngine {
+        BftEngine::new(100, "0xself".into(), 1000)
+    }
+
+    fn status(validator: &str, round: u32) -> RoundStatus {
+        RoundStatus {
+            height: 100,
+            round,
+            validator: validator.into(),
+            signature: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_143_f_plus_one_peers_at_same_round_triggers_catch_up() {
+        // 2 of 4 peers at round 1 → f+1 (2 peers × 250 stake = 500 > 334).
+        // Our round is 0, so we should catch up to round 1.
+        let mut engine = setup_143();
+        assert_eq!(engine.round(), 0);
+
+        let _ = engine.on_round_status_weighted(&status("0xa", 1), 250);
+        let action = engine.on_round_status_weighted(&status("0xb", 1), 250);
+
+        assert!(
+            matches!(action, BftAction::BroadcastPrevote(ref p) if p.round == 1 && p.block_hash.is_none()),
+            "expected nil prevote at round 1 after f+1 peers reported, got {:?}",
+            action,
+        );
+        assert_eq!(engine.round(), 1);
+        assert!(engine.state.our_prevote_cast);
+    }
+
+    #[test]
+    fn test_143_single_peer_one_round_ahead_does_not_trigger() {
+        // Only 1/4 peers (250/1000 = 25%) at round 1 — below the 1/3 threshold.
+        // Our round stays at 0, matching the pre-#143 safety: we don't jump
+        // on a single voice.
+        let mut engine = setup_143();
+        let action = engine.on_round_status_weighted(&status("0xa", 1), 250);
+        assert!(matches!(action, BftAction::Wait));
+        assert_eq!(engine.round(), 0);
+    }
+
+    #[test]
+    fn test_143_peers_spread_across_rounds_picks_max_with_quorum() {
+        // 2 peers at round 3, 1 peer at round 5. f+1 threshold = 334.
+        //
+        // We jump to round 3 (the highest round where f+1 stake converges).
+        // The lone peer at round 5 does NOT drag us further — that's only
+        // f (one voice), and a lying peer could equally well claim round
+        // 5 without having reached it.
+        let mut engine = setup_143();
+        let a1 = engine.on_round_status_weighted(&status("0xa", 3), 250);
+        let a2 = engine.on_round_status_weighted(&status("0xb", 3), 250);
+        let a3 = engine.on_round_status_weighted(&status("0xc", 5), 250);
+
+        // First report: only 1 peer at round 3 → below threshold, no skip.
+        assert!(matches!(a1, BftAction::Wait), "a1 = {:?}", a1);
+        // Second report: 2 peers at round 3 → cumulative 500 stake, crosses
+        // the 334 threshold, so we jump to round 3.
+        assert!(
+            matches!(a2, BftAction::BroadcastPrevote(ref p) if p.round == 3),
+            "expected catch-up to round 3 at a2, got {:?}",
+            a2,
+        );
+        // Third report: one peer at round 5 is below threshold on its own,
+        // so we stay at round 3. This is the anti-single-liar property.
+        assert!(matches!(a3, BftAction::Wait), "a3 = {:?}", a3);
+        assert_eq!(engine.round(), 3);
+    }
+
+    #[test]
+    fn test_143_peer_at_same_round_does_not_trigger() {
+        // A peer reporting OUR OWN round should never trigger a skip.
+        let mut engine = setup_143();
+        let action = engine.on_round_status_weighted(&status("0xa", 0), 250);
+        assert!(matches!(action, BftAction::Wait));
+        assert_eq!(engine.round(), 0);
+    }
+
+    #[test]
+    fn test_143_repeated_report_from_same_peer_is_idempotent() {
+        // Same peer reporting the same round twice must not double-count
+        // their stake — otherwise a chatty peer could unilaterally trigger
+        // a skip.
+        let mut engine = setup_143();
+        let a1 = engine.on_round_status_weighted(&status("0xa", 1), 250);
+        let a2 = engine.on_round_status_weighted(&status("0xa", 1), 250);
+        assert!(matches!(a1, BftAction::Wait));
+        assert!(matches!(a2, BftAction::Wait));
+        assert_eq!(engine.round(), 0);
+    }
+
+    #[test]
+    fn test_143_peer_stake_refresh_on_update() {
+        // If a peer's stake changes across epoch boundaries, the next
+        // RoundStatus from them should overwrite the cached stake.
+        let mut engine = setup_143();
+        // Peer first reports with very low stake — below threshold alone.
+        let _ = engine.on_round_status_weighted(&status("0xa", 1), 1);
+        // Second peer confirms at same round.
+        let action = engine.on_round_status_weighted(&status("0xb", 1), 250);
+        // 1 + 250 = 251 stake, below 334 threshold — no skip yet.
+        assert!(matches!(action, BftAction::Wait));
+
+        // Peer 0xa reports again, this time with their actual 250 stake.
+        let action = engine.on_round_status_weighted(&status("0xa", 1), 250);
+        assert!(
+            matches!(action, BftAction::BroadcastPrevote(ref p) if p.round == 1),
+            "stake refresh should unlock the skip, got {:?}",
+            action,
+        );
+        assert_eq!(engine.round(), 1);
+    }
+
+    #[test]
+    fn test_143_higher_height_still_triggers_sync() {
+        // Higher-height RoundStatus bypasses the round-skip logic entirely.
+        let mut engine = setup_143();
+        let action = engine.on_round_status_weighted(&status("0xa", 0), 250);
+        assert!(matches!(action, BftAction::Wait));
+
+        let mut s = status("0xa", 0);
+        s.height = 101;
+        let action = engine.on_round_status_weighted(&s, 250);
+        assert!(
+            matches!(action, BftAction::SyncNeeded { peer_height: 101 }),
+            "higher height must return SyncNeeded, got {:?}",
+            action,
+        );
+    }
+
+    #[test]
+    fn test_143_peer_rounds_clear_on_new_height() {
+        // After advancing to a new height, the peer_rounds cache must
+        // reset — otherwise stale entries from height N could trigger a
+        // spurious skip at height N+1.
+        let mut engine = setup_143();
+        let _ = engine.on_round_status_weighted(&status("0xa", 5), 250);
+        let _ = engine.on_round_status_weighted(&status("0xb", 5), 250);
+        assert_eq!(engine.round(), 5);
+
+        engine.new_height(101, 1000);
+        // At height 101 with fresh state, a single peer at round 1 must
+        // NOT trigger a skip (cache was wiped).
+        let action = engine.on_round_status_weighted(&status("0xa", 1), 250);
+        assert!(matches!(action, BftAction::Wait));
+        assert_eq!(engine.round(), 0);
+    }
+
+    #[test]
+    fn test_143_legacy_on_round_status_still_works() {
+        // The back-compat `on_round_status` wrapper preserves the pre-#143
+        // single-peer "2+ rounds ahead" trigger for any call site that
+        // hasn't migrated to the weighted API yet.
+        let mut engine = setup_143();
+        let action = engine.on_round_status(&status("0xa", 2));
+        assert!(
+            matches!(action, BftAction::BroadcastPrevote(ref p) if p.round == 1),
+            "legacy path should catch up to peer_round - 1, got {:?}",
+            action,
+        );
     }
 }

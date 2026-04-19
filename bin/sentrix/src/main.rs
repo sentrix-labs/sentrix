@@ -1530,7 +1530,16 @@ async fn cmd_start(
                                 drop(bc);
                                 bft.on_precommit_weighted(&precommit, stake)
                             }
-                            BftMessage::RoundStatus(status) => bft.on_round_status(&status),
+                            BftMessage::RoundStatus(status) => {
+                                let bc = shared_clone.read().await;
+                                let stake = bc
+                                    .stake_registry
+                                    .get_validator(&status.validator)
+                                    .map(|v| v.total_stake())
+                                    .unwrap_or(0);
+                                drop(bc);
+                                bft.on_round_status_weighted(&status, stake)
+                            }
                         };
 
                         // Cascading BFT action loop for peer messages
