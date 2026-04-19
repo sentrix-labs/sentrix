@@ -398,8 +398,15 @@ impl Blockchain {
             return 0;
         }
 
-        let halvings = self.height() / HALVING_INTERVAL;
-        let reward = BLOCK_REWARD >> halvings; // divide by 2^halvings
+        // P1: halving bit-shift overflow. `u64 >> 64+` is undefined in
+        // Rust (panics in debug, implementation-defined in release) and
+        // `halvings` is `height / HALVING_INTERVAL` — after ~21×42M blocks
+        // (~28 years at 1 s blocks) `halvings` reaches 64 and the shift
+        // would crash the validator. checked_shr returns `None` at ≥64
+        // so we clamp the reward to 0 (matching the intended "reward
+        // halved to nothing" semantics).
+        let halvings: u32 = (self.height() / HALVING_INTERVAL).try_into().unwrap_or(u32::MAX);
+        let reward = BLOCK_REWARD.checked_shr(halvings).unwrap_or(0);
 
         if reward == 0 {
             return 0;

@@ -284,7 +284,23 @@ pub async fn jsonrpc_handler(
 
             // Convert Ethereum value (wei) to Sentrix sentri (1 SRX = 1e18 wei = 1e8 sentri)
             // 1 sentri = 1e10 wei
-            let value_wei: u128 = value_u256.try_into().unwrap_or(u128::MAX);
+            //
+            // P1: reject instead of saturating on U256→u128 overflow.
+            // Pre-fix, a caller could set `value = U256::MAX` and have
+            // it silently saturate to `u128::MAX`, then divide by 1e10
+            // to produce a nonsensical u64 amount. Surface the
+            // out-of-range condition as a JSON-RPC error so the client
+            // sees the rejection rather than a mangled amount.
+            let value_wei: u128 = match value_u256.try_into() {
+                Ok(v) => v,
+                Err(_) => {
+                    return Json(JsonRpcResponse::err(
+                        id,
+                        -32602,
+                        "tx value exceeds u128 (not representable on Sentrix)",
+                    ));
+                }
+            };
             let amount_sentri = (value_wei / 10_000_000_000u128) as u64;
 
             // Build Sentrix Transaction. txid = keccak256 of raw bytes (Ethereum tx hash)
