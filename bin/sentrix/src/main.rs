@@ -994,13 +994,35 @@ async fn cmd_start(
                     };
 
                     if let Some((height, Some(block_to_save))) = result {
-                        println!("Block {} produced by {}", height, wallet.address);
-                        let _ = storage_clone.save_block(&block_to_save);
-                        {
-                            let bc = shared_clone.read().await;
-                            let _ = storage_clone.save_blockchain(&bc);
+                        // H-09: only broadcast after the block is durably
+                        // persisted. A broadcast of a block we can't recover
+                        // on restart is a fork risk — peers would accept
+                        // blocks extending ours, but after our next restart
+                        // we would rewind to the last saved block and
+                        // diverge from the chain we just helped produce.
+                        if let Err(e) = storage_clone.save_block(&block_to_save) {
+                            tracing::error!(
+                                "H-09: failed to persist block {} produced by {}: {}; \
+                                 skipping broadcast to prevent fork",
+                                height,
+                                wallet.address,
+                                e
+                            );
+                        } else {
+                            println!("Block {} produced by {}", height, wallet.address);
+                            {
+                                let bc = shared_clone.read().await;
+                                if let Err(e) = storage_clone.save_blockchain(&bc) {
+                                    tracing::warn!(
+                                        "save_blockchain snapshot failed at height {}: {} \
+                                         (block already persisted, continuing)",
+                                        height,
+                                        e
+                                    );
+                                }
+                            }
+                            lp2p_clone.broadcast_block(&block_to_save).await;
                         }
-                        lp2p_clone.broadcast_block(&block_to_save).await;
                     }
                     continue;
                 }
@@ -1216,19 +1238,41 @@ async fn cmd_start(
 
                                                         drop(bc);
                                                         if let Some(ref saved_block) = updated {
-                                                            println!(
-                                                                "Block {} produced by {}",
-                                                                height, proposer
-                                                            );
-                                                            let _ = storage_clone
-                                                                .save_block(saved_block);
-                                                            let bc = shared_clone.read().await;
-                                                            let _ =
-                                                                storage_clone.save_blockchain(&bc);
-                                                            drop(bc);
-                                                            lp2p_clone
-                                                                .broadcast_block(saved_block)
-                                                                .await;
+                                                            // H-09: persist before broadcast.
+                                                            if let Err(e) = storage_clone
+                                                                .save_block(saved_block)
+                                                            {
+                                                                tracing::error!(
+                                                                    "H-09: failed to persist \
+                                                                     BFT block {} by {}: {}; \
+                                                                     skipping broadcast",
+                                                                    height,
+                                                                    proposer,
+                                                                    e
+                                                                );
+                                                            } else {
+                                                                println!(
+                                                                    "Block {} produced by {}",
+                                                                    height, proposer
+                                                                );
+                                                                let bc =
+                                                                    shared_clone.read().await;
+                                                                if let Err(e) = storage_clone
+                                                                    .save_blockchain(&bc)
+                                                                {
+                                                                    tracing::warn!(
+                                                                        "save_blockchain \
+                                                                         snapshot failed at \
+                                                                         {}: {}",
+                                                                        height,
+                                                                        e
+                                                                    );
+                                                                }
+                                                                drop(bc);
+                                                                lp2p_clone
+                                                                    .broadcast_block(saved_block)
+                                                                    .await;
+                                                            }
                                                         }
                                                     }
                                                     Err(e) => tracing::warn!(
@@ -1455,15 +1499,38 @@ async fn cmd_start(
 
                                                 drop(bc);
                                                 if let Some(ref saved_block) = updated {
-                                                    println!(
-                                                        "Block {} produced by {}",
-                                                        height, proposer
-                                                    );
-                                                    let _ = storage_clone.save_block(saved_block);
-                                                    let bc = shared_clone.read().await;
-                                                    let _ = storage_clone.save_blockchain(&bc);
-                                                    drop(bc);
-                                                    lp2p_clone.broadcast_block(saved_block).await;
+                                                    // H-09: persist before broadcast.
+                                                    if let Err(e) =
+                                                        storage_clone.save_block(saved_block)
+                                                    {
+                                                        tracing::error!(
+                                                            "H-09: failed to persist BFT block \
+                                                             {} by {}: {}; skipping broadcast",
+                                                            height,
+                                                            proposer,
+                                                            e
+                                                        );
+                                                    } else {
+                                                        println!(
+                                                            "Block {} produced by {}",
+                                                            height, proposer
+                                                        );
+                                                        let bc = shared_clone.read().await;
+                                                        if let Err(e) =
+                                                            storage_clone.save_blockchain(&bc)
+                                                        {
+                                                            tracing::warn!(
+                                                                "save_blockchain snapshot \
+                                                                 failed at {}: {}",
+                                                                height,
+                                                                e
+                                                            );
+                                                        }
+                                                        drop(bc);
+                                                        lp2p_clone
+                                                            .broadcast_block(saved_block)
+                                                            .await;
+                                                    }
                                                 }
                                             }
                                             Err(e) => tracing::warn!("BFT add_block failed: {}", e),
