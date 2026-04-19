@@ -137,7 +137,16 @@ impl AccountDB {
                 .balance
                 .checked_sub(total)
                 .ok_or_else(|| SentrixError::Internal("balance underflow".to_string()))?;
-            sender.nonce += 1;
+            // P1: nonce overflow. u64 wraps to 0 at u64::MAX + 1, which
+            // would then let an attacker replay any previously-signed tx
+            // whose nonce matched the wrapped value. checked_add keeps
+            // the chain safe by surfacing the condition as an Err — at
+            // current mainnet throughput this is unreachable in any
+            // practical lifetime, but the guard is cheap.
+            sender.nonce = sender
+                .nonce
+                .checked_add(1)
+                .ok_or_else(|| SentrixError::Internal("nonce overflow".to_string()))?;
         }
 
         // Credit recipient
