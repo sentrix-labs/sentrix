@@ -3,6 +3,7 @@
 #![allow(missing_docs)]
 
 pub mod explorer;
+pub mod explorer_api;
 pub mod jsonrpc;
 pub mod routes;
 
