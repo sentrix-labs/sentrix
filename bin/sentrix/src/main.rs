@@ -1103,6 +1103,30 @@ async fn cmd_start(
                     Some(bft) => bft.height() <= current_height,
                 };
                 if need_new_round {
+                    // P1: refuse to start a BFT round when the active set is
+                    // too small for byzantine-fault tolerance. BFT requires
+                    // N ≥ 4 for f = ⌊(N-1)/3⌋ ≥ 1 — at N < 4 a single
+                    // byzantine validator cannot be tolerated, so running
+                    // BFT is worse than PoA fallback. We log and skip this
+                    // iteration instead of initialising the engine; the
+                    // outer loop will retry once the active set recovers.
+                    {
+                        let bc_check = shared_clone.read().await;
+                        let active = bc_check.stake_registry.active_count();
+                        if active < sentrix::core::staking::MIN_BFT_VALIDATORS {
+                            tracing::warn!(
+                                "P1: skipping BFT round at height {} — active set \
+                                 {} < minimum {} for BFT safety",
+                                next_height,
+                                active,
+                                sentrix::core::staking::MIN_BFT_VALIDATORS
+                            );
+                            drop(bc_check);
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            continue;
+                        }
+                    }
+
                     let mut bft =
                         BftEngine::new(next_height, wallet.address.clone(), total_active_stake);
                     proposed_block = None;
