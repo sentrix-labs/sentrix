@@ -2004,9 +2004,16 @@ async fn cmd_start(
         }
     };
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal)
-        .await?;
+    // P1 RPC security: expose ConnectInfo so extract_client_ip can read
+    // the real socket peer address. Without `into_make_service_with_connect_info`
+    // the `ConnectInfo<SocketAddr>` extension is never populated, and
+    // rate-limit bucketing falls back to "unknown" for every request.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal)
+    .await?;
     Ok(())
 }
 
