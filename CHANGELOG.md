@@ -31,6 +31,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (22.04, glibc 2.35).
 
 ### Added
+- **Ethereum event log + fee RPC (Sprint 2)** — adds `eth_getLogs`,
+  `eth_feeHistory`, and `eth_maxPriorityFeePerGas`, plus real logs on
+  `eth_getTransactionReceipt` (previously hardcoded `[]`). New MDBX
+  tables `TABLE_LOGS` (key: height + tx_index + log_index BE, value:
+  bincode StoredLog) and `TABLE_BLOOM` (key: height, value: 2048-bit
+  bloom per yellow-paper §4.4.3). Block executor persists logs +
+  bloom on Pass 2 so queries are served directly from disk. Address
+  filter runs through the per-block bloom prefilter. Range capped at
+  10 000 blocks (`-32005 query returned more than 10000 results`).
+  Fee history returns flat `INITIAL_BASE_FEE` for now (no EIP-1559
+  dynamic base-fee yet); `gasUsedRatio` reflects real per-block EVM
+  consumption. Unlocks MetaMask gas estimation + dApp event indexing.
 - **Sentrix native JSON-RPC namespace (Sprint 1)** (PR #137) — five
   new methods that expose chain features the `eth_*` namespace cannot
   represent: `sentrix_getValidatorSet`, `sentrix_getDelegations`,

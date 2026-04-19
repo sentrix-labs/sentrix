@@ -573,9 +573,35 @@ impl Blockchain {
             }
 
             // Execute EVM transaction if present (data field starts with "EVM:")
+            // tx_index skips coinbase at slot 0 — first real tx is index 1.
             if tx.is_evm_tx() && Self::is_voyager_height(self.height()) {
-                self.execute_evm_tx_in_block(tx)?;
+                let tx_index = (block.transactions.iter().position(|t| t.txid == tx.txid).unwrap_or(0)) as u32;
+                self.execute_evm_tx_in_block(tx, block.index, &block.hash, tx_index)?;
             }
+        }
+        // Sprint 2: compute + persist per-block logs bloom. Cheap enough to
+        // re-scan the height-prefix range because EVM txs per block are
+        // bounded; keeps the bloom exactly aligned with TABLE_LOGS without a
+        // parallel in-memory accumulator.
+        if let Some(storage) = self.mdbx_storage.as_ref() {
+            use sentrix_evm::{add_log_to_bloom, empty_bloom, StoredLog};
+            let mut bloom = empty_bloom();
+            let prefix = block.index.to_be_bytes();
+            if let Ok(entries) = storage.iter(sentrix_storage::tables::TABLE_LOGS) {
+                for (k, v) in entries {
+                    if k.len() >= 8
+                        && k[..8] == prefix
+                        && let Ok(log) = bincode::deserialize::<StoredLog>(&v)
+                    {
+                        add_log_to_bloom(&mut bloom, &log.address, &log.topics);
+                    }
+                }
+            }
+            let _ = storage.put(
+                sentrix_storage::tables::TABLE_BLOOM,
+                &block.index.to_be_bytes(),
+                &bloom,
+            );
         }
 
         // Burn gets ceiling division, validator gets floor — all fees distributed with no rounding loss
@@ -667,6 +693,9 @@ impl Blockchain {
     fn execute_evm_tx_in_block(
         &mut self,
         tx: &sentrix_primitives::transaction::Transaction,
+        block_height: u64,
+        block_hash_hex: &str,
+        tx_index: u32,
     ) -> SentrixResult<()> {
         // Parse "EVM:gas_limit:hex_data" from data field
         let parts: Vec<&str> = tx.data.splitn(3, ':').collect();
@@ -755,6 +784,38 @@ impl Blockchain {
                     // A2: reverted EVM tx — record so eth_getTransactionReceipt
                     // returns status=0x0 instead of the default 0x1.
                     self.accounts.mark_evm_tx_failed(&tx.txid);
+                }
+                // Sprint 2: persist every log emitted by this tx. Key is
+                // (height, tx_index, log_index) BE-packed so range scans
+                // return logs in canonical Ethereum order.
+                if let Some(storage) = self.mdbx_storage.as_ref() {
+                    use sentrix_evm::{log_key, StoredLog};
+                    let mut block_hash_bytes = [0u8; 32];
+                    if let Ok(decoded) = hex::decode(block_hash_hex.trim_start_matches("0x")) {
+                        let n = decoded.len().min(32);
+                        block_hash_bytes[..n].copy_from_slice(&decoded[..n]);
+                    }
+                    let mut tx_hash_bytes = [0u8; 32];
+                    if let Ok(decoded) = hex::decode(tx.txid.trim_start_matches("0x")) {
+                        let n = decoded.len().min(32);
+                        tx_hash_bytes[..n].copy_from_slice(&decoded[..n]);
+                    }
+                    for (log_idx, log) in receipt.logs.iter().enumerate() {
+                        let stored = StoredLog::from_revm(
+                            log,
+                            block_height,
+                            block_hash_bytes,
+                            tx_hash_bytes,
+                            tx_index,
+                            log_idx as u32,
+                        );
+                        let key = log_key(block_height, tx_index, log_idx as u32);
+                        let _ = storage.put_bincode(
+                            sentrix_storage::tables::TABLE_LOGS,
+                            &key,
+                            &stored,
+                        );
+                    }
                 }
                 // Store contract RUNTIME code (not init code) if CREATE succeeded.
                 // receipt.output contains the runtime bytecode returned by the constructor.
