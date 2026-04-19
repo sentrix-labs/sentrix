@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+# Least-privilege defaults (CodeQL alerts #265, #266). Individual jobs
+# opt in to additional scopes as needed; the top-level default denies
+# everything so an accidental `uses:` that requests a scope we didn't
+# intend cannot silently escalate. Adjust per-job `permissions:` to
+# grant narrow access (e.g. `contents: write` only for release jobs).
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
