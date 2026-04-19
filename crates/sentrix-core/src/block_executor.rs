@@ -68,11 +68,34 @@ impl Blockchain {
             )));
         }
 
-        // Validate all non-coinbase transactions on working state copy
+        // Validate all non-coinbase transactions on working state copy.
+        //
+        // H-06: reject blocks containing duplicate txids or duplicate
+        // (from_address, nonce) pairs. The working_nonces update at loop end
+        // already rejects a second tx with the stale nonce, but explicit
+        // dedup makes the intent unambiguous and survives future refactors.
+        // It also prevents the CVE-2012-2459 merkle collision prerequisite
+        // (identical leaves) at the consensus layer, independent of the
+        // merkle implementation.
         let mut working_balances: HashMap<String, u64> = HashMap::new();
         let mut working_nonces: HashMap<String, u64> = HashMap::new();
+        let mut seen_txids: HashSet<String> = HashSet::new();
+        let mut seen_sender_nonce: HashSet<(String, u64)> = HashSet::new();
 
         for tx in block.transactions.iter().skip(1) {
+            if !seen_txids.insert(tx.txid.clone()) {
+                return Err(SentrixError::InvalidBlock(format!(
+                    "duplicate txid {} in block",
+                    tx.txid
+                )));
+            }
+            if !seen_sender_nonce.insert((tx.from_address.clone(), tx.nonce)) {
+                return Err(SentrixError::InvalidBlock(format!(
+                    "duplicate (sender, nonce) pair for {} nonce {} in block",
+                    tx.from_address, tx.nonce
+                )));
+            }
+
             // Get working balance (fall back to real balance)
             let balance = working_balances
                 .get(&tx.from_address)
@@ -686,6 +709,98 @@ mod tests {
         assert_eq!(
             added.hash, original_hash,
             "block hash must not change without trie"
+        );
+    }
+
+    // H-06: block with two txs sharing the same (sender, nonce) must be
+    // rejected in Pass 1 before any state mutation.
+    #[test]
+    fn test_h06_duplicate_nonce_in_block_rejected() {
+        use sentrix_primitives::block::Block;
+
+        let mut bc = setup();
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+        bc.accounts.credit(&sender, 10_000_000_000).unwrap();
+
+        let reward = bc.get_block_reward();
+        let prev = bc.latest_block().unwrap().hash.clone();
+        let ts = bc.latest_block().unwrap().timestamp + 1;
+        let coinbase = Transaction::new_coinbase("v1".to_string(), reward, 1, ts);
+
+        // Two distinct txs (different recipients → different txids) sharing
+        // the same nonce. Sender nonce starts at 0.
+        let tx1 = Transaction::new(
+            sender.clone(),
+            "0x0000000000000000000000000000000000000001".to_string(),
+            1,
+            MIN_TX_FEE,
+            0,
+            String::new(),
+            CHAIN_ID,
+            &sk,
+            &pk,
+        )
+        .unwrap();
+        let tx2 = Transaction::new(
+            sender.clone(),
+            "0x0000000000000000000000000000000000000002".to_string(),
+            1,
+            MIN_TX_FEE,
+            0,
+            String::new(),
+            CHAIN_ID,
+            &sk,
+            &pk,
+        )
+        .unwrap();
+
+        assert_ne!(tx1.txid, tx2.txid, "precondition: txids must differ");
+        assert_eq!(tx1.nonce, tx2.nonce, "precondition: nonces must match");
+
+        let block = Block::new(1, prev, vec![coinbase, tx1, tx2], "v1".to_string());
+        let err = bc.add_block(block).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("duplicate (sender, nonce)"),
+            "expected duplicate-nonce rejection, got: {err:?}"
+        );
+    }
+
+    // H-06: block containing the exact same transaction twice (same txid)
+    // must be rejected before any state mutation.
+    #[test]
+    fn test_h06_duplicate_txid_in_block_rejected() {
+        use sentrix_primitives::block::Block;
+
+        let mut bc = setup();
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+        bc.accounts.credit(&sender, 10_000_000_000).unwrap();
+
+        let reward = bc.get_block_reward();
+        let prev = bc.latest_block().unwrap().hash.clone();
+        let ts = bc.latest_block().unwrap().timestamp + 1;
+        let coinbase = Transaction::new_coinbase("v1".to_string(), reward, 1, ts);
+
+        let tx = Transaction::new(
+            sender.clone(),
+            "0x0000000000000000000000000000000000000001".to_string(),
+            1,
+            MIN_TX_FEE,
+            0,
+            String::new(),
+            CHAIN_ID,
+            &sk,
+            &pk,
+        )
+        .unwrap();
+
+        // Clone the same tx twice into a block.
+        let block = Block::new(1, prev, vec![coinbase, tx.clone(), tx], "v1".to_string());
+        let err = bc.add_block(block).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("duplicate txid"),
+            "expected duplicate-txid rejection, got: {err:?}"
         );
     }
 
