@@ -15,6 +15,15 @@ pub const MAX_CANDIDATES: usize = 100;
 pub const UNBONDING_PERIOD: u64 = 201_600; // 7 days at 3s blocks
 pub const MAX_DELEGATIONS_PER_ACCOUNT: usize = 10;
 pub const MAX_UNBONDING_ENTRIES: usize = 7;
+/// P1: hard cap on total unbonding entries for a single validator across
+/// all delegators. Prevents pathological memory growth from many
+/// small-stake delegators issuing partial unbondings against the same
+/// validator; the per-(delegator, validator) cap alone (= 7) multiplied
+/// by MAX_CANDIDATES delegators × MAX_DELEGATIONS_PER_ACCOUNT would
+/// otherwise bound total entries in the thousands per validator. 10 000
+/// is generous for realistic networks and far below the point where
+/// the BTreeMap iteration becomes a block-time concern.
+pub const MAX_UNBONDING_PER_VALIDATOR: usize = 10_000;
 pub const REDELEGATE_COOLDOWN: u64 = 201_600; // 7 days
 pub const MIN_COMMISSION: u16 = 500; // 5% in basis points
 pub const MAX_COMMISSION: u16 = 2000; // 20%
@@ -253,16 +262,29 @@ impl StakeRegistry {
         }
 
         // Check unbonding entry count for this delegator+validator pair
-        let existing_unbonding = self
+        // AND the global per-validator cap (P1). Iterate the queue once and
+        // count both buckets in the same pass.
+        let (existing_unbonding, per_validator_total) = self
             .unbonding_queue
             .values()
             .flat_map(|v| v.iter())
-            .filter(|u| u.delegator == delegator && u.validator == validator)
-            .count();
+            .filter(|u| u.validator == validator)
+            .fold((0usize, 0usize), |(per_pair, total), u| {
+                (
+                    per_pair + (u.delegator == delegator) as usize,
+                    total + 1,
+                )
+            });
         if existing_unbonding >= MAX_UNBONDING_ENTRIES {
             return Err(SentrixError::InvalidTransaction(format!(
                 "max {} unbonding entries per delegation",
                 MAX_UNBONDING_ENTRIES
+            )));
+        }
+        if per_validator_total >= MAX_UNBONDING_PER_VALIDATOR {
+            return Err(SentrixError::InvalidTransaction(format!(
+                "max {} unbonding entries per validator reached",
+                MAX_UNBONDING_PER_VALIDATOR
             )));
         }
 
@@ -423,12 +445,23 @@ impl StakeRegistry {
             let delegated_before = val.total_delegated;
             val.total_delegated = val.total_delegated.saturating_sub(remaining);
 
-            // Reduce individual delegation amounts proportionally
+            // Reduce individual delegation amounts proportionally.
+            //
+            // P1: use ceiling division so the slashed total is at least
+            // the validator-level `remaining` amount, never below. Floor
+            // division (previous behaviour) loses fractions — e.g. at a
+            // 10 % slash rate across three 99-token delegations, each
+            // delegator loses 9 tokens (floor of 9.9) instead of 10,
+            // under-slashing the network. Ceiling may over-slash a
+            // single delegator by at most 1 sentri per rounding step
+            // (imperceptible) but keeps the protocol-wide slash invariant
+            // ≥ stated rate.
             for entries in self.delegations.values_mut() {
                 for entry in entries.iter_mut() {
                     if entry.validator == validator && delegated_before > 0 {
-                        let entry_slash = (entry.amount as u128).saturating_mul(remaining as u128)
-                            / (delegated_before as u128);
+                        let num = (entry.amount as u128).saturating_mul(remaining as u128);
+                        let den = delegated_before as u128;
+                        let entry_slash = num.div_ceil(den);
                         entry.amount = entry.amount.saturating_sub(entry_slash as u64);
                     }
                 }
