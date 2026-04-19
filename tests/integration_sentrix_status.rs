@@ -106,3 +106,25 @@ async fn uptime_is_monotonic_across_calls() {
     let u2 = r2.0["uptime_seconds"].as_u64().expect("uptime u64");
     assert!(u2 >= u1, "uptime must be monotonic ({u1} → {u2})");
 }
+
+#[tokio::test]
+async fn active_validator_count_reflects_consensus_source() {
+    // Pre-fix this returned 0 on mainnet because the handler only
+    // queried stake_registry (DPoS). PoA chains surface active count
+    // via `authority.active_count()` instead.
+    let (bc, _admin) = common::setup_single_validator();
+    let state = shared(bc);
+    let resp = sentrix_status(State(state)).await;
+    let consensus = resp.0["consensus"].as_str().expect("consensus");
+    let count = resp.0["validators"]["active_count"]
+        .as_u64()
+        .expect("active_count u64");
+    if consensus == "PoA" {
+        assert!(
+            count >= 1,
+            "PoA chain should surface at least one authority validator, got {count}",
+        );
+    }
+    // BFT path needs a stake-registry fixture that
+    // `setup_single_validator` doesn't build — covered separately.
+}

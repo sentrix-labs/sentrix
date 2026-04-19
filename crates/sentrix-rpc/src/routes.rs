@@ -271,6 +271,12 @@ async fn write_rate_limit_middleware(
 
 // ── Router ───────────────────────────────────────────────
 pub fn create_router(state: SharedState) -> Router {
+    // Eagerly pin the process start time so /sentrix_status and /metrics
+    // report uptime relative to boot, not to the first handler call that
+    // happened to trigger the OnceLock. Without this, uptime_seconds was
+    // 0 on the first /sentrix_status request and undercounted thereafter.
+    let _ = START_TIME.get_or_init(Instant::now);
+
     // CORS uses a fail-safe restrictive default — no cross-origin allowed unless SENTRIX_CORS_ORIGIN is set.
     // Use SENTRIX_CORS_ORIGIN=* for local development only; set specific origins in production.
     let cors = match std::env::var("SENTRIX_CORS_ORIGIN").ok().as_deref() {
@@ -540,7 +546,14 @@ pub async fn sentrix_status(State(state): State<SharedState>) -> Json<serde_json
     // Window start = earliest block we can answer from RAM. Useful for
     // clients deciding whether to use this node as a history source.
     let earliest_height = bc.chain.first().map(|b| b.index).unwrap_or(0);
-    let active_validators = bc.stake_registry.active_count();
+    // PoA reads from the authority set; Voyager/BFT reads from the DPoS
+    // stake registry. Picking the wrong source returns 0 (the other set
+    // is empty on that chain).
+    let active_validators = if consensus == "PoA" {
+        bc.authority.active_count()
+    } else {
+        bc.stake_registry.active_count()
+    };
     // "Syncing" here means we are behind any known peer. Without a peer
     // view here, we approximate `syncing = false` (operators watching this
     // should cross-check with /chain/info window_is_partial).
