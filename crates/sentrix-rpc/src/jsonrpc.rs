@@ -361,10 +361,17 @@ pub async fn jsonrpc_handler(
                 .unwrap_or("0x")
                 .trim_start_matches("0x");
             let data_bytes = hex::decode(data_hex).unwrap_or_default();
+            // P1: cap eth_call gas_limit at BLOCK_GAS_LIMIT. Without the
+            // cap a client can request `u64::MAX` gas and force the EVM
+            // to run until it naturally OOGs, which at current
+            // INITIAL_BASE_FEE is a free long-running compute request
+            // against the validator — an asymmetric DoS: cheap for the
+            // client, expensive for the node.
             let gas_limit = call_obj["gas"]
                 .as_str()
                 .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
-                .unwrap_or(30_000_000);
+                .unwrap_or(sentrix_evm::gas::BLOCK_GAS_LIMIT)
+                .min(sentrix_evm::gas::BLOCK_GAS_LIMIT);
 
             let bc = state.read().await;
             use sentrix_evm::database::parse_sentrix_address;

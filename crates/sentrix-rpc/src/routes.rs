@@ -34,8 +34,25 @@ impl<S: Send + Sync> FromRequestParts<S> for ApiKey {
     type Rejection = StatusCode;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        // P1: require SENTRIX_API_KEY of at least MIN_API_KEY_LEN bytes
+        // when set. The pre-fix behaviour accepted any non-empty key,
+        // so an operator who accidentally set `SENTRIX_API_KEY=1`
+        // effectively had no protection (trivially guessable). An
+        // empty or too-short value now behaves as "not configured" —
+        // endpoints stay open rather than silently trusting a
+        // hopelessly weak secret.
+        const MIN_API_KEY_LEN: usize = 16;
         let required = match std::env::var("SENTRIX_API_KEY") {
-            Ok(k) if !k.is_empty() => k,
+            Ok(k) if k.len() >= MIN_API_KEY_LEN => k,
+            Ok(k) if !k.is_empty() => {
+                tracing::warn!(
+                    "SENTRIX_API_KEY is set but too short ({} chars, need ≥ {}); \
+                     ignoring — endpoints running unauthenticated",
+                    k.len(),
+                    MIN_API_KEY_LEN
+                );
+                return Ok(ApiKey);
+            }
             _ => return Ok(ApiKey), // no key set → always allow
         };
         let provided = parts
@@ -138,13 +155,34 @@ pub struct GlobalIpLimiter(pub IpRateLimiter);
 pub struct WriteIpLimiter(pub IpRateLimiter);
 
 fn extract_client_ip(request: &axum::http::Request<axum::body::Body>) -> String {
+    // P1: trust X-Forwarded-For / X-Real-IP only when
+    // `SENTRIX_TRUST_PROXY=1`. Previously these headers were always
+    // consulted first, so any client could spoof their source IP by
+    // sending a fake X-Forwarded-For and bypass the per-IP rate limit
+    // wholesale. On VPS1/2/3 the RPC listener binds a local port and
+    // the Caddy LB (VPS4) is the only upstream — operators who want
+    // the LB-set IP to be authoritative opt in via the env var; all
+    // other deployments fall back to the TCP socket peer address.
+    let trust_proxy = matches!(
+        std::env::var("SENTRIX_TRUST_PROXY").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
+    if trust_proxy
+        && let Some(ip) = request
+            .headers()
+            .get("x-forwarded-for")
+            .or_else(|| request.headers().get("x-real-ip"))
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    {
+        return ip;
+    }
     request
-        .headers()
-        .get("x-forwarded-for")
-        .or_else(|| request.headers().get("x-real-ip"))
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string())
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string())
         .unwrap_or_else(|| "unknown".to_string())
 }
 
