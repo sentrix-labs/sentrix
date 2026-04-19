@@ -758,16 +758,40 @@ impl Blockchain {
                 }
                 // Store contract RUNTIME code (not init code) if CREATE succeeded.
                 // receipt.output contains the runtime bytecode returned by the constructor.
+                //
+                // P1 (EIP-170): cap deployed runtime bytecode at 24_576
+                // bytes. Without this an attacker could ship a contract
+                // whose runtime code expands state and trie pages
+                // disproportionately per gas unit, amplifying the cost
+                // of every subsequent block that touches the account.
+                // We reject the CREATE by dropping the stored code and
+                // marking the tx failed; the sender still paid gas but
+                // no contract is registered.
+                const EIP170_MAX_CODE_SIZE: usize = 24_576;
                 if let Some(contract_addr) = receipt.contract_address
                     && !receipt.output.is_empty()
                 {
-                    let addr_str = format!("0x{}", hex::encode(contract_addr.as_slice()));
-                    use sha3::{Digest as _, Keccak256};
-                    let code_hash: [u8; 32] = Keccak256::digest(&receipt.output).into();
-                    let code_hash_hex = hex::encode(code_hash);
-                    self.accounts
-                        .store_contract_code(&code_hash_hex, receipt.output.clone());
-                    self.accounts.set_contract(&addr_str, code_hash);
+                    if receipt.output.len() > EIP170_MAX_CODE_SIZE {
+                        tracing::warn!(
+                            "P1/EIP-170: contract {} runtime bytecode {} B > {} B limit; \
+                             rejecting deploy (tx {})",
+                            format!("0x{}", hex::encode(contract_addr.as_slice())),
+                            receipt.output.len(),
+                            EIP170_MAX_CODE_SIZE,
+                            &tx.txid[..16.min(tx.txid.len())]
+                        );
+                        self.accounts.mark_evm_tx_failed(&tx.txid);
+                    } else {
+                        let addr_str =
+                            format!("0x{}", hex::encode(contract_addr.as_slice()));
+                        use sha3::{Digest as _, Keccak256};
+                        let code_hash: [u8; 32] =
+                            Keccak256::digest(&receipt.output).into();
+                        let code_hash_hex = hex::encode(code_hash);
+                        self.accounts
+                            .store_contract_code(&code_hash_hex, receipt.output.clone());
+                        self.accounts.set_contract(&addr_str, code_hash);
+                    }
                 }
             }
             Err(e) => {

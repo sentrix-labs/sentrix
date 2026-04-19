@@ -69,7 +69,16 @@ impl SentrixEvmDb {
                     B256::from(account.code_hash)
                 };
                 let info = AccountInfo {
-                    balance: U256::from(account.balance),
+                    // P1: EVM balances are denominated in wei; Sentrix
+                    // native balances are in sentri (1 SRX = 1e8 sentri,
+                    // 1 SRX = 1e18 wei → 1 sentri = 1e10 wei). Loading
+                    // the raw sentri value into revm caused the EVM to
+                    // observe a balance 1e10× smaller than reality,
+                    // which under-approximated gas-funding and broke
+                    // eth_call / eth_estimateGas for accounts with
+                    // small SRX balances.
+                    balance: U256::from(account.balance)
+                        .saturating_mul(U256::from(10_000_000_000u64)),
                     nonce: account.nonce,
                     code_hash,
                     account_id: None,
@@ -93,7 +102,9 @@ impl SentrixEvmDb {
                 .map(|a| B256::from(a.code_hash))
                 .unwrap_or(KECCAK_EMPTY);
             let info = AccountInfo {
-                balance: U256::from(balance),
+                // P1: sentri → wei conversion (see `from_account_db`).
+                balance: U256::from(balance)
+                    .saturating_mul(U256::from(10_000_000_000u64)),
                 nonce,
                 code_hash,
                 account_id: None,
@@ -300,7 +311,11 @@ mod tests {
         let mut evm_db = SentrixEvmDb::from_account_db(&account_db);
         let addr = parse_sentrix_address("0x4f3319a747fd564136209cd5d9e7d1a1e4d142be").unwrap();
         let info = evm_db.basic(addr).ok().flatten().unwrap();
-        assert_eq!(info.balance, U256::from(1_000_000u64));
+        // 1 sentri = 1e10 wei (see from_account_db P1 comment).
+        assert_eq!(
+            info.balance,
+            U256::from(1_000_000u64).saturating_mul(U256::from(10_000_000_000u64))
+        );
         assert_eq!(info.nonce, 3);
     }
 
@@ -316,7 +331,10 @@ mod tests {
 
         let addr = parse_sentrix_address("0xa7fc67af1ba0c664d859f4c1bcd2eb1f7211f112").unwrap();
         let info = evm_db.basic(addr).ok().flatten().unwrap();
-        assert_eq!(info.balance, U256::from(500_000u64));
+        assert_eq!(
+            info.balance,
+            U256::from(500_000u64).saturating_mul(U256::from(10_000_000_000u64))
+        );
     }
 
     #[test]
