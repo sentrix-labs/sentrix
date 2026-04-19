@@ -9,46 +9,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-- **feat(rpc): `/sentrix_status` endpoint** (backlog #13) — NEAR-style
-  structured node-status snapshot for operators. Returns version/build,
-  chain_id, consensus tag, `sync_info` (latest block height/hash/time,
-  earliest retained block, syncing flag), active validator count, and
-  process uptime in seconds. Distinct from `/` (API surface) and
-  `/chain/info` (chain-wide stats) — this is the "is my node healthy
-  and on the right fork" one-shot. Advertised from the root handler.
-  4 integration tests.
-
-### Fixed
-- **fix(bft): stake-weighted f+1 round skipping (issue #143)** — the
-  legacy `on_round_status` only triggered catch-up when a single peer
-  was 2+ rounds ahead, which could not resolve a persistent 1-round
-  drift between validator clusters. Testnet reproduced this repeatedly
-  (rounds climbed past 140, 2/4 validators always lagging). The engine
-  now tracks each peer's highest-observed round + their stake at the
-  current height, and skips to the largest round where f+1 stake
-  (strictly > 1/3 of `total_active_stake`) of distinct peers have
-  converged. Matches standard Tendermint round-skip. Back-compat
-  `on_round_status` wrapper retained for call sites that lack peer
-  stake; main validator loop uses the new `on_round_status_weighted`.
-  9 new tests cover the f+1 path, single-peer anti-trigger, stake
-  refresh on epoch rotation, and cache reset on height advance.
-
-### Changed
-- **perf(validator): Pioneer-mode poll 3s → 200ms + `BLOCK_TIME_SECS`
-  gate** — the Pioneer/PoA validator loop previously slept a fixed 3s
-  between block attempts, so the effective mainnet block time
-  oscillated around 3s instead of the configured 1s. The loop now
-  polls every 200ms and only attempts to build a block when at least
-  `BLOCK_TIME_SECS` has elapsed since the last one, giving a
-  consistent ~1s cadence with at most 200ms jitter. No change to
-  block validation rules.
-- **refactor(token): rename SRX-20 → SRC-20 across code + docs for
-  naming consistency.** Address prefix `SRX20_` → `SRC20_`. **BREAKING:**
-  contract address prefix changed. Safe — zero native tokens deployed
-  pre-rename. Matches industry pattern (ERC-20 / BEP-20 / TRC-20 —
-  Sentrix Request for Comments).
-
 ### Planned
 - Mainnet hard fork to Voyager (DPoS + BFT + EVM)
 - Parallel tx execution (rayon)
@@ -58,6 +18,72 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Per-delegator per-epoch reward ledger (turns
   `sentrix_getStakingRewards` history into exact claim records —
   Sprint 2)
+
+---
+
+## [2.1.1] — 2026-04-19
+
+**Testnet BFT livelock fix + mainnet block-time tuning + new status
+endpoint.** Patch release on top of v2.1.0 with one P0 liveness fix,
+one mainnet performance improvement, and one additive RPC endpoint.
+
+### Added
+- **feat(rpc): `/sentrix_status` endpoint** (backlog #13, PR #149,
+  hardened #150) — NEAR-style structured node-status snapshot for
+  operators. Returns version/build, chain_id, consensus tag,
+  `sync_info` (latest block height/hash/time, earliest retained block,
+  syncing flag), active validator count (PoA reads `authority`,
+  BFT reads `stake_registry`), and process uptime in seconds. Distinct
+  from `/` (API surface) and `/chain/info` (chain-wide stats). Uptime
+  is pinned at router init so the first call reports boot-to-now, not
+  zero. 5 integration tests.
+
+### Fixed
+- **fix(bft): stake-weighted f+1 round skipping (issue #143, PR
+  #147)** — the legacy `on_round_status` only triggered catch-up when
+  a single peer was 2+ rounds ahead, which could not resolve a
+  persistent 1-round drift between validator clusters. Testnet
+  reproduced this repeatedly (rounds climbed past 140, 2/4 validators
+  always lagging). The engine now tracks each peer's highest-observed
+  round + their stake at the current height, and skips to the largest
+  round where f+1 stake (strictly > 1/3 of `total_active_stake`) of
+  distinct peers have converged. Matches standard Tendermint round-skip.
+  Back-compat `on_round_status` wrapper retained for call sites that
+  lack peer stake; main validator loop uses the new
+  `on_round_status_weighted`. 9 new tests cover the f+1 path,
+  single-peer anti-trigger, stake refresh on epoch rotation, and
+  cache reset on height advance.
+
+### Changed
+- **perf(validator): Pioneer-mode poll 3s → 200ms + `BLOCK_TIME_SECS`
+  gate** (PR #148) — the Pioneer/PoA validator loop previously slept a
+  fixed 3s between block attempts, so the effective mainnet block time
+  oscillated around 3s instead of the configured 1s. The loop now
+  polls every 200ms and only attempts to build a block when at least
+  `BLOCK_TIME_SECS` has elapsed since the last one, giving a
+  consistent ~1s cadence with at most 200ms jitter. Verified on
+  mainnet: +42 blocks in ~35s post-restart window (was +9 blocks).
+  No change to block validation rules.
+- **refactor(token): rename SRX-20 → SRC-20** (PR #146) — code +
+  docs. Address prefix `SRX20_` → `SRC20_`. **Breaking:** contract
+  address prefix changed. Safe — zero native tokens deployed
+  pre-rename. Matches industry pattern (ERC-20 / BEP-20 / TRC-20 —
+  Sentrix Request for Comments).
+
+### Known issues
+- **Transitive dependency advisories (to be addressed in a future
+  patch):**
+  - RUSTSEC-2025-0055 — `tracing-subscriber 0.2.25` pulled in via
+    `ark-r1cs-std` → `ark-relations`. Fix requires upstream `ark-*`
+    crate updates; main `tracing-subscriber` is already 0.3.x.
+  - `bincode 1.3.3` unmaintained (RUSTSEC-2025-0141) — used directly
+    by `sentrix-trie` for MDBX value encoding. Migration to
+    `bincode 2.x` planned as a separate task.
+  - `paste 1.0.15` unmaintained (RUSTSEC-2024-0436) — transitive via
+    `netlink-packet-core` (not reached at runtime on any supported
+    platform).
+  - `derivative 2.2.0` — transitive via `ark-ff` / `ruint` (same
+    upstream track as the tracing-subscriber advisory).
 
 ---
 
@@ -533,7 +559,8 @@ Pioneer release. PoA chain live with 7 validators across 3 VPS, 141K+ blocks, 11
 
 ---
 
-[Unreleased]: https://github.com/sentrix-labs/sentrix/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/sentrix-labs/sentrix/compare/v2.1.1...HEAD
+[2.1.1]: https://github.com/sentrix-labs/sentrix/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/sentrix-labs/sentrix/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/sentrix-labs/sentrix/compare/v1.5.0...v2.0.0
 [1.5.0]: https://github.com/sentrix-labs/sentrix/compare/v1.4.0...v1.5.0
