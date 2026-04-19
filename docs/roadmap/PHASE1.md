@@ -10,7 +10,7 @@ Done. Live in production.
 - Two-pass atomic block validation
 - ECDSA secp256k1 signing with chain_id replay protection
 - SentrixTrie (256-level Binary SMT, BLAKE3+SHA-256)
-- SRX-20 tokens (SNTX deployed, 10B supply)
+- SRC-20 tokens (SNTX deployed, 10B supply)
 - libp2p networking (Noise XX + Yamux, bincode wire, Kademlia DHT, gossipsub)
 - REST API (25+ endpoints) + JSON-RPC 2.0 (20 methods)
 - Block explorer (12 pages, dark theme)

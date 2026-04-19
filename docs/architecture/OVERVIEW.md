@@ -31,7 +31,7 @@ src/core/authority.rs        Validators, round-robin, admin audit log
 src/core/transaction.rs      ECDSA signing, nonce, chain_id
 src/core/account.rs          Balances (u64 sentri), fee split
 src/core/trie/               State trie — 256-level Binary SMT
-src/core/vm.rs               SRX-20 token engine
+src/core/vm.rs               SRC-20 token engine
 src/core/block.rs            Block struct, hashing
 src/core/merkle.rs           SHA-256 tx merkle root
 src/network/libp2p_node.rs   P2P swarm, broadcast, sync

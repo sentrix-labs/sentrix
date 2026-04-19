@@ -38,14 +38,14 @@ src/
 │   ├── mempool.rs         # Mempool management (add, prune, limits)
 │   ├── block_producer.rs  # Block creation (create_block)
 │   ├── block_executor.rs  # Block validation + commit (add_block)
-│   ├── token_ops.rs       # SRX-20 operations
+│   ├── token_ops.rs       # SRC-20 operations
 │   ├── chain_queries.rs   # Read-only chain queries
 │   ├── block.rs           # Block struct + hash
 │   ├── transaction.rs     # TX struct + ECDSA sign/verify
 │   ├── account.rs         # Balance + nonce state
 │   ├── authority.rs       # PoA validator management
 │   ├── merkle.rs          # SHA-256 Merkle tree
-│   └── vm.rs              # SRX-20 token engine
+│   └── vm.rs              # SRC-20 token engine
 ├── network/
 │   ├── node.rs            # Legacy TCP P2P
 │   ├── sync.rs            # Chain sync protocol

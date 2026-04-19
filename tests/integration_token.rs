@@ -1,5 +1,5 @@
 #![allow(missing_docs, clippy::expect_used, clippy::unwrap_used)]
-// integration_token.rs — SRX-20 token deploy + transfer + burn + mint tests
+// integration_token.rs — SRC-20 token deploy + transfer + burn + mint tests
 // All token operations go through the standard mempool → add_block path (no shortcuts).
 
 mod common;
@@ -34,7 +34,7 @@ fn mine_token_op(
     common::mine_block_with_mempool(bc, validator_addr);
 }
 
-/// Deploy an SRX-20 token, verify deployer receives total supply.
+/// Deploy an SRC-20 token, verify deployer receives total supply.
 #[test]
 fn test_token_deploy_and_initial_supply() {
     let (mut bc, val) = common::setup_single_validator();
@@ -99,10 +99,10 @@ fn test_contract_address_deterministic() {
         .expect("addr1")
         .to_string();
 
-    // The address format is SRX20_<hex> — verify it's deterministic (non-empty, consistent prefix)
+    // The address format is SRC20_<hex> — verify it's deterministic (non-empty, consistent prefix)
     assert!(
-        addr1.starts_with("SRX20_"),
-        "contract address must have SRX20_ prefix"
+        addr1.starts_with("SRC20_"),
+        "contract address must have SRC20_ prefix"
     );
 
     // Verify balance is correct (deployer has all tokens)

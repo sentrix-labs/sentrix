@@ -6,7 +6,7 @@
 |------|------|----|----------------|
 | Coinbase | `COINBASE` | Validator | Automatic (block reward) |
 | Transfer | User | Recipient | User (signed) |
-| Token op | User | Contract | User (via SRX-20) |
+| Token op | User | Contract | User (via SRC-20) |
 
 ## Structure
 
@@ -90,9 +90,9 @@ Encoded in the `data` field as JSON:
 
 ```json
 {"op": "deploy",   "name": "...", "symbol": "...", "supply": N, "decimals": N}
-{"op": "transfer", "contract": "SRX20_...", "to": "0x...", "amount": N}
-{"op": "burn",     "contract": "SRX20_...", "amount": N}
-{"op": "approve",  "contract": "SRX20_...", "spender": "0x...", "amount": N}
+{"op": "transfer", "contract": "SRC20_...", "to": "0x...", "amount": N}
+{"op": "burn",     "contract": "SRC20_...", "amount": N}
+{"op": "approve",  "contract": "SRC20_...", "spender": "0x...", "amount": N}
 ```
 
 Still need SRX for gas. See [Token Standards](../tokenomics/TOKEN_STANDARDS.md).

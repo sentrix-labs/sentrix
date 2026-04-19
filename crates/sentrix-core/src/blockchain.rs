@@ -825,7 +825,7 @@ mod tests {
         assert_eq!(bc.total_minted, TOTAL_PREMINE + BLOCK_REWARD);
     }
 
-    // ── SRX-20 Token Tests ──────────────────────────────
+    // ── SRC-20 Token Tests ──────────────────────────────
 
     #[test]
     fn test_deploy_token() {
@@ -845,7 +845,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(addr.starts_with("SRX20_"));
+        assert!(addr.starts_with("SRC20_"));
         assert_eq!(bc.token_balance(&addr, "deployer"), 1_000_000);
         assert_eq!(bc.list_tokens().len(), 1);
         // Fee deducted: 100k fee, deployer had 1M

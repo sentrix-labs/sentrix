@@ -1,10 +1,10 @@
-// token_ops.rs - Sentrix — SRX-20 token operations
+// token_ops.rs - Sentrix — SRC-20 token operations
 
 use crate::blockchain::{Blockchain, ECOSYSTEM_FUND_ADDRESS};
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 
 impl Blockchain {
-    // ── SRX-20 Token Operations ────────────────────────────
+    // ── SRC-20 Token Operations ────────────────────────────
 
     // pub(crate) — not callable from routes.rs; canonical on-chain path uses the mempool/add_block pipeline.
     // Direct state mutation bypasses transaction lifecycle; restrict to internal/testing use only.
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn test_token_info_unknown_contract() {
         let bc = setup();
-        let result = bc.token_info("SRX20_nonexistent_contract");
+        let result = bc.token_info("SRC20_nonexistent_contract");
         assert!(result.is_err());
     }
 
@@ -235,7 +235,7 @@ mod tests {
     fn test_token_balance_unknown_contract_returns_zero() {
         let bc = setup();
         let balance = bc.token_balance(
-            "SRX20_nonexistent",
+            "SRC20_nonexistent",
             "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
         );
         assert_eq!(balance, 0);

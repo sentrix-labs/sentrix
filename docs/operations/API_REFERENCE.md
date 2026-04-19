@@ -26,7 +26,7 @@ Base URL: `https://testnet-rpc.sentriscloud.com` (testnet) or `https://sentrix-r
 | GET | `/mempool` | Current mempool contents |
 | GET | `/transactions?page=0&limit=20` | Latest transactions (paginated) |
 | GET | `/transactions/{txid}` | Transaction detail by txid |
-| GET | `/tokens` | List all deployed SRX-20 tokens |
+| GET | `/tokens` | List all deployed SRC-20 tokens |
 | GET | `/tokens/{contract}` | Token info (name, symbol, supply, owner) |
 | GET | `/tokens/{contract}/balance/{address}` | Token balance for address |
 | GET | `/tokens/{contract}/holders` | Token holder list (sorted by balance) |
@@ -48,7 +48,7 @@ Base URL: `https://testnet-rpc.sentriscloud.com` (testnet) or `https://sentrix-r
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/transactions` | Submit a signed native SRX transaction |
-| POST | `/tokens/deploy` | Deploy a new SRX-20 token (signed tx) |
+| POST | `/tokens/deploy` | Deploy a new SRC-20 token (signed tx) |
 | POST | `/tokens/{contract}/transfer` | Token transfer (signed tx) |
 | POST | `/tokens/{contract}/burn` | Token burn (signed tx) |
 | POST | `/rpc` | JSON-RPC 2.0 dispatcher (single + batch) |

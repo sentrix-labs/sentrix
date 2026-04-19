@@ -28,7 +28,7 @@ Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, i
 | **Storage** | libmdbx — memory-mapped B+ tree (used by Reth/Erigon) |
 | **EVM** | revm 37 — Solidity contracts, MetaMask compatible (testnet) |
 | **State** | Binary Sparse Merkle Tree (BLAKE3 + SHA-256) with proofs |
-| **Tokens** | SRX-20 native + SRC-20 (ERC-20 via EVM) |
+| **Tokens** | SRC-20 native + SRC-20 (ERC-20 via EVM) |
 | **Network** | libp2p + Noise XX + Kademlia + Gossipsub |
 | **API** | REST (60+ endpoints) + JSON-RPC 2.0 (25 methods, incl. `sentrix_*` native namespace) |
 | **Explorer** | Built-in dark-themed block explorer |
@@ -103,7 +103,7 @@ bin/sentrix/              CLI binary
 
 | Phase | Status | Focus |
 |-------|--------|-------|
-| **Pioneer** | Live (mainnet v2.0.0) | PoA consensus, MDBX storage, 1s blocks, SRX-20 tokens |
+| **Pioneer** | Live (mainnet v2.0.0) | PoA consensus, MDBX storage, 1s blocks, SRC-20 tokens |
 | **Voyager** | Live (testnet) | DPoS + BFT finality, EVM (revm 37), eth_sendRawTransaction |
 | **Frontier** | Planned | Mainnet hard fork, parallel execution, ecosystem |
 | **Odyssey** | Future | Cross-chain, mature ecosystem |

@@ -583,7 +583,7 @@ async fn metrics(State(state): State<SharedState>) -> axum::response::Response {
          # HELP sentrix_block_time_seconds Average block time in seconds (last 10 blocks).\n\
          # TYPE sentrix_block_time_seconds gauge\n\
          sentrix_block_time_seconds {avg_block_time:.2}\n\
-         # HELP sentrix_deployed_tokens Number of deployed SRX-20/SRC-20 token contracts.\n\
+         # HELP sentrix_deployed_tokens Number of deployed SRC-20/SRC-20 token contracts.\n\
          # TYPE sentrix_deployed_tokens gauge\n\
          sentrix_deployed_tokens {deployed_tokens}\n\
          # HELP sentrix_uptime_seconds Seconds since node process started.\n\
@@ -1319,7 +1319,7 @@ async fn get_address_proof(
                     "root_hex": hex::encode(trie.root_hash()),
                     // Proof covers native SRX state only — token balances are not committed to the trie
                     "scope": "native_srx_only",
-                    "scope_note": "Proof covers native SRX balance and nonce only. SRX-20 token balances are not committed to the state root.",
+                    "scope_note": "Proof covers native SRX balance and nonce only. SRC-20 token balances are not committed to the state root.",
                 }))
                 .into_response()
             }
