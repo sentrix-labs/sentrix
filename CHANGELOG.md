@@ -22,6 +22,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   call. 8 integration tests.
 
 ### Refactored
+- **refactor(rpc): split routes.rs into submodules** (backlog #12 phase
+  1) — `routes.rs` → `routes/mod.rs`; auth extractor +
+  `constant_time_eq` moved to `routes/auth.rs`; rate-limiter types +
+  middleware + `extract_client_ip` moved to `routes/ratelimit.rs`;
+  response / request DTOs (`ApiResponse`, `SendTxRequest`,
+  `SignedTxRequest`) moved to `routes/types.rs`. Public API preserved
+  via `pub use` re-exports. Handlers (~900 lines) stay in mod.rs
+  pending phase 2. mod.rs shrinks 1593 → 1368 LOC. No behaviour change.
 - **refactor(rpc): jsonrpc helpers extracted to submodule** (backlog
   #11 phase 1, PR #152) — `jsonrpc.rs` → `jsonrpc/mod.rs` and all
   shared helpers (to_hex, normalize_rpc_*, parse_hex_u64,

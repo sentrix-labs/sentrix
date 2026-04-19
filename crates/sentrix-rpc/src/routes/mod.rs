@@ -1,9 +1,24 @@
-// routes.rs - Sentrix
+// routes/mod.rs - Sentrix REST API. Shared bits (auth, rate limiting,
+// request/response DTOs) live in sibling submodules; this file wires
+// them up via `create_router` and carries the per-resource handlers
+// (chain / accounts / staking / tokens / epoch / ops). Phase 2 of the
+// backlog #12 refactor will further split those handler groups into
+// dedicated modules. (backlog #12 phase 1)
+
+mod auth;
+mod ratelimit;
+mod types;
+
+pub use auth::{ApiKey, constant_time_eq};
+pub use ratelimit::{GlobalIpLimiter, IpRateLimiter, WriteIpLimiter};
+pub use types::{ApiResponse, SendTxRequest, SignedTxRequest};
+
+use ratelimit::{ip_rate_limit_middleware, write_rate_limit_middleware};
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, FromRequestParts, Path, State},
-    http::{StatusCode, request::Parts},
+    extract::{DefaultBodyLimit, Path, State},
+    http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
 };
@@ -17,7 +32,6 @@ use crate::jsonrpc::rpc_dispatcher;
 use sentrix_core::blockchain::Blockchain;
 use sentrix_primitives::transaction::{TokenOp, Transaction};
 use sentrix_trie::address::{account_value_decode, address_to_key};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
@@ -25,249 +39,10 @@ use tokio::sync::RwLock;
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{Any, CorsLayer};
 
-// ── API key extractor ─────────────────────────────────────
-// Add `_auth: ApiKey` as the first parameter of any handler that needs auth.
-// Returns 401 if SENTRIX_API_KEY is set and the request doesn't match.
-pub struct ApiKey;
-
-impl<S: Send + Sync> FromRequestParts<S> for ApiKey {
-    type Rejection = StatusCode;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        // P1: require SENTRIX_API_KEY of at least MIN_API_KEY_LEN bytes
-        // when set. The pre-fix behaviour accepted any non-empty key,
-        // so an operator who accidentally set `SENTRIX_API_KEY=1`
-        // effectively had no protection (trivially guessable). An
-        // empty or too-short value now behaves as "not configured" —
-        // endpoints stay open rather than silently trusting a
-        // hopelessly weak secret.
-        const MIN_API_KEY_LEN: usize = 16;
-        let required = match std::env::var("SENTRIX_API_KEY") {
-            Ok(k) if k.len() >= MIN_API_KEY_LEN => k,
-            Ok(k) if !k.is_empty() => {
-                tracing::warn!(
-                    "SENTRIX_API_KEY is set but too short ({} chars, need ≥ {}); \
-                     ignoring — endpoints running unauthenticated",
-                    k.len(),
-                    MIN_API_KEY_LEN
-                );
-                return Ok(ApiKey);
-            }
-            _ => return Ok(ApiKey), // no key set → always allow
-        };
-        let provided = parts
-            .headers
-            .get("X-API-Key")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if constant_time_eq(provided, &required) {
-            Ok(ApiKey)
-        } else {
-            Err(StatusCode::UNAUTHORIZED)
-        }
-    }
-}
 
 pub type SharedState = Arc<RwLock<Blockchain>>;
 
-// ── Response types ───────────────────────────────────────
-#[derive(Serialize)]
-pub struct ApiResponse<T: Serialize> {
-    pub success: bool,
-    pub data: Option<T>,
-    pub error: Option<String>,
-}
 
-impl<T: Serialize> ApiResponse<T> {
-    pub fn ok(data: T) -> Json<Self> {
-        Json(Self {
-            success: true,
-            data: Some(data),
-            error: None,
-        })
-    }
-    pub fn err(msg: String) -> Json<ApiResponse<()>> {
-        Json(ApiResponse {
-            success: false,
-            data: None,
-            error: Some(msg),
-        })
-    }
-}
-
-// ── Request types ────────────────────────────────────────
-#[derive(Deserialize)]
-pub struct SendTxRequest {
-    pub transaction: Transaction,
-}
-
-// Token endpoints accept pre-signed transactions only — private keys stay client-side.
-// Client builds TokenOp JSON → encodes in tx.data → signs locally → POSTs signed tx here.
-#[derive(Deserialize)]
-pub struct SignedTxRequest {
-    pub transaction: Transaction,
-}
-
-// Constant-time comparison via `subtle` crate prevents timing-based API key leakage.
-pub fn constant_time_eq(a: &str, b: &str) -> bool {
-    use subtle::ConstantTimeEq;
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-    // Pad both to max_len so comparison traverses equal bytes regardless of input length.
-    let max_len = a_bytes.len().max(b_bytes.len());
-    let mut a_padded = vec![0u8; max_len];
-    let mut b_padded = vec![0u8; max_len];
-    a_padded[..a_bytes.len()].copy_from_slice(a_bytes);
-    b_padded[..b_bytes.len()].copy_from_slice(b_bytes);
-    // Length difference must also cause failure (constant-time).
-    let len_eq: subtle::Choice = (a_bytes.len() as u64).ct_eq(&(b_bytes.len() as u64));
-    let content_eq: subtle::Choice = a_padded.ct_eq(&b_padded);
-    (len_eq & content_eq).into()
-}
-
-// ── Per-IP Rate Limiter (V5-06) ──────────────────────────
-pub type IpRateLimiter = Arc<Mutex<HashMap<String, (u32, Instant)>>>;
-const RATE_LIMIT_WINDOW_SECS: u64 = 60;
-/// Override via SENTRIX_GLOBAL_RATE_LIMIT env var for benchmarking.
-fn global_rate_limit_max() -> u32 {
-    std::env::var("SENTRIX_GLOBAL_RATE_LIMIT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(60)
-}
-/// A7: tighter per-IP cap applied only to write/expensive endpoints
-/// (POST /transactions, /tokens/deploy|transfer|burn, /rpc). Defends
-/// against single-IP spam of state-mutating requests in addition to the
-/// global 60 req/min ceiling. Read endpoints stay at the global limit.
-/// Override via SENTRIX_WRITE_RATE_LIMIT env var for benchmarking (e.g. 10000).
-fn write_rate_limit_max() -> u32 {
-    std::env::var("SENTRIX_WRITE_RATE_LIMIT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10)
-}
-
-/// A7: distinct limiter newtypes so write+read counters do not alias each
-/// other. Both registered as separate `Extension<T>` entries on requests.
-#[derive(Clone)]
-pub struct GlobalIpLimiter(pub IpRateLimiter);
-#[derive(Clone)]
-pub struct WriteIpLimiter(pub IpRateLimiter);
-
-fn extract_client_ip(request: &axum::http::Request<axum::body::Body>) -> String {
-    // P1: trust X-Forwarded-For / X-Real-IP only when
-    // `SENTRIX_TRUST_PROXY=1`. Previously these headers were always
-    // consulted first, so any client could spoof their source IP by
-    // sending a fake X-Forwarded-For and bypass the per-IP rate limit
-    // wholesale. On VPS1/2/3 the RPC listener binds a local port and
-    // the Caddy LB (VPS4) is the only upstream — operators who want
-    // the LB-set IP to be authoritative opt in via the env var; all
-    // other deployments fall back to the TCP socket peer address.
-    let trust_proxy = matches!(
-        std::env::var("SENTRIX_TRUST_PROXY").as_deref(),
-        Ok("1") | Ok("true") | Ok("TRUE")
-    );
-    if trust_proxy
-        && let Some(ip) = request
-            .headers()
-            .get("x-forwarded-for")
-            .or_else(|| request.headers().get("x-real-ip"))
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.split(',').next())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-    {
-        return ip;
-    }
-    request
-        .extensions()
-        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|ci| ci.0.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-async fn check_rate_limit(
-    limiter: IpRateLimiter,
-    ip: String,
-    max_requests: u32,
-    window_secs: u64,
-) -> bool {
-    let mut map = limiter.lock().await;
-    if map.len() > 10_000 {
-        map.retain(|_, (_, ts)| ts.elapsed().as_secs() < window_secs);
-    }
-    let now = Instant::now();
-    let entry = map.entry(ip).or_insert((0, now));
-    if entry.1.elapsed().as_secs() >= window_secs {
-        *entry = (1, now);
-        true
-    } else {
-        entry.0 += 1;
-        entry.0 <= max_requests
-    }
-}
-
-fn rate_limit_response(max: u32, window: u64) -> axum::response::Response {
-    (
-        StatusCode::TOO_MANY_REQUESTS,
-        Json(serde_json::json!({
-            "error": "rate limit exceeded",
-            "limit": max,
-            "window_secs": window,
-        })),
-    )
-        .into_response()
-}
-
-async fn ip_rate_limit_middleware(
-    request: axum::http::Request<axum::body::Body>,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    let ip = extract_client_ip(&request);
-    let allowed = if let Some(limiter) = request.extensions().get::<GlobalIpLimiter>().cloned() {
-        check_rate_limit(
-            limiter.0,
-            ip,
-            global_rate_limit_max(),
-            RATE_LIMIT_WINDOW_SECS,
-        )
-        .await
-    } else {
-        true
-    };
-    if allowed {
-        next.run(request).await
-    } else {
-        rate_limit_response(global_rate_limit_max(), RATE_LIMIT_WINDOW_SECS)
-    }
-}
-
-/// A7: stricter write-endpoint rate limit (10 req/min per IP). Layered on
-/// top of the global 60/min limit, so an attacker hitting POST endpoints
-/// burns the write quota first while read traffic from the same IP keeps
-/// flowing. Returns 429 with the same response shape as the global limit.
-async fn write_rate_limit_middleware(
-    request: axum::http::Request<axum::body::Body>,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    let ip = extract_client_ip(&request);
-    let allowed = if let Some(limiter) = request.extensions().get::<WriteIpLimiter>().cloned() {
-        check_rate_limit(
-            limiter.0,
-            ip,
-            write_rate_limit_max(),
-            RATE_LIMIT_WINDOW_SECS,
-        )
-        .await
-    } else {
-        true
-    };
-    if allowed {
-        next.run(request).await
-    } else {
-        rate_limit_response(write_rate_limit_max(), RATE_LIMIT_WINDOW_SECS)
-    }
-}
 
 // ── Router ───────────────────────────────────────────────
 pub fn create_router(state: SharedState) -> Router {
