@@ -4,7 +4,7 @@
 use clap::{Parser, Subcommand};
 use libp2p::Multiaddr;
 use sentrix::api::routes::{SharedState, create_router};
-use sentrix::core::blockchain::Blockchain;
+use sentrix::core::blockchain::{BLOCK_TIME_SECS, Blockchain};
 use sentrix::core::transaction::{TOKEN_OP_ADDRESS, TokenOp, Transaction};
 use sentrix::network::libp2p_node::{LibP2pNode, make_multiaddr};
 use sentrix::network::node::{DEFAULT_PORT, NodeEvent};
@@ -962,6 +962,14 @@ async fn cmd_start(
             let mut bft_engine: Option<BftEngine> = None;
             let mut voyager_tick_count: u64 = 0;
             let mut proposed_block: Option<Block> = None;
+            // Pioneer mode: track last block time for a fine-grained poll loop.
+            // Poll every PIONEER_TICK, but only attempt to build a block when
+            // at least BLOCK_TIME_SECS has elapsed since the last one. Gives
+            // a consistent ~1s cadence without blocking the loop for 3s when
+            // nothing is happening (previous 3s sleep made the effective
+            // block time oscillate around 3s instead of the configured 1s).
+            let mut pioneer_last_block = tokio::time::Instant::now()
+                - tokio::time::Duration::from_secs(BLOCK_TIME_SECS);
 
             loop {
                 if shutdown_flag_clone.load(Ordering::Acquire) {
@@ -1002,10 +1010,23 @@ async fn cmd_start(
                 }
 
                 // ════════════════════════════════════════════════
-                // Pioneer mode: original 3s polling, no BFT
+                // Pioneer mode: 200ms poll, produce block once per
+                // BLOCK_TIME_SECS. This replaces the original 3s fixed
+                // sleep which made the effective block time oscillate
+                // around 3s instead of the configured 1s.
                 // ════════════════════════════════════════════════
                 if !voyager_activated {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                    const PIONEER_TICK: tokio::time::Duration =
+                        tokio::time::Duration::from_millis(200);
+                    tokio::time::sleep(PIONEER_TICK).await;
+
+                    // Gate block production on BLOCK_TIME_SECS so the tighter
+                    // poll doesn't produce a burst of sub-second blocks.
+                    if pioneer_last_block.elapsed()
+                        < tokio::time::Duration::from_secs(BLOCK_TIME_SECS)
+                    {
+                        continue;
+                    }
 
                     let result = {
                         let mut bc = shared_clone.write().await;
@@ -1028,6 +1049,7 @@ async fn cmd_start(
                     };
 
                     if let Some((height, Some(block_to_save))) = result {
+                        pioneer_last_block = tokio::time::Instant::now();
                         // H-09: only broadcast after the block is durably
                         // persisted. A broadcast of a block we can't recover
                         // on restart is a fork risk — peers would accept
