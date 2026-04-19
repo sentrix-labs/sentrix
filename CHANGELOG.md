@@ -9,6 +9,27 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **feat(rpc): `eth_getBlockReceipts`** (backlog #8) — batch receipt
+  query matching the Ethereum JSON-RPC spec. Input: block tag
+  (`latest` / `earliest` / `pending` / `safe` / `finalized` / hex
+  number) OR block hash OR `{blockHash}` / `{blockNumber}` object.
+  Output: array of receipt objects in transaction order with
+  `transactionIndex`, `from`, `to`, and monotonic `cumulativeGasUsed`
+  on top of the existing `eth_getTransactionReceipt` shape (status,
+  logs, logsBloom, gasUsed). Non-existent block → `null`. Collapses
+  the N-round-trip receipt fan-out explorers used to do into one
+  call. 8 integration tests.
+
+### Refactored
+- **refactor(rpc): jsonrpc helpers extracted to submodule** (backlog
+  #11 phase 1, PR #152) — `jsonrpc.rs` → `jsonrpc/mod.rs` and all
+  shared helpers (to_hex, normalize_rpc_*, parse_hex_u64,
+  resolve_block_tag, parse_address_filter, parse_topic_filter,
+  log_matches, collect_logs, load_logs_for_tx, block_gas_used_ratio,
+  TopicFilter) moved to `jsonrpc/helpers.rs`. mod.rs 1302 → 1057 LOC.
+  No behaviour change. Phase 2 (per-namespace handler split) pending.
+
 ### Planned
 - Mainnet hard fork to Voyager (DPoS + BFT + EVM)
 - Parallel tx execution (rayon)
