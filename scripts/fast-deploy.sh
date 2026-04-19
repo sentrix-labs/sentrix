@@ -123,13 +123,29 @@ else
 fi
 
 # ── Build ───────────────────────────────────────────────────
+# Build in a Debian bullseye container (glibc 2.31) so the resulting
+# binary runs on every target — VPS1/VPS2 ship Ubuntu 22.04 (glibc 2.35)
+# and VPS3 ships 24.04 (glibc 2.39). A native VPS4 build would pin to
+# glibc 2.39 and crash on VPS1/VPS2 (happened on commit e49e01d).
+# Cargo cache is mounted so only the first build is cold.
+DOCKER_BUILD_IMAGE="${SENTRIX_BUILD_IMAGE:-rust:1.95-bullseye}"
+DOCKER_CACHE="${SENTRIX_DOCKER_CACHE:-$HOME/.cache/sentrix-docker-build}"
 if [[ -n "${SENTRIX_ROLLBACK:-}" ]]; then
     BINARY="$SENTRIX_ROLLBACK"
     echo "  $(blue '=>') Using rollback binary: $BINARY"
 else
-    echo "  $(blue '=>') Building release binary on VPS4 ..."
-    cargo build --workspace --release --quiet 2>&1 | tail -2
-    BINARY="$REPO_ROOT/target/release/sentrix"
+    echo "  $(blue '=>') Building release binary on VPS4 (docker: $DOCKER_BUILD_IMAGE) ..."
+    mkdir -p "$DOCKER_CACHE/cargo-registry" "$DOCKER_CACHE/cargo-git" "$DOCKER_CACHE/target"
+    docker run --rm \
+        -v "$REPO_ROOT":/work \
+        -v "$DOCKER_CACHE/cargo-registry":/usr/local/cargo/registry \
+        -v "$DOCKER_CACHE/cargo-git":/usr/local/cargo/git \
+        -v "$DOCKER_CACHE/target":/work/target \
+        -w /work \
+        -e CARGO_TERM_COLOR=never \
+        "$DOCKER_BUILD_IMAGE" \
+        bash -c "apt-get update -qq && apt-get install -y -qq pkg-config libssl-dev clang >/dev/null && cargo build --workspace --release --quiet" 2>&1 | tail -3
+    BINARY="$DOCKER_CACHE/target/release/sentrix"
 fi
 [[ -x "$BINARY" ]] || { echo "  $(red "No binary at $BINARY")"; exit 4; }
 BINARY_HASH=$(sha256sum "$BINARY" | cut -c1-16)
