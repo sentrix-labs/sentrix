@@ -129,8 +129,17 @@ impl StakeRegistry {
                 self_stake,
                 total_delegated: 0,
                 commission_rate,
+                // C-09: clamp to MAX_COMMISSION. saturating_add alone
+                // tops out at u16::MAX; the per-epoch change budget
+                // (5 × 200 = 1000) added to a commission registered near
+                // MAX_COMMISSION (e.g. 1500) would otherwise produce a
+                // max_commission_rate of 2500, i.e. 25 %, even though
+                // the hard ceiling is 2000 (20 %). Clamping restores
+                // the invariant that no stored max_commission_rate
+                // can exceed MAX_COMMISSION.
                 max_commission_rate: commission_rate
-                    .saturating_add(MAX_COMMISSION_CHANGE_PER_EPOCH * 5),
+                    .saturating_add(MAX_COMMISSION_CHANGE_PER_EPOCH * 5)
+                    .min(MAX_COMMISSION),
                 is_jailed: false,
                 jail_until: 0,
                 is_tombstoned: false,
@@ -730,6 +739,38 @@ mod tests {
         assert!(
             reg.register_validator("0xval1", MIN_SELF_STAKE, 1000, 0)
                 .is_err()
+        );
+    }
+
+    // C-09: max_commission_rate must be clamped to MAX_COMMISSION on
+    // registration, so that `update_commission` cannot grow the rate
+    // above the hard ceiling even after saturating the per-epoch
+    // growth budget.
+    #[test]
+    fn test_c09_max_commission_rate_clamped_on_registration() {
+        let mut reg = new_registry();
+        // Register at the upper edge of the allowed commission band.
+        // With the pre-fix saturating_add, max_commission_rate would be
+        // 1500 + 1000 = 2500 > MAX_COMMISSION (2000).
+        reg.register_validator("0xvalhigh", MIN_SELF_STAKE, 1500, 0)
+            .unwrap();
+        let stored = reg.get_validator("0xvalhigh").unwrap();
+        assert!(
+            stored.max_commission_rate <= MAX_COMMISSION,
+            "max_commission_rate {} must not exceed MAX_COMMISSION {}",
+            stored.max_commission_rate,
+            MAX_COMMISSION
+        );
+
+        // Sanity check: a mid-range registration still gets a budget
+        // (the clamp only kicks in near the ceiling).
+        reg.register_validator("0xvallow", MIN_SELF_STAKE, 500, 0)
+            .unwrap();
+        let stored_low = reg.get_validator("0xvallow").unwrap();
+        assert_eq!(
+            stored_low.max_commission_rate,
+            500 + MAX_COMMISSION_CHANGE_PER_EPOCH * 5,
+            "low-rate registration should get the full 5-epoch budget"
         );
     }
 
