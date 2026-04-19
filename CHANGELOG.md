@@ -11,21 +11,47 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 - **chore(rpc): expand root endpoint self-describe with full REST
-  surface + JSON-RPC namespaces** — `GET /` now returns the complete
-  REST endpoint map (accounts, staking, epoch, mempool, metrics) plus
-  a `jsonrpc_namespaces` section advertising `eth_*`, `net_*`, `web3_*`,
-  `sentrix_*`. Adds `consensus` (PoA/BFT from chain_id) and
-  `native_token` ("SRX") top-level fields so wallets can discover chain
-  semantics without scraping docs.
+  surface + JSON-RPC namespaces** (PR #140) — `GET /` now returns the
+  complete REST endpoint map (accounts, staking, epoch, mempool,
+  metrics) plus a `jsonrpc_namespaces` section advertising `eth_*`,
+  `net_*`, `web3_*`, `sentrix_*`. Adds `consensus` (PoA/BFT from
+  chain_id) and `native_token` ("SRX") top-level fields so wallets can
+  discover chain semantics without scraping docs.
+- **feat(ops): fast-deploy.sh as primary deploy path** (PR #139) — new
+  `scripts/fast-deploy.sh` builds on VPS4, uploads binary via wg1 SCP,
+  rolling restart with bounded health check. Cuts deploy time from
+  ~10–12 min (CI cold cargo cache) to ~3–5 min. CI `deploy` job
+  disabled (`if: false`) — CI still runs tests for audit trail. New
+  `scripts/emergency-deploy.sh` for break-glass cases.
+- **fix(deploy): build in bullseye container to match VPS1/VPS2 glibc**
+  (PR #141) — `fast-deploy.sh` build step runs inside
+  `rust:1.95-bullseye` (glibc 2.31) so binaries work on every target
+  regardless of VPS4 host OS. Fixes crash-loop on commit e49e01d where
+  a VPS4 24.04 native build (glibc 2.39) failed to load on VPS1/VPS2
+  (22.04, glibc 2.35).
 
 ### Added
-- **Sentrix native JSON-RPC namespace (Sprint 1)** — five new methods
-  that expose chain features the `eth_*` namespace cannot represent:
-  `sentrix_getValidatorSet`, `sentrix_getDelegations`,
+- **Sentrix native JSON-RPC namespace (Sprint 1)** (PR #137) — five
+  new methods that expose chain features the `eth_*` namespace cannot
+  represent: `sentrix_getValidatorSet`, `sentrix_getDelegations`,
   `sentrix_getStakingRewards`, `sentrix_getBftStatus`,
   `sentrix_getFinalizedHeight`. Amounts returned in wei hex so
   existing bignum libraries keep working. See
   `docs/operations/API_REFERENCE.md` for the full payload spec.
+
+### Fixed
+- **sentrix_getValidatorSet PoA fallback (Sprint 1.1)** (PR #138) — on
+  mainnet `stake_registry` is empty pre-Voyager, so the initial
+  Sprint 1 implementation returned `validators: []`. The handler now
+  falls back to `AuthorityManager` when `is_voyager_height(height)` is
+  false or the DPoS registry is empty, and marks the response
+  `consensus: "PoA"`. DPoS path unchanged for post-Voyager / testnet.
+- **BFT catch_up silent validator** (PR #134, issue #133) — after a
+  catch-up round the validator was left silent in the Propose phase
+  because `our_prevote_cast` stayed false. Added an explicit nil
+  prevote emission + flag flip so the validator always participates in
+  the next round's quorum. Surfaced via a TPS benchmark that stalled
+  testnet briefly.
 
 ### Planned
 - Mainnet hard fork to Voyager (DPoS + BFT + EVM)
