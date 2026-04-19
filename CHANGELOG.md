@@ -9,6 +9,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **chore(rpc): expand root endpoint self-describe with full REST
+  surface + JSON-RPC namespaces** — `GET /` now returns the complete
+  REST endpoint map (accounts, staking, epoch, mempool, metrics) plus
+  a `jsonrpc_namespaces` section advertising `eth_*`, `net_*`, `web3_*`,
+  `sentrix_*`. Adds `consensus` (PoA/BFT from chain_id) and
+  `native_token` ("SRX") top-level fields so wallets can discover chain
+  semantics without scraping docs.
+
 ### Added
 - **Sentrix native JSON-RPC namespace (Sprint 1)** — five new methods
   that expose chain features the `eth_*` namespace cannot represent:

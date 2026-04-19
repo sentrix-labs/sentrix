@@ -12,7 +12,7 @@ Base URL: `https://testnet-rpc.sentriscloud.com` (testnet) or `https://sentrix-r
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/` | Node info (name, version, chain_id, links) |
+| GET | `/` | Node self-describe (name, version, chain_id, consensus, endpoint map, JSON-RPC namespaces) — see [Root response](#root-response) |
 | GET | `/health` | Health check (`{"status":"ok"}`) |
 | GET | `/metrics` | Prometheus-format metrics (block height, validators, mempool, uptime) |
 | GET | `/chain/info` | Chain stats (height, supply, validators, mempool, etc.) |
@@ -295,6 +295,53 @@ curl -X POST http://localhost:8545/transactions \
   -H "X-API-Key: your-api-key-here" \
   -d '{"transaction": { ... }}'
 ```
+
+---
+
+## Root response
+
+`GET /` returns the node self-describe payload used by wallets and
+explorers for chain discovery.
+
+```json
+{
+  "name": "Sentrix",
+  "version": "2.0.0",
+  "chain_id": 7119,
+  "consensus": "PoA",
+  "native_token": "SRX",
+  "docs": {
+    "rpc_jsonrpc": "POST /rpc",
+    "rest": {
+      "chain_info": "/chain/info",
+      "blocks": "/chain/blocks",
+      "transactions": "/transactions",
+      "accounts": "/accounts/{address}",
+      "tokens": "/tokens",
+      "validators": "/validators",
+      "staking": "/staking",
+      "epoch": "/epoch/current",
+      "mempool": "/mempool"
+    },
+    "ops": {
+      "health": "/health",
+      "metrics": "/metrics",
+      "explorer_builtin": "/explorer"
+    }
+  },
+  "jsonrpc_namespaces": {
+    "eth_": "Ethereum-compatible (MetaMask, ethers.js, Hardhat)",
+    "net_": "Network info",
+    "web3_": "Client version",
+    "sentrix_": "Native Sentrix (validators, BFT, staking, delegations, finality)"
+  }
+}
+```
+
+`consensus` is derived from `chain_id` (`7119` → `PoA`, otherwise →
+`BFT`). `native_token` is `SRX` on every network. The endpoint map
+lists the canonical path per resource — handlers are registered in
+`crates/sentrix-rpc/src/routes.rs`.
 
 ---
 
