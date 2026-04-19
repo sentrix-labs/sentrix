@@ -70,25 +70,17 @@ impl Blockchain {
 
         // Validate all non-coinbase transactions on working state copy.
         //
-        // H-06: reject blocks containing duplicate txids or duplicate
-        // (from_address, nonce) pairs. The working_nonces update at loop end
-        // already rejects a second tx with the stale nonce, but explicit
-        // dedup makes the intent unambiguous and survives future refactors.
-        // It also prevents the CVE-2012-2459 merkle collision prerequisite
-        // (identical leaves) at the consensus layer, independent of the
-        // merkle implementation.
+        // H-06: reject blocks containing duplicate (from_address, nonce)
+        // pairs. The working_nonces update at loop end already rejects a
+        // second tx with the stale nonce via tx.validate(), but explicit
+        // dedup makes the intent unambiguous and survives future refactors
+        // of the Pass 1 loop. Duplicate txids are rejected earlier by
+        // Block::validate_structure (C-05).
         let mut working_balances: HashMap<String, u64> = HashMap::new();
         let mut working_nonces: HashMap<String, u64> = HashMap::new();
-        let mut seen_txids: HashSet<String> = HashSet::new();
         let mut seen_sender_nonce: HashSet<(String, u64)> = HashSet::new();
 
         for tx in block.transactions.iter().skip(1) {
-            if !seen_txids.insert(tx.txid.clone()) {
-                return Err(SentrixError::InvalidBlock(format!(
-                    "duplicate txid {} in block",
-                    tx.txid
-                )));
-            }
             if !seen_sender_nonce.insert((tx.from_address.clone(), tx.nonce)) {
                 return Err(SentrixError::InvalidBlock(format!(
                     "duplicate (sender, nonce) pair for {} nonce {} in block",
