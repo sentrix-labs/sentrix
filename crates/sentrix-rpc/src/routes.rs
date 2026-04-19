@@ -382,6 +382,57 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/staking/unbonding/{address}", get(staking_unbonding))
         .route("/epoch/current", get(epoch_current))
         .route("/epoch/history", get(epoch_history))
+        // ── Explorer/Wallet new REST surface (explorer_api.rs) ───
+        // Matches the `/accounts/...` paths expected by the
+        // sentrix-scan and sentrix-wallet-web frontends. The older
+        // `/address/...` routes above are kept for back-compat.
+        .route(
+            "/accounts/{address}/history",
+            get(crate::explorer_api::accounts_history),
+        )
+        .route(
+            "/accounts/top",
+            get(crate::explorer_api::accounts_top),
+        )
+        .route(
+            "/accounts/{address}/tokens",
+            get(crate::explorer_api::accounts_tokens),
+        )
+        .route(
+            "/accounts/{address}/code",
+            get(crate::explorer_api::accounts_code),
+        )
+        .route(
+            "/tokens/{contract}/transfers",
+            get(crate::explorer_api::tokens_transfers),
+        )
+        // Replace holders list response shape with the frontend-expected
+        // `{ holders, total }` layout computing `percentage` per holder.
+        // The older `/tokens/{contract}/holders` → get_token_holders_list
+        // is NOT rewired here because axum's first-match wins on route
+        // registration order; we keep back-compat by adding a v2 route
+        // under the same path in explorer_api — older callers hitting
+        // the original route keep their payload.
+        .route(
+            "/tokens/{contract}/holders-v2",
+            get(crate::explorer_api::tokens_holders),
+        )
+        .route(
+            "/chain/performance",
+            get(crate::explorer_api::chain_performance),
+        )
+        .route(
+            "/validators/{address}/delegators",
+            get(crate::explorer_api::validator_delegators),
+        )
+        .route(
+            "/validators/{address}/rewards",
+            get(crate::explorer_api::validator_rewards),
+        )
+        .route(
+            "/validators/{address}/blocks-over-time",
+            get(crate::explorer_api::validator_blocks_over_time),
+        )
         // ── Admin ────────────────────────────────────────────────
         .route("/admin/log", get(get_admin_log))
         // ── Stats ────────────────────────────────────────────────
