@@ -473,18 +473,38 @@ fn explorer_router(_state: SharedState) -> Router<SharedState> {
 
 // ── Handlers ─────────────────────────────────────────────
 async fn root() -> Json<serde_json::Value> {
+    let chain_id = sentrix_core::blockchain::get_chain_id();
+    let consensus = if chain_id == 7119 { "PoA" } else { "BFT" };
     Json(serde_json::json!({
         "name": "Sentrix",
-        "chain_id": sentrix_core::blockchain::get_chain_id(),
         "version": env!("CARGO_PKG_VERSION"),
+        "chain_id": chain_id,
+        "consensus": consensus,
+        "native_token": "SRX",
         "docs": {
-            "chain_info": "/chain/info",
-            "blocks": "/chain/blocks",
-            "tokens": "/tokens",
-            "validators": "/validators",
-            "explorer": "/explorer",
-            "health": "/health",
-            "rpc": "POST /rpc"
+            "rpc_jsonrpc": "POST /rpc",
+            "rest": {
+                "chain_info": "/chain/info",
+                "blocks": "/chain/blocks",
+                "transactions": "/transactions",
+                "accounts": "/accounts/{address}",
+                "tokens": "/tokens",
+                "validators": "/validators",
+                "staking": "/staking",
+                "epoch": "/epoch/current",
+                "mempool": "/mempool"
+            },
+            "ops": {
+                "health": "/health",
+                "metrics": "/metrics",
+                "explorer_builtin": "/explorer"
+            }
+        },
+        "jsonrpc_namespaces": {
+            "eth_": "Ethereum-compatible (MetaMask, ethers.js, Hardhat)",
+            "net_": "Network info",
+            "web3_": "Client version",
+            "sentrix_": "Native Sentrix (validators, BFT, staking, delegations, finality)"
         }
     }))
 }
