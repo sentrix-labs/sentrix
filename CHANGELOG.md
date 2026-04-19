@@ -9,62 +9,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed
-- **chore(rpc): expand root endpoint self-describe with full REST
-  surface + JSON-RPC namespaces** (PR #140) — `GET /` now returns the
-  complete REST endpoint map (accounts, staking, epoch, mempool,
-  metrics) plus a `jsonrpc_namespaces` section advertising `eth_*`,
-  `net_*`, `web3_*`, `sentrix_*`. Adds `consensus` (PoA/BFT from
-  chain_id) and `native_token` ("SRX") top-level fields so wallets can
-  discover chain semantics without scraping docs.
-- **feat(ops): fast-deploy.sh as primary deploy path** (PR #139) — new
-  `scripts/fast-deploy.sh` builds on VPS4, uploads binary via wg1 SCP,
-  rolling restart with bounded health check. Cuts deploy time from
-  ~10–12 min (CI cold cargo cache) to ~3–5 min. CI `deploy` job
-  disabled (`if: false`) — CI still runs tests for audit trail. New
-  `scripts/emergency-deploy.sh` for break-glass cases.
-- **fix(deploy): build in bullseye container to match VPS1/VPS2 glibc**
-  (PR #141) — `fast-deploy.sh` build step runs inside
-  `rust:1.95-bullseye` (glibc 2.31) so binaries work on every target
-  regardless of VPS4 host OS. Fixes crash-loop on commit e49e01d where
-  a VPS4 24.04 native build (glibc 2.39) failed to load on VPS1/VPS2
-  (22.04, glibc 2.35).
-
-### Added
-- **Ethereum event log + fee RPC (Sprint 2)** — adds `eth_getLogs`,
-  `eth_feeHistory`, and `eth_maxPriorityFeePerGas`, plus real logs on
-  `eth_getTransactionReceipt` (previously hardcoded `[]`). New MDBX
-  tables `TABLE_LOGS` (key: height + tx_index + log_index BE, value:
-  bincode StoredLog) and `TABLE_BLOOM` (key: height, value: 2048-bit
-  bloom per yellow-paper §4.4.3). Block executor persists logs +
-  bloom on Pass 2 so queries are served directly from disk. Address
-  filter runs through the per-block bloom prefilter. Range capped at
-  10 000 blocks (`-32005 query returned more than 10000 results`).
-  Fee history returns flat `INITIAL_BASE_FEE` for now (no EIP-1559
-  dynamic base-fee yet); `gasUsedRatio` reflects real per-block EVM
-  consumption. Unlocks MetaMask gas estimation + dApp event indexing.
-- **Sentrix native JSON-RPC namespace (Sprint 1)** (PR #137) — five
-  new methods that expose chain features the `eth_*` namespace cannot
-  represent: `sentrix_getValidatorSet`, `sentrix_getDelegations`,
-  `sentrix_getStakingRewards`, `sentrix_getBftStatus`,
-  `sentrix_getFinalizedHeight`. Amounts returned in wei hex so
-  existing bignum libraries keep working. See
-  `docs/operations/API_REFERENCE.md` for the full payload spec.
-
-### Fixed
-- **sentrix_getValidatorSet PoA fallback (Sprint 1.1)** (PR #138) — on
-  mainnet `stake_registry` is empty pre-Voyager, so the initial
-  Sprint 1 implementation returned `validators: []`. The handler now
-  falls back to `AuthorityManager` when `is_voyager_height(height)` is
-  false or the DPoS registry is empty, and marks the response
-  `consensus: "PoA"`. DPoS path unchanged for post-Voyager / testnet.
-- **BFT catch_up silent validator** (PR #134, issue #133) — after a
-  catch-up round the validator was left silent in the Propose phase
-  because `our_prevote_cast` stayed false. Added an explicit nil
-  prevote emission + flag flip so the validator always participates in
-  the next round's quorum. Surfaced via a TPS benchmark that stalled
-  testnet briefly.
-
 ### Planned
 - Mainnet hard fork to Voyager (DPoS + BFT + EVM)
 - Parallel tx execution (rayon)
@@ -75,16 +19,139 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `sentrix_getStakingRewards` history into exact claim records —
   Sprint 2)
 
+---
+
+## [2.1.0] — 2026-04-19
+
+**Hardening sweep + EVM RPC expansion + native `sentrix_*` namespace +
+fast-deploy workflow.** ~60 PRs since v2.0.0. Most of this release is
+C-/H-/M-level security fixes from the Sprint 1 audit; on top of that,
+Sprint 2 RPC adds event log / fee RPC so MetaMask and dApp indexers
+work natively, and deploy moves from CI to `fast-deploy.sh` on VPS4.
+
+### Added
+- **Ethereum event log + fee RPC (Sprint 2)** (PR #144) — `eth_getLogs`,
+  `eth_feeHistory`, `eth_maxPriorityFeePerGas`, plus real logs on
+  `eth_getTransactionReceipt` (was hardcoded `[]`). New MDBX tables
+  `TABLE_LOGS` (height + tx_index + log_index BE → bincode StoredLog)
+  and `TABLE_BLOOM` (height → 2048-bit bloom per yellow-paper §4.4.3).
+  Block executor persists logs + bloom on Pass 2; address filter runs
+  through the per-block bloom prefilter. Range capped at 10 000 blocks
+  (`-32005`). Fee history returns flat `INITIAL_BASE_FEE` for now (no
+  dynamic base-fee yet); `gasUsedRatio` reflects real per-block EVM
+  consumption. Unlocks MetaMask gas estimation + dApp event indexing.
+- **Sentrix native JSON-RPC namespace (Sprint 1)** (PR #137) — five
+  methods that expose chain features `eth_*` cannot represent:
+  `sentrix_getValidatorSet`, `sentrix_getDelegations`,
+  `sentrix_getStakingRewards`, `sentrix_getBftStatus`,
+  `sentrix_getFinalizedHeight`. Amounts in wei hex so existing bignum
+  libraries keep working. See `docs/operations/API_REFERENCE.md`.
+- **Explorer + wallet REST endpoints** (PR #136) — consolidated
+  endpoint surface for `sentrix-scan` (explorer) and `wallet-web`
+  (dApp wallet) so neither has to scrape HTML.
+- **Genesis externalization** (PR #104, #105) — `--genesis <path>` CLI
+  flag + embedded mainnet default; `Blockchain::new` now driven from
+  Genesis TOML. Testnets no longer need a custom binary.
+- **fast-deploy.sh primary deploy path** (PR #139) — builds on VPS4,
+  uploads binary via wg1 SCP, rolling restart with bounded health
+  check. ~3–5 min vs ~10–12 min for CI cold cargo cache. CI `deploy`
+  job disabled (`if: false`); CI still runs tests for audit trail.
+- **emergency-deploy.sh break-glass script** (PR #135) — skips the
+  preflight test gate, requires strict confirmation phrase. For chain
+  halt / active exploit / CI outage only.
+
+### Changed
+- **Root endpoint self-describe** (PR #140) — `GET /` now returns the
+  full REST endpoint map (accounts, staking, epoch, mempool, metrics)
+  plus a `jsonrpc_namespaces` section advertising `eth_*`, `net_*`,
+  `web3_*`, `sentrix_*`. Adds `consensus` (PoA/BFT from chain_id) and
+  `native_token` ("SRX") so wallets can discover chain semantics.
+- **fast-deploy builds in bullseye container** (PR #141) — runs inside
+  `rust:1.95-bullseye` (glibc 2.31) so binaries work on every target
+  regardless of VPS4 host OS. Fixes crash-loop on commit e49e01d where
+  a VPS4 24.04 native build (glibc 2.39) failed to load on VPS1/VPS2.
+- **chain_id consolidation** (PR #104) — removed hardcoded `CHAIN_ID`
+  fallback in EVM; all call sites must pass `chain_id`. `MAX_SUPPLY`
+  constants deduped and imported from `blockchain` module.
+- **Dep hygiene** — `secp256k1` 0.29 → 0.31, `rand` 0.8 → 0.9, GitHub
+  Actions → v5 (Node.js 24).
+
+### Fixed
+- **BFT re-propose on round timeout** (PR #113, issue: testnet stall
+  ~10500) — engine now re-proposes on `TimeoutAdvanceRound` and
+  `SkipRound`. Was the P1 root cause of testnet BFT liveness gaps.
+- **BFT catch_up silent validator** (PR #134, issue #133) — after
+  catch-up the validator stayed silent in Propose because
+  `our_prevote_cast` was never flipped. Now casts an explicit nil
+  prevote + flips the flag.
+- **BFT refuse rounds below MIN_BFT_VALIDATORS** (PR #124) — prevents
+  a degenerate single-validator BFT round from rubber-stamping state.
+- **Trie LRU/MDBX race** (PR #126) — closed race in `get_node` and
+  `delete_node` where an LRU evict could clobber a concurrent read.
+- **sentrix_getValidatorSet PoA fallback** (PR #138) — pre-Voyager
+  `stake_registry` is empty; handler now falls back to
+  `AuthorityManager` and tags the response `consensus: "PoA"`.
+- **EVM sentri→wei conversion** (PR #121) — correct unit conversion at
+  the EVM boundary, EIP-170 bytecode cap enforced, `fits_in_block`
+  wired so block gas limit is actually checked.
+- **Storage integrity check on blockchain load** (M-05, PR #128) —
+  chain header checksum verified on startup before serving traffic.
+- **Mempool invariant doc** (M-13, PR #128) — documented sender/nonce
+  ordering invariants that downstream code relied on implicitly.
+- **RPC batch pre-deserialize size check** (M-03, PR #127) — bounds
+  batch size before decode to prevent memory amplification.
+- **RPC strict address/hash validation** (M-11, PR #127) — rejects
+  malformed 0x-prefixed inputs at parse time instead of propagating.
+- **Staking slash ceiling rounding + per-validator unbonding cap**
+  (PR #123) — closes off a rounding path that could over-slash and a
+  missing per-validator cap on concurrent unbonds.
+- **Consensus + RPC overflow hardening batch** (PR #119) — mixed set
+  of integer overflow + validation tightening.
+- **BFT channel SendError + validator task join on shutdown** (C-07,
+  C-08, PR #117) — log errors instead of silently dropping; join the
+  validator task so shutdown is clean.
+- **Pre-validate in BFT finalize path** (PR #132) — read-only
+  pre-validate runs before finalize so a malformed block fails fast.
+- **Abort process on panic — systemd restarts** (PR #130) — was
+  previously swallowing panics in worker tasks.
+- **CI deploy workflow aligned with actual v2.0.0 VPS state** (commit
+  0b59b42) — stale assumptions from pre-v2.0 purged.
+
 ### Security
-- **C-06 — Removed `--validator-key <hex>` CLI flag.** Private keys passed
-  as CLI arguments leak via `ps aux`, shell history, and process
-  snapshots. Validators must now use `--validator-keystore <path>`
-  (encrypted Argon2id v2 keystore) or `SENTRIX_VALIDATOR_KEY` env var.
-  **Breaking change for validator operators.**
-- **C-06 hardening — Wallet zeroize plumbed through startup.** The
-  validator key no longer round-trips through an unzeroed heap `String`
-  inside `cmd_start`; the `Wallet`'s `Zeroizing<[u8; 32]>` field is the
+- **C-01 — BFT signature verify at network boundary** (PR #107) — BFT
+  verification moved to the libp2p boundary; validator-set membership
+  enforced on inbound BFT; `RoundStatus` messages now signed + verified.
+- **H-01 — fast-reject cross-chain NewBlock / NewTx at libp2p boundary**
+  (PR #107) — mismatched chain_id rejected before deserialize.
+- **C-03 — atomic rollback of Pass 2 mutations on Err** (PR #116) —
+  previously a mid-Pass-2 failure could leave the account DB in a
+  partially-mutated state. Now all Pass 2 writes are staged and
+  rolled back atomically on any Err.
+- **C-04 — prevent COINBASE tx forgery in block validation** (commit
+  d886023) — block validator now rejects non-producer COINBASE txs.
+- **C-05 / H-06 — reject duplicate txid and (sender, nonce) at block
+  layer** (PR #114) — closes the Merkle CVE-2012-2459 dedup gap plus
+  the H-06 duplicate-nonce double-spend.
+- **H-09 — only broadcast block after persistence succeeds** (PR #115)
+  — previously a persistence failure could still emit the block gossip.
+- **C-06 — removed `--validator-key <hex>` CLI flag** (PR #109) —
+  private keys as CLI args leak via `ps aux`, shell history, and
+  process snapshots. Validators must now use
+  `--validator-keystore <path>` (Argon2id v2) or
+  `SENTRIX_VALIDATOR_KEY` env var. **Breaking for validator operators.**
+- **C-06 hardening — Wallet zeroize plumbed through startup** (PR #109)
+  — validator key no longer round-trips through an unzeroed heap
+  `String` in `cmd_start`; the `Wallet`'s `Zeroizing<[u8; 32]>` is the
   only owner of the secret bytes after key resolution.
+- **C-09 — clamp max_commission_rate to MAX_COMMISSION on registration**
+  (PR #118) — validator registration now enforces the protocol ceiling.
+- **RPC gas cap, API-key minimum length, socket-IP rate limiting**
+  (PR #120) — closes three independent P1 abuse vectors.
+- **yamux 0.12 upgrade + non-reachability note** (PR #108) — documented
+  that the advisoried code path isn't reachable in our config; upgrade
+  applied anyway to stay on the supported track.
+- **CI/CD workflow least-privilege permissions** (PR #129) — declared
+  minimal `permissions:` blocks on every workflow.
 
 ---
 
@@ -426,8 +493,14 @@ Pioneer release. PoA chain live with 7 validators across 3 VPS, 141K+ blocks, 11
 
 ---
 
-[Unreleased]: https://github.com/sentrix-labs/sentrix/compare/v1.2.0...HEAD
-[1.2.0]: https://github.com/sentrix-labs/sentrix/releases/tag/v1.2.0
-[1.1.0]: https://github.com/sentrix-labs/sentrix/releases/tag/v1.1.0
-[1.0.0]: https://github.com/sentrix-labs/sentrix/releases/tag/v1.0.0
+[Unreleased]: https://github.com/sentrix-labs/sentrix/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/sentrix-labs/sentrix/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/sentrix-labs/sentrix/compare/v1.5.0...v2.0.0
+[1.5.0]: https://github.com/sentrix-labs/sentrix/compare/v1.4.0...v1.5.0
+[1.4.0]: https://github.com/sentrix-labs/sentrix/compare/v1.3.1...v1.4.0
+[1.3.1]: https://github.com/sentrix-labs/sentrix/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/sentrix-labs/sentrix/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/sentrix-labs/sentrix/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/sentrix-labs/sentrix/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/sentrix-labs/sentrix/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/sentrix-labs/sentrix/releases/tag/v0.1.0

@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-rpc"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Sentrix REST API, JSON-RPC, and block explorer"
