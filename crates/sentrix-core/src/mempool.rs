@@ -119,21 +119,41 @@ impl Blockchain {
             });
         }
 
-        // Insert sorted by fee descending (highest fee = front of queue).
-        // A3: position lookup via partition_point — O(log n) comparisons
-        // instead of the previous O(n) linear scan. The trailing memmove
-        // from VecDeque::insert is a single hardware-accelerated memcpy
-        // and stays well below comparison cost at MAX_MEMPOOL_SIZE=10_000.
+        // Insert sorted by fee descending (highest fee at the front), with a
+        // per-sender nonce constraint overriding fee when the two conflict.
+        //
+        // Why the constraint: the mempool's own nonce check above guarantees
+        // that every new tx from a given sender has the *highest* nonce
+        // among that sender's pending txs. Block production iterates the
+        // mempool in order — if we let fee ordering put the high-nonce tx
+        // before a same-sender lower-nonce tx already in the queue, block
+        // validation rejects the high-nonce one ("expected nonce N, got
+        // N+1") and the block is lost. Backlog #10 fix.
+        //
+        // Algorithm:
+        //   1. partition_point by fee desc → O(log n), same as before.
+        //   2. scan mempool for the last tx from the same sender
+        //      (O(k) where k ≤ MAX_MEMPOOL_PER_SENDER ≈ 250).
+        //   3. insert at max(fee_pos, same_sender_last_pos + 1).
+        //
         // We deliberately keep VecDeque (not BinaryHeap) because callers
         // depend on ordered iteration: block_producer.create_block takes
-        // the first N by fee, explorer/API list mempool in fee order, and
-        // tests index `mempool[0]`. BinaryHeap iteration is unordered and
-        // would force a sort on every read — worse trade for read-heavy
-        // access patterns.
-        // TODO: RBF (Replace-By-Fee) not yet implemented.
-        let pos = self
+        // the first N, explorer/API list mempool in order, and tests index
+        // mempool[0]. BinaryHeap iteration is unordered and would force a
+        // sort on every read — worse trade for read-heavy access patterns.
+        // TODO: RBF (Replace-By-Fee) still not implemented.
+        let fee_pos = self
             .mempool
             .partition_point(|existing| existing.fee >= tx.fee);
+        let same_sender_last = self
+            .mempool
+            .iter()
+            .rposition(|existing| existing.from_address == tx.from_address)
+            .map(|i| i + 1);
+        let pos = match same_sender_last {
+            Some(min_pos) => fee_pos.max(min_pos),
+            None => fee_pos,
+        };
         self.mempool.insert(pos, tx);
         Ok(())
     }
@@ -336,5 +356,106 @@ mod tests {
 
         // Highest fee should be first in mempool
         assert!(bc.mempool[0].fee > bc.mempool[1].fee);
+    }
+
+    /// #10 — same-sender nonce order must not be reordered by a later
+    /// higher-fee tx from the same sender. Without the fix, a sender who
+    /// submits nonce=0 low-fee then nonce=1 high-fee would see nonce=1
+    /// placed in front by fee-priority, and block production would reject
+    /// it with "expected nonce 0, got 1" every round.
+    #[test]
+    fn test_same_sender_nonce_order_preserved_under_fee_priority() {
+        let mut bc = setup();
+        let (sk, pk) = make_keypair();
+        let sender = derive_addr(&pk);
+        bc.accounts.credit(&sender, 1_000_000_000).unwrap();
+
+        let tx_nonce0_low_fee = Transaction::new(
+            sender.clone(),
+            RECV.to_string(),
+            100_000,
+            MIN_TX_FEE,
+            0,
+            String::new(),
+            CHAIN_ID,
+            &sk,
+            &pk,
+        )
+        .unwrap();
+        let tx_nonce1_high_fee = Transaction::new(
+            sender,
+            RECV.to_string(),
+            100_000,
+            MIN_TX_FEE * 100,
+            1,
+            String::new(),
+            CHAIN_ID,
+            &sk,
+            &pk,
+        )
+        .unwrap();
+
+        bc.add_to_mempool(tx_nonce0_low_fee).unwrap();
+        bc.add_to_mempool(tx_nonce1_high_fee).unwrap();
+
+        assert_eq!(
+            bc.mempool[0].nonce, 0,
+            "nonce=0 must stay in front of nonce=1 from same sender despite lower fee"
+        );
+        assert_eq!(bc.mempool[1].nonce, 1);
+    }
+
+    /// #10 — cross-sender fee priority should still work alongside the
+    /// per-sender nonce constraint. When a high-fee tx arrives from a
+    /// different sender, it should jump ahead of low-fee txs from others
+    /// — the nonce constraint only binds txs from the *same* sender.
+    #[test]
+    fn test_cross_sender_fee_priority_preserved() {
+        let mut bc = setup();
+        let (sk_a, pk_a) = make_keypair();
+        let (sk_b, pk_b) = make_keypair();
+        let sender_a = derive_addr(&pk_a);
+        let sender_b = derive_addr(&pk_b);
+        bc.accounts.credit(&sender_a, 1_000_000_000).unwrap();
+        bc.accounts.credit(&sender_b, 1_000_000_000).unwrap();
+
+        // Sender A submits 2 txs at MIN_TX_FEE: nonce=0, nonce=1.
+        for nonce in 0..2 {
+            let tx = Transaction::new(
+                sender_a.clone(),
+                RECV.to_string(),
+                100_000,
+                MIN_TX_FEE,
+                nonce,
+                String::new(),
+                CHAIN_ID,
+                &sk_a,
+                &pk_a,
+            )
+            .unwrap();
+            bc.add_to_mempool(tx).unwrap();
+        }
+
+        // Sender B submits a high-fee tx.
+        let tx_b_high_fee = Transaction::new(
+            sender_b.clone(),
+            RECV.to_string(),
+            100_000,
+            MIN_TX_FEE * 50,
+            0,
+            String::new(),
+            CHAIN_ID,
+            &sk_b,
+            &pk_b,
+        )
+        .unwrap();
+        bc.add_to_mempool(tx_b_high_fee).unwrap();
+
+        // B's high-fee tx should be at the front; A's txs follow in nonce order.
+        assert_eq!(bc.mempool[0].from_address, sender_b);
+        assert_eq!(bc.mempool[1].from_address, sender_a);
+        assert_eq!(bc.mempool[1].nonce, 0);
+        assert_eq!(bc.mempool[2].from_address, sender_a);
+        assert_eq!(bc.mempool[2].nonce, 1);
     }
 }
