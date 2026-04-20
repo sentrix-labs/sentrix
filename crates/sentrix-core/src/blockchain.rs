@@ -1017,9 +1017,18 @@ mod tests {
         bc.add_to_mempool(tx_high).unwrap();
         bc.add_to_mempool(tx_mid).unwrap();
 
-        // Mempool should be ordered: high, mid, low
+        // Backlog #10 fix: within the same sender, nonce order trumps
+        // fee — otherwise block production would pick nonce=1 first and
+        // trip the "expected nonce 0" rejection. Fee priority only
+        // applies across *different* senders.
         let fees: Vec<u64> = bc.mempool.iter().map(|tx| tx.fee).collect();
-        assert_eq!(fees, vec![MIN_TX_FEE * 100, MIN_TX_FEE * 10, MIN_TX_FEE]);
+        let nonces: Vec<u64> = bc.mempool.iter().map(|tx| tx.nonce).collect();
+        assert_eq!(
+            nonces,
+            vec![0, 1, 2],
+            "same-sender txs must stay in nonce order regardless of fee"
+        );
+        assert_eq!(fees, vec![MIN_TX_FEE, MIN_TX_FEE * 100, MIN_TX_FEE * 10]);
     }
 
     #[test]
