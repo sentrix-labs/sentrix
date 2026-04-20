@@ -9,6 +9,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Refactored
+- **refactor(rpc): token handlers out to `routes/tokens.rs`** (backlog
+  #12 phase 2a) — the 8 SRC-20 handlers (list / info / balance /
+  holders / trades / deploy / transfer / burn) move to their own
+  module. `api_err` is now `pub(super)` so modules can reuse it. No
+  route path or behaviour change. Follow-up phases will peel off
+  chain / accounts / staking / epoch / ops the same way.
+
 ### Added
 - **feat(cli): `validator force-unjail` operator-recovery command**
   (backlog #1b) — unlocks the chicken-and-egg state where every
