@@ -10,6 +10,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Refactored
+- **refactor(rpc): ops handlers out to `routes/ops.rs`** (backlog #12
+  phase 2c) — five handlers moved: `root` (`GET /`), `health`
+  (`GET /health`), `sentrix_status` (`GET /sentrix_status`, re-exported
+  pub for integration tests), `metrics` (`GET /metrics`), `get_admin_log`
+  (`GET /admin/log`, auth-gated). Shared `START_TIME` `OnceLock` moved
+  with them. Zero route / behaviour change.
 - **refactor(rpc): staking handlers out to `routes/staking.rs`**
   (backlog #12 phase 2b) — 4 handlers moved: `get_validators`
   (PoA authority set, `GET /validators`), `staking_validators`
