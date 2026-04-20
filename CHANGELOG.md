@@ -10,6 +10,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Refactored
+- **refactor(rpc): staking handlers out to `routes/staking.rs`**
+  (backlog #12 phase 2b) — 4 handlers moved: `get_validators`
+  (PoA authority set, `GET /validators`), `staking_validators`
+  (DPoS set, `GET /staking/validators`), `staking_delegations`
+  (`GET /staking/delegations/{addr}`), `staking_unbonding`
+  (`GET /staking/unbonding/{addr}`). Zero route / behaviour change.
 - **refactor(rpc): token handlers out to `routes/tokens.rs`** (backlog
   #12 phase 2a) — the 8 SRC-20 handlers (list / info / balance /
   holders / trades / deploy / transfer / burn) move to their own

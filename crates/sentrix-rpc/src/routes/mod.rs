@@ -7,6 +7,7 @@
 
 mod auth;
 mod ratelimit;
+mod staking;
 mod tokens;
 mod types;
 
@@ -15,6 +16,7 @@ pub use ratelimit::{GlobalIpLimiter, IpRateLimiter, WriteIpLimiter};
 pub use types::{ApiResponse, SendTxRequest, SignedTxRequest};
 
 use ratelimit::{ip_rate_limit_middleware, write_rate_limit_middleware};
+use staking::{get_validators, staking_delegations, staking_unbonding, staking_validators};
 use tokens::{
     deploy_token, get_token_balance, get_token_holders_list, get_token_info,
     get_token_trades_list, list_tokens, token_burn, token_transfer,
@@ -623,28 +625,6 @@ async fn get_mempool(State(state): State<SharedState>) -> Json<serde_json::Value
     }))
 }
 
-async fn get_validators(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    let bc = state.read().await;
-    let validators: Vec<serde_json::Value> = bc
-        .authority
-        .validators
-        .values()
-        .map(|v| {
-            serde_json::json!({
-                "address": v.address,
-                "name": v.name,
-                "is_active": v.is_active,
-                "blocks_produced": v.blocks_produced,
-                "registered_at": v.registered_at,
-            })
-        })
-        .collect();
-    Json(serde_json::json!({
-        "validators": validators,
-        "active": bc.authority.active_count(),
-        "total": bc.authority.validator_count(),
-    }))
-}
 
 // ── Token handlers ───────────────────────────────────────
 
@@ -733,84 +713,8 @@ async fn get_admin_log(_auth: ApiKey, State(state): State<SharedState>) -> Json<
 
 // ── Staking + Epoch handlers (Voyager Phase 2a) ─────────
 
-async fn staking_validators(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    let bc = state.read().await;
-    let validators: Vec<serde_json::Value> = bc
-        .stake_registry
-        .validators
-        .values()
-        .map(|v| {
-            serde_json::json!({
-                "address": v.address,
-                "self_stake": v.self_stake,
-                "total_delegated": v.total_delegated,
-                "total_stake": v.total_stake(),
-                "commission_rate": v.commission_rate,
-                "is_jailed": v.is_jailed,
-                "is_tombstoned": v.is_tombstoned,
-                "is_active": bc.stake_registry.is_active(&v.address),
-                "blocks_signed": v.blocks_signed,
-                "blocks_missed": v.blocks_missed,
-                "pending_rewards": v.pending_rewards,
-            })
-        })
-        .collect();
-    Json(serde_json::json!({
-        "validators": validators,
-        "active_count": bc.stake_registry.active_count(),
-        "total_count": bc.stake_registry.validators.len(),
-    }))
-}
 
-async fn staking_delegations(
-    State(state): State<SharedState>,
-    axum::extract::Path(address): axum::extract::Path<String>,
-) -> Json<serde_json::Value> {
-    let bc = state.read().await;
-    let addr = address.to_lowercase();
-    let delegations: Vec<serde_json::Value> = bc
-        .stake_registry
-        .get_delegations(&addr)
-        .iter()
-        .map(|d| {
-            serde_json::json!({
-                "validator": d.validator,
-                "amount": d.amount,
-                "height": d.height,
-            })
-        })
-        .collect();
-    Json(serde_json::json!({
-        "delegator": addr,
-        "delegations": delegations,
-        "count": delegations.len(),
-    }))
-}
 
-async fn staking_unbonding(
-    State(state): State<SharedState>,
-    axum::extract::Path(address): axum::extract::Path<String>,
-) -> Json<serde_json::Value> {
-    let bc = state.read().await;
-    let addr = address.to_lowercase();
-    let entries: Vec<serde_json::Value> = bc
-        .stake_registry
-        .get_pending_unbonding(&addr)
-        .iter()
-        .map(|u| {
-            serde_json::json!({
-                "validator": u.validator,
-                "amount": u.amount,
-                "completion_height": u.completion_height,
-            })
-        })
-        .collect();
-    Json(serde_json::json!({
-        "delegator": addr,
-        "unbonding": entries,
-        "count": entries.len(),
-    }))
-}
 
 async fn epoch_current(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let bc = state.read().await;
