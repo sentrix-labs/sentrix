@@ -10,6 +10,12 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Refactored
+- **refactor(rpc): token handlers out to `routes/tokens.rs`** (backlog
+  #12 phase 2a) — the 8 SRC-20 handlers (list / info / balance /
+  holders / trades / deploy / transfer / burn) move to their own
+  module. `api_err` is now `pub(super)` so modules can reuse it.
+  No route path or behaviour change. Follow-up slices (staking, ops,
+  chain, accounts, transactions, epoch) get the same treatment.
 - **refactor(rpc): split jsonrpc handlers by namespace** (backlog #11
   phase 2) — the 900-line match in `jsonrpc/mod.rs::jsonrpc_handler`
   is now a prefix-dispatch to four namespace modules: `eth.rs`
