@@ -7,6 +7,7 @@
 
 mod auth;
 mod ratelimit;
+mod tokens;
 mod types;
 
 pub use auth::{ApiKey, constant_time_eq};
@@ -14,6 +15,10 @@ pub use ratelimit::{GlobalIpLimiter, IpRateLimiter, WriteIpLimiter};
 pub use types::{ApiResponse, SendTxRequest, SignedTxRequest};
 
 use ratelimit::{ip_rate_limit_middleware, write_rate_limit_middleware};
+use tokens::{
+    deploy_token, get_token_balance, get_token_holders_list, get_token_info,
+    get_token_trades_list, list_tokens, token_burn, token_transfer,
+};
 
 use axum::{
     Json, Router,
@@ -30,7 +35,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::explorer;
 use crate::jsonrpc::rpc_dispatcher;
 use sentrix_core::blockchain::Blockchain;
-use sentrix_primitives::transaction::{TokenOp, Transaction};
+use sentrix_primitives::transaction::Transaction;
 use sentrix_trie::address::{account_value_decode, address_to_key};
 use std::sync::Arc;
 use std::time::Instant;
@@ -643,152 +648,6 @@ async fn get_validators(State(state): State<SharedState>) -> Json<serde_json::Va
 
 // ── Token handlers ───────────────────────────────────────
 
-async fn list_tokens(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    let bc = state.read().await;
-    let tokens = bc.list_tokens();
-    Json(serde_json::json!({
-        "tokens": tokens,
-        "total": tokens.len(),
-    }))
-}
-
-async fn get_token_info(
-    State(state): State<SharedState>,
-    Path(contract): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let bc = state.read().await;
-    match bc.token_info(&contract) {
-        Ok(info) => Ok(Json(info)),
-        Err(_) => Err(StatusCode::NOT_FOUND),
-    }
-}
-
-async fn get_token_balance(
-    State(state): State<SharedState>,
-    Path((contract, addr)): Path<(String, String)>,
-) -> Json<serde_json::Value> {
-    let bc = state.read().await;
-    let balance = bc.token_balance(&contract, &addr);
-    Json(serde_json::json!({
-        "contract": contract,
-        "address": addr,
-        "balance": balance,
-    }))
-}
-
-// Token operations are submitted as pre-signed transactions — server never touches private keys.
-// Client must sign the transaction locally:
-//   1. Build TokenOp JSON → put in tx.data
-//   2. Set tx.to_address = TOKEN_OP_ADDRESS ("0x0000000000000000000000000000000000000000")
-//   3. Sign with local private key
-//   4. POST { "transaction": <signed_tx> } to this endpoint
-
-async fn deploy_token(
-    _auth: ApiKey,
-    State(state): State<SharedState>,
-    Json(req): Json<SignedTxRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let tx = req.transaction;
-    // Validate data contains a Deploy token op
-    let op = TokenOp::decode(&tx.data)
-        .ok_or_else(|| api_err("data must contain a valid TokenOp JSON"))?;
-    let (name, symbol, total_supply, max_supply) = match &op {
-        TokenOp::Deploy {
-            name,
-            symbol,
-            supply,
-            max_supply,
-            ..
-        } => (name.clone(), symbol.clone(), *supply, *max_supply),
-        _ => return Err(api_err("expected Deploy operation in tx.data")),
-    };
-    let deployer = tx.from_address.clone();
-    let txid = tx.txid.clone();
-    let mut bc = state.write().await;
-    bc.add_to_mempool(tx).map_err(|e| api_err(&e.to_string()))?;
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "txid": txid,
-        "deployer": deployer,
-        "name": name,
-        "symbol": symbol,
-        "total_supply": total_supply,
-        "max_supply": max_supply,
-        "status": "pending_in_mempool",
-    })))
-}
-
-async fn token_transfer(
-    _auth: ApiKey,
-    State(state): State<SharedState>,
-    Path(contract): Path<String>,
-    Json(req): Json<SignedTxRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let tx = req.transaction;
-    let op = TokenOp::decode(&tx.data)
-        .ok_or_else(|| api_err("data must contain a valid TokenOp JSON"))?;
-    let (to_addr, amount) = match &op {
-        TokenOp::Transfer {
-            contract: c,
-            to,
-            amount,
-        } => {
-            if *c != contract {
-                return Err(api_err("contract in data does not match URL"));
-            }
-            (to.clone(), *amount)
-        }
-        _ => return Err(api_err("expected Transfer operation in tx.data")),
-    };
-    let from_addr = tx.from_address.clone();
-    let txid = tx.txid.clone();
-    let mut bc = state.write().await;
-    bc.add_to_mempool(tx).map_err(|e| api_err(&e.to_string()))?;
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "txid": txid,
-        "contract": contract,
-        "from": from_addr,
-        "to": to_addr,
-        "amount": amount,
-        "status": "pending_in_mempool",
-    })))
-}
-
-async fn token_burn(
-    _auth: ApiKey,
-    State(state): State<SharedState>,
-    Path(contract): Path<String>,
-    Json(req): Json<SignedTxRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let tx = req.transaction;
-    let op = TokenOp::decode(&tx.data)
-        .ok_or_else(|| api_err("data must contain a valid TokenOp JSON"))?;
-    let amount = match &op {
-        TokenOp::Burn {
-            contract: c,
-            amount,
-        } => {
-            if *c != contract {
-                return Err(api_err("contract in data does not match URL"));
-            }
-            *amount
-        }
-        _ => return Err(api_err("expected Burn operation in tx.data")),
-    };
-    let burned_by = tx.from_address.clone();
-    let txid = tx.txid.clone();
-    let mut bc = state.write().await;
-    bc.add_to_mempool(tx).map_err(|e| api_err(&e.to_string()))?;
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "txid": txid,
-        "contract": contract,
-        "burned_by": burned_by,
-        "amount": amount,
-        "status": "pending_in_mempool",
-    })))
-}
 
 // ── Short-form alias handlers ────────────────────────────
 
@@ -835,48 +694,6 @@ async fn list_transactions(
     }))
 }
 
-async fn get_token_holders_list(
-    State(state): State<SharedState>,
-    Path(contract): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let bc = state.read().await;
-    match bc.get_token_holders(&contract) {
-        Some(holders) => {
-            let total = holders.len();
-            Ok(Json(serde_json::json!({
-                "contract": contract,
-                "holders": holders,
-                "total": total,
-            })))
-        }
-        None => Err(StatusCode::NOT_FOUND),
-    }
-}
-
-async fn get_token_trades_list(
-    State(state): State<SharedState>,
-    Path(contract): Path<String>,
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Json<serde_json::Value> {
-    let bc = state.read().await;
-    let limit: usize = params
-        .get("limit")
-        .and_then(|l| l.parse().ok())
-        .unwrap_or(20)
-        .min(100);
-    let offset: usize = params
-        .get("offset")
-        .and_then(|o| o.parse().ok())
-        .unwrap_or(0);
-    let trades = bc.get_token_trades(&contract, limit, offset);
-    let count = trades.len();
-    Json(serde_json::json!({
-        "contract": contract,
-        "trades": trades,
-        "count": count,
-        "pagination": { "limit": limit, "offset": offset },
-    }))
-}
 
 async fn get_richlist(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let bc = state.read().await;
@@ -1042,7 +859,7 @@ async fn epoch_history(
 }
 
 // Helper for API error responses
-fn api_err(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
+pub(super) fn api_err(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (
         StatusCode::BAD_REQUEST,
         Json(serde_json::json!({"success": false, "error": msg})),
