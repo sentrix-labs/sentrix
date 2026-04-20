@@ -32,26 +32,33 @@ impl TrieStorage {
     /// O(n_blocks) one-time cost on migration; O(1) fast-path on all subsequent opens.
     fn ensure_committed_roots_index(&self) -> SentrixResult<()> {
         // Fast path: sentinel present means the index is already complete.
-        if self.mdbx.has(tables::TABLE_TRIE_COMMITTED, b"__ready__")
-            .map_err(|e| SentrixError::StorageError(e.to_string()))? {
+        if self
+            .mdbx
+            .has(tables::TABLE_TRIE_COMMITTED, b"__ready__")
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?
+        {
             return Ok(());
         }
 
         // Slow path: scan trie_roots and populate the reverse index.
-        let entries = self.mdbx.iter(tables::TABLE_TRIE_ROOTS)
+        let entries = self
+            .mdbx
+            .iter(tables::TABLE_TRIE_ROOTS)
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
 
         let mut any = false;
         for (k, v) in &entries {
             if v.len() == 32 {
-                self.mdbx.put(tables::TABLE_TRIE_COMMITTED, v, k)
+                self.mdbx
+                    .put(tables::TABLE_TRIE_COMMITTED, v, k)
                     .map_err(|e| SentrixError::StorageError(e.to_string()))?;
                 any = true;
             }
         }
 
         if any {
-            self.mdbx.put(tables::TABLE_TRIE_COMMITTED, b"__ready__", b"1")
+            self.mdbx
+                .put(tables::TABLE_TRIE_COMMITTED, b"__ready__", b"1")
                 .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         }
         Ok(())
@@ -62,14 +69,18 @@ impl TrieStorage {
     pub fn store_node(&self, hash: &NodeHash, node: &TrieNode) -> SentrixResult<()> {
         let bytes = bincode::serialize(node)
             .map_err(|e| SentrixError::SerializationError(e.to_string()))?;
-        self.mdbx.put(tables::TABLE_TRIE_NODES, hash, &bytes)
+        self.mdbx
+            .put(tables::TABLE_TRIE_NODES, hash, &bytes)
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         Ok(())
     }
 
     pub fn load_node(&self, hash: &NodeHash) -> SentrixResult<Option<TrieNode>> {
-        match self.mdbx.get(tables::TABLE_TRIE_NODES, hash)
-            .map_err(|e| SentrixError::StorageError(e.to_string()))? {
+        match self
+            .mdbx
+            .get(tables::TABLE_TRIE_NODES, hash)
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?
+        {
             Some(bytes) => {
                 let node = bincode::deserialize::<TrieNode>(&bytes)
                     .map_err(|e| SentrixError::SerializationError(e.to_string()))?;
@@ -81,7 +92,8 @@ impl TrieStorage {
 
     /// Remove a node entry from persistent storage (called when a leaf is replaced).
     pub fn delete_node(&self, hash: &NodeHash) -> SentrixResult<()> {
-        self.mdbx.delete(tables::TABLE_TRIE_NODES, hash)
+        self.mdbx
+            .delete(tables::TABLE_TRIE_NODES, hash)
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         Ok(())
     }
@@ -89,19 +101,22 @@ impl TrieStorage {
     // ── Values ────────────────────────────────────────────
 
     pub fn store_value(&self, hash: &NodeHash, value: &[u8]) -> SentrixResult<()> {
-        self.mdbx.put(tables::TABLE_TRIE_VALUES, hash, value)
+        self.mdbx
+            .put(tables::TABLE_TRIE_VALUES, hash, value)
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         Ok(())
     }
 
     pub fn load_value(&self, hash: &NodeHash) -> SentrixResult<Option<Vec<u8>>> {
-        self.mdbx.get(tables::TABLE_TRIE_VALUES, hash)
+        self.mdbx
+            .get(tables::TABLE_TRIE_VALUES, hash)
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
     /// Remove a value blob from persistent storage (called when a leaf is replaced).
     pub fn delete_value(&self, hash: &NodeHash) -> SentrixResult<()> {
-        self.mdbx.delete(tables::TABLE_TRIE_VALUES, hash)
+        self.mdbx
+            .delete(tables::TABLE_TRIE_VALUES, hash)
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         Ok(())
     }
@@ -109,23 +124,41 @@ impl TrieStorage {
     // ── Roots ─────────────────────────────────────────────
 
     pub fn store_root(&self, version: u64, root: &NodeHash) -> SentrixResult<()> {
-        self.mdbx.put(tables::TABLE_TRIE_ROOTS, &version.to_be_bytes(), root.as_slice())
+        self.mdbx
+            .put(
+                tables::TABLE_TRIE_ROOTS,
+                &version.to_be_bytes(),
+                root.as_slice(),
+            )
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
 
         // Maintain reverse index: NodeHash → version (O(1) is_committed_root lookups).
-        self.mdbx.put(tables::TABLE_TRIE_COMMITTED, root.as_slice(), &version.to_be_bytes())
+        self.mdbx
+            .put(
+                tables::TABLE_TRIE_COMMITTED,
+                root.as_slice(),
+                &version.to_be_bytes(),
+            )
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
 
-        if !self.mdbx.has(tables::TABLE_TRIE_COMMITTED, b"__ready__")
-            .unwrap_or(false) {
-            let _ = self.mdbx.put(tables::TABLE_TRIE_COMMITTED, b"__ready__", b"1");
+        if !self
+            .mdbx
+            .has(tables::TABLE_TRIE_COMMITTED, b"__ready__")
+            .unwrap_or(false)
+        {
+            let _ = self
+                .mdbx
+                .put(tables::TABLE_TRIE_COMMITTED, b"__ready__", b"1");
         }
         Ok(())
     }
 
     pub fn load_root(&self, version: u64) -> SentrixResult<Option<NodeHash>> {
-        match self.mdbx.get(tables::TABLE_TRIE_ROOTS, &version.to_be_bytes())
-            .map_err(|e| SentrixError::StorageError(e.to_string()))? {
+        match self
+            .mdbx
+            .get(tables::TABLE_TRIE_ROOTS, &version.to_be_bytes())
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?
+        {
             Some(bytes) if bytes.len() == 32 => {
                 let mut arr = [0u8; 32];
                 arr.copy_from_slice(&bytes);
@@ -141,7 +174,8 @@ impl TrieStorage {
     /// Check whether `hash` is currently recorded as a committed root for any version.
     /// O(1) via `trie_committed_roots` reverse index.
     pub fn is_committed_root(&self, hash: &NodeHash) -> SentrixResult<bool> {
-        self.mdbx.has(tables::TABLE_TRIE_COMMITTED, hash.as_slice())
+        self.mdbx
+            .has(tables::TABLE_TRIE_COMMITTED, hash.as_slice())
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
@@ -153,7 +187,9 @@ impl TrieStorage {
         let cutoff = latest_version - keep;
         let mut removed = 0usize;
 
-        let entries = self.mdbx.iter(tables::TABLE_TRIE_ROOTS)
+        let entries = self
+            .mdbx
+            .iter(tables::TABLE_TRIE_ROOTS)
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
 
         let mut to_delete: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
@@ -169,10 +205,12 @@ impl TrieStorage {
         }
 
         for (key, root_hash) in &to_delete {
-            self.mdbx.delete(tables::TABLE_TRIE_ROOTS, key.as_slice())
+            self.mdbx
+                .delete(tables::TABLE_TRIE_ROOTS, key.as_slice())
                 .map_err(|e| SentrixError::StorageError(e.to_string()))?;
             if root_hash.len() == 32 {
-                self.mdbx.delete(tables::TABLE_TRIE_COMMITTED, root_hash.as_slice())
+                self.mdbx
+                    .delete(tables::TABLE_TRIE_COMMITTED, root_hash.as_slice())
                     .map_err(|e| SentrixError::StorageError(e.to_string()))?;
             }
             removed += 1;
@@ -197,7 +235,9 @@ impl TrieStorage {
         table: &str,
         live_hashes: &std::collections::HashSet<NodeHash>,
     ) -> SentrixResult<usize> {
-        let entries = self.mdbx.iter(table)
+        let entries = self
+            .mdbx
+            .iter(table)
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
 
         let mut to_delete: Vec<NodeHash> = Vec::new();
@@ -212,7 +252,8 @@ impl TrieStorage {
         }
         let count = to_delete.len();
         for hash in &to_delete {
-            self.mdbx.delete(table, hash)
+            self.mdbx
+                .delete(table, hash)
                 .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         }
         Ok(count)
@@ -220,7 +261,8 @@ impl TrieStorage {
 
     /// Count entries in a trie table. Used by tests.
     pub fn count(&self, table: &str) -> SentrixResult<usize> {
-        self.mdbx.count(table)
+        self.mdbx
+            .count(table)
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 }
@@ -403,7 +445,10 @@ mod tests {
         let root = dummy_hash(0x42);
         storage.store_root(7, &root).unwrap();
         assert!(
-            storage.mdbx.has(tables::TABLE_TRIE_COMMITTED, root.as_slice()).unwrap(),
+            storage
+                .mdbx
+                .has(tables::TABLE_TRIE_COMMITTED, root.as_slice())
+                .unwrap(),
             "trie_committed_roots must contain the hash after store_root()"
         );
     }
@@ -431,7 +476,8 @@ mod tests {
         let mdbx = Arc::new(MdbxStorage::open(dir.path()).unwrap());
 
         let root = dummy_hash(0xAA);
-        mdbx.put(tables::TABLE_TRIE_ROOTS, &1u64.to_be_bytes(), &root[..]).unwrap();
+        mdbx.put(tables::TABLE_TRIE_ROOTS, &1u64.to_be_bytes(), &root[..])
+            .unwrap();
 
         // Re-open via TrieStorage::new() — triggers ensure_committed_roots_index()
         let storage = TrieStorage::new(mdbx).unwrap();

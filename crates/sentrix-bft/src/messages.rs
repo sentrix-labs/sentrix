@@ -4,9 +4,9 @@
 // All serializable with bincode to match P2P wire format.
 // Signatures use secp256k1 ECDSA (same as transaction signing).
 
-use sentrix_primitives::{SentrixError, SentrixResult};
 use secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
 use secp256k1::{Message, Secp256k1, SecretKey};
+use sentrix_primitives::{SentrixError, SentrixResult};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -189,8 +189,8 @@ pub fn recover_signer(payload: &[u8], signature: &[u8]) -> SentrixResult<String>
     let secp = Secp256k1::verification_only();
     let hash: [u8; 32] = Sha256::digest(payload).into();
     let msg = Message::from_digest(hash);
-    let rec_id = RecoveryId::try_from(signature[64] as i32)
-        .map_err(|_| SentrixError::InvalidSignature)?;
+    let rec_id =
+        RecoveryId::try_from(signature[64] as i32).map_err(|_| SentrixError::InvalidSignature)?;
     let sig = RecoverableSignature::from_compact(&signature[..64], rec_id)
         .map_err(|_| SentrixError::InvalidSignature)?;
     let pubkey = secp

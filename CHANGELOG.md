@@ -9,6 +9,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.2] — 2026-04-20 — Trie-init hardening hotfix
+
+### Fixed
+- **fix(consensus): hard-fail trie init above STATE_ROOT_FORK_HEIGHT**
+  (`crates/sentrix-core/src/storage.rs`). Before: init_trie failure was
+  a tracing warn and the node continued, producing blocks with
+  `state_root = None` while peers with working tries produced
+  `state_root = Some(...)` — the hashes diverge and the chain forks.
+  Mainnet stalled at block 100,004 on 2026-04-20 via exactly this path:
+  VPS3's trie had a missing node (`24afba5f…`) so block 100,004 got
+  saved with `state_root = null`, VPS1 had a functional trie and block
+  100,004 with `state_root = Some(…)` → different block hashes → VPS1
+  rejected VPS3's block 100,005 as "invalid previous hash". Post-fix,
+  any node whose trie cannot init past fork height refuses to start —
+  a silently diverging validator is worse for the network than an
+  offline one. Below fork height the old hash format ignores
+  `state_root`, so the warn-only path is still safe there.
+
 ### Refactored
 - **refactor(rpc): transactions + epoch handlers out of
   `routes/mod.rs`** (backlog #12 phase 2f + 2g, final slices) — 5

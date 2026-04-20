@@ -79,11 +79,7 @@ async fn test_eth_get_logs_rejects_inverted_range() {
 #[tokio::test]
 async fn test_eth_get_logs_requires_filter_object() {
     let state = fresh_state();
-    let resp = jsonrpc_handler(
-        State(state),
-        Json(make_request("eth_getLogs", json!([]))),
-    )
-    .await;
+    let resp = jsonrpc_handler(State(state), Json(make_request("eth_getLogs", json!([])))).await;
     let err = resp.0.error.expect("should error");
     assert_eq!(err.code, -32602);
 }
@@ -101,13 +97,21 @@ async fn test_eth_fee_history_shape() {
     .await;
     let result = resp.0.result.expect("result");
     assert!(result["oldestBlock"].as_str().unwrap().starts_with("0x"));
-    let base_fees = result["baseFeePerGas"].as_array().expect("baseFeePerGas array");
-    let ratios = result["gasUsedRatio"].as_array().expect("gasUsedRatio array");
+    let base_fees = result["baseFeePerGas"]
+        .as_array()
+        .expect("baseFeePerGas array");
+    let ratios = result["gasUsedRatio"]
+        .as_array()
+        .expect("gasUsedRatio array");
     let rewards = result["reward"].as_array().expect("reward array");
     assert_eq!(base_fees.len(), 5, "baseFeePerGas always blockCount+1");
     assert_eq!(ratios.len(), rewards.len(), "ratios + rewards must align");
     if let Some(first_reward) = rewards.first() {
-        assert_eq!(first_reward.as_array().unwrap().len(), 3, "reward[i] len == percentiles len");
+        assert_eq!(
+            first_reward.as_array().unwrap().len(),
+            3,
+            "reward[i] len == percentiles len"
+        );
     }
 }
 

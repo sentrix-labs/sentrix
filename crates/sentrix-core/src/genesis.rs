@@ -180,9 +180,9 @@ impl Genesis {
         // from hostile configs before hitting AccountDB.
         let mut total: u64 = 0;
         for b in &self.genesis.balances {
-            total = total.checked_add(b.amount).ok_or_else(|| {
-                GenesisError::Invalid("balance sum overflows u64".into())
-            })?;
+            total = total
+                .checked_add(b.amount)
+                .ok_or_else(|| GenesisError::Invalid("balance sum overflows u64".into()))?;
         }
         if total > crate::blockchain::MAX_SUPPLY {
             return Err(GenesisError::Invalid(format!(

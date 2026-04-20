@@ -4,9 +4,7 @@
 
 use crate::error::{StorageError, StorageResult};
 use crate::tables::ALL_TABLES;
-use libmdbx::{
-    Database, DatabaseOptions, NoWriteMap, TableFlags, Transaction, WriteFlags, RW,
-};
+use libmdbx::{Database, DatabaseOptions, NoWriteMap, RW, TableFlags, Transaction, WriteFlags};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
 
@@ -30,11 +28,14 @@ impl MdbxStorage {
     pub fn open(path: &Path) -> StorageResult<Self> {
         std::fs::create_dir_all(path).map_err(|e| StorageError::Other(e.to_string()))?;
 
-        let db = Database::<NoWriteMap>::open_with_options(path, DatabaseOptions {
-            max_tables: Some(16),
-            ..Default::default()
-        })
-            .map_err(|e| StorageError::Mdbx(format!("open: {e}")))?;
+        let db = Database::<NoWriteMap>::open_with_options(
+            path,
+            DatabaseOptions {
+                max_tables: Some(16),
+                ..Default::default()
+            },
+        )
+        .map_err(|e| StorageError::Mdbx(format!("open: {e}")))?;
 
         // Pre-create all named tables
         {
@@ -45,7 +46,11 @@ impl MdbxStorage {
             tx.commit()?;
         }
 
-        tracing::info!("MDBX storage opened at {:?} ({} tables)", path, ALL_TABLES.len());
+        tracing::info!(
+            "MDBX storage opened at {:?} ({} tables)",
+            path,
+            ALL_TABLES.len()
+        );
         Ok(Self { db })
     }
 
@@ -89,13 +94,22 @@ impl MdbxStorage {
     // ── Typed operations (bincode encoding) ─────────────────
 
     /// Put a serializable value into the given table (bincode).
-    pub fn put_bincode<V: Serialize>(&self, table: &str, key: &[u8], value: &V) -> StorageResult<()> {
+    pub fn put_bincode<V: Serialize>(
+        &self,
+        table: &str,
+        key: &[u8],
+        value: &V,
+    ) -> StorageResult<()> {
         let encoded = bincode::serialize(value)?;
         self.put(table, key, &encoded)
     }
 
     /// Get a deserializable value from the given table (bincode).
-    pub fn get_bincode<V: DeserializeOwned>(&self, table: &str, key: &[u8]) -> StorageResult<Option<V>> {
+    pub fn get_bincode<V: DeserializeOwned>(
+        &self,
+        table: &str,
+        key: &[u8],
+    ) -> StorageResult<Option<V>> {
         match self.get(table, key)? {
             Some(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
             None => Ok(None),
@@ -109,7 +123,11 @@ impl MdbxStorage {
     }
 
     /// Get a JSON-deserializable value.
-    pub fn get_json<V: DeserializeOwned>(&self, table: &str, key: &[u8]) -> StorageResult<Option<V>> {
+    pub fn get_json<V: DeserializeOwned>(
+        &self,
+        table: &str,
+        key: &[u8],
+    ) -> StorageResult<Option<V>> {
         match self.get(table, key)? {
             Some(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
             None => Ok(None),
@@ -185,7 +203,12 @@ impl WriteBatch<'_> {
     }
 
     /// Put a bincode-encoded value.
-    pub fn put_bincode<V: Serialize>(&self, table: &str, key: &[u8], value: &V) -> StorageResult<()> {
+    pub fn put_bincode<V: Serialize>(
+        &self,
+        table: &str,
+        key: &[u8],
+        value: &V,
+    ) -> StorageResult<()> {
         let encoded = bincode::serialize(value)?;
         self.put(table, key, &encoded)
     }

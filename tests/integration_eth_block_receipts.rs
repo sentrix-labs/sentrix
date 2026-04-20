@@ -89,8 +89,7 @@ async fn cumulative_gas_used_is_monotonic() {
         let cur_hex = r["cumulativeGasUsed"]
             .as_str()
             .expect("cumulativeGasUsed hex");
-        let cur = u64::from_str_radix(cur_hex.trim_start_matches("0x"), 16)
-            .expect("u64 from hex");
+        let cur = u64::from_str_radix(cur_hex.trim_start_matches("0x"), 16).expect("u64 from hex");
         assert!(
             cur >= prev,
             "cumulativeGasUsed must be non-decreasing ({prev} → {cur})",

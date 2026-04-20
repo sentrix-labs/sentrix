@@ -1,6 +1,5 @@
 // keystore.rs - Sentrix
 
-use sentrix_primitives::{SentrixError, SentrixResult};
 use crate::wallet::Wallet;
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
@@ -9,6 +8,7 @@ use aes_gcm::{
 use argon2::{Algorithm, Argon2, Params, Version};
 use pbkdf2::pbkdf2_hmac;
 use rand::RngCore;
+use sentrix_primitives::{SentrixError, SentrixResult};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 

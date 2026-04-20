@@ -15,11 +15,7 @@ use serde_json::{Value, json};
 use super::DispatchResult;
 use super::helpers::to_hex_u128;
 
-pub(super) async fn dispatch(
-    method: &str,
-    params: &Value,
-    state: &SharedState,
-) -> DispatchResult {
+pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) -> DispatchResult {
     match method {
         "sentrix_sendTransaction" => {
             // JSON-RPC token operations accept signed transactions only — no
@@ -30,10 +26,7 @@ pub(super) async fn dispatch(
             let tx: Transaction = match serde_json::from_value(params[0].clone()) {
                 Ok(t) => t,
                 Err(e) => {
-                    return Err((
-                        -32602,
-                        format!("invalid transaction object: {}", e),
-                    ));
+                    return Err((-32602, format!("invalid transaction object: {}", e)));
                 }
             };
             let txid = tx.txid.clone();
@@ -63,10 +56,7 @@ pub(super) async fn dispatch(
 async fn sentrix_get_validator_set(state: &SharedState) -> DispatchResult {
     let bc = state.read().await;
     let epoch = &bc.epoch_manager.current_epoch;
-    let epoch_span = epoch
-        .end_height
-        .saturating_sub(epoch.start_height)
-        .max(1);
+    let epoch_span = epoch.end_height.saturating_sub(epoch.start_height).max(1);
 
     // On a PoA chain (mainnet pre-Voyager) the DPoS stake_registry is
     // empty by design — validators live in AuthorityManager. Without the
@@ -229,8 +219,7 @@ async fn sentrix_get_delegations(params: &Value, state: &SharedState) -> Dispatc
         // delegator reward accounting lives in a staking sprint.
         let pending_reward_wei = match vstake {
             Some(v) if v.total_delegated > 0 => {
-                let share = (d.amount as u128)
-                    .saturating_mul(v.pending_rewards as u128)
+                let share = (d.amount as u128).saturating_mul(v.pending_rewards as u128)
                     / v.total_delegated as u128;
                 share.saturating_mul(10_000_000_000u128)
             }
@@ -306,8 +295,7 @@ async fn sentrix_get_staking_rewards(params: &Value, state: &SharedState) -> Dis
         if vstake.total_delegated == 0 {
             continue;
         }
-        let share_sentri = (d.amount as u128)
-            .saturating_mul(vstake.pending_rewards as u128)
+        let share_sentri = (d.amount as u128).saturating_mul(vstake.pending_rewards as u128)
             / vstake.total_delegated as u128;
         total_pending_sentri = total_pending_sentri.saturating_add(share_sentri);
         if cur >= from_epoch && cur <= to_epoch && share_sentri > 0 {

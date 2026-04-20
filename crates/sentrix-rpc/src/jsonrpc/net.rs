@@ -12,11 +12,7 @@ use serde_json::{Value, json};
 
 use super::DispatchResult;
 
-pub(super) async fn dispatch(
-    method: &str,
-    _params: &Value,
-    state: &SharedState,
-) -> DispatchResult {
+pub(super) async fn dispatch(method: &str, _params: &Value, state: &SharedState) -> DispatchResult {
     match method {
         "net_version" => {
             let bc = state.read().await;

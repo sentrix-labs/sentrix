@@ -1,15 +1,15 @@
 // block_executor.rs - Sentrix — Block validation and commit (two-pass)
 
-use sentrix_primitives::account::AccountDB;
-use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
-use sentrix_primitives::error::{SentrixError, SentrixResult};
-use sentrix_primitives::transaction::{TokenOp, Transaction};
 use crate::authority::AuthorityManager;
 use crate::blockchain::{
     Blockchain, CHAIN_WINDOW_SIZE, is_spendable_sentrix_address, is_valid_sentrix_address,
 };
 use crate::vm::ContractRegistry;
 use hex;
+use sentrix_primitives::account::AccountDB;
+use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
+use sentrix_primitives::error::{SentrixError, SentrixResult};
+use sentrix_primitives::transaction::{TokenOp, Transaction};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// C-03: snapshot of the mutable Blockchain state taken immediately
@@ -508,9 +508,9 @@ impl Blockchain {
             // in practice, but the guard is cheap and prevents a silent
             // wrap if MAX_TX_PER_BLOCK or MIN_TX_FEE are ever tuned
             // upward past the implicit ceiling.
-            total_fee = total_fee.checked_add(tx.fee).ok_or_else(|| {
-                SentrixError::Internal("block total_fee overflow".to_string())
-            })?;
+            total_fee = total_fee
+                .checked_add(tx.fee)
+                .ok_or_else(|| SentrixError::Internal("block total_fee overflow".to_string()))?;
 
             // Execute token operation if present in data field
             if let Some(token_op) = TokenOp::decode(&tx.data) {
@@ -575,7 +575,11 @@ impl Blockchain {
             // Execute EVM transaction if present (data field starts with "EVM:")
             // tx_index skips coinbase at slot 0 — first real tx is index 1.
             if tx.is_evm_tx() && Self::is_voyager_height(self.height()) {
-                let tx_index = (block.transactions.iter().position(|t| t.txid == tx.txid).unwrap_or(0)) as u32;
+                let tx_index = (block
+                    .transactions
+                    .iter()
+                    .position(|t| t.txid == tx.txid)
+                    .unwrap_or(0)) as u32;
                 self.execute_evm_tx_in_block(tx, block.index, &block.hash, tx_index)?;
             }
         }
@@ -584,7 +588,7 @@ impl Blockchain {
         // bounded; keeps the bloom exactly aligned with TABLE_LOGS without a
         // parallel in-memory accumulator.
         if let Some(storage) = self.mdbx_storage.as_ref() {
-            use sentrix_evm::{add_log_to_bloom, empty_bloom, StoredLog};
+            use sentrix_evm::{StoredLog, add_log_to_bloom, empty_bloom};
             let mut bloom = empty_bloom();
             let prefix = block.index.to_be_bytes();
             if let Ok(entries) = storage.iter(sentrix_storage::tables::TABLE_LOGS) {
@@ -722,14 +726,14 @@ impl Blockchain {
         let _sender = envelope.recover_signer().ok();
 
         // Build EVM tx
-        use sentrix_evm::database::parse_sentrix_address;
-        use sentrix_evm::executor::execute_tx;
-        use sentrix_evm::gas::INITIAL_BASE_FEE;
         use alloy_primitives::U256;
         use revm::context::TxEnv;
         use revm::database::InMemoryDB;
         use revm::primitives::{KECCAK_EMPTY, TxKind};
         use revm::state::AccountInfo;
+        use sentrix_evm::database::parse_sentrix_address;
+        use sentrix_evm::executor::execute_tx;
+        use sentrix_evm::gas::INITIAL_BASE_FEE;
 
         let from_addr =
             parse_sentrix_address(&tx.from_address).unwrap_or(alloy_primitives::Address::ZERO);
@@ -789,7 +793,7 @@ impl Blockchain {
                 // (height, tx_index, log_index) BE-packed so range scans
                 // return logs in canonical Ethereum order.
                 if let Some(storage) = self.mdbx_storage.as_ref() {
-                    use sentrix_evm::{log_key, StoredLog};
+                    use sentrix_evm::{StoredLog, log_key};
                     let mut block_hash_bytes = [0u8; 32];
                     if let Ok(decoded) = hex::decode(block_hash_hex.trim_start_matches("0x")) {
                         let n = decoded.len().min(32);
@@ -810,11 +814,8 @@ impl Blockchain {
                             log_idx as u32,
                         );
                         let key = log_key(block_height, tx_index, log_idx as u32);
-                        let _ = storage.put_bincode(
-                            sentrix_storage::tables::TABLE_LOGS,
-                            &key,
-                            &stored,
-                        );
+                        let _ =
+                            storage.put_bincode(sentrix_storage::tables::TABLE_LOGS, &key, &stored);
                     }
                 }
                 // Store contract RUNTIME code (not init code) if CREATE succeeded.
@@ -843,11 +844,9 @@ impl Blockchain {
                         );
                         self.accounts.mark_evm_tx_failed(&tx.txid);
                     } else {
-                        let addr_str =
-                            format!("0x{}", hex::encode(contract_addr.as_slice()));
+                        let addr_str = format!("0x{}", hex::encode(contract_addr.as_slice()));
                         use sha3::{Digest as _, Keccak256};
-                        let code_hash: [u8; 32] =
-                            Keccak256::digest(&receipt.output).into();
+                        let code_hash: [u8; 32] = Keccak256::digest(&receipt.output).into();
                         let code_hash_hex = hex::encode(code_hash);
                         self.accounts
                             .store_contract_code(&code_hash_hex, receipt.output.clone());
@@ -870,8 +869,8 @@ impl Blockchain {
 #[cfg(test)]
 mod tests {
     use crate::blockchain::{Blockchain, CHAIN_ID};
-    use sentrix_primitives::transaction::{MIN_TX_FEE, TOKEN_OP_ADDRESS, TokenOp, Transaction};
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
+    use sentrix_primitives::transaction::{MIN_TX_FEE, TOKEN_OP_ADDRESS, TokenOp, Transaction};
 
     fn make_keypair() -> (SecretKey, PublicKey) {
         let secp = Secp256k1::new();

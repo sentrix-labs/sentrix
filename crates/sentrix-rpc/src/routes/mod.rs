@@ -22,8 +22,8 @@ pub use ratelimit::{GlobalIpLimiter, IpRateLimiter, WriteIpLimiter};
 pub use types::{ApiResponse, SendTxRequest, SignedTxRequest};
 
 use accounts::{
-    get_address_history, get_address_info, get_address_proof, get_balance, get_nonce,
-    get_richlist, get_state_root, get_wallet_info, list_transactions,
+    get_address_history, get_address_info, get_address_proof, get_balance, get_nonce, get_richlist,
+    get_state_root, get_wallet_info, list_transactions,
 };
 use chain::{chain_info, get_block, get_blocks, validate_chain};
 use epoch::{epoch_current, epoch_history};
@@ -31,8 +31,8 @@ use ops::{START_TIME, get_admin_log, health, metrics, root};
 use ratelimit::{ip_rate_limit_middleware, write_rate_limit_middleware};
 use staking::{get_validators, staking_delegations, staking_unbonding, staking_validators};
 use tokens::{
-    deploy_token, get_token_balance, get_token_holders_list, get_token_info,
-    get_token_trades_list, list_tokens, token_burn, token_transfer,
+    deploy_token, get_token_balance, get_token_holders_list, get_token_info, get_token_trades_list,
+    list_tokens, token_burn, token_transfer,
 };
 use transactions::{get_mempool, get_transaction, send_transaction};
 
@@ -57,10 +57,7 @@ use tokio::sync::RwLock;
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{Any, CorsLayer};
 
-
 pub type SharedState = Arc<RwLock<Blockchain>>;
-
-
 
 // ── Router ───────────────────────────────────────────────
 pub fn create_router(state: SharedState) -> Router {
@@ -190,10 +187,7 @@ pub fn create_router(state: SharedState) -> Router {
             "/accounts/{address}/history",
             get(crate::explorer_api::accounts_history),
         )
-        .route(
-            "/accounts/top",
-            get(crate::explorer_api::accounts_top),
-        )
+        .route("/accounts/top", get(crate::explorer_api::accounts_top))
         .route(
             "/accounts/{address}/tokens",
             get(crate::explorer_api::accounts_tokens),
@@ -273,19 +267,9 @@ fn explorer_router(_state: SharedState) -> Router<SharedState> {
 
 // ── Handlers ─────────────────────────────────────────────
 
-
-
-
-
 // ── Token handlers ───────────────────────────────────────
 
-
 // ── Short-form alias handlers ────────────────────────────
-
-
-
-
-
 
 // Helper for API error responses
 pub(super) fn api_err(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
@@ -351,7 +335,6 @@ mod tests {
         assert!(!constant_time_eq("", "a"));
         assert!(!constant_time_eq("a", ""));
     }
-
 
     // ── L-05: serde_json error propagation tests ──────────
 

@@ -11,8 +11,7 @@ use axum::{Json, extract::State, response::IntoResponse};
 
 use super::{ApiKey, SharedState};
 
-pub(super) static START_TIME: std::sync::OnceLock<std::time::Instant> =
-    std::sync::OnceLock::new();
+pub(super) static START_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 pub(super) async fn root() -> Json<serde_json::Value> {
     let chain_id = sentrix_core::blockchain::get_chain_id();

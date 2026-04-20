@@ -1,7 +1,7 @@
 // db.rs - Sentrix — Per-block persistent storage (MDBX backend)
 
-use sentrix_primitives::block::Block;
 use crate::blockchain::{Blockchain, CHAIN_WINDOW_SIZE};
+use sentrix_primitives::block::Block;
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_storage::{ChainStorage, MdbxStorage};
 use std::sync::Arc;
@@ -12,13 +12,14 @@ pub struct Storage {
 
 impl Storage {
     pub fn open(path: &str) -> SentrixResult<Self> {
-        let chain = ChainStorage::open(path)
-            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        let chain =
+            ChainStorage::open(path).map_err(|e| SentrixError::StorageError(e.to_string()))?;
         Ok(Self { chain })
     }
 
     pub fn ensure_hash_index(&self) -> SentrixResult<()> {
-        self.chain.ensure_hash_index()
+        self.chain
+            .ensure_hash_index()
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
@@ -31,15 +32,19 @@ impl Storage {
     // ── Blockchain state (everything except blocks) ──────
 
     pub fn save_blockchain(&self, blockchain: &Blockchain) -> SentrixResult<()> {
-        self.chain.save_blockchain(blockchain, &blockchain.chain)
+        self.chain
+            .save_blockchain(blockchain, &blockchain.chain)
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         Ok(())
     }
 
     pub fn load_blockchain(&self) -> SentrixResult<Option<Blockchain>> {
         // Try loading state
-        let mut bc: Blockchain = match self.chain.load_state()
-            .map_err(|e| SentrixError::StorageError(e.to_string()))? {
+        let mut bc: Blockchain = match self
+            .chain
+            .load_state()
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?
+        {
             Some(bc) => bc,
             None => {
                 // Fallback: old "blockchain" key in meta table
@@ -49,7 +54,9 @@ impl Storage {
         };
 
         // Load only the sliding window (last CHAIN_WINDOW_SIZE blocks) into RAM.
-        let height = self.chain.load_height()
+        let height = self
+            .chain
+            .load_height()
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         let window_start = height.saturating_sub(CHAIN_WINDOW_SIZE as u64 - 1);
         let mut blocks = Vec::with_capacity((height - window_start + 1) as usize);
@@ -79,7 +86,8 @@ impl Storage {
                         height,
                         effective
                     );
-                    self.chain.save_height(effective)
+                    self.chain
+                        .save_height(effective)
                         .map_err(|e| SentrixError::StorageError(e.to_string()))?;
                     break;
                 }
@@ -104,10 +112,35 @@ impl Storage {
             );
         }
 
-        // Restore state trie from MDBX
+        // Restore state trie from MDBX.
+        //
+        // HARD-FAIL on trie init failure above STATE_ROOT_FORK_HEIGHT: past the
+        // fork height, `state_root` is part of the block hash, so a node that
+        // silently fails trie init would produce blocks with `state_root = None`
+        // while peers with working tries produce `state_root = Some(...)`. The
+        // hashes diverge → chain fork. Mainnet stall on 2026-04-20 was caused
+        // by exactly this silent-warn path. Refusing to start surfaces broken
+        // trie state to operators immediately; the chain tolerates one
+        // validator offline better than a silently-diverging validator.
+        //
+        // Below fork height the old hash format ignores state_root entirely, so
+        // a failed trie init cannot cause consensus divergence — warn-only is
+        // still safe there.
         let mdbx = self.mdbx_arc();
         if let Err(e) = bc.init_trie(mdbx.clone()) {
-            tracing::warn!("trie init failed after blockchain load: {}", e);
+            let h = bc.height();
+            if h >= sentrix_primitives::block::STATE_ROOT_FORK_HEIGHT {
+                return Err(SentrixError::Internal(format!(
+                    "trie init failed at height {h}: {e}. Past STATE_ROOT_FORK_HEIGHT the trie \
+                     must be functional — state_root is part of the block hash and silent trie \
+                     failure causes chain forks. Resync from peers or wipe data dir to recover."
+                )));
+            }
+            tracing::warn!(
+                "trie init failed at height {} (below fork height — allowed): {}",
+                h,
+                e
+            );
         }
 
         // Bind storage handles for txid_index lookups
@@ -129,34 +162,40 @@ impl Storage {
     // ── Per-block operations ─────────────────────────────
 
     pub fn save_block(&self, block: &Block) -> SentrixResult<()> {
-        self.chain.save_block(block)
+        self.chain
+            .save_block(block)
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
     pub fn load_block(&self, index: u64) -> SentrixResult<Option<Block>> {
-        self.chain.load_block(index)
+        self.chain
+            .load_block(index)
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
     pub fn load_block_by_hash(&self, hash: &str) -> SentrixResult<Option<Block>> {
-        self.chain.load_block_by_hash(hash)
+        self.chain
+            .load_block_by_hash(hash)
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
     pub fn load_blocks_range(&self, from: u64, to: u64) -> SentrixResult<Vec<Block>> {
-        self.chain.load_blocks_range(from, to)
+        self.chain
+            .load_blocks_range(from, to)
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
     // ── Height ───────────────────────────────────────────
 
     pub fn save_height(&self, height: u64) -> SentrixResult<()> {
-        self.chain.save_height(height)
+        self.chain
+            .save_height(height)
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
     pub fn load_height(&self) -> SentrixResult<u64> {
-        self.chain.load_height()
+        self.chain
+            .load_height()
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
@@ -167,12 +206,14 @@ impl Storage {
     }
 
     pub fn clear(&self) -> SentrixResult<()> {
-        self.chain.clear()
+        self.chain
+            .clear()
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
     pub fn reset_trie(&self) -> SentrixResult<()> {
-        self.chain.reset_trie()
+        self.chain
+            .reset_trie()
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 

@@ -685,11 +685,15 @@ mod tests {
         let key = address_to_key("0xaaaa");
 
         trie.insert(&key, &account_value_bytes(100, 0)).unwrap();
-        let nodes_after_insert = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
+        let nodes_after_insert = mdbx
+            .count(sentrix_storage::tables::TABLE_TRIE_NODES)
+            .unwrap();
 
         // Update same key — node count must stay the same (old leaf removed, new leaf added)
         trie.insert(&key, &account_value_bytes(200, 1)).unwrap();
-        let nodes_after_update = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
+        let nodes_after_update = mdbx
+            .count(sentrix_storage::tables::TABLE_TRIE_NODES)
+            .unwrap();
 
         assert_eq!(
             nodes_after_insert, nodes_after_update,
@@ -759,12 +763,20 @@ mod tests {
         let val = account_value_bytes(500, 0);
 
         trie.insert(&key, &val).unwrap();
-        let nodes_after_insert = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
-        let values_after_insert = mdbx.count(sentrix_storage::tables::TABLE_TRIE_VALUES).unwrap();
+        let nodes_after_insert = mdbx
+            .count(sentrix_storage::tables::TABLE_TRIE_NODES)
+            .unwrap();
+        let values_after_insert = mdbx
+            .count(sentrix_storage::tables::TABLE_TRIE_VALUES)
+            .unwrap();
 
         trie.delete(&key).unwrap();
-        let nodes_after_delete = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
-        let values_after_delete = mdbx.count(sentrix_storage::tables::TABLE_TRIE_VALUES).unwrap();
+        let nodes_after_delete = mdbx
+            .count(sentrix_storage::tables::TABLE_TRIE_NODES)
+            .unwrap();
+        let values_after_delete = mdbx
+            .count(sentrix_storage::tables::TABLE_TRIE_VALUES)
+            .unwrap();
 
         assert!(
             nodes_after_delete < nodes_after_insert,
@@ -792,15 +804,21 @@ mod tests {
 
         // Insert first key (creates leaf at root)
         trie.insert(&k1, &account_value_bytes(100, 0)).unwrap();
-        let nodes_1 = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
+        let nodes_1 = mdbx
+            .count(sentrix_storage::tables::TABLE_TRIE_NODES)
+            .unwrap();
 
         // Insert second key (creates internal node, old root-leaf becomes sibling)
         trie.insert(&k2, &account_value_bytes(200, 0)).unwrap();
-        let nodes_2 = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
+        let nodes_2 = mdbx
+            .count(sentrix_storage::tables::TABLE_TRIE_NODES)
+            .unwrap();
 
         // Update k1 (causes structural change — old internal nodes replaced)
         trie.insert(&k1, &account_value_bytes(300, 1)).unwrap();
-        let nodes_3 = mdbx.count(sentrix_storage::tables::TABLE_TRIE_NODES).unwrap();
+        let nodes_3 = mdbx
+            .count(sentrix_storage::tables::TABLE_TRIE_NODES)
+            .unwrap();
 
         // Node count after update should not exceed count after two-key insert
         // (old internal nodes should be cleaned up)

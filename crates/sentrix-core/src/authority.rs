@@ -1,7 +1,7 @@
 // authority.rs - Sentrix
 
-use sentrix_primitives::error::{SentrixError, SentrixResult};
 use secp256k1::PublicKey;
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -114,9 +114,7 @@ impl AuthorityManager {
     /// boundary to reject consensus messages from non-validator peers
     /// (C-01 gap 2). Admin-toggled-off validators return `false`.
     pub fn is_active_validator(&self, address: &str) -> bool {
-        self.validators
-            .get(address)
-            .is_some_and(|v| v.is_active)
+        self.validators.get(address).is_some_and(|v| v.is_active)
     }
 
     // Admin operations

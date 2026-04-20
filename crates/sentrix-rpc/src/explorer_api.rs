@@ -36,7 +36,11 @@ use std::collections::HashMap;
 const SENTRI_PER_SRX: f64 = 100_000_000.0;
 
 fn parse_page_limit(params: &HashMap<String, String>) -> (usize, usize) {
-    let page: usize = params.get("page").and_then(|p| p.parse().ok()).unwrap_or(1).max(1);
+    let page: usize = params
+        .get("page")
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(1)
+        .max(1);
     let limit: usize = params
         .get("limit")
         .and_then(|l| l.parse().ok())

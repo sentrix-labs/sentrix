@@ -1,7 +1,7 @@
 // wallet.rs - Sentrix
 
-use sentrix_primitives::{SentrixError, SentrixResult};
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
+use sentrix_primitives::{SentrixError, SentrixResult};
 use sha3::Digest;
 use sha3::Keccak256;
 use zeroize::Zeroizing;

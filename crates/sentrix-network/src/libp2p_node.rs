@@ -30,14 +30,14 @@ use libp2p::{
 };
 use tokio::sync::mpsc;
 
-use sentrix_primitives::block::Block;
-use sentrix_primitives::transaction::Transaction;
 use crate::behaviour::{
     BLOCKS_TOPIC, GossipBlock, GossipTransaction, SentrixBehaviour, SentrixBehaviourEvent,
     SentrixRequest, SentrixResponse, TXS_TOPIC,
 };
 use crate::node::{NodeEvent, SharedBlockchain};
+use sentrix_primitives::block::Block;
 use sentrix_primitives::error::{SentrixError, SentrixResult};
+use sentrix_primitives::transaction::Transaction;
 
 // ── P2P protection constants ────────────────────────────
 /// Maximum number of verified (handshaked) peers.
@@ -166,10 +166,7 @@ impl LibP2pNode {
 
     /// Broadcast our current BFT round status so peers can sync rounds.
     /// Called periodically (~5s) by the validator loop.
-    pub async fn broadcast_bft_round_status(
-        &self,
-        status: &sentrix_bft::messages::RoundStatus,
-    ) {
+    pub async fn broadcast_bft_round_status(&self, status: &sentrix_bft::messages::RoundStatus) {
         let req = SentrixRequest::BftRoundStatus {
             status: status.clone(),
         };
@@ -1335,7 +1332,8 @@ mod tests {
 
         let node = LibP2pNode::new(keypair, bc, etx).expect("node");
         // No peers — broadcast should silently do nothing
-        let block = sentrix_primitives::block::Block::new(0, "0".to_string(), vec![], "v1".to_string());
+        let block =
+            sentrix_primitives::block::Block::new(0, "0".to_string(), vec![], "v1".to_string());
         node.broadcast_block(&block).await; // must not panic
     }
 }

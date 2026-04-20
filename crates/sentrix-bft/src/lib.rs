@@ -19,9 +19,9 @@
 pub mod engine;
 pub mod messages;
 
-pub use engine::{BftEngine, BftAction, BftPhase, BftRoundState, VoteCollector};
-pub use engine::{propose_timeout, prevote_timeout, precommit_timeout};
-pub use engine::{PROPOSE_TIMEOUT_MS, PREVOTE_TIMEOUT_MS, PRECOMMIT_TIMEOUT_MS, MAX_ROUND};
+pub use engine::{BftAction, BftEngine, BftPhase, BftRoundState, VoteCollector};
+pub use engine::{MAX_ROUND, PRECOMMIT_TIMEOUT_MS, PREVOTE_TIMEOUT_MS, PROPOSE_TIMEOUT_MS};
+pub use engine::{precommit_timeout, prevote_timeout, propose_timeout};
 pub use messages::{
     BftMessage, BlockJustification, Precommit, Prevote, Proposal, RoundStatus,
     supermajority_threshold,
