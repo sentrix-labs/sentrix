@@ -68,6 +68,13 @@ enum SwarmCommand {
     GetPeerCount(tokio::sync::oneshot::Sender<usize>),
     /// Re-dial bootstrap peers that are no longer connected.
     ReconnectPeers(Vec<Multiaddr>),
+    /// Trigger an out-of-band block sync from the first verified peer.
+    /// Fired by the validator loop when BFT sees a peer at a higher
+    /// height and we need to catch up before we can vote (backlog #4
+    /// auto-resync). Unlike the periodic 30s sync_interval tick, this
+    /// fires *immediately* so the chain doesn't wait up to 30s to
+    /// discover it's behind.
+    TriggerSync,
 }
 
 // ── Public handle ────────────────────────────────────────
@@ -176,6 +183,15 @@ impl LibP2pNode {
     /// Re-dial bootstrap peers that may have disconnected.
     pub async fn reconnect_peers(&self, addrs: Vec<Multiaddr>) {
         let _ = self.cmd_tx.send(SwarmCommand::ReconnectPeers(addrs)).await;
+    }
+
+    /// Ask the swarm to immediately issue a `GetBlocks` to the first
+    /// verified peer. Backlog #4 auto-resync trigger: when BFT detects
+    /// a peer at a higher height (via RoundStatus gossip) we want to
+    /// catch up before the next round starts, not wait up to 30s for
+    /// the periodic sync interval to fire.
+    pub async fn trigger_sync(&self) {
+        let _ = self.cmd_tx.send(SwarmCommand::TriggerSync).await;
     }
 
     /// Add a known peer to the Kademlia routing table (bootstrap node).
@@ -402,6 +418,31 @@ async fn run_swarm(
                         for addr in addrs {
                             if let Err(e) = swarm.dial(addr.clone()) {
                                 tracing::warn!("libp2p reconnect dial {} failed: {}", addr, e);
+                            }
+                        }
+                    }
+                    Some(SwarmCommand::TriggerSync) => {
+                        // Backlog #4 auto-resync: ask the first verified peer
+                        // for blocks from our current height + 1. Fires
+                        // immediately instead of waiting for the 30s periodic
+                        // sync_interval tick.
+                        if verified_peers.is_empty() {
+                            tracing::debug!("libp2p trigger_sync: no verified peers");
+                        } else {
+                            let our_height = blockchain.read().await.height();
+                            if let Some(&peer_id) = verified_peers.iter().next() {
+                                let req_id = swarm.behaviour_mut().rr.send_request(
+                                    &peer_id,
+                                    SentrixRequest::GetBlocks {
+                                        from_height: our_height + 1,
+                                    },
+                                );
+                                pending_syncs.insert(req_id, peer_id);
+                                tracing::info!(
+                                    "libp2p trigger_sync: requested blocks from {} starting at {}",
+                                    peer_id,
+                                    our_height + 1
+                                );
                             }
                         }
                     }
