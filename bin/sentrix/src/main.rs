@@ -2070,10 +2070,11 @@ async fn cmd_start(
                 // silently dropping votes/proposals.
                 NodeEvent::BftProposal(p) => {
                     tracing::info!(
-                        "BFT proposal: height={} round={} proposer={}",
+                        "BFT proposal: height={} round={} proposer={} block_hash={}",
                         p.height,
                         p.round,
-                        &p.proposer[..p.proposer.len().min(12)]
+                        &p.proposer[..p.proposer.len().min(12)],
+                        &p.block_hash[..p.block_hash.len().min(16)]
                     );
                     if let Err(e) = bft_tx_clone
                         .send(sentrix::core::bft_messages::BftMessage::Propose(p))
@@ -2086,11 +2087,16 @@ async fn cmd_start(
                     }
                 }
                 NodeEvent::BftPrevote(v) => {
+                    let hash_tag = match &v.block_hash {
+                        Some(h) => format!("block={}", &h[..h.len().min(16)]),
+                        None => "block=nil".to_string(),
+                    };
                     tracing::info!(
-                        "BFT prevote: height={} round={} from={}",
+                        "BFT prevote: height={} round={} from={} {}",
                         v.height,
                         v.round,
-                        &v.validator[..v.validator.len().min(12)]
+                        &v.validator[..v.validator.len().min(12)],
+                        hash_tag
                     );
                     if let Err(e) = bft_tx_clone
                         .send(sentrix::core::bft_messages::BftMessage::Prevote(v))
@@ -2103,11 +2109,16 @@ async fn cmd_start(
                     }
                 }
                 NodeEvent::BftPrecommit(c) => {
+                    let hash_tag = match &c.block_hash {
+                        Some(h) => format!("block={}", &h[..h.len().min(16)]),
+                        None => "block=nil".to_string(),
+                    };
                     tracing::info!(
-                        "BFT precommit: height={} round={} from={}",
+                        "BFT precommit: height={} round={} from={} {}",
                         c.height,
                         c.round,
-                        &c.validator[..c.validator.len().min(12)]
+                        &c.validator[..c.validator.len().min(12)],
+                        hash_tag
                     );
                     if let Err(e) = bft_tx_clone
                         .send(sentrix::core::bft_messages::BftMessage::Precommit(c))
