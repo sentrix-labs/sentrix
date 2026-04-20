@@ -339,7 +339,7 @@ impl Node {
 
                 Message::NewBlock { block } => {
                     let mut bc = blockchain.write().await;
-                    match bc.add_block(block.clone()) {
+                    match bc.add_block_from_peer(block.clone()) {
                         Ok(()) => {
                             tracing::info!("Received block {} from peer", block.index);
                             // Send the canonically committed block (with state_root set) rather than the pre-commit version
@@ -376,7 +376,7 @@ impl Node {
                     let mut bc = blockchain.write().await;
                     let mut applied = 0;
                     for block in blocks {
-                        match bc.add_block(block) {
+                        match bc.add_block_from_peer(block) {
                             Ok(()) => applied += 1,
                             Err(_) => break, // stop on first invalid
                         }
@@ -482,7 +482,7 @@ impl Node {
                         let mut bc = self.blockchain.write().await;
                         let mut applied = 0;
                         for block in blocks {
-                            match bc.add_block(block) {
+                            match bc.add_block_from_peer(block) {
                                 Ok(()) => applied += 1,
                                 Err(_) => break,
                             }

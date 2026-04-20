@@ -586,7 +586,7 @@ async fn on_swarm_event(
                         let peer = propagation_source;
                         tokio::spawn(async move {
                             let mut chain = bc.write().await;
-                            match chain.add_block(gossip.block.clone()) {
+                            match chain.add_block_from_peer(gossip.block.clone()) {
                                 Ok(()) => {
                                     let updated =
                                         chain.latest_block().ok().cloned().unwrap_or(gossip.block);
@@ -837,7 +837,7 @@ async fn on_inbound_request(
             let etx = event_tx.clone();
             tokio::spawn(async move {
                 let mut chain = bc.write().await;
-                match chain.add_block(*block.clone()) {
+                match chain.add_block_from_peer(*block.clone()) {
                     Ok(()) => {
                         tracing::info!("libp2p: applied block {} from {}", block.index, peer);
                         // Capture H2 (with state_root + recomputed hash) before releasing
@@ -1056,7 +1056,7 @@ async fn on_inbound_response(
             let mut chain = bc.write().await;
             let mut synced = 0u64;
             for block in &blocks_owned {
-                match chain.add_block(block.clone()) {
+                match chain.add_block_from_peer(block.clone()) {
                     Ok(()) => {
                         // Use H2 (post-add_block state_root hash) — not the raw peer block (PR #78).
                         let updated = chain

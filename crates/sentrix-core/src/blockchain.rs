@@ -149,6 +149,18 @@ pub struct Blockchain {
     /// Slashing engine for liveness + double-sign tracking
     #[serde(default)]
     pub slashing: sentrix_staking::slashing::SlashingEngine,
+
+    /// Origin of the block currently being admitted. Set by the
+    /// `add_block*` family before calling `apply_block_pass2` and
+    /// cleared after. Peer blocks trigger strict state_root checks;
+    /// self-produced blocks are allowed to stamp state_root in
+    /// Pass 2. Backlog #1e. Not persisted.
+    #[serde(skip, default = "default_block_source")]
+    pub(crate) source_for_current_add: crate::block_executor::BlockSource,
+}
+
+fn default_block_source() -> crate::block_executor::BlockSource {
+    crate::block_executor::BlockSource::SelfProduced
 }
 
 impl Blockchain {
@@ -189,6 +201,7 @@ impl Blockchain {
             stake_registry: sentrix_staking::staking::StakeRegistry::new(),
             epoch_manager: sentrix_staking::epoch::EpochManager::new(),
             slashing: sentrix_staking::slashing::SlashingEngine::new(),
+            source_for_current_add: crate::block_executor::BlockSource::SelfProduced,
         };
         bc.initialize_genesis(genesis);
         bc

@@ -12,6 +12,22 @@ use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::transaction::{TokenOp, Transaction};
 use std::collections::{HashMap, HashSet, VecDeque};
 
+/// Origin of a block being admitted to the chain. Distinguishes
+/// proposals this validator just produced locally (where `state_root`
+/// is legitimately `None` until `update_trie_for_block` stamps it)
+/// from blocks that arrived over the wire (where a `None` state_root
+/// past `STATE_ROOT_FORK_HEIGHT` means the sender's trie is broken
+/// and accepting would fork the chain). Backlog #1e.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockSource {
+    /// Produced by this validator (block_producer::build_block).
+    /// state_root starts None and is stamped in Pass 2.
+    SelfProduced,
+    /// Received from a peer via P2P sync or BFT finalize.
+    /// state_root must already be Some past STATE_ROOT_FORK_HEIGHT.
+    Peer,
+}
+
 /// C-03: snapshot of the mutable Blockchain state taken immediately
 /// before Pass 2 of `add_block`. If any step in Pass 2 returns `Err`,
 /// the snapshot is restored so the chain never observes a partial
@@ -232,7 +248,45 @@ impl Blockchain {
     }
 
     // ── Block application (two-pass atomic) ─────────────
+    /// Admit a block produced locally. Preserves existing call sites that
+    /// don't care about origin (tests, legacy integrations). For blocks
+    /// arriving from peers past `STATE_ROOT_FORK_HEIGHT`, use
+    /// [`add_block_from_peer`](Self::add_block_from_peer) instead — it
+    /// rejects state_root=None rather than stamping it locally (which
+    /// would silently fork the chain when the peer's trie is broken,
+    /// backlog #1e / 2026-04-20 mainnet incident).
     pub fn add_block(&mut self, block: Block) -> SentrixResult<()> {
+        self.add_block_with_source(block, BlockSource::SelfProduced)
+    }
+
+    /// Admit a block received from a peer. Past fork height, the block
+    /// must carry `state_root = Some(root)` — a `None` from a peer
+    /// indicates the peer's trie failed to commit (backlog #1e) and
+    /// accepting it would cause us to stamp our own root and recompute
+    /// the block hash, diverging from the peer's persisted hash →
+    /// "invalid previous hash" fork on the next block.
+    pub fn add_block_from_peer(&mut self, block: Block) -> SentrixResult<()> {
+        self.add_block_with_source(block, BlockSource::Peer)
+    }
+
+    /// Core admit path. `source` is consulted only in the state_root
+    /// stamping branch — everything else is identical for self-produced
+    /// and peer-received blocks.
+    pub fn add_block_with_source(
+        &mut self,
+        block: Block,
+        source: BlockSource,
+    ) -> SentrixResult<()> {
+        self.source_for_current_add = source;
+        let result = self.add_block_impl(block);
+        // Clear the source marker so stale state can't leak into a later
+        // unrelated call (e.g. if apply_block_pass2 were ever called
+        // directly from tests).
+        self.source_for_current_add = BlockSource::SelfProduced;
+        result
+    }
+
+    fn add_block_impl(&mut self, block: Block) -> SentrixResult<()> {
         let expected_index = self.height() + 1;
         let expected_prev = self.latest_block()?.hash.clone();
 
@@ -663,8 +717,31 @@ impl Blockchain {
             if last.index >= STATE_ROOT_FORK_HEIGHT {
                 match last.state_root {
                     None => {
-                        // Self-produced block: set state_root and recompute hash so that
-                        // state_root is committed into the block header (V7-C-01).
+                        // state_root=None past fork height is only legitimate
+                        // when WE just produced this block — build_block creates
+                        // fresh blocks with state_root=None and add_block is
+                        // expected to stamp it here. A peer-sent block with
+                        // state_root=None means the peer's trie is broken
+                        // (backlog #1e / 2026-04-20 mainnet incident) — if we
+                        // stamp it ourselves we silently recompute the block
+                        // hash, diverging from what the peer persisted, and
+                        // the next block's previous_hash check fails → fork.
+                        //
+                        // Peer blocks with None get rejected loud, not stamped.
+                        if self.source_for_current_add == BlockSource::Peer {
+                            tracing::error!(
+                                "CRITICAL #1e: peer block {} arrived with state_root=None past \
+                                 STATE_ROOT_FORK_HEIGHT — sender's trie is broken. Rejecting to \
+                                 prevent silent fork. Expected local trie root: {}",
+                                last.index,
+                                hex::encode(computed_root)
+                            );
+                            return Err(SentrixError::ChainValidationFailed(format!(
+                                "peer block {} has state_root=None past fork height (#1e)",
+                                last.index
+                            )));
+                        }
+                        // Self-produced: stamp and recompute hash (V7-C-01).
                         last.state_root = Some(computed_root);
                         last.hash = last.calculate_hash();
                     }
@@ -672,6 +749,14 @@ impl Blockchain {
                         // Received block: verify peer's state_root matches ours (V7-C-01).
                         // State root mismatch is fatal — reject the block to prevent accepting a diverged chain state
                         if received_root != computed_root {
+                            tracing::error!(
+                                "CRITICAL #1e: state_root mismatch at block {} — received {} \
+                                 vs computed {}. Local trie and peer's trie disagree on the \
+                                 post-block state. Rejecting.",
+                                last.index,
+                                hex::encode(received_root),
+                                hex::encode(computed_root),
+                            );
                             return Err(SentrixError::ChainValidationFailed(format!(
                                 "state_root mismatch at block {}: received {}, computed {}",
                                 last.index,

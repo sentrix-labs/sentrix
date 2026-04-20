@@ -9,7 +9,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [2.1.2] — 2026-04-20 — Trie-init hardening hotfix
+## [2.1.3] — 2026-04-20 — Runtime trie divergence guard (backlog #1e)
+
+### Fixed
+- **fix(consensus): reject peer blocks with state_root=None past
+  STATE_ROOT_FORK_HEIGHT** (`crates/sentrix-core/src/block_executor.rs`).
+  Root cause of the 2026-04-20 mainnet fork that recurred even after
+  v2.1.2: `apply_block_pass2` treated every block arriving with
+  `state_root = None` as self-produced and silently stamped its own
+  computed root + recomputed the block hash. When a peer with a broken
+  trie broadcast a block with `state_root = None`, local nodes accepted
+  it, stamped a different root, stored a different hash — the next
+  block's `previous_hash` check failed against the peer's view and the
+  chain forked.
+
+  Fix: admission path now threads a `BlockSource` enum. New
+  `Blockchain::add_block_from_peer` routes incoming P2P / BFT-finalized
+  blocks through a strict branch that returns
+  `ChainValidationFailed` on `state_root = None` past fork height.
+  `Blockchain::add_block` stays as the permissive self-proposed path
+  (used by `build_block` where `state_root = None` is legitimate
+  because Pass 2 stamps it). All `sentrix-network` sync/gossip call
+  sites updated to `add_block_from_peer`. CRITICAL-level logs emitted
+  on both the None-from-peer and the `received_root != computed_root`
+  branches so operators see trie divergence loud in journalctl.
+
+
 
 ### Fixed
 - **fix(consensus): hard-fail trie init above STATE_ROOT_FORK_HEIGHT**
