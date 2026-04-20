@@ -1059,7 +1059,10 @@ mod tests {
         match action {
             BftAction::BroadcastPrevote(p) => {
                 assert_eq!(p.round, 4, "prevote must be for caught-up round");
-                assert_eq!(p.block_hash, None, "must be nil prevote — we have no proposal");
+                assert_eq!(
+                    p.block_hash, None,
+                    "must be nil prevote — we have no proposal"
+                );
             }
             other => panic!("expected BroadcastPrevote(nil), got {other:?}"),
         }
@@ -1078,7 +1081,10 @@ mod tests {
             signature: Vec::new(),
         };
         let _ = engine.on_round_status(&status);
-        assert!(engine.state.our_prevote_cast, "catch_up must mark our prevote cast");
+        assert!(
+            engine.state.our_prevote_cast,
+            "catch_up must mark our prevote cast"
+        );
         assert_eq!(engine.state.phase, BftPhase::Prevote);
 
         // Late proposal for the same round must NOT cause a second prevote.

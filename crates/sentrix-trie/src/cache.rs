@@ -2,8 +2,8 @@
 
 use crate::node::{NodeHash, TrieNode};
 use crate::storage::TrieStorage;
-use sentrix_primitives::SentrixResult;
 use lru::LruCache;
+use sentrix_primitives::SentrixResult;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 

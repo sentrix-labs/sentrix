@@ -144,9 +144,7 @@ async fn test_gossipsub_block_propagation() {
     // Create a valid block on chain A (so it has correct prev_hash, merkle root, etc.)
     let block = {
         let mut chain_a = bc_a.write().await;
-        let b = chain_a
-            .create_block(&val.address)
-            .expect("create_block");
+        let b = chain_a.create_block(&val.address).expect("create_block");
         chain_a.add_block(b.clone()).expect("add_block on A");
         b
     };

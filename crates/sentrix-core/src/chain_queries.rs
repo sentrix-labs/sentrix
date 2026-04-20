@@ -220,8 +220,8 @@ impl Blockchain {
 #[cfg(test)]
 mod tests {
     use crate::blockchain::{Blockchain, CHAIN_ID};
-    use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
+    use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
 
     fn make_keypair() -> (SecretKey, PublicKey) {
         let secp = Secp256k1::new();

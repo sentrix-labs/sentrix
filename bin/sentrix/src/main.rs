@@ -843,18 +843,9 @@ fn cmd_validator_force_unjail(
     storage.save_blockchain(&bc)?;
     println!("Validator force-unjailed: {}", address);
     if let (Some(b), Some(a)) = (before, after) {
-        println!(
-            "  self_stake: {} → {}",
-            b.0, a.0,
-        );
-        println!(
-            "  is_jailed:  {} → {}",
-            b.1, a.1,
-        );
-        println!(
-            "  jail_until: {} → {}",
-            b.2, a.2,
-        );
+        println!("  self_stake: {} → {}", b.0, a.0,);
+        println!("  is_jailed:  {} → {}", b.1, a.1,);
+        println!("  jail_until: {} → {}", b.2, a.2,);
     }
     println!(
         "Active set: {} validators",
@@ -1063,8 +1054,8 @@ async fn cmd_start(
             // a consistent ~1s cadence without blocking the loop for 3s when
             // nothing is happening (previous 3s sleep made the effective
             // block time oscillate around 3s instead of the configured 1s).
-            let mut pioneer_last_block = tokio::time::Instant::now()
-                - tokio::time::Duration::from_secs(BLOCK_TIME_SECS);
+            let mut pioneer_last_block =
+                tokio::time::Instant::now() - tokio::time::Duration::from_secs(BLOCK_TIME_SECS);
 
             loop {
                 if shutdown_flag_clone.load(Ordering::Acquire) {
@@ -1339,8 +1330,7 @@ async fn cmd_start(
                                                 // signature verification + state lookups.
                                                 {
                                                     let bc_read = shared_clone.read().await;
-                                                    if let Err(e) = bc_read.validate_block(&blk)
-                                                    {
+                                                    if let Err(e) = bc_read.validate_block(&blk) {
                                                         drop(bc_read);
                                                         tracing::warn!(
                                                             "BFT finalize: pre-validate \
@@ -1450,8 +1440,7 @@ async fn cmd_start(
                                                                     "Block {} produced by {}",
                                                                     height, proposer
                                                                 );
-                                                                let bc =
-                                                                    shared_clone.read().await;
+                                                                let bc = shared_clone.read().await;
                                                                 if let Err(e) = storage_clone
                                                                     .save_blockchain(&bc)
                                                                 {
@@ -1487,8 +1476,7 @@ async fn cmd_start(
                                             // new round never emits a proposal, peers prevote
                                             // nil, precommit nil, skip-round, and loop.
                                             let bc_r = shared_clone.read().await;
-                                            let we_propose =
-                                                bft.is_proposer(&bc_r.stake_registry);
+                                            let we_propose = bft.is_proposer(&bc_r.stake_registry);
                                             drop(bc_r);
                                             if we_propose {
                                                 let mut bc = shared_clone.write().await;
@@ -1496,9 +1484,8 @@ async fn cmd_start(
                                                     bc.create_block_voyager(&wallet.address)
                                                 {
                                                     let block_hash = block.hash.clone();
-                                                    let block_data =
-                                                        bincode::serialize(&block)
-                                                            .unwrap_or_default();
+                                                    let block_data = bincode::serialize(&block)
+                                                        .unwrap_or_default();
                                                     let mut proposal = Proposal {
                                                         height: bft.height(),
                                                         round: bft.round(),
@@ -1534,8 +1521,7 @@ async fn cmd_start(
                                             // P1: re-propose on skip-round if we are the new
                                             // round's proposer. Same stall pattern as above.
                                             let bc_r = shared_clone.read().await;
-                                            let we_propose =
-                                                bft.is_proposer(&bc_r.stake_registry);
+                                            let we_propose = bft.is_proposer(&bc_r.stake_registry);
                                             drop(bc_r);
                                             if we_propose {
                                                 let mut bc = shared_clone.write().await;
@@ -1543,9 +1529,8 @@ async fn cmd_start(
                                                     bc.create_block_voyager(&wallet.address)
                                                 {
                                                     let block_hash = block.hash.clone();
-                                                    let block_data =
-                                                        bincode::serialize(&block)
-                                                            .unwrap_or_default();
+                                                    let block_data = bincode::serialize(&block)
+                                                        .unwrap_or_default();
                                                     let mut proposal = Proposal {
                                                         height: bft.height(),
                                                         round: bft.round(),
@@ -1625,8 +1610,8 @@ async fn cmd_start(
                                 }
                             }
                             // Messages reaching this point have already been
-                                // signature-verified AND membership-checked at the
-                                // libp2p network boundary (C-01 gaps 1/2/3).
+                            // signature-verified AND membership-checked at the
+                            // libp2p network boundary (C-01 gaps 1/2/3).
                             BftMessage::Prevote(prevote) => {
                                 let bc = shared_clone.read().await;
                                 let stake = bc
@@ -1972,12 +1957,11 @@ async fn cmd_start(
                                     drop(bc_r);
                                     if we_propose {
                                         let mut bc = shared_clone.write().await;
-                                        if let Ok(block) =
-                                            bc.create_block_voyager(&wallet.address)
+                                        if let Ok(block) = bc.create_block_voyager(&wallet.address)
                                         {
                                             let block_hash = block.hash.clone();
-                                            let block_data = bincode::serialize(&block)
-                                                .unwrap_or_default();
+                                            let block_data =
+                                                bincode::serialize(&block).unwrap_or_default();
                                             let mut proposal = Proposal {
                                                 height: bft.height(),
                                                 round: bft.round(),
@@ -1988,9 +1972,7 @@ async fn cmd_start(
                                             };
                                             proposal.sign(&validator_secret_key);
                                             drop(bc);
-                                            lp2p_clone
-                                                .broadcast_bft_proposal(&proposal)
-                                                .await;
+                                            lp2p_clone.broadcast_bft_proposal(&proposal).await;
                                             proposed_block = Some(block);
                                             let _ = bft.on_own_proposal(&block_hash);
                                             tracing::info!(
@@ -2017,12 +1999,11 @@ async fn cmd_start(
                                     drop(bc_r);
                                     if we_propose {
                                         let mut bc = shared_clone.write().await;
-                                        if let Ok(block) =
-                                            bc.create_block_voyager(&wallet.address)
+                                        if let Ok(block) = bc.create_block_voyager(&wallet.address)
                                         {
                                             let block_hash = block.hash.clone();
-                                            let block_data = bincode::serialize(&block)
-                                                .unwrap_or_default();
+                                            let block_data =
+                                                bincode::serialize(&block).unwrap_or_default();
                                             let mut proposal = Proposal {
                                                 height: bft.height(),
                                                 round: bft.round(),
@@ -2033,9 +2014,7 @@ async fn cmd_start(
                                             };
                                             proposal.sign(&validator_secret_key);
                                             drop(bc);
-                                            lp2p_clone
-                                                .broadcast_bft_proposal(&proposal)
-                                                .await;
+                                            lp2p_clone.broadcast_bft_proposal(&proposal).await;
                                             proposed_block = Some(block);
                                             let _ = bft.on_own_proposal(&block_hash);
                                             tracing::info!(
@@ -2264,17 +2243,11 @@ async fn cmd_start(
         //     lock.
         if let Some(handle) = validator_handle {
             tracing::info!("Graceful shutdown: awaiting validator task exit...");
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                handle,
-            )
-            .await
-            {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), handle).await {
                 Ok(Ok(())) => tracing::info!("Validator task exited cleanly"),
-                Ok(Err(join_err)) => tracing::warn!(
-                    "C-08: validator task joined with panic: {}",
-                    join_err
-                ),
+                Ok(Err(join_err)) => {
+                    tracing::warn!("C-08: validator task joined with panic: {}", join_err)
+                }
                 Err(_) => tracing::warn!(
                     "C-08: validator task did not exit within 10s; \
                      proceeding to save state snapshot anyway"

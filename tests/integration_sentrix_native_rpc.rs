@@ -67,8 +67,7 @@ fn setup_chain_with_dpos() -> (Arc<RwLock<Blockchain>>, String, String, String, 
     bc.stake_registry
         .delegate(&del2.address, &val2.address, 7_000_000_000, 12)
         .expect("delegate");
-    bc.stake_registry
-        .update_active_set();
+    bc.stake_registry.update_active_set();
 
     (
         Arc::new(RwLock::new(bc)),
@@ -82,14 +81,24 @@ fn setup_chain_with_dpos() -> (Arc<RwLock<Blockchain>>, String, String, String, 
 #[tokio::test]
 async fn test_sentrix_get_validator_set_shape() {
     let (state, _, _, _, _) = setup_chain_with_dpos();
-    let resp = jsonrpc_handler(State(state), Json(make_request("sentrix_getValidatorSet", json!([])))).await;
+    let resp = jsonrpc_handler(
+        State(state),
+        Json(make_request("sentrix_getValidatorSet", json!([]))),
+    )
+    .await;
     let result = resp.0.result.expect("result");
     assert_eq!(
         result["consensus"].as_str().unwrap(),
         "PoA",
         "default chain (no VOYAGER_FORK_HEIGHT env) is PoA — empty stake_registry must fall back to AuthorityManager"
     );
-    assert!(result.get("validators").and_then(|v| v.as_array()).is_some(), "validators array");
+    assert!(
+        result
+            .get("validators")
+            .and_then(|v| v.as_array())
+            .is_some(),
+        "validators array"
+    );
     assert!(result.get("active_count").is_some());
     assert!(result.get("total_count").is_some());
     assert!(result.get("total_active_stake").is_some());
@@ -157,7 +166,12 @@ async fn test_sentrix_get_staking_rewards_default_window() {
     .await;
     let result = resp.0.result.expect("result");
     assert!(result["total_lifetime"].as_str().unwrap().starts_with("0x"));
-    assert!(result["pending_claimable"].as_str().unwrap().starts_with("0x"));
+    assert!(
+        result["pending_claimable"]
+            .as_str()
+            .unwrap()
+            .starts_with("0x")
+    );
     assert!(result["by_epoch"].is_array());
     assert!(result["from_epoch"].is_number());
     assert!(result["to_epoch"].is_number());
@@ -179,7 +193,10 @@ async fn test_sentrix_get_bft_status_poa_mode() {
     assert!(result.get("last_finalized_height").is_some());
     assert!(result.get("last_finalized_hash").is_some());
     // PoA response does NOT include BFT-only fields.
-    assert!(result.get("current_round").is_none(), "PoA must omit current_round");
+    assert!(
+        result.get("current_round").is_none(),
+        "PoA must omit current_round"
+    );
 }
 
 #[tokio::test]

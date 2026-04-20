@@ -278,10 +278,7 @@ impl StakeRegistry {
             .flat_map(|v| v.iter())
             .filter(|u| u.validator == validator)
             .fold((0usize, 0usize), |(per_pair, total), u| {
-                (
-                    per_pair + (u.delegator == delegator) as usize,
-                    total + 1,
-                )
+                (per_pair + (u.delegator == delegator) as usize, total + 1)
             });
         if existing_unbonding >= MAX_UNBONDING_ENTRIES {
             return Err(SentrixError::InvalidTransaction(format!(

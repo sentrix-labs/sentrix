@@ -4,8 +4,8 @@ use crate::blockchain::{
     Blockchain, MAX_MEMPOOL_PER_SENDER, MAX_MEMPOOL_SIZE, MEMPOOL_MAX_AGE_SECS,
     is_valid_sentrix_address,
 };
-use sentrix_primitives::transaction::{TOKEN_OP_ADDRESS, TokenOp, Transaction};
 use sentrix_primitives::error::{SentrixError, SentrixResult};
+use sentrix_primitives::transaction::{TOKEN_OP_ADDRESS, TokenOp, Transaction};
 
 /// M-10: per-transaction size ceiling. Bounds worst-case memory impact
 /// of a single accepted mempool entry and caps block bloat from any
@@ -188,8 +188,8 @@ impl Blockchain {
 mod tests {
     use super::*;
     use crate::blockchain::{Blockchain, CHAIN_ID};
-    use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
+    use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
 
     fn make_keypair() -> (SecretKey, PublicKey) {
         let secp = Secp256k1::new();

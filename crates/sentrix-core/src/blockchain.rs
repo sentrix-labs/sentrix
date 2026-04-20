@@ -1,17 +1,17 @@
 // blockchain.rs - Sentrix — Blockchain struct, constants, genesis, core state methods
 
-use sentrix_primitives::account::AccountDB;
 use crate::authority::AuthorityManager;
+use crate::vm::ContractRegistry;
+use hex;
+use sentrix_primitives::account::AccountDB;
 use sentrix_primitives::block::Block;
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::merkle::merkle_root;
 use sentrix_primitives::transaction::TOKEN_OP_ADDRESS;
 use sentrix_primitives::transaction::Transaction;
+use sentrix_storage::{MdbxStorage, height_key, key_to_height, tables};
 use sentrix_trie::address::{account_value_bytes, address_to_key};
 use sentrix_trie::tree::SentrixTrie;
-use crate::vm::ContractRegistry;
-use sentrix_primitives::error::{SentrixError, SentrixResult};
-use sentrix_storage::{MdbxStorage, tables, height_key, key_to_height};
-use hex;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -161,8 +161,8 @@ impl Blockchain {
     /// a corrupt `include_str!` target; we fail loud rather than silently.
     pub fn new(admin_address: String) -> Self {
         #[allow(clippy::expect_used)]
-        let genesis = crate::Genesis::mainnet()
-            .expect("embedded mainnet genesis must parse and validate");
+        let genesis =
+            crate::Genesis::mainnet().expect("embedded mainnet genesis must parse and validate");
         Self::new_with_genesis(admin_address, &genesis)
     }
 
@@ -241,7 +241,11 @@ impl Blockchain {
     /// never called (e.g. unit tests with no storage backing).
     pub fn record_tx_in_index(&self, txid: &str, block_index: u64) {
         if let Some(mdbx) = &self.mdbx_storage {
-            let _ = mdbx.put(tables::TABLE_TX_INDEX, txid.as_bytes(), &height_key(block_index));
+            let _ = mdbx.put(
+                tables::TABLE_TX_INDEX,
+                txid.as_bytes(),
+                &height_key(block_index),
+            );
         }
     }
 
@@ -251,13 +255,19 @@ impl Blockchain {
     /// initialised.
     pub fn lookup_tx_in_storage(&self, txid: &str) -> Option<(Block, u64)> {
         let mdbx = self.mdbx_storage.as_ref()?;
-        let raw = mdbx.get(tables::TABLE_TX_INDEX, txid.as_bytes()).ok().flatten()?;
+        let raw = mdbx
+            .get(tables::TABLE_TX_INDEX, txid.as_bytes())
+            .ok()
+            .flatten()?;
         if raw.len() != 8 {
             return None;
         }
         let block_index = key_to_height(&raw);
         let key = format!("block:{}", block_index);
-        let bytes = mdbx.get(tables::TABLE_META, key.as_bytes()).ok().flatten()?;
+        let bytes = mdbx
+            .get(tables::TABLE_META, key.as_bytes())
+            .ok()
+            .flatten()?;
         let block: Block = serde_json::from_slice(&bytes).ok()?;
         Some((block, block_index))
     }
@@ -290,8 +300,12 @@ impl Blockchain {
                     .map_err(|e| SentrixError::StorageError(e.to_string()))?
                     .is_none()
                 {
-                    mdbx.put(tables::TABLE_TX_INDEX, tx.txid.as_bytes(), &height_key(block.index))
-                        .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+                    mdbx.put(
+                        tables::TABLE_TX_INDEX,
+                        tx.txid.as_bytes(),
+                        &height_key(block.index),
+                    )
+                    .map_err(|e| SentrixError::StorageError(e.to_string()))?;
                     written += 1;
                 }
             }
@@ -419,7 +433,9 @@ impl Blockchain {
         // would crash the validator. checked_shr returns `None` at ≥64
         // so we clamp the reward to 0 (matching the intended "reward
         // halved to nothing" semantics).
-        let halvings: u32 = (self.height() / HALVING_INTERVAL).try_into().unwrap_or(u32::MAX);
+        let halvings: u32 = (self.height() / HALVING_INTERVAL)
+            .try_into()
+            .unwrap_or(u32::MAX);
         let reward = BLOCK_REWARD.checked_shr(halvings).unwrap_or(0);
 
         if reward == 0 {
@@ -659,8 +675,8 @@ impl Blockchain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
+    use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
 
     fn make_keypair() -> (SecretKey, PublicKey) {
         let secp = Secp256k1::new();

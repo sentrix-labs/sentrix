@@ -65,4 +65,3 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
     let content_eq: subtle::Choice = a_padded.ct_eq(&b_padded);
     (len_eq & content_eq).into()
 }
-

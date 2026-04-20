@@ -8,10 +8,10 @@
 // The TCP listener/handler functions below are NOT called by main.rs.
 // Do NOT re-enable raw TCP P2P without adding encryption.
 
-use sentrix_primitives::block::Block;
 use sentrix_core::blockchain::Blockchain;
-use sentrix_primitives::transaction::Transaction;
+use sentrix_primitives::block::Block;
 use sentrix_primitives::error::{SentrixError, SentrixResult};
+use sentrix_primitives::transaction::Transaction;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;

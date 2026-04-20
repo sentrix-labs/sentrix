@@ -3,13 +3,13 @@
 // Builds a fully encrypted, multiplexed transport:
 //   TCP  →  Noise XX (mutual auth + forward secrecy)  →  Yamux (stream muxing)
 
-use sentrix_primitives::error::{SentrixError, SentrixResult};
 use libp2p::{
     PeerId, Transport,
     core::{muxing::StreamMuxerBox, transport::Boxed, upgrade},
     identity::Keypair,
     noise, tcp, yamux,
 };
+use sentrix_primitives::error::{SentrixError, SentrixResult};
 
 /// Fully assembled, boxed transport: TCP + Noise + Yamux.
 /// Ready to be handed to a libp2p `Swarm`.

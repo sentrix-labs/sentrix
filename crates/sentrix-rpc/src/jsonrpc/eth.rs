@@ -17,11 +17,7 @@ use super::helpers::{
     to_hex, to_hex_u128,
 };
 
-pub(super) async fn dispatch(
-    method: &str,
-    params: &Value,
-    state: &SharedState,
-) -> DispatchResult {
+pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) -> DispatchResult {
     match method {
         "eth_chainId" => {
             let bc = state.read().await;
@@ -412,9 +408,8 @@ async fn eth_call(params: &Value, state: &SharedState) -> DispatchResult {
     {
         let code_hash_hex = hex::encode(target_account.code_hash);
         if let Some(code_bytes) = bc.accounts.get_contract_code(&code_hash_hex) {
-            let bytecode = revm::state::Bytecode::new_raw(alloy_primitives::Bytes::from(
-                code_bytes.clone(),
-            ));
+            let bytecode =
+                revm::state::Bytecode::new_raw(alloy_primitives::Bytes::from(code_bytes.clone()));
             let code_hash = alloy_primitives::B256::from(target_account.code_hash);
             in_mem_db.insert_account_info(
                 target,
@@ -471,11 +466,7 @@ async fn eth_get_logs(params: &Value, state: &SharedState) -> DispatchResult {
 }
 
 async fn eth_fee_history(params: &Value, state: &SharedState) -> DispatchResult {
-    let block_count = params
-        .get(0)
-        .and_then(parse_hex_u64)
-        .unwrap_or(1)
-        .min(1024);
+    let block_count = params.get(0).and_then(parse_hex_u64).unwrap_or(1).min(1024);
     let bc = state.read().await;
     let latest = bc.height();
     let newest = params

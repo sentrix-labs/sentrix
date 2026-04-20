@@ -16,9 +16,9 @@ pub mod logs;
 pub mod precompiles;
 
 pub use database::{SentrixEvmDb, parse_sentrix_address};
-pub use executor::{execute_tx, execute_call, TxReceipt};
+pub use executor::{TxReceipt, execute_call, execute_tx};
 pub use gas::{BLOCK_GAS_LIMIT, INITIAL_BASE_FEE};
 pub use logs::{
-    add_log_to_bloom, bloom_contains, bloom_union, compute_logs_bloom, empty_bloom, log_key,
-    log_key_prefix, LogsBloom, StoredLog,
+    LogsBloom, StoredLog, add_log_to_bloom, bloom_contains, bloom_union, compute_logs_bloom,
+    empty_bloom, log_key, log_key_prefix,
 };

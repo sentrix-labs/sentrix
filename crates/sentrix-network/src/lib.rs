@@ -12,4 +12,4 @@ pub mod sync;
 pub mod transport;
 
 pub use libp2p_node::{LibP2pNode, make_multiaddr};
-pub use node::{NodeEvent, SharedBlockchain, DEFAULT_PORT};
+pub use node::{DEFAULT_PORT, NodeEvent, SharedBlockchain};

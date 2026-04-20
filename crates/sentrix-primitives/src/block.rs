@@ -1,8 +1,8 @@
 // block.rs - Sentrix
 
+use crate::error::{SentrixError, SentrixResult};
 use crate::merkle::{merkle_root, sha256_hex};
 use crate::transaction::Transaction;
-use crate::error::{SentrixError, SentrixResult};
 use hex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -287,8 +287,7 @@ mod tests {
     #[test]
     fn test_c05_duplicate_txids_rejected_at_block_layer() {
         let genesis = Block::genesis();
-        let coinbase =
-            Transaction::new_coinbase("v1".to_string(), 100_000_000, 1, 1_712_620_800);
+        let coinbase = Transaction::new_coinbase("v1".to_string(), 100_000_000, 1, 1_712_620_800);
         // Two structurally-identical tx records share a txid by construction
         // (Transaction::new_coinbase is deterministic for given inputs).
         let dup_a = Transaction::new_coinbase("v2".to_string(), 1, 2, 1_712_620_800);
@@ -327,12 +326,7 @@ mod tests {
         let genesis = Block::genesis();
         let cb1 = Transaction::new_coinbase("v1".to_string(), 100_000_000, 1, 1_712_620_801);
         let cb2 = Transaction::new_coinbase("attacker".to_string(), 999_999_999, 1, 1_712_620_801);
-        let block1 = Block::new(
-            1,
-            genesis.hash.clone(),
-            vec![cb1, cb2],
-            "v1".to_string(),
-        );
+        let block1 = Block::new(1, genesis.hash.clone(), vec![cb1, cb2], "v1".to_string());
         let err = block1.validate_structure(1, &genesis.hash).unwrap_err();
         assert!(
             format!("{err:?}").contains("only the first transaction may be coinbase"),

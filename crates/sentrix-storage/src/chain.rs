@@ -25,8 +25,7 @@ impl ChainStorage {
     /// Applies the same disk-encryption checks as the old sled Storage.
     pub fn open(path: &str) -> StorageResult<Self> {
         let encrypted = std::env::var("SENTRIX_ENCRYPTED_DISK").as_deref() == Ok("true");
-        let dev_override =
-            std::env::var("SENTRIX_ALLOW_UNENCRYPTED_DISK").as_deref() == Ok("true");
+        let dev_override = std::env::var("SENTRIX_ALLOW_UNENCRYPTED_DISK").as_deref() == Ok("true");
         if !encrypted {
             if dev_override {
                 tracing::warn!(
@@ -77,8 +76,11 @@ impl ChainStorage {
             if let Some(block) = self.load_block(i)? {
                 indexed_any = true;
                 if !self.mdbx.has(TABLE_BLOCK_HASHES, block.hash.as_bytes())? {
-                    self.mdbx
-                        .put(TABLE_BLOCK_HASHES, block.hash.as_bytes(), &height_key(block.index))?;
+                    self.mdbx.put(
+                        TABLE_BLOCK_HASHES,
+                        block.hash.as_bytes(),
+                        &height_key(block.index),
+                    )?;
                 }
             }
         }
@@ -91,7 +93,11 @@ impl ChainStorage {
 
     // ── Blockchain state ────────────────────────────────────
 
-    pub fn save_blockchain<T: Serialize>(&self, blockchain: &T, chain: &[Block]) -> StorageResult<()> {
+    pub fn save_blockchain<T: Serialize>(
+        &self,
+        blockchain: &T,
+        chain: &[Block],
+    ) -> StorageResult<()> {
         // Save state (accounts, authority, etc.)
         self.mdbx.put_json(TABLE_STATE, b"state", blockchain)?;
 
@@ -318,12 +324,21 @@ mod tests {
         let storage = ChainStorage::open(&path).unwrap();
 
         storage.save_block(&Block::genesis()).unwrap();
-        storage.mdbx().put(TABLE_TRIE_NODES, b"node1", b"data").unwrap();
+        storage
+            .mdbx()
+            .put(TABLE_TRIE_NODES, b"node1", b"data")
+            .unwrap();
         assert!(storage.load_block(0).unwrap().is_some());
 
         storage.reset_trie().unwrap();
         // Trie cleared but blocks still exist
-        assert!(storage.mdbx().get(TABLE_TRIE_NODES, b"node1").unwrap().is_none());
+        assert!(
+            storage
+                .mdbx()
+                .get(TABLE_TRIE_NODES, b"node1")
+                .unwrap()
+                .is_none()
+        );
         assert!(storage.load_block(0).unwrap().is_some());
 
         let _ = std::fs::remove_dir_all(&path);

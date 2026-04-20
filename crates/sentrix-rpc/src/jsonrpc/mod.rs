@@ -160,7 +160,6 @@ pub async fn rpc_dispatcher(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

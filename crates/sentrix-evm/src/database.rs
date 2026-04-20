@@ -3,11 +3,11 @@
 // Maps Sentrix account state to revm's Database trait, allowing the EVM
 // to read balances, nonces, contract code, and storage from our trie.
 
-use sentrix_primitives::{AccountDB, EMPTY_CODE_HASH};
 use alloy_primitives::{Address, B256, U256};
 use revm::database_interface::{DBErrorMarker, Database};
 use revm::primitives::KECCAK_EMPTY;
 use revm::state::{AccountInfo, Bytecode};
+use sentrix_primitives::{AccountDB, EMPTY_CODE_HASH};
 use std::collections::HashMap;
 
 /// Minimal EVM database error type that implements DBErrorMarker.
@@ -103,8 +103,7 @@ impl SentrixEvmDb {
                 .unwrap_or(KECCAK_EMPTY);
             let info = AccountInfo {
                 // P1: sentri → wei conversion (see `from_account_db`).
-                balance: U256::from(balance)
-                    .saturating_mul(U256::from(10_000_000_000u64)),
+                balance: U256::from(balance).saturating_mul(U256::from(10_000_000_000u64)),
                 nonce,
                 code_hash,
                 account_id: None,
