@@ -8,10 +8,12 @@
 mod accounts;
 mod auth;
 mod chain;
+mod epoch;
 mod ops;
 mod ratelimit;
 mod staking;
 mod tokens;
+mod transactions;
 mod types;
 
 pub use auth::{ApiKey, constant_time_eq};
@@ -24,6 +26,7 @@ use accounts::{
     get_richlist, get_state_root, get_wallet_info, list_transactions,
 };
 use chain::{chain_info, get_block, get_blocks, validate_chain};
+use epoch::{epoch_current, epoch_history};
 use ops::{START_TIME, get_admin_log, health, metrics, root};
 use ratelimit::{ip_rate_limit_middleware, write_rate_limit_middleware};
 use staking::{get_validators, staking_delegations, staking_unbonding, staking_validators};
@@ -31,10 +34,11 @@ use tokens::{
     deploy_token, get_token_balance, get_token_holders_list, get_token_info,
     get_token_trades_list, list_tokens, token_burn, token_transfer,
 };
+use transactions::{get_mempool, get_transaction, send_transaction};
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::DefaultBodyLimit,
     http::StatusCode,
     routing::{get, post},
 };
@@ -46,7 +50,6 @@ use std::collections::HashMap;
 use crate::explorer;
 use crate::jsonrpc::rpc_dispatcher;
 use sentrix_core::blockchain::Blockchain;
-use sentrix_primitives::transaction::Transaction;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
@@ -274,51 +277,6 @@ fn explorer_router(_state: SharedState) -> Router<SharedState> {
 
 
 
-async fn send_transaction(
-    _auth: ApiKey,
-    State(state): State<SharedState>,
-    Json(req): Json<SendTxRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let mut bc = state.write().await;
-    match bc.add_to_mempool(req.transaction.clone()) {
-        Ok(()) => Ok(Json(serde_json::json!({
-            "success": true,
-            "txid": req.transaction.txid,
-            "message": "transaction added to mempool",
-        }))),
-        Err(e) => Err((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "success": false,
-                "error": e.to_string(),
-            })),
-        )),
-    }
-}
-
-async fn get_transaction(
-    State(state): State<SharedState>,
-    Path(txid): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let bc = state.read().await;
-    // A5: delegate to Blockchain::get_transaction so lookups fall through to
-    // the sled txid_index for blocks evicted from the in-memory window.
-    match bc.get_transaction(&txid) {
-        Some(value) => Ok(Json(value)),
-        None => Err(StatusCode::NOT_FOUND),
-    }
-}
-
-async fn get_mempool(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    let bc = state.read().await;
-    let txs: Vec<&Transaction> = bc.mempool.iter().collect();
-    Json(serde_json::json!({
-        "size": txs.len(),
-        "transactions": txs,
-    }))
-}
-
-
 // ── Token handlers ───────────────────────────────────────
 
 
@@ -328,57 +286,6 @@ async fn get_mempool(State(state): State<SharedState>) -> Json<serde_json::Value
 
 
 
-
-// ── Staking + Epoch handlers (Voyager Phase 2a) ─────────
-
-
-
-
-async fn epoch_current(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    let bc = state.read().await;
-    let epoch = &bc.epoch_manager.current_epoch;
-    Json(serde_json::json!({
-        "epoch_number": epoch.epoch_number,
-        "start_height": epoch.start_height,
-        "end_height": epoch.end_height,
-        "validator_set": epoch.validator_set,
-        "total_staked": epoch.total_staked,
-        "total_rewards": epoch.total_rewards,
-        "total_blocks_produced": epoch.total_blocks_produced,
-    }))
-}
-
-async fn epoch_history(
-    State(state): State<SharedState>,
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Json<serde_json::Value> {
-    let bc = state.read().await;
-    let count: usize = params
-        .get("count")
-        .and_then(|c| c.parse().ok())
-        .unwrap_or(10)
-        .min(100);
-    let epochs: Vec<serde_json::Value> = bc
-        .epoch_manager
-        .recent_epochs(count)
-        .iter()
-        .map(|e| {
-            serde_json::json!({
-                "epoch_number": e.epoch_number,
-                "start_height": e.start_height,
-                "end_height": e.end_height,
-                "validator_count": e.validator_set.len(),
-                "total_staked": e.total_staked,
-                "total_rewards": e.total_rewards,
-                "total_blocks_produced": e.total_blocks_produced,
-            })
-        })
-        .collect();
-    Json(serde_json::json!({
-        "epochs": epochs,
-        "count": epochs.len(),
-    }))
-}
 
 // Helper for API error responses
 pub(super) fn api_err(msg: &str) -> (StatusCode, Json<serde_json::Value>) {

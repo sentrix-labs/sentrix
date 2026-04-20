@@ -10,6 +10,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Refactored
+- **refactor(rpc): transactions + epoch handlers out of
+  `routes/mod.rs`** (backlog #12 phase 2f + 2g, final slices) — 5
+  handlers moved into two new modules:
+  - `routes/transactions.rs` — `send_transaction`, `get_transaction`,
+    `get_mempool`. `sentrix_primitives::transaction::Transaction` import
+    follows the handler.
+  - `routes/epoch.rs` — `epoch_current`, `epoch_history`.
+  `routes/mod.rs` is now down to router wiring + the shared `api_err`
+  helper; the per-resource handler modules are complete. Zero route /
+  behaviour change. Closes backlog #12 phase 2.
 - **refactor(rpc): accounts handlers out to `routes/accounts.rs`**
   (backlog #12 phase 2e) — 9 address-indexed handlers moved:
   `get_balance`, `get_nonce`, `get_wallet_info`, `list_transactions`,
