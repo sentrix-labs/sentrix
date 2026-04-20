@@ -9,6 +9,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Refactored
+- **refactor(rpc): split jsonrpc handlers by namespace** (backlog #11
+  phase 2) — the 900-line match in `jsonrpc/mod.rs::jsonrpc_handler`
+  is now a prefix-dispatch to four namespace modules: `eth.rs`
+  (20 methods), `net.rs` (2), `web3.rs` (1), `sentrix.rs` (7). Each
+  module exposes a `dispatch(method, &params, &state) -> DispatchResult`
+  async fn; `mod.rs` routes by `method.starts_with("eth_" | "net_" |
+  "web3_" | "sentrix_")`. Error paths converted from the old
+  `return Json(JsonRpcResponse::err(id, code, msg))` pattern to
+  `Err((code, msg))`; the envelope wrap happens once in the top-level
+  handler. No behaviour change, all tests pass, clippy clean.
+
 ### Added
 - **feat(cli): `validator force-unjail` operator-recovery command**
   (backlog #1b) — unlocks the chicken-and-egg state where every
