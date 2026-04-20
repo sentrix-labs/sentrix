@@ -92,3 +92,5 @@ __pycache__/
 
 # ── Rust editor backup files ────────────────────────────────
 **/*.rs.bk
+
+.claude/
