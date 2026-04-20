@@ -10,6 +10,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Refactored
+- **refactor(rpc): chain handlers out to `routes/chain.rs`** (backlog
+  #12 phase 2d) — 4 handlers moved: `chain_info` (`GET /chain/info`),
+  `get_blocks` (paginated listing), `get_block` (by index),
+  `validate_chain` (full-chain scan, auth-gated with result cache).
+  The `VALIDATE_CACHE_HEIGHT` / `VALIDATE_CACHE_RESULT` statics +
+  their M-07 cache tests moved with the handler. Zero route /
+  behaviour change.
 - **refactor(rpc): ops handlers out to `routes/ops.rs`** (backlog #12
   phase 2c) — five handlers moved: `root` (`GET /`), `health`
   (`GET /health`), `sentrix_status` (`GET /sentrix_status`, re-exported
