@@ -773,6 +773,12 @@ impl Blockchain {
             }
         }
 
+        // Reclaim historical trie storage on a periodic schedule. The trie's
+        // insert/delete paths intentionally do NOT clean up replaced nodes
+        // inline (that was unsound — see the 2026-04-20 missing-node
+        // incident). prune() is the only sound GC, so it runs here.
+        self.maybe_prune_trie();
+
         Ok(())
     }
 

@@ -144,12 +144,11 @@ impl SentrixTrie {
         self.cache.put_node(new_value_hash, new_leaf)?;
         self.cache.store_value(&new_value_hash, value)?;
 
-        // T-B: remove the orphaned old leaf (node entry + value blob) now that the
-        // new leaf is safely written.  Only triggers when a key is updated in-place.
-        if let Some(old_hash) = old_leaf_hash {
-            self.cache.delete_node(&old_hash)?;
-            self.cache.delete_value(&old_hash)?;
-        }
+        // ROOT CAUSE (2026-04-20): removing the old leaf here was unsound for
+        // the same reason as the internal-node cleanup below — the old leaf
+        // is still reachable from previously committed roots. Left in place;
+        // prune() is responsible for collecting unreachable leaves.
+        let _ = old_leaf_hash;
 
         // Phase 3 — walk UP recomputing internal hashes.
         let mut up_hash = new_value_hash;
@@ -170,17 +169,29 @@ impl SentrixTrie {
 
         self.root = up_hash;
 
-        // Delete old internal nodes that were structurally replaced during this insert.
-        // These became orphaned because new internal nodes were written with different hashes.
+        // ROOT CAUSE (2026-04-20 mainnet incident): inline deletion of
+        // `old_internal_hashes` here was unsound. The `is_committed_root`
+        // guard below only protected root hashes themselves — it did not
+        // protect internal nodes that were CHILDREN of still-committed
+        // roots. A previously committed root R_N stores {left, right}
+        // pointers to internal nodes below it; when a later version's
+        // insert walked through those same internal nodes, it added them
+        // to `old_internal_hashes` and the cleanup deleted them. Any walk
+        // starting from R_N (e.g. on restart, historical query, or any
+        // path where self.root hadn't yet been updated to R_{N+1}) would
+        // then fire "trie: missing node <hash>".
         //
-        // ROOT CAUSE #3 fix: skip any hash that is recorded as a committed root in trie_roots.
-        // Deleting it would cause "root missing" on restart, forcing a non-deterministic
-        // backfill from AccountDB that permanently forks the chain.
-        for old_hash in old_internal_hashes {
-            if !self.cache.storage.is_committed_root(&old_hash)? {
-                let _ = self.cache.delete_node(&old_hash);
-            }
-        }
+        // We can't safely decide "is this internal node still reachable"
+        // without a full walk of every surviving committed root, which
+        // is what `prune()` does. Inline deletion cannot do that cheaply,
+        // so it's removed entirely. Storage growth is bounded by calling
+        // `prune()` periodically from the block-apply path; see
+        // blockchain::maybe_prune_trie.
+        //
+        // DO NOT re-introduce inline deletion here without also tracking
+        // reference counts or walking all committed roots to verify the
+        // hash is truly orphaned.
+        let _ = old_internal_hashes; // bindings above still needed for borrow-check
 
         Ok(up_hash)
     }
@@ -318,13 +329,12 @@ impl SentrixTrie {
 
         self.root = up_hash;
 
-        // Clean up the deleted leaf node and its associated value blob from storage.
-        if let Some(leaf_hash) = found_leaf_hash {
-            let _ = self.cache.delete_node(&leaf_hash);
-        }
-        if let Some(val_hash) = found_value_hash {
-            let _ = self.cache.delete_value(&val_hash);
-        }
+        // ROOT CAUSE (2026-04-20): deleting the leaf and its value here was
+        // unsound — the leaf is still reachable from previously committed
+        // roots (e.g. a get() at an older version). Leave intact; prune()
+        // handles unreachable-leaf collection.
+        let _ = found_leaf_hash;
+        let _ = found_value_hash;
 
         Ok(up_hash)
     }
@@ -677,27 +687,48 @@ mod tests {
         assert_ne!(NULL_HASH, hash_leaf(&[0u8; 32], &[]));
     }
 
-    /// T-B: updating an existing key must not grow the node count (old leaf is cleaned up).
+    /// T-B: updating an existing key must leave storage reclaimable by prune().
+    ///
+    /// The previous in-line "delete old leaf after update" cleanup (removed
+    /// 2026-04-20) was unsound — the old leaf is still reachable from prior
+    /// committed roots. This test now checks the invariant via prune(),
+    /// which is the sound mechanism for reclaiming unreachable leaves.
     #[test]
-    fn test_update_in_place_no_storage_leak() {
+    fn test_update_in_place_prune_reclaims_old_leaf() {
         let (_dir, mdbx) = temp_mdbx();
         let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let key = address_to_key("0xaaaa");
 
+        // Version 1: initial insert + commit.
         trie.insert(&key, &account_value_bytes(100, 0)).unwrap();
-        let nodes_after_insert = mdbx
+        let _ = trie.commit(1).unwrap();
+        let nodes_v1 = mdbx
             .count(sentrix_storage::tables::TABLE_TRIE_NODES)
             .unwrap();
 
-        // Update same key — node count must stay the same (old leaf removed, new leaf added)
+        // Version 2: update same key + commit. The old leaf now lives only
+        // in version 1's subtree — not reachable from v2's root.
         trie.insert(&key, &account_value_bytes(200, 1)).unwrap();
+        let _ = trie.commit(2).unwrap();
         let nodes_after_update = mdbx
             .count(sentrix_storage::tables::TABLE_TRIE_NODES)
             .unwrap();
+        assert!(
+            nodes_after_update > nodes_v1,
+            "before prune, node count must grow (old leaf is still stored for v1)"
+        );
 
-        assert_eq!(
-            nodes_after_insert, nodes_after_update,
-            "update must not grow node count — old leaf must be cleaned up"
+        // prune(keep=0) retires v1 and GCs nodes only reachable from it.
+        let (roots_pruned, nodes_gc) = trie.prune(0).unwrap();
+        assert!(roots_pruned >= 1, "must retire at least one old root");
+        assert!(nodes_gc >= 1, "must GC at least one unreachable leaf");
+
+        let nodes_after_prune = mdbx
+            .count(sentrix_storage::tables::TABLE_TRIE_NODES)
+            .unwrap();
+        assert!(
+            nodes_after_prune < nodes_after_update,
+            "prune must reduce node count once old versions retire"
         );
     }
 
@@ -754,88 +785,102 @@ mod tests {
         let _ = removed; // count varies — just assert GC runs without error
     }
 
-    /// delete() cleans up both the leaf node and its associated value blob.
+    /// delete() makes the key unreachable from the current root; storage is
+    /// reclaimed by prune() once the pre-delete version is retired.
+    ///
+    /// Inline delete-time cleanup (removed 2026-04-20) was unsound — the
+    /// leaf node and its value blob were still reachable from the pre-delete
+    /// committed root. Walking that older root after a delete would then
+    /// fire "trie: missing node".
     #[test]
-    fn test_delete_cleans_up_leaf_node_and_value() {
+    fn test_delete_key_unreachable_and_prunable() {
         let (_dir, mdbx) = temp_mdbx();
         let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let key = address_to_key("0x1111111111111111111111111111111111111111");
         let val = account_value_bytes(500, 0);
 
+        // v1: insert + commit.
         trie.insert(&key, &val).unwrap();
-        let nodes_after_insert = mdbx
-            .count(sentrix_storage::tables::TABLE_TRIE_NODES)
-            .unwrap();
-        let values_after_insert = mdbx
+        let _ = trie.commit(1).unwrap();
+        let values_v1 = mdbx
             .count(sentrix_storage::tables::TABLE_TRIE_VALUES)
             .unwrap();
 
+        // v2: delete + commit.
         trie.delete(&key).unwrap();
-        let nodes_after_delete = mdbx
-            .count(sentrix_storage::tables::TABLE_TRIE_NODES)
-            .unwrap();
-        let values_after_delete = mdbx
-            .count(sentrix_storage::tables::TABLE_TRIE_VALUES)
-            .unwrap();
+        let _ = trie.commit(2).unwrap();
 
-        assert!(
-            nodes_after_delete < nodes_after_insert,
-            "delete must reduce node count (leaf removed)"
-        );
-        assert_eq!(
-            values_after_delete,
-            values_after_insert - 1,
-            "delete must remove the value blob"
-        );
-        // Verify the key is actually gone
+        // From the current root, the key is gone.
         assert!(
             trie.get(&key).unwrap().is_none(),
-            "deleted key must not be found"
+            "deleted key must not be found from the current root"
+        );
+
+        // v1's root is still intact and must still resolve the key.
+        let mut trie_v1 = SentrixTrie::open(Arc::clone(&mdbx), 1).unwrap();
+        assert!(
+            trie_v1.get(&key).unwrap().is_some(),
+            "key must still be retrievable from v1 root after a v2 delete"
+        );
+
+        // prune(keep=0) retires v1; its leaf+value become unreachable.
+        let (_roots_pruned, nodes_gc) = trie.prune(0).unwrap();
+        assert!(nodes_gc >= 1, "prune must GC the deleted leaf's storage");
+
+        let values_after_prune = mdbx
+            .count(sentrix_storage::tables::TABLE_TRIE_VALUES)
+            .unwrap();
+        assert!(
+            values_after_prune < values_v1,
+            "prune must reclaim the value blob of the deleted key"
         );
     }
 
-    /// insert cleans up old internal nodes when a structural relink is required.
+    /// Updates accumulate internal-node storage between commits; prune() is
+    /// what reclaims it. Inline cleanup of old_internal_hashes (removed
+    /// 2026-04-20) was unsound — see the comment in insert() and the
+    /// ROOT-CAUSE regression tests above.
     #[test]
-    fn test_insert_cleans_old_internal_nodes() {
+    fn test_insert_internal_nodes_accumulate_until_prune() {
         let (_dir, mdbx) = temp_mdbx();
         let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
         let k1 = address_to_key("0xaaaa");
         let k2 = address_to_key("0xbbbb");
 
-        // Insert first key (creates leaf at root)
+        // v1: two keys committed.
         trie.insert(&k1, &account_value_bytes(100, 0)).unwrap();
-        let nodes_1 = mdbx
-            .count(sentrix_storage::tables::TABLE_TRIE_NODES)
-            .unwrap();
-
-        // Insert second key (creates internal node, old root-leaf becomes sibling)
         trie.insert(&k2, &account_value_bytes(200, 0)).unwrap();
-        let nodes_2 = mdbx
+        let _ = trie.commit(1).unwrap();
+        let nodes_v1 = mdbx
             .count(sentrix_storage::tables::TABLE_TRIE_NODES)
             .unwrap();
 
-        // Update k1 (causes structural change — old internal nodes replaced)
+        // v2: structural update on k1.
         trie.insert(&k1, &account_value_bytes(300, 1)).unwrap();
-        let nodes_3 = mdbx
+        let _ = trie.commit(2).unwrap();
+        let nodes_v2 = mdbx
             .count(sentrix_storage::tables::TABLE_TRIE_NODES)
             .unwrap();
-
-        // Node count after update should not exceed count after two-key insert
-        // (old internal nodes should be cleaned up)
         assert!(
-            nodes_3 <= nodes_2 + 1,
-            "update must not accumulate internal nodes without bound (nodes_2={}, nodes_3={})",
-            nodes_2,
-            nodes_3
+            nodes_v2 > nodes_v1,
+            "v2 must store new internal nodes alongside v1's (no inline cleanup)"
         );
 
-        // Both keys still readable
+        // Both keys reachable from current (v2) root.
         let v1 = trie.get(&k1).unwrap().unwrap();
         assert_eq!(account_value_decode(&v1).unwrap().0, 300);
         let v2 = trie.get(&k2).unwrap().unwrap();
         assert_eq!(account_value_decode(&v2).unwrap().0, 200);
 
-        let _ = nodes_1; // suppress unused warning
+        // v1's root still walkable — k1's old value retrievable.
+        let mut trie_v1 = SentrixTrie::open(Arc::clone(&mdbx), 1).unwrap();
+        let v1_old = trie_v1.get(&k1).unwrap().unwrap();
+        assert_eq!(account_value_decode(&v1_old).unwrap().0, 100);
+
+        // prune(keep=0) reclaims v1's now-unreachable internal nodes.
+        let (roots_pruned, nodes_gc) = trie.prune(0).unwrap();
+        assert!(roots_pruned >= 1, "prune must retire at least v1");
+        assert!(nodes_gc >= 1, "prune must GC v1's orphaned internal nodes");
     }
 
     /// ROOT CAUSE #3 regression guard: insert() must not delete the root node of a
@@ -871,6 +916,110 @@ mod tests {
             Some(root_v1),
             "root_at_version(1) must return the original committed root"
         );
+    }
+
+    /// Regression: walking a previously committed root must remain possible
+    /// after subsequent inserts. The 2026-04-20 mainnet "trie missing node"
+    /// incident traced back to insert() deleting internal nodes that were
+    /// still reachable from earlier committed roots. The is_committed_root
+    /// guard at line 180 protected only the root hash itself, not the
+    /// internal nodes BELOW it.
+    ///
+    /// Failing on current code, passing after the fix.
+    #[test]
+    fn test_committed_root_subtree_remains_walkable_after_later_insert() {
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
+
+        // Build a real subtree: three keys with shared upper prefix bits so
+        // there are real internal nodes in the path (not just expanded leaves).
+        let k1 = address_to_key("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1");
+        let k2 = address_to_key("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2");
+        let k3 = address_to_key("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3");
+
+        // Version 1: build a 3-key trie and commit. Walk now sees real
+        // internal nodes between root and leaves.
+        trie.insert(&k1, &account_value_bytes(100, 0)).unwrap();
+        trie.insert(&k2, &account_value_bytes(200, 0)).unwrap();
+        trie.insert(&k3, &account_value_bytes(300, 0)).unwrap();
+        let root_v1 = trie.commit(1).unwrap();
+
+        // Version 2: update k1's value — the insert walks down v1's
+        // structure and (under the buggy cleanup) deletes the internal
+        // nodes on k1's path that root_v1 still references.
+        trie.insert(&k1, &account_value_bytes(999, 1)).unwrap();
+        let _ = trie.commit(2).unwrap();
+
+        // Re-open at version 1 and try to read all three keys back.
+        // get() walks from root_v1; if any internal node on a key's path
+        // was deleted by v2, this returns Err("trie: missing node ...").
+        let mut trie_v1 = SentrixTrie::open(Arc::clone(&mdbx), 1).unwrap();
+        assert_eq!(trie_v1.root_hash(), root_v1, "trie at v1 must load v1 root");
+
+        for (k, expected_balance) in [(k1, 100u64), (k2, 200), (k3, 300)] {
+            let v = trie_v1
+                .get(&k)
+                .expect("walking committed root v1 must not hit a deleted internal node");
+            let bytes = v.expect("k must be retrievable from v1 root");
+            let (balance, _) = account_value_decode(&bytes).unwrap();
+            assert_eq!(
+                balance, expected_balance,
+                "v1 should preserve original balance"
+            );
+        }
+    }
+
+    /// Same shape as the test above, but routed through update_trie_for_block-style
+    /// repeated insert/commit with a structural-change burst. This is closer to
+    /// what mainnet validators do every block — a few inserts and a commit. The
+    /// regression we observed in the 2026-04-20 incident is that after enough
+    /// such bursts, a walk from the CURRENT root (not even a historical one)
+    /// hits "missing node" because some prior burst's cleanup nuked an internal
+    /// node still referenced by the live root.
+    #[test]
+    fn test_current_root_walkable_after_many_bursts() {
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
+
+        // Generate 64 keys with shared upper prefix so they cluster in the trie
+        // (lots of shared internal nodes — maximises the chance a cleanup
+        // touches a live node).
+        let keys: Vec<_> = (0u8..64)
+            .map(|i| {
+                let mut h = [0u8; 32];
+                // Shared upper 16 bytes
+                for byte in h.iter_mut().take(16) {
+                    *byte = 0xAA;
+                }
+                h[31] = i;
+                h
+            })
+            .collect();
+
+        // Round 1: bulk insert + commit.
+        for (i, k) in keys.iter().enumerate() {
+            trie.insert(k, &account_value_bytes(100 + i as u64, 0)).unwrap();
+        }
+        let _ = trie.commit(1).unwrap();
+
+        // Rounds 2..=20: update one key per round, commit. Each update walks
+        // through the cluster, deletes some internal nodes along its path.
+        for round in 2u64..=20 {
+            let i = (round as usize) % keys.len();
+            trie.insert(&keys[i], &account_value_bytes(1000 + round, round)).unwrap();
+            let _ = trie.commit(round).unwrap();
+        }
+
+        // After all those bursts, every key must still be reachable from the
+        // CURRENT root.
+        for (i, k) in keys.iter().enumerate() {
+            let _ = trie.get(k).unwrap_or_else(|e| {
+                panic!(
+                    "current-root walk for key {i} hit a missing node: {e}. \
+                     Inline cleanup deleted a still-live internal node."
+                );
+            });
+        }
     }
 
     /// prove() only reads the trie — no mutable reference required.
