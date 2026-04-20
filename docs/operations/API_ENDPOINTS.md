@@ -332,3 +332,238 @@ BFT mode adds `current_round`, `current_view`, `phase`, `rounds_since_last_block
 - **CORS:** restrictive default. Set `SENTRIX_CORS_ORIGIN=*` on the validator for dev, specific origin for prod.
 
 Cross-check any shape by `curl`ing the live endpoint — responses are authoritative, this doc is a summary.
+
+---
+
+## Copy-pasteable examples
+
+### Chain state
+```bash
+curl -s https://sentrix-rpc.sentriscloud.com/chain/info
+# {
+#   "chain_id": 7119, "height": 80123, "total_blocks": 80124,
+#   "active_validators": 3, "circulating_supply_srx": 63030377.988,
+#   "max_supply_srx": 210000000.0, "next_block_reward_srx": 1.0,
+#   "mempool_size": 0, "deployed_tokens": 0,
+#   "window_is_partial": false, "window_start_block": 79123
+# }
+
+curl -s https://sentrix-rpc.sentriscloud.com/sentrix_status
+# { "version": {"version":"2.1.1","build":"unknown"}, "chain_id": 7119,
+#   "consensus": "PoA", "native_token": "SRX",
+#   "sync_info": { "latest_block_height": 80123, ... },
+#   "validators": { "active_count": 3 }, "uptime_seconds": 1234 }
+```
+
+### Account balance + nonce (REST)
+```bash
+curl -s https://sentrix-rpc.sentriscloud.com/accounts/0x682126f5f973bddda2c92fb0dfce8a4ba275c99b/balance
+# { "address": "0x682126...", "balance": 664000000000 }   // in sentri
+
+curl -s https://sentrix-rpc.sentriscloud.com/accounts/0x682126f5f973bddda2c92fb0dfce8a4ba275c99b/nonce
+# { "address": "0x682126...", "nonce": 9 }
+```
+
+### Account balance (JSON-RPC, wei)
+```bash
+curl -s -X POST https://sentrix-rpc.sentriscloud.com/rpc \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"eth_getBalance",
+       "params":["0x682126f5f973bddda2c92fb0dfce8a4ba275c99b","latest"],"id":1}'
+# { "jsonrpc": "2.0", "result": "0x169872033d686c1a000", "id": 1 }
+```
+
+### Latest block
+```bash
+curl -s https://sentrix-rpc.sentriscloud.com/blocks/80123
+# { "index": 80123, "hash": "f35cd...", "previous_hash": "abc...",
+#   "timestamp": 1776625635, "tx_count": 1, "validator": "0x...",
+#   "merkle_root": "...", "round": 0, "has_justification": false }
+```
+
+### Validator set (PoA)
+```bash
+curl -s -X POST https://sentrix-rpc.sentriscloud.com/rpc \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"sentrix_getValidatorSet","params":[],"id":1}'
+# {
+#   "result": {
+#     "consensus": "PoA", "active_count": 3, "total_count": 3,
+#     "total_active_stake": "0x0", "epoch_number": 2,
+#     "validators": [{
+#       "address": "0x245785...", "name": "Foundation",
+#       "stake": "0x0", "commission": 0.0, "status": "active",
+#       "blocks_produced_epoch": 26789, "uptime": 1.0,
+#       "voting_power": "0x13d92d400"   // flat 1/N on PoA
+#     }, ...]
+#   }
+# }
+```
+
+### Deploy SRC-20 token (wallet side)
+1. Build `TokenOp` payload:
+```json
+{ "Deploy": { "name": "Sentrix Utility Token", "symbol": "SNTX",
+              "decimals": 18, "supply": 10000000000, "max_supply": 0 } }
+```
+2. Put that JSON string into `tx.data`, set `tx.to_address = "0x0000000000000000000000000000000000000000"`, sign.
+3. Fetch nonce via JSON-RPC `eth_getTransactionCount`.
+4. `POST /tokens/deploy`:
+```bash
+curl -s -X POST https://testnet-rpc.sentriscloud.com/tokens/deploy \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "transaction": {
+      "txid": "<sha256 of canonical payload>",
+      "from_address": "0x682126...",
+      "to_address": "0x0000000000000000000000000000000000000000",
+      "amount": 0, "fee": 100000, "nonce": 0,
+      "data": "{\"Deploy\":{\"name\":\"Sentrix Utility Token\",\"symbol\":\"SNTX\",\"decimals\":18,\"supply\":10000000000,\"max_supply\":0}}",
+      "timestamp": 1776625635, "chain_id": 7120,
+      "signature": "<128 hex compact>", "public_key": "<130 hex uncompressed>"
+    }
+  }'
+# {
+#   "success": true, "txid": "1379d177...",
+#   "deployer": "0x682126...",
+#   "name": "Sentrix Utility Token", "symbol": "SNTX",
+#   "total_supply": 10000000000, "max_supply": 0,
+#   "status": "pending_in_mempool"
+# }
+```
+
+After the next block, `GET /tokens` lists the new contract at `SRC20_<40 hex>`, e.g. `SRC20_df98a9e4407bc2d28cd7e9046698e2d1cb0834ae`.
+
+### Send SRX (native transfer)
+Same pattern, amount > 0 and empty `data`:
+```bash
+curl -s -X POST https://testnet-rpc.sentriscloud.com/transactions \
+  -H 'Content-Type: application/json' \
+  -d '{"transaction": { "from_address":"0x...", "to_address":"0x...",
+                        "amount": 1000000000, "fee": 10000, "nonce": 3,
+                        "data": "", "timestamp": 1776625635,
+                        "chain_id": 7120,
+                        "txid":"...", "signature":"...", "public_key":"..." }}'
+# { "success": true, "txid": "...", "status": "pending_in_mempool" }
+```
+
+### Block receipts (batch)
+```bash
+curl -s -X POST https://sentrix-rpc.sentriscloud.com/rpc \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"eth_getBlockReceipts","params":["latest"],"id":1}'
+# { "result": [{
+#     "transactionHash": "0x...", "transactionIndex": "0x0",
+#     "blockNumber": "0x138ab", "blockHash": "0x...",
+#     "from": "0x...", "to": "0x...",
+#     "status": "0x1", "gasUsed": "0x5208", "cumulativeGasUsed": "0x5208",
+#     "logs": [], "logsBloom": "0x0000..."
+# }] }
+```
+
+### EVM event logs (filter)
+```bash
+curl -s -X POST https://sentrix-rpc.sentriscloud.com/rpc \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"eth_getLogs","params":[{
+        "fromBlock":"0x0","toBlock":"latest",
+        "address":"0x5fbdb2315678afecb367f032d93f642f64180aa3",
+        "topics":["0xddf252ad..."]
+      }],"id":1}'
+# { "result": [ { address, topics, data, blockNumber, transactionHash, ... } ] }
+```
+
+---
+
+## Error response samples
+
+### REST (400 Bad Request)
+```json
+// POST /transactions with amount=0 on a native transfer
+{ "success": false,
+  "error": "Invalid transaction: amount must be > 0 (unless token/EVM operation)" }
+
+// POST /transactions with out-of-order nonce
+{ "success": false,
+  "error": "Invalid nonce: expected 4, got 16" }
+
+// POST /transactions when too many pending from one sender
+{ "success": false,
+  "error": "Invalid transaction: too many pending transactions from this sender" }
+
+// POST /tokens/deploy with data that isn't TokenOp::Deploy
+{ "success": false,
+  "error": "expected Deploy operation in tx.data" }
+
+// POST /tokens/{c}/transfer where URL contract ≠ data contract
+{ "success": false,
+  "error": "contract in data does not match URL" }
+```
+
+### Rate-limited (429)
+```json
+{ "error": "rate limit exceeded", "limit": 10, "window_secs": 60 }
+```
+`limit` is 10 on write endpoints, 60 on the global bucket.
+
+### JSON-RPC error envelope
+```json
+{ "jsonrpc": "2.0",
+  "error": { "code": -32602, "message": "address must be 42 chars (0x + 40 hex)" },
+  "id": 1 }
+
+{ "jsonrpc": "2.0",
+  "error": { "code": -32601, "message": "method not found: eth_madeUp" },
+  "id": 1 }
+
+{ "jsonrpc": "2.0",
+  "error": { "code": -32005, "message": "query returned more than 10000 results" },
+  "id": 1 }
+
+{ "jsonrpc": "2.0",
+  "error": { "code": -32600,
+             "message": "batch too large: max 100 requests, got 101" },
+  "id": null }
+
+{ "jsonrpc": "2.0",
+  "error": { "code": -32000, "message": "EVM not active yet" },
+  "id": 1 }
+```
+
+### Auth-required without key (401)
+```
+HTTP/1.1 401 Unauthorized
+```
+No JSON body (axum default). Set `X-API-Key: <16+ char key>` on endpoints with `_auth: ApiKey`: `/admin/log`, `/tokens/deploy|transfer|burn`, `/rpc`, and `POST /transactions`.
+
+### Not found (404)
+```
+HTTP/1.1 404 Not Found
+```
+`GET /tokens/{unknown_contract}`, `GET /transactions/{txid_outside_window}`, etc. No JSON body.
+
+---
+
+## Tx signing recipe (native REST + JSON-RPC)
+
+For `POST /transactions`, `POST /tokens/*`, `sentrix_sendTransaction`:
+
+1. Build a canonical signing payload — sorted-key JSON with exactly these 8 fields (extras break the hash):
+```json
+{ "amount": <u64>, "chain_id": <u64>, "data": "<string>",
+  "fee": <u64>, "from": "<addr>", "nonce": <u64>,
+  "timestamp": <unix-sec>, "to": "<addr>" }
+```
+BTreeMap-sorted; `serde_json::to_string` on the server matches bit-for-bit.
+
+2. `sha256(canonical_json)` → 32-byte digest.
+
+3. ECDSA sign the digest with secp256k1 (non-recoverable, compact 64 bytes) → 128 hex → `signature`.
+
+4. `public_key` = uncompressed secp256k1 (65 bytes, `0x04` + 32 + 32) → 130 hex.
+
+5. `txid` = `sha256(canonical_json).hex()` — same digest, different use.
+
+6. POST the full Transaction with all 11 fields.
+
+For `eth_sendRawTransaction` the chain decodes the RLP and recovers the sender — that path doesn't need `signature` / `public_key`. Sentrix maps the resulting Ethereum tx onto an internal `Transaction` with `data = "EVM:{gas_limit}:{hex_calldata}"`, `signature = <full raw hex>`, `public_key = ""`.
