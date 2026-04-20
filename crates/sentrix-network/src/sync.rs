@@ -80,7 +80,7 @@ impl ChainSync {
                             );
                             return Ok(total_synced);
                         }
-                        match bc.add_block(block.clone()) {
+                        match bc.add_block_from_peer(block.clone()) {
                             Ok(()) => {
                                 // Persist each synced block to sled immediately rather than batching
                                 if let Err(e) = storage.save_block(block) {

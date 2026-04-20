@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-primitives"
-version = "2.1.2"
+version = "2.1.3"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Core types and error handling for Sentrix blockchain"
