@@ -1038,7 +1038,7 @@ async fn cmd_start(
         let mut bft_rx = bft_rx; // move receiver into this task
         let validator_secret_key = wallet.get_secret_key()?;
         Some(tokio::spawn(async move {
-            use sentrix::core::bft::{BftAction, BftEngine};
+            use sentrix::core::bft::{BftAction, BftEngine, BftPhase};
             use sentrix::core::bft_messages::{BftMessage, Proposal};
             use sentrix::core::block::Block;
 
@@ -1048,6 +1048,16 @@ async fn cmd_start(
             let mut bft_engine: Option<BftEngine> = None;
             let mut voyager_tick_count: u64 = 0;
             let mut proposed_block: Option<Block> = None;
+            // #1d fix: proposer rebroadcast. libp2p request-response drops
+            // Proposal messages to peers that aren't in verified_peers at
+            // broadcast time (e.g. just-reconnected validators), causing
+            // the persistent "proposal only reached 2/4 peers" livelock we
+            // diagnosed from the nil-majority tally logs on 2026-04-20.
+            // Tracking the last broadcast time + a bounded rebroadcast
+            // count lets the proposer retry every few seconds until
+            // enough peers have acked, without spamming the network.
+            let mut proposal_broadcast_at: Option<std::time::Instant> = None;
+            let mut proposal_rebroadcast_count: u32 = 0;
             // Pioneer mode: track last block time for a fine-grained poll loop.
             // Poll every PIONEER_TICK, but only attempt to build a block when
             // at least BLOCK_TIME_SECS has elapsed since the last one. Gives
@@ -1238,6 +1248,9 @@ async fn cmd_start(
                     let mut bft =
                         BftEngine::new(next_height, wallet.address.clone(), total_active_stake);
                     proposed_block = None;
+                    // #1d: reset rebroadcast tracking on new height.
+                    proposal_broadcast_at = None;
+                    proposal_rebroadcast_count = 0;
 
                     // Check if we're the proposer for this height+round
                     let bc = shared_clone.read().await;
@@ -1275,6 +1288,11 @@ async fn cmd_start(
 
                                 // Broadcast signed proposal to peers
                                 lp2p_clone.broadcast_bft_proposal(&proposal).await;
+                                // #1d rebroadcast tracking: record when we sent
+                                // the proposal so the tick can retry after a few
+                                // seconds if prevote supermajority isn't reached.
+                                proposal_broadcast_at = Some(std::time::Instant::now());
+                                proposal_rebroadcast_count = 0;
 
                                 // Self-vote: on_own_proposal triggers prevote
                                 let initial_action = bft.on_own_proposal(&block_hash);
@@ -1499,6 +1517,9 @@ async fn cmd_start(
                                                     lp2p_clone
                                                         .broadcast_bft_proposal(&proposal)
                                                         .await;
+                                                    proposal_broadcast_at =
+                                                        Some(std::time::Instant::now());
+                                                    proposal_rebroadcast_count = 0;
                                                     proposed_block = Some(block);
                                                     let _ = bft.on_own_proposal(&block_hash);
                                                     tracing::info!(
@@ -1544,6 +1565,9 @@ async fn cmd_start(
                                                     lp2p_clone
                                                         .broadcast_bft_proposal(&proposal)
                                                         .await;
+                                                    proposal_broadcast_at =
+                                                        Some(std::time::Instant::now());
+                                                    proposal_rebroadcast_count = 0;
                                                     proposed_block = Some(block);
                                                     let _ = bft.on_own_proposal(&block_hash);
                                                     tracing::info!(
@@ -1846,6 +1870,8 @@ async fn cmd_start(
                                             proposal.sign(&validator_secret_key);
                                             drop(bc);
                                             lp2p_clone.broadcast_bft_proposal(&proposal).await;
+                                            proposal_broadcast_at = Some(std::time::Instant::now());
+                                            proposal_rebroadcast_count = 0;
                                             proposed_block = Some(block);
                                             let _ = bft.on_own_proposal(&block_hash);
                                             tracing::info!(
@@ -1886,6 +1912,8 @@ async fn cmd_start(
                                             proposal.sign(&validator_secret_key);
                                             drop(bc);
                                             lp2p_clone.broadcast_bft_proposal(&proposal).await;
+                                            proposal_broadcast_at = Some(std::time::Instant::now());
+                                            proposal_rebroadcast_count = 0;
                                             proposed_block = Some(block);
                                             let _ = bft.on_own_proposal(&block_hash);
                                             tracing::info!(
@@ -1906,6 +1934,47 @@ async fn cmd_start(
                                 BftAction::Wait | BftAction::ProposeBlock => break,
                             }
                         }
+                    }
+
+                    // #1d rebroadcast: if we're the proposer, still in Propose
+                    // phase, and our initial proposal broadcast hasn't yet pulled
+                    // supermajority prevote, resend the proposal every ~3s up to
+                    // 3 times. Covers the libp2p case where the Proposal got
+                    // dropped for a peer that wasn't in verified_peers at the
+                    // moment of the initial broadcast (reconnect lag, handshake
+                    // still in progress). Without this the peer times out to
+                    // nil-prevote, supermajority for our block never forms, round
+                    // skips — the core #1d livelock shape from the 2026-04-20 logs.
+                    const REBROADCAST_INTERVAL: std::time::Duration =
+                        std::time::Duration::from_secs(3);
+                    const MAX_REBROADCASTS: u32 = 3;
+                    if let Some(ref block) = proposed_block
+                        && bft.phase() == BftPhase::Propose
+                        && proposal_rebroadcast_count < MAX_REBROADCASTS
+                        && proposal_broadcast_at
+                            .is_some_and(|t| t.elapsed() >= REBROADCAST_INTERVAL)
+                    {
+                        let block_hash = block.hash.clone();
+                        let block_data = bincode::serialize(block).unwrap_or_default();
+                        let mut proposal = Proposal {
+                            height: bft.height(),
+                            round: bft.round(),
+                            block_hash,
+                            block_data,
+                            proposer: wallet.address.clone(),
+                            signature: vec![],
+                        };
+                        proposal.sign(&validator_secret_key);
+                        lp2p_clone.broadcast_bft_proposal(&proposal).await;
+                        proposal_broadcast_at = Some(std::time::Instant::now());
+                        proposal_rebroadcast_count += 1;
+                        tracing::info!(
+                            "BFT #1d: rebroadcast proposal at height={} round={} attempt={}/{}",
+                            bft.height(),
+                            bft.round(),
+                            proposal_rebroadcast_count,
+                            MAX_REBROADCASTS
+                        );
                     }
 
                     // Check for BFT timeouts
@@ -1973,6 +2042,8 @@ async fn cmd_start(
                                             proposal.sign(&validator_secret_key);
                                             drop(bc);
                                             lp2p_clone.broadcast_bft_proposal(&proposal).await;
+                                            proposal_broadcast_at = Some(std::time::Instant::now());
+                                            proposal_rebroadcast_count = 0;
                                             proposed_block = Some(block);
                                             let _ = bft.on_own_proposal(&block_hash);
                                             tracing::info!(
@@ -2015,6 +2086,8 @@ async fn cmd_start(
                                             proposal.sign(&validator_secret_key);
                                             drop(bc);
                                             lp2p_clone.broadcast_bft_proposal(&proposal).await;
+                                            proposal_broadcast_at = Some(std::time::Instant::now());
+                                            proposal_rebroadcast_count = 0;
                                             proposed_block = Some(block);
                                             let _ = bft.on_own_proposal(&block_hash);
                                             tracing::info!(
