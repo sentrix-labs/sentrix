@@ -479,3 +479,304 @@ For REST-only integration: no deps needed (use native `fetch`).
 - **Rate limits per IP.** Frontend on a shared proxy (Cloudflare, Vercel) may share limits with other tenants. If you're on a dedicated edge, 60 req/min / 10 req/min is plenty.
 - **CORS.** Sentrix RPC `SENTRIX_CORS_ORIGIN` is configurable per validator. Mainnet/testnet live behind Caddy which sets permissive CORS for known frontend origins. If you see a CORS error, check with the chain operator.
 - **No WebSocket.** Poll or wait for backlog #5/#6.
+
+---
+
+## 9. Flutter / Dart (mobile APK)
+
+For `sentrix-wallet-mobile` and any Dart-side integrator. Same pattern as JS/TS, different syntax.
+
+### pubspec.yaml
+```yaml
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.5.0
+  web3dart: ^3.0.0          # EVM client — eth_* + signing
+  convert: ^3.1.1           # hex utils
+  pointycastle: ^3.9.0      # secp256k1, sha256 (for native signing)
+  flutter_secure_storage: ^9.2.2  # keystore persistence
+```
+
+### Constants
+```dart
+// lib/sentrix/constants.dart
+class Sentrix {
+  static const mainnetRpc = 'https://sentrix-rpc.sentriscloud.com';
+  static const testnetRpc = 'https://testnet-rpc.sentriscloud.com';
+  static const mainnetChainId = 7119;
+  static const testnetChainId = 7120;
+  static const tokenOpAddress = '0x0000000000000000000000000000000000000000';
+
+  // Unit scale
+  static const weiPerSentri = 10000000000;       // 1e10
+  static const sentriPerSrx = 100000000;          // 1e8
+}
+```
+
+### REST helpers
+```dart
+// lib/sentrix/rest.dart
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'constants.dart';
+
+class SentrixRest {
+  final String baseUrl;
+  SentrixRest({this.baseUrl = Sentrix.mainnetRpc});
+
+  factory SentrixRest.testnet() => SentrixRest(baseUrl: Sentrix.testnetRpc);
+
+  Future<Map<String, dynamic>> chainInfo() async {
+    final r = await http.get(Uri.parse('$baseUrl/chain/info'));
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> status() async {
+    final r = await http.get(Uri.parse('$baseUrl/sentrix_status'));
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  }
+
+  /// Returns balance in sentri (1 SRX = 1e8 sentri).
+  Future<BigInt> balance(String address) async {
+    final r = await http.get(
+      Uri.parse('$baseUrl/accounts/$address/balance'),
+    );
+    if (r.statusCode == 404) return BigInt.zero;
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    return BigInt.from(j['balance'] as int);
+  }
+
+  Future<int> nonce(String address) async {
+    final r = await http.get(Uri.parse('$baseUrl/accounts/$address/nonce'));
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    return j['nonce'] as int;
+  }
+
+  Future<List<dynamic>> tokens() async {
+    final r = await http.get(Uri.parse('$baseUrl/tokens'));
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    return j['tokens'] as List<dynamic>;
+  }
+
+  Future<BigInt> tokenBalance(String contract, String holder) async {
+    final r = await http.get(
+      Uri.parse('$baseUrl/tokens/$contract/balance/$holder'),
+    );
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    return BigInt.from(j['balance'] as int);
+  }
+
+  Future<Map<String, dynamic>?> transaction(String txid) async {
+    final r = await http.get(Uri.parse('$baseUrl/transactions/$txid'));
+    if (r.statusCode == 404) return null;
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> mempool() async {
+    final r = await http.get(Uri.parse('$baseUrl/mempool'));
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  }
+}
+```
+
+### JSON-RPC wrapper
+```dart
+// lib/sentrix/rpc.dart
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+class SentrixRpc {
+  final String baseUrl;
+  SentrixRpc({required this.baseUrl});
+
+  Future<dynamic> call(String method, [List<dynamic> params = const []]) async {
+    final r = await http.post(
+      Uri.parse('$baseUrl/rpc'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'jsonrpc': '2.0',
+        'method': method,
+        'params': params,
+        'id': 1,
+      }),
+    );
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    if (j['error'] != null) {
+      final err = j['error'] as Map<String, dynamic>;
+      throw Exception('$method ${err['code']}: ${err['message']}');
+    }
+    return j['result'];
+  }
+
+  Future<BigInt> getBalance(String address) async {
+    final hex = await call('eth_getBalance', [address, 'latest']) as String;
+    return BigInt.parse(hex.substring(2), radix: 16); // wei
+  }
+
+  Future<int> getBlockNumber() async {
+    final hex = await call('eth_blockNumber') as String;
+    return int.parse(hex.substring(2), radix: 16);
+  }
+
+  Future<Map<String, dynamic>> getValidatorSet() async {
+    return await call('sentrix_getValidatorSet') as Map<String, dynamic>;
+  }
+}
+```
+
+### Send SRX via web3dart (EVM path)
+`web3dart` speaks the `eth_*` namespace. Sentrix is EIP-155, so signing flows work as-is.
+
+```dart
+// lib/sentrix/wallet.dart
+import 'package:http/http.dart' as http;
+import 'package:web3dart/web3dart.dart';
+import 'constants.dart';
+
+class SentrixWallet {
+  final Web3Client client;
+  final Credentials credentials;
+  final int chainId;
+
+  SentrixWallet({
+    required String rpcUrl,
+    required this.credentials,
+    required this.chainId,
+  }) : client = Web3Client(rpcUrl, http.Client());
+
+  factory SentrixWallet.fromPrivateKey(String hex, {bool testnet = false}) {
+    final creds = EthPrivateKey.fromHex(hex);
+    return SentrixWallet(
+      rpcUrl: '${testnet ? Sentrix.testnetRpc : Sentrix.mainnetRpc}/rpc',
+      credentials: creds,
+      chainId: testnet ? Sentrix.testnetChainId : Sentrix.mainnetChainId,
+    );
+  }
+
+  Future<EthereumAddress> address() => credentials.extractAddress();
+
+  /// Balance in wei.
+  Future<EtherAmount> balance() async {
+    return client.getBalance(await address());
+  }
+
+  /// Send SRX. `amountSrx` is a string like "1.5".
+  Future<String> sendSrx(String to, String amountSrx) async {
+    final amount = EtherAmount.fromBase10String(EtherUnit.ether, amountSrx);
+    return client.sendTransaction(
+      credentials,
+      Transaction(
+        to: EthereumAddress.fromHex(to),
+        value: amount,
+        gasPrice: EtherAmount.inWei(BigInt.from(1000000000)), // 1 Gwei
+        maxGas: 21000,
+      ),
+      chainId: chainId,
+    );
+  }
+
+  void dispose() => client.dispose();
+}
+```
+
+### EVM contract (ERC-20 / SRC-20 via Solidity)
+Same ABI as standard ERC-20. `web3dart` reads contract events + calls.
+
+```dart
+import 'package:web3dart/web3dart.dart';
+
+const erc20Abi = '''[
+  {"constant":true,"inputs":[{"name":"_owner","type":"address"}],
+   "name":"balanceOf","outputs":[{"name":"balance","type":"uint256"}],"type":"function"},
+  {"constant":true,"inputs":[],"name":"decimals",
+   "outputs":[{"name":"","type":"uint8"}],"type":"function"},
+  {"constant":false,"inputs":[{"name":"_to","type":"address"},
+                              {"name":"_value","type":"uint256"}],
+   "name":"transfer","outputs":[{"name":"","type":"bool"}],"type":"function"}
+]''';
+
+Future<BigInt> erc20Balance(
+  SentrixWallet wallet, String tokenAddr, String holder,
+) async {
+  final contract = DeployedContract(
+    ContractAbi.fromJson(erc20Abi, 'ERC20'),
+    EthereumAddress.fromHex(tokenAddr),
+  );
+  final result = await wallet.client.call(
+    contract: contract,
+    function: contract.function('balanceOf'),
+    params: [EthereumAddress.fromHex(holder)],
+  );
+  return result.first as BigInt;
+}
+```
+
+### Native SRC-20 (TokenOp path)
+Native SRC-20 tokens (addresses `SRC20_<40 hex>`) aren't EVM — use REST. Signing the TokenOp tx requires manual secp256k1 + canonical payload hashing. Reference Rust implementation: `crates/sentrix-primitives/src/transaction.rs::Transaction::new`. Dart port lives in `lib/sentrix/native_tx.dart` (TBD in sentrix-wallet-mobile repo).
+
+For read-only (list tokens, balances, trades): use `SentrixRest` above.
+
+### Secure key storage
+Never put a private key in plain `SharedPreferences`. Use `flutter_secure_storage` which backs keystore/keychain on Android/iOS.
+
+```dart
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+const _storage = FlutterSecureStorage(
+  aOptions: AndroidOptions(encryptedSharedPreferences: true),
+);
+
+Future<void> saveKey(String privateKeyHex, {String label = 'default'}) =>
+    _storage.write(key: 'sentrix_key_$label', value: privateKeyHex);
+
+Future<String?> loadKey({String label = 'default'}) =>
+    _storage.read(key: 'sentrix_key_$label');
+
+Future<void> deleteKey({String label = 'default'}) =>
+    _storage.delete(key: 'sentrix_key_$label');
+```
+
+### Polling pattern
+```dart
+import 'dart:async';
+
+StreamSubscription<int> watchBlocks(
+  SentrixRpc rpc, void Function(int) onBlock,
+  {Duration interval = const Duration(seconds: 1)}
+) {
+  int last = 0;
+  final controller = StreamController<int>();
+  final timer = Timer.periodic(interval, (_) async {
+    try {
+      final h = await rpc.getBlockNumber();
+      if (h > last) {
+        last = h;
+        controller.add(h);
+      }
+    } catch (_) { /* retry next tick */ }
+  });
+  controller.onCancel = () => timer.cancel();
+  return controller.stream.listen(onBlock);
+}
+```
+
+### Riverpod / Provider pattern
+```dart
+// Example with Riverpod — swap for Provider/Bloc as you prefer.
+final sentrixRestProvider = Provider((ref) => SentrixRest());
+final sentrixRpcProvider  = Provider((ref) =>
+    SentrixRpc(baseUrl: Sentrix.mainnetRpc));
+
+final balanceProvider = FutureProvider.family<BigInt, String>((ref, address) {
+  return ref.watch(sentrixRestProvider).balance(address);
+});
+
+// In a widget:
+final balance = ref.watch(balanceProvider(userAddress));
+balance.when(
+  data: (sentri) => Text('${sentri / BigInt.from(1e8)} SRX'),
+  loading: () => const CircularProgressIndicator(),
+  error: (e, _) => Text('Error: $e'),
+);
+```
