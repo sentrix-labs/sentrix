@@ -1936,20 +1936,26 @@ async fn cmd_start(
                         }
                     }
 
-                    // #1d rebroadcast: if we're the proposer, still in Propose
-                    // phase, and our initial proposal broadcast hasn't yet pulled
-                    // supermajority prevote, resend the proposal every ~3s up to
-                    // 3 times. Covers the libp2p case where the Proposal got
-                    // dropped for a peer that wasn't in verified_peers at the
-                    // moment of the initial broadcast (reconnect lag, handshake
-                    // still in progress). Without this the peer times out to
-                    // nil-prevote, supermajority for our block never forms, round
-                    // skips — the core #1d livelock shape from the 2026-04-20 logs.
+                    // #1d rebroadcast (v2.1.4 — extended after first round of
+                    // testnet bake showed 3 attempts × 3s = 9s isn't enough to
+                    // catch persistently-late peers). The shape we kept seeing:
+                    // proposer fires the proposal, 2 of 4 peers prevote it in
+                    // time, 1 peer takes ~10s before it shows up in
+                    // `verified_peers` post-restart, by which time the
+                    // already-fast peers have already nil-precommit'd because
+                    // their prevote window closed. v2.1.4 widens the retry
+                    // window to 14s (7 × 2s) so a slow peer has a real chance
+                    // to enter `verified_peers` during the proposer's send loop
+                    // before the proposer's own propose timeout fires (20s).
+                    // Stays in Propose AND Prevote phases — sometimes peers
+                    // need the proposal even after we've moved to prevote
+                    // collection so they can validate the prevotes they're
+                    // receiving from us.
                     const REBROADCAST_INTERVAL: std::time::Duration =
-                        std::time::Duration::from_secs(3);
-                    const MAX_REBROADCASTS: u32 = 3;
+                        std::time::Duration::from_secs(2);
+                    const MAX_REBROADCASTS: u32 = 7;
                     if let Some(ref block) = proposed_block
-                        && bft.phase() == BftPhase::Propose
+                        && matches!(bft.phase(), BftPhase::Propose | BftPhase::Prevote)
                         && proposal_rebroadcast_count < MAX_REBROADCASTS
                         && proposal_broadcast_at
                             .is_some_and(|t| t.elapsed() >= REBROADCAST_INTERVAL)

@@ -9,7 +9,23 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [2.1.3] — 2026-04-20 — Runtime trie divergence guard (backlog #1e)
+## [2.1.4] — 2026-04-20 — Extended #1d rebroadcast window
+
+### Fixed
+- **fix(bft): widen proposer rebroadcast window 9s → 14s + cover Prevote
+  phase too** (`bin/sentrix/src/main.rs`). v2.1.3's 3 retries × 3s
+  helped but didn't fully close #1d on testnet — bake logs showed the
+  4th validator (often after restart) still missed the proposal during
+  the 9s window because it took ~10s+ to enter the proposer's
+  `verified_peers` set. v2.1.4 bumps the retry budget to 7 attempts at
+  2s each (= 14s of live retry) and lets the proposer keep
+  rebroadcasting after it has moved into Prevote phase, so a peer that
+  finally appears mid-prevote can still validate the prevotes it's
+  receiving from the proposer. 14s fits inside the 20s propose
+  timeout, so the additional retries don't push past the round
+  boundary.
+
+
 
 ### Fixed
 - **fix(consensus): reject peer blocks with state_root=None past
