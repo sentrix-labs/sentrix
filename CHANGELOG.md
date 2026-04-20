@@ -25,7 +25,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   timeout, so the additional retries don't push past the round
   boundary.
 
-
+## [2.1.3] — 2026-04-20 — Runtime trie divergence guard (backlog #1e)
 
 ### Fixed
 - **fix(consensus): reject peer blocks with state_root=None past
@@ -50,7 +50,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   on both the None-from-peer and the `received_root != computed_root`
   branches so operators see trie divergence loud in journalctl.
 
-
+## [2.1.2] — 2026-04-20 — Trie-init hardening hotfix
 
 ### Fixed
 - **fix(consensus): hard-fail trie init above STATE_ROOT_FORK_HEIGHT**
