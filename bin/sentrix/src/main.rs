@@ -2120,6 +2120,7 @@ async fn cmd_start(
     // Sync is handled inside the libp2p swarm task (Step 3d).
     let storage_for_p2p = storage.clone();
     let bft_tx_clone = bft_tx;
+    let lp2p_for_events = lp2p.clone();
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             match event {
@@ -2137,6 +2138,13 @@ async fn cmd_start(
                     peer_height,
                 } => {
                     tracing::info!("Sync needed from {} (height: {})", peer_addr, peer_height);
+                    // Backlog #4 auto-resync: BFT RoundStatus gossip told us a
+                    // peer is at a higher height. Request blocks right now
+                    // instead of waiting up to 30s for the periodic
+                    // sync_interval tick. If the trigger is dropped (channel
+                    // closed), we simply fall back to the periodic path —
+                    // no error surfacing needed for that case.
+                    lp2p_for_events.trigger_sync().await;
                 }
                 // BFT events — forward to validator loop for multi-validator consensus.
                 //
