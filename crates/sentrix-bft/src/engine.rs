@@ -17,11 +17,25 @@ use sentrix_staking::StakeRegistry;
 
 // Timeouts tuned for 4-validator testnet with ~100ms localhost latency.
 // Round 0 must give enough time for all validators to start up + exchange
-// their first proposal. Previous 3s propose caused premature nil-prevotes
-// when validators started at slightly different times.
-pub const PROPOSE_TIMEOUT_MS: u64 = 10_000;
-pub const PREVOTE_TIMEOUT_MS: u64 = 10_000;
-pub const PRECOMMIT_TIMEOUT_MS: u64 = 10_000;
+// their first proposal.
+//
+// 2026-04-20 #1d diagnosis (`BFT #1d:` tally logging added in PR #171):
+// the livelock fires when the proposer's request-response Proposal
+// message doesn't reach all peers within the 10s propose timeout.
+// Typically a peer has just reconnected and isn't yet in the proposer's
+// `verified_peers` set at proposal time — the message is silently
+// dropped. The peer's own propose-phase timeout fires with no proposal
+// received, it nil-prevotes, the proposer's supermajority for block
+// fails → nil-precommit chain reaction → skip round, repeat forever.
+// Bumping propose_timeout 10s → 20s widens the window the proposer has
+// to include a freshly-reconnected peer in the outbound send list.
+// It's not a root-cause fix (that needs proposer re-broadcast or
+// verified-peer stability, backlog #1d follow-up) but empirically
+// stops the stall. prevote/precommit also nudged up to 12s so phase
+// transitions don't race the wider propose window.
+pub const PROPOSE_TIMEOUT_MS: u64 = 20_000;
+pub const PREVOTE_TIMEOUT_MS: u64 = 12_000;
+pub const PRECOMMIT_TIMEOUT_MS: u64 = 12_000;
 pub const TIMEOUT_INCREMENT_MS: u64 = 1_000; // +1s per round for propose
 pub const VOTE_TIMEOUT_INCREMENT_MS: u64 = 2_000; // +2s per round for votes
 pub const MAX_TIMEOUT_MS: u64 = 30_000;
@@ -1264,17 +1278,19 @@ mod tests {
 
     #[test]
     fn test_propose_timeout_values() {
-        assert_eq!(propose_timeout(0), Duration::from_millis(10_000));
-        assert_eq!(propose_timeout(1), Duration::from_millis(11_000));
-        assert_eq!(propose_timeout(10), Duration::from_millis(20_000));
+        // Base 20_000ms + 1_000ms per round, capped at 30_000ms.
+        assert_eq!(propose_timeout(0), Duration::from_millis(20_000));
+        assert_eq!(propose_timeout(1), Duration::from_millis(21_000));
+        assert_eq!(propose_timeout(10), Duration::from_millis(30_000)); // capped
         assert_eq!(propose_timeout(100), Duration::from_millis(30_000)); // capped
     }
 
     #[test]
     fn test_prevote_timeout_values() {
-        assert_eq!(prevote_timeout(0), Duration::from_millis(10_000));
-        assert_eq!(prevote_timeout(1), Duration::from_millis(12_000));
-        assert_eq!(prevote_timeout(10), Duration::from_millis(30_000)); // capped
+        // Base 12_000ms + 2_000ms per round, capped at 30_000ms.
+        assert_eq!(prevote_timeout(0), Duration::from_millis(12_000));
+        assert_eq!(prevote_timeout(1), Duration::from_millis(14_000));
+        assert_eq!(prevote_timeout(9), Duration::from_millis(30_000)); // capped
     }
 
     #[test]
