@@ -729,49 +729,34 @@ impl StakeRegistry {
             .collect()
     }
 
-    /// Weighted proposer selection: deterministic round-robin weighted by stake
+    /// Proposer selection: deterministic round-robin over the active set.
+    ///
+    /// Picks `active_set[(height + round) % len]`. Same validator at the
+    /// same `(height, round)` for all peers — required for BFT consensus
+    /// to agree on who's allowed to propose. Function name kept as
+    /// `weighted_proposer` for call-site compatibility; the *voting*
+    /// weight is still stake-weighted (see `BftEngine::on_*_weighted`).
+    /// Only the proposer slot itself is now stake-blind.
+    ///
+    /// Backlog #consensus-audit Section 5(4): the previous SHA-256 over
+    /// cumulative stake weights gave the largest-stake validator a much
+    /// bigger share of proposer slots, which is a centralisation risk
+    /// once mainnet is on Voyager (a single big delegator could see its
+    /// validator proposing >50% of blocks). Pure round-robin keeps the
+    /// proposer rotation fair across the active set; stake still matters
+    /// in two places: who is *in* the active set (top-N by stake), and
+    /// vote weight at quorum time.
+    ///
+    /// `active_set` order is deterministic (sorted by stake desc with
+    /// address-asc tie-break — see `compute_active_set`), so all nodes
+    /// pick the same proposer for any given `(height, round)`.
     pub fn weighted_proposer(&self, height: u64, round: u32) -> Option<String> {
         if self.active_set.is_empty() {
             return None;
         }
-
-        // Build cumulative stake weights
-        let mut weights: Vec<(String, u64)> = Vec::new();
-        let mut total_weight: u64 = 0;
-        for addr in &self.active_set {
-            if let Some(v) = self.validators.get(addr) {
-                let w = v.total_stake();
-                total_weight = total_weight.saturating_add(w);
-                weights.push((addr.clone(), total_weight));
-            }
-        }
-
-        if total_weight == 0 {
-            return None;
-        }
-
-        // Deterministic selection based on height + round — use SHA-256 hash
-        // to ensure uniform distribution across total_weight range.
-        // Previous naive (height*31+round)*7 % total_weight always produced
-        // small values → always picked the first validator.
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(height.to_le_bytes());
-        hasher.update(round.to_le_bytes());
-        let hash = hasher.finalize();
-        // Take first 8 bytes as u64 for selector
-        let mut sel_bytes = [0u8; 8];
-        sel_bytes.copy_from_slice(&hash[..8]);
-        let selector = u64::from_le_bytes(sel_bytes) % total_weight;
-
-        for (addr, cumulative) in &weights {
-            if selector < *cumulative {
-                return Some(addr.clone());
-            }
-        }
-
-        // Fallback to last validator
-        weights.last().map(|(addr, _)| addr.clone())
+        let n = self.active_set.len() as u64;
+        let idx = (height.wrapping_add(round as u64) % n) as usize;
+        Some(self.active_set[idx].clone())
     }
 }
 
