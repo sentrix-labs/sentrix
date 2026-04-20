@@ -5,6 +5,7 @@
 // backlog #12 refactor will further split those handler groups into
 // dedicated modules. (backlog #12 phase 1)
 
+mod accounts;
 mod auth;
 mod chain;
 mod ops;
@@ -18,6 +19,10 @@ pub use ops::sentrix_status;
 pub use ratelimit::{GlobalIpLimiter, IpRateLimiter, WriteIpLimiter};
 pub use types::{ApiResponse, SendTxRequest, SignedTxRequest};
 
+use accounts::{
+    get_address_history, get_address_info, get_address_proof, get_balance, get_nonce,
+    get_richlist, get_state_root, get_wallet_info, list_transactions,
+};
 use chain::{chain_info, get_block, get_blocks, validate_chain};
 use ops::{START_TIME, get_admin_log, health, metrics, root};
 use ratelimit::{ip_rate_limit_middleware, write_rate_limit_middleware};
@@ -31,7 +36,6 @@ use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
-    response::IntoResponse,
     routing::{get, post},
 };
 use std::collections::HashMap;
@@ -43,7 +47,6 @@ use crate::explorer;
 use crate::jsonrpc::rpc_dispatcher;
 use sentrix_core::blockchain::Blockchain;
 use sentrix_primitives::transaction::Transaction;
-use sentrix_trie::address::{account_value_decode, address_to_key};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
@@ -269,31 +272,7 @@ fn explorer_router(_state: SharedState) -> Router<SharedState> {
 
 
 
-async fn get_balance(
-    State(state): State<SharedState>,
-    Path(address): Path<String>,
-) -> Json<serde_json::Value> {
-    // Normalize address to lowercase for case-insensitive lookup (REST/RPC consistency)
-    let address = address.to_lowercase();
-    let bc = state.read().await;
-    let balance = bc.accounts.get_balance(&address);
-    Json(serde_json::json!({
-        "address": address,
-        "balance_sentri": balance,
-        "balance_srx": balance as f64 / 100_000_000.0,
-    }))
-}
 
-async fn get_nonce(
-    State(state): State<SharedState>,
-    Path(address): Path<String>,
-) -> Json<serde_json::Value> {
-    // Normalize address to lowercase for case-insensitive lookup
-    let address = address.to_lowercase();
-    let bc = state.read().await;
-    let nonce = bc.accounts.get_nonce(&address);
-    Json(serde_json::json!({ "address": address, "nonce": nonce }))
-}
 
 async fn send_transaction(
     _auth: ApiKey,
@@ -345,76 +324,9 @@ async fn get_mempool(State(state): State<SharedState>) -> Json<serde_json::Value
 
 // ── Short-form alias handlers ────────────────────────────
 
-async fn get_wallet_info(
-    State(state): State<SharedState>,
-    Path(address): Path<String>,
-) -> Json<serde_json::Value> {
-    // Normalize address to lowercase for case-insensitive lookup
-    let address = address.to_lowercase();
-    let bc = state.read().await;
-    let balance = bc.accounts.get_balance(&address);
-    let nonce = bc.accounts.get_nonce(&address);
-    // get_address_tx_count returns window-aware metadata; see chain_queries.rs for coverage details
-    let tx_count_info = bc.get_address_tx_count(&address);
-    Json(serde_json::json!({
-        "address": address,
-        "balance_sentri": balance,
-        "balance_srx": balance as f64 / 100_000_000.0,
-        "nonce": nonce,
-        "tx_count": tx_count_info,
-    }))
-}
-
-async fn list_transactions(
-    State(state): State<SharedState>,
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Json<serde_json::Value> {
-    let bc = state.read().await;
-    let limit: usize = params
-        .get("limit")
-        .and_then(|l| l.parse().ok())
-        .unwrap_or(20)
-        .min(100);
-    let offset: usize = params
-        .get("offset")
-        .and_then(|o| o.parse().ok())
-        .unwrap_or(0);
-    let txs = bc.get_latest_transactions(limit, offset);
-    let count = txs.len();
-    Json(serde_json::json!({
-        "transactions": txs,
-        "count": count,
-        "pagination": { "limit": limit, "offset": offset },
-    }))
-}
 
 
-async fn get_richlist(State(state): State<SharedState>) -> Json<serde_json::Value> {
-    let bc = state.read().await;
-    let mut holders: Vec<serde_json::Value> = bc
-        .accounts
-        .accounts
-        .iter()
-        .filter(|(_, a)| a.balance > 0)
-        .map(|(addr, a)| {
-            let pct = a.balance as f64 / sentrix_core::blockchain::MAX_SUPPLY as f64 * 100.0;
-            serde_json::json!({
-                "address": addr,
-                "balance_sentri": a.balance,
-                "balance_srx": a.balance as f64 / 100_000_000.0,
-                "percent_of_supply": pct,
-            })
-        })
-        .collect();
-    holders.sort_by(|a, b| {
-        let ba = a["balance_sentri"].as_u64().unwrap_or(0);
-        let bb = b["balance_sentri"].as_u64().unwrap_or(0);
-        bb.cmp(&ba)
-    });
-    holders.truncate(50);
-    let total = holders.len();
-    Json(serde_json::json!({ "holders": holders, "total": total }))
-}
+
 
 
 // ── Staking + Epoch handlers (Voyager Phase 2a) ─────────
@@ -474,157 +386,6 @@ pub(super) fn api_err(msg: &str) -> (StatusCode, Json<serde_json::Value>) {
         StatusCode::BAD_REQUEST,
         Json(serde_json::json!({"success": false, "error": msg})),
     )
-}
-
-// ── Address history handlers ─────────────────────────────
-
-// Paginated address history
-async fn get_address_history(
-    State(state): State<SharedState>,
-    Path(address): Path<String>,
-    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
-) -> Json<serde_json::Value> {
-    // Normalize address to lowercase — consistent with get_balance, get_nonce, get_address_info
-    let address = address.to_lowercase();
-    let bc = state.read().await;
-    let limit: usize = params
-        .get("limit")
-        .and_then(|l| l.parse().ok())
-        .unwrap_or(20)
-        .min(100);
-    let offset: usize = params
-        .get("offset")
-        .and_then(|o| o.parse().ok())
-        .unwrap_or(0);
-    let history = bc.get_address_history(&address, limit, offset);
-    let count = history.len();
-    Json(serde_json::json!({
-        "address": address,
-        "transactions": history,
-        "count": count,
-        "pagination": { "limit": limit, "offset": offset, "has_more": count == limit }
-    }))
-}
-
-async fn get_address_info(
-    State(state): State<SharedState>,
-    Path(address): Path<String>,
-) -> Json<serde_json::Value> {
-    // Normalize address to lowercase for case-insensitive lookup
-    let address = address.to_lowercase();
-    let bc = state.read().await;
-    let balance = bc.accounts.get_balance(&address);
-    let nonce = bc.accounts.get_nonce(&address);
-    // get_address_tx_count returns window-aware metadata; see chain_queries.rs for coverage details
-    let tx_count_info = bc.get_address_tx_count(&address);
-    Json(serde_json::json!({
-        "address": address,
-        "balance_sentri": balance,
-        "balance_srx": balance as f64 / 100_000_000.0,
-        "nonce": nonce,
-        "tx_count": tx_count_info,
-    }))
-}
-
-// ── State-trie endpoints ──────────────────────────────────────
-
-/// GET /address/:address/proof
-/// Returns a Merkle membership/non-membership proof for the address in the current state trie.
-/// Requires the trie to be initialized (init_trie called at node startup).
-async fn get_address_proof(
-    State(state): State<SharedState>,
-    Path(address): Path<String>,
-) -> impl IntoResponse {
-    // Validate address format before acquiring any lock — fail fast on bad input
-    // Rejects obviously-invalid inputs early (no lock overhead, no trie traversal).
-    if !sentrix_core::blockchain::is_valid_sentrix_address(&address) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "invalid address format: expected 0x + 40 hex chars",
-                "received": address,
-            })),
-        )
-            .into_response();
-    }
-
-    // Read lock is sufficient for proof generation — no state mutation required
-    // prove() previously took &mut self due to LRU mutation; TrieCache now uses an
-    // internal Mutex<LruCache>, so prove() takes &self — a read lock is sufficient.
-    // This prevents proof requests from blocking block production (which needs a write lock).
-    let bc = state.read().await;
-    let key = address_to_key(&address);
-    match bc.state_trie.as_ref() {
-        None => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
-                "error": "state trie not initialized",
-                "hint": "node must be started with --trie flag"
-            })),
-        )
-            .into_response(),
-        Some(trie) => match trie.prove(&key) {
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            )
-                .into_response(),
-            Ok(proof) => {
-                let (balance, nonce) = if proof.found {
-                    account_value_decode(&proof.value)
-                        .map(|(b, n)| (Some(b), Some(n)))
-                        .unwrap_or((None, None))
-                } else {
-                    (None, None)
-                };
-                Json(serde_json::json!({
-                    "address": address,
-                    "found": proof.found,
-                    "balance_sentri": balance,
-                    "nonce": nonce,
-                    "key_hex": hex::encode(proof.key),
-                    "depth": proof.depth,
-                    "terminal_hash_hex": hex::encode(proof.terminal_hash),
-                    "siblings_hex": proof.siblings.iter().map(hex::encode).collect::<Vec<_>>(),
-                    "root_hex": hex::encode(trie.root_hash()),
-                    // Proof covers native SRX state only — token balances are not committed to the trie
-                    "scope": "native_srx_only",
-                    "scope_note": "Proof covers native SRX balance and nonce only. SRC-20 token balances are not committed to the state root.",
-                }))
-                .into_response()
-            }
-        },
-    }
-}
-
-/// GET /chain/state-root/:height
-/// Returns the committed state root hash for the given block height.
-async fn get_state_root(
-    State(state): State<SharedState>,
-    Path(height): Path<u64>,
-) -> impl IntoResponse {
-    let bc = state.read().await;
-    match bc.state_trie.as_ref() {
-        None => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
-                "error": "state trie not initialized"
-            })),
-        )
-            .into_response(),
-        Some(trie) => match trie.root_at_version(height) {
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e.to_string() })),
-            )
-                .into_response(),
-            Ok(opt) => Json(serde_json::json!({
-                "height": height,
-                "state_root_hex": opt.map(hex::encode),
-            }))
-            .into_response(),
-        },
-    }
 }
 
 #[cfg(test)]

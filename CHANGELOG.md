@@ -10,6 +10,13 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Refactored
+- **refactor(rpc): accounts handlers out to `routes/accounts.rs`**
+  (backlog #12 phase 2e) — 9 address-indexed handlers moved:
+  `get_balance`, `get_nonce`, `get_wallet_info`, `list_transactions`,
+  `get_richlist`, `get_address_history`, `get_address_info`,
+  `get_address_proof` (state-trie Merkle proof), `get_state_root`
+  (per-height root lookup). `sentrix_trie::address` imports follow
+  the handlers into their new home. Zero route / behaviour change.
 - **refactor(rpc): chain handlers out to `routes/chain.rs`** (backlog
   #12 phase 2d) — 4 handlers moved: `chain_info` (`GET /chain/info`),
   `get_blocks` (paginated listing), `get_block` (by index),
