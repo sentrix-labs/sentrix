@@ -4801,6 +4801,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sentrix-codec"
+version = "2.1.6"
+dependencies = [
+ "bincode",
+ "hex",
+ "serde",
+]
+
+[[package]]
 name = "sentrix-core"
 version = "2.1.6"
 dependencies = [
