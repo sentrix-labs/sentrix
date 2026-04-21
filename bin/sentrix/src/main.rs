@@ -2467,10 +2467,27 @@ fn cmd_state_import(input: &str, force: bool) -> anyhow::Result<()> {
     let count = bc.import_state(&snapshot)?;
     storage.save_blockchain(&bc)?;
 
+    // ROOT CAUSE fix (2026-04-21 deploy rollback post-mortem): import only
+    // rewrites `accounts` and counters. The trie storage (trie_nodes +
+    // trie_values + trie_roots MDBX tables) is untouched. On the next
+    // `sentrix start`, `init_trie` finds the existing committed root for
+    // the current height + its nodes still present → uses the stale trie
+    // that reflects the PRE-import accounts. Every block applied after
+    // restart then computes a state_root from the stale trie, diverging
+    // from peers whose trie matches their (non-imported) accounts. The
+    // `#1e strict reject` guard fires and the chain halts.
+    //
+    // Resetting the trie here forces `init_trie` to backfill from the
+    // freshly imported accounts on next startup. The backfill produces
+    // the SAME root any validator would compute from the same account
+    // set, restoring cross-validator determinism.
+    storage.reset_trie()?;
+
     println!(
         "State imported: {} accounts from snapshot at height {}",
         count, snapshot.metadata.height
     );
+    println!("Trie storage reset — next startup will rebuild it from the imported accounts.");
     println!("Restart the node to rebuild the state trie.");
     Ok(())
 }
