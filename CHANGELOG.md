@@ -9,6 +9,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.5] — 2026-04-21 — Trie backfill divergence guard (bug #3)
+
 ### Fixed
 - **fix(trie): refuse to start when backfill diverges from stored block
   state_root (bug #3)** (`crates/sentrix-core/src/blockchain.rs`). The

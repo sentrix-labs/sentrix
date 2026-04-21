@@ -4,7 +4,7 @@ members = [".", "crates/sentrix-primitives", "crates/sentrix-wallet", "crates/se
 
 [package]
 name = "sentrix"
-version = "2.1.4"
+version = "2.1.5"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Fast, secure Layer-1 blockchain built in Rust"
