@@ -9,6 +9,28 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.6] — 2026-04-21 — RPC validation hardening
+
+### Fixed
+- **fix(rpc): reject wei values not divisible by 1e10 in eth_sendRawTransaction**
+  (`crates/sentrix-rpc/src/jsonrpc/eth.rs`). Sentrix's on-chain unit is sentri
+  (1 SRX = 1e8 sentri = 1e18 wei), so values below 1e10 wei are sub-sentri
+  dust. Truncating them silently meant a caller sending 10_000_000_001 wei
+  saw 1 sentri transferred and 9 wei unaccounted — neither burned, refunded,
+  nor credited. The handler now returns JSON-RPC `-32602` if
+  `value_wei % 1e10 != 0`, surfacing the mismatch at the boundary.
+- **fix(rpc): eth_getBlockByNumber returns -32602 on invalid hex**
+  (`crates/sentrix-rpc/src/jsonrpc/eth.rs`). Previously a typo like `0xZZ`
+  or a non-hex string silently mapped to block 0 (genesis), so clients
+  took genesis data at face value for broken inputs. Now the parse error
+  is propagated with the offending value quoted.
+- **fix(rpc): panic at startup when SENTRIX_CORS_ORIGIN is unparseable**
+  (`crates/sentrix-rpc/src/routes/mod.rs`). A malformed env value used to
+  silently fall back to the literal "null" header, producing a router
+  that rejected every browser request without any signal to the operator.
+  Now an invalid value aborts `create_router` with a clear panic message
+  naming the offending string — fail-fast at config validation time.
+
 ## [2.1.5] — 2026-04-21 — Trie backfill divergence guard (bug #3)
 
 ### Fixed

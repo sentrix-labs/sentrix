@@ -87,13 +87,18 @@ pub fn create_router(state: SharedState) -> Router {
                 ])
         }
         Some(origin) if !origin.is_empty() => {
-            // Specific origin (production)
-            CorsLayer::new()
-                .allow_origin(
-                    origin
-                        .parse::<axum::http::HeaderValue>()
-                        .unwrap_or(axum::http::HeaderValue::from_static("null")),
+            // Specific origin (production). Silently falling back to the
+            // literal "null" header on parse failure meant a typo in
+            // SENTRIX_CORS_ORIGIN produced a router that rejected every
+            // browser request without surfacing the misconfig. Panic at
+            // startup instead so operators see the problem immediately.
+            let header = origin.parse::<axum::http::HeaderValue>().unwrap_or_else(|e| {
+                panic!(
+                    "SENTRIX_CORS_ORIGIN={origin:?} is not a valid HTTP header value: {e}"
                 )
+            });
+            CorsLayer::new()
+                .allow_origin(header)
                 .allow_methods([
                     axum::http::Method::GET,
                     axum::http::Method::POST,

@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-core"
-version = "2.1.5"
+version = "2.1.6"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Sentrix blockchain core — Blockchain state, block execution, authority, mempool"

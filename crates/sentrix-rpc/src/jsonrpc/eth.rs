@@ -77,12 +77,23 @@ pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) 
 async fn eth_get_block_by_number(params: &Value, state: &SharedState) -> DispatchResult {
     let bc = state.read().await;
     let block_param = params[0].as_str().unwrap_or("latest");
+    // Silently mapping invalid hex to block 0 returned genesis on typos like
+    // `0xZZ` or `"not a number"`, which users then took at face value. Reject
+    // the parse error so the caller sees the mistake instead of genesis data.
     let index = if block_param == "latest" {
         bc.height()
     } else if block_param == "earliest" {
         0
     } else {
-        u64::from_str_radix(block_param.trim_start_matches("0x"), 16).unwrap_or(0)
+        match u64::from_str_radix(block_param.trim_start_matches("0x"), 16) {
+            Ok(n) => n,
+            Err(_) => {
+                return Err((
+                    -32602,
+                    format!("invalid block number: {block_param:?}").into(),
+                ));
+            }
+        }
     };
     match bc.get_block(index) {
         Some(block) => Ok(json!({
@@ -296,6 +307,18 @@ async fn eth_send_raw_transaction(params: &Value, state: &SharedState) -> Dispat
             ));
         }
     };
+    // Sentrix's on-chain unit is sentri (1 SRX = 1e8 sentri = 1e18 wei), so
+    // values below 1e10 wei are sub-sentri dust. Truncating them silently
+    // meant a caller sending 10_000_000_001 wei saw 1 sentri transferred
+    // and 9 wei unaccounted — the 9 wei was neither burned, refunded, nor
+    // credited. Reject non-divisible amounts so the mismatch surfaces at
+    // the boundary instead of becoming phantom loss.
+    if value_wei % 10_000_000_000u128 != 0 {
+        return Err((
+            -32602,
+            "tx value is not a whole number of sentri (must be divisible by 1e10 wei)".into(),
+        ));
+    }
     let amount_sentri = (value_wei / 10_000_000_000u128) as u64;
 
     use sha3::{Digest as _, Keccak256};
