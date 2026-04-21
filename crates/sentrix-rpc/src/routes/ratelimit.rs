@@ -4,12 +4,17 @@
 //
 // Two limiters are layered on each request:
 // * `GlobalIpLimiter` — cap every endpoint at `SENTRIX_GLOBAL_RATE_LIMIT`
-//   (default 60 / min / IP).
+//   (default 300 / min / IP). Raised 2026-04-21 from 60 → 300 so the
+//   block-explorer frontend (sentrixscan.sentriscloud.com) can poll the
+//   ~8 live stats endpoints it uses without tripping the limit on a
+//   shared office / NAT IP. Reads are cheap; 300/min is still well
+//   below any realistic DoS threshold on this hardware.
 // * `WriteIpLimiter` — tighter cap on state-mutating endpoints
 //   (`POST /transactions`, `/tokens/*`, `/rpc`) at
-//   `SENTRIX_WRITE_RATE_LIMIT` (default 10 / min / IP). An attacker
-//   hitting POST endpoints burns the write quota first while read
-//   traffic from the same IP keeps flowing.
+//   `SENTRIX_WRITE_RATE_LIMIT` (default 10 / min / IP). Applied ON TOP
+//   of the global limit so POSTs are effectively min(10, 300) = 10/min
+//   per IP. An attacker hitting POST endpoints burns the write quota
+//   first while read traffic from the same IP keeps flowing.
 
 use axum::{Json, http::StatusCode, response::IntoResponse};
 use std::collections::HashMap;
@@ -21,11 +26,14 @@ pub type IpRateLimiter = Arc<Mutex<HashMap<String, (u32, Instant)>>>;
 const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
 /// Override via `SENTRIX_GLOBAL_RATE_LIMIT` env var for benchmarking.
+/// Default raised from 60 to 300 on 2026-04-21 — block-explorer
+/// frontend polls ~8 stats endpoints per tick, single user on shared
+/// IP was hitting 60/min within seconds.
 pub(super) fn global_rate_limit_max() -> u32 {
     std::env::var("SENTRIX_GLOBAL_RATE_LIMIT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(60)
+        .unwrap_or(300)
 }
 
 /// A7: tighter per-IP cap applied only to write / expensive endpoints
