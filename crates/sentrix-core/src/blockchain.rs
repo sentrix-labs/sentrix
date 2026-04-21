@@ -592,12 +592,46 @@ impl Blockchain {
                     let val = account_value_bytes(balance, nonce);
                     trie.insert(&key, &val)?;
                 }
-                trie.commit(height)?;
+                let backfilled_root = trie.commit(height)?;
                 tracing::info!(
                     "trie: backfill complete at height {}, root = {}",
                     height,
-                    hex::encode(trie.root_hash())
+                    hex::encode(backfilled_root)
                 );
+
+                // Bug #3 safeguard (mainnet freeze 2026-04-21): the incremental
+                // path (update_trie_for_block) only inserts accounts touched by
+                // blocks, while backfill inserts every account with balance > 0
+                // — including premines/genesis accounts that were never touched.
+                // For the same logical state, the two paths produce different
+                // trie root sets, so a validator recovering via reset_trie +
+                // init_trie at height > 0 will compute a state_root that
+                // disagrees with peers whose trie was built incrementally from
+                // genesis. Without this check, the validator silently forks
+                // and every block it produces trips the #1e strict-reject guard.
+                //
+                // Refuse to start if the backfill root doesn't match the stored
+                // header. Operators must recover via rsync chain.db from a
+                // healthy peer (whole-trie copy preserves the incremental
+                // shape) instead of state_import + reset.
+                if let Ok(block) = self.latest_block()
+                    && block.index == height
+                    && let Some(stored_root) = block.state_root
+                    && backfilled_root != stored_root
+                {
+                    return Err(SentrixError::Internal(format!(
+                        "trie backfill at height {} produced root {} but the \
+                         block header at that height records state_root {}. \
+                         The rebuilt trie disagrees with the canonical chain \
+                         (bug #3). Refusing to start to prevent a silent \
+                         state fork. Recovery: rsync /opt/sentrix/data/chain.db \
+                         from a healthy peer with all validators stopped, \
+                         instead of `sentrix state import` + reset_trie.",
+                        height,
+                        hex::encode(backfilled_root),
+                        hex::encode(stored_root)
+                    )));
+                }
             }
         }
 
@@ -1977,6 +2011,72 @@ mod tests {
         assert!(
             bc_trie.latest_block().unwrap().state_root.is_some(),
             "state_root must be Some when trie is initialized"
+        );
+    }
+
+    /// Regression test for bug #3 — mainnet freeze 2026-04-21.
+    ///
+    /// The incremental path (update_trie_for_block) only inserts accounts
+    /// actually touched by a block, while the backfill path (init_trie at
+    /// height > 0) inserts every account with balance > 0. For the same
+    /// logical state these two paths produce different leaf sets: any
+    /// premine / genesis account never touched by a tx is absent from the
+    /// incremental trie but present in the backfill trie. A validator that
+    /// recovers via state-import + reset_trie therefore rebuilds a trie
+    /// whose root disagrees with peers that kept their original trie, and
+    /// every subsequent block trips the #1e strict-reject guard (chain halt).
+    ///
+    /// The safeguard in init_trie MUST detect this divergence at startup
+    /// and refuse to continue — silently starting would fork the chain.
+    /// This test asserts that init_trie errors out with a message that
+    /// fingers the backfill/state-fork failure mode, not that the roots
+    /// magically align (they can't without changing consensus history).
+    #[test]
+    fn test_reset_trie_then_init_refuses_on_backfill_divergence() {
+        let (_dir, mdbx) = temp_mdbx();
+        let mut bc = setup_chain();
+        bc.init_trie(Arc::clone(&mdbx)).unwrap();
+
+        // Run several coinbase-only blocks so the incremental path has
+        // committed at least one root. Blocks do not touch any premine
+        // address — the "untouched premine" is precisely the state that
+        // backfill later reintroduces but incremental never did.
+        for _ in 0..3 {
+            let block = bc.create_block("validator1").unwrap();
+            bc.add_block(block).unwrap();
+        }
+        let stored_root = bc
+            .latest_block()
+            .expect("chain must have at least one block")
+            .state_root
+            .expect("block at trie-active height must have Some state_root");
+
+        // Simulate `sentrix chain reset-trie` (PR #187): drop all trie
+        // tables. accounts.accounts is untouched — this is the exact
+        // scenario a validator hits after `state import --force` on the
+        // post-#187 code path.
+        for table in [
+            "trie_nodes",
+            "trie_values",
+            "trie_roots",
+            "trie_committed_roots",
+        ] {
+            mdbx.clear_table(table).unwrap();
+        }
+        bc.state_trie = None;
+
+        // Re-init. height > 0 + empty trie tables triggers the backfill
+        // branch, which must detect that backfill != stored state_root
+        // and refuse to start.
+        let result = bc.init_trie(Arc::clone(&mdbx));
+        let err = result.expect_err(
+            "init_trie MUST refuse when backfill diverges from stored state_root \
+             — silently succeeding here is the 2026-04-21 mainnet freeze bug",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("backfill") && msg.contains(&hex::encode(stored_root)),
+            "error must name the backfill/stored-root mismatch: {msg}"
         );
     }
 }

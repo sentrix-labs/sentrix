@@ -9,6 +9,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.5] — 2026-04-21 — Trie backfill divergence guard (bug #3)
+
+### Fixed
+- **fix(trie): refuse to start when backfill diverges from stored block
+  state_root (bug #3)** (`crates/sentrix-core/src/blockchain.rs`). The
+  incremental path (`update_trie_for_block`) only inserts accounts
+  touched by a block, while the backfill path (`init_trie` at height > 0)
+  inserts every account with balance > 0 — including premines that
+  were never touched by a tx. For the same logical state the two paths
+  produce different leaf sets. A validator that recovered via
+  `sentrix state import` + PR #187's auto-reset therefore rebuilt a
+  trie whose state_root silently disagreed with peers, and every block
+  it produced tripped the #1e strict-reject guard. This was the exact
+  shape of the 2026-04-21 mainnet freeze (VPS2 drifted ~45 SRX/min
+  from canonical after state-import; chain halted).
+
+  We cannot align the two paths without changing consensus history
+  (sync-from-genesis would fail). Instead `init_trie` now reads the
+  stored `state_root` on the block at that height and refuses to start
+  if the freshly-backfilled root disagrees. Operators hitting this must
+  recover via `rsync /opt/sentrix/data/chain.db` from a healthy peer
+  with all validators stopped — a whole-trie copy preserves the
+  incremental shape. New regression test
+  `test_reset_trie_then_init_refuses_on_backfill_divergence` pins
+  the safeguard; it fails on main and passes with the fix.
+
 ## [2.1.4] — 2026-04-20 — Extended #1d rebroadcast window
 
 ### Fixed
