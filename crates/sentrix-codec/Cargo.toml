@@ -1,0 +1,12 @@
+[package]
+name = "sentrix-codec"
+version = "2.1.6"
+edition = "2024"
+license = "BUSL-1.1"
+description = "Centralised encoding: bincode + hex wrappers for Sentrix"
+repository = "https://github.com/sentrix-labs/sentrix"
+
+[dependencies]
+bincode = "1.3"
+hex = "0.4"
+serde = { version = "1.0", features = ["derive"] }
