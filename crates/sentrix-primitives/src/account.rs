@@ -221,6 +221,28 @@ impl AccountDB {
         account.code_hash = code_hash;
     }
 
+    /// Set an account's balance to an absolute value in sentri. Used by the
+    /// EVM state writeback path (`sentrix_evm::writeback::commit_state_to_account_db`)
+    /// where revm returns the post-execution balance as an absolute U256 in
+    /// wei, which the caller converts to u64 sentri before calling here.
+    ///
+    /// Native paths (`transfer`, `credit`) continue to compute deltas — they
+    /// must NOT migrate to this setter or they'd lose the overflow/underflow
+    /// guards on the delta arithmetic.
+    pub fn set_balance(&mut self, address: &str, balance: u64) {
+        let account = self.get_or_create(address);
+        account.balance = balance;
+    }
+
+    /// Set an account's nonce to an absolute value. Used by the EVM state
+    /// writeback path where revm returns the post-execution nonce directly.
+    /// Native paths (`transfer`) continue to increment via `checked_add` —
+    /// they must NOT migrate to this setter or they'd lose the overflow guard.
+    pub fn set_nonce(&mut self, address: &str, nonce: u64) {
+        let account = self.get_or_create(address);
+        account.nonce = nonce;
+    }
+
     /// A2: Mark an EVM tx hash as failed (reverted). Bounded FIFO — evicts
     /// the oldest entry once the set hits `MAX_FAILED_EVM_TXS` so the
     /// structure cannot grow unbounded.
@@ -390,6 +412,34 @@ mod tests {
                 .map(|a| a.is_contract())
                 .unwrap_or(false)
         );
+    }
+
+    #[test]
+    fn test_set_balance_overrides_existing() {
+        let mut db = AccountDB::new();
+        db.credit("alice", 1_000).unwrap();
+        assert_eq!(db.get_balance("alice"), 1_000);
+
+        db.set_balance("alice", 42);
+        assert_eq!(db.get_balance("alice"), 42);
+
+        // On a fresh address (no prior credit) set_balance auto-creates.
+        db.set_balance("bob", 999);
+        assert_eq!(db.get_balance("bob"), 999);
+    }
+
+    #[test]
+    fn test_set_nonce_direct() {
+        let mut db = AccountDB::new();
+        // Fresh address: starts at 0, setter bumps to N.
+        db.set_nonce("alice", 5);
+        assert_eq!(db.get_nonce("alice"), 5);
+
+        // Overwrite is allowed (EVM writeback may set to a lower value
+        // only in pathological rollback-ish scenarios; setter itself
+        // enforces no policy).
+        db.set_nonce("alice", 3);
+        assert_eq!(db.get_nonce("alice"), 3);
     }
 
     #[test]
