@@ -82,8 +82,12 @@ declare -A TESTNET_HOSTS=(
 
 if [[ "$TARGET" == "mainnet" ]]; then
     declare -n HOSTS=MAINNET_HOSTS
+    BIN_DIR="/opt/sentrix"
 else
     declare -n HOSTS=TESTNET_HOSTS
+    # Testnet lives under its own tree so a testnet deploy never touches
+    # the mainnet binary on the same host (VPS3 runs both).
+    BIN_DIR="/opt/sentrix-testnet"
 fi
 
 # ── Banner ──────────────────────────────────────────────────
@@ -180,17 +184,17 @@ for userhost in "${!UNIQUE_USERHOSTS[@]}"; do
 done
 echo
 
-echo "  $(blue '=>') Phase 2: archive + replace binary on each host ..."
+echo "  $(blue '=>') Phase 2: archive + replace binary on each host ($BIN_DIR) ..."
 for userhost in "${!UNIQUE_USERHOSTS[@]}"; do
     printf "    %-32s " "$userhost"
     ssh $SSH_OPTS "$userhost" "
         set -e
-        sudo mkdir -p /opt/sentrix/releases
-        PREV_VER=\$(/opt/sentrix/sentrix --version 2>/dev/null | awk '{print \$2}' || echo unknown)
-        sudo cp /opt/sentrix/sentrix /opt/sentrix/releases/sentrix-v\${PREV_VER}-\$(date +%Y%m%d%H%M%S) 2>/dev/null || true
-        cd /opt/sentrix/releases && ls -t | tail -n +4 | xargs -r sudo rm -f
-        sudo mv /tmp/sentrix_new /opt/sentrix/sentrix
-        sudo chmod +x /opt/sentrix/sentrix
+        sudo mkdir -p $BIN_DIR/releases
+        PREV_VER=\$($BIN_DIR/sentrix --version 2>/dev/null | awk '{print \$2}' || echo unknown)
+        sudo cp $BIN_DIR/sentrix $BIN_DIR/releases/sentrix-v\${PREV_VER}-\$(date +%Y%m%d%H%M%S) 2>/dev/null || true
+        cd $BIN_DIR/releases && ls -t | tail -n +4 | xargs -r sudo rm -f
+        sudo mv /tmp/sentrix_new $BIN_DIR/sentrix
+        sudo chmod +x $BIN_DIR/sentrix
     " >/dev/null 2>&1
     echo "$(green 'OK')"
 done
@@ -225,7 +229,7 @@ for h in "${!HOSTS[@]}"; do
         echo "    $(green 'health OK')"
     else
         echo "    $(red 'HEALTH CHECK FAILED after 120 s — aborting further rollout')"
-        echo "    $(red 'Rollback: SENTRIX_ROLLBACK=/opt/sentrix/releases/<prev> ./scripts/fast-deploy.sh '"$TARGET")"
+        echo "    $(red "Rollback: SENTRIX_ROLLBACK=$BIN_DIR/releases/<prev> ./scripts/fast-deploy.sh $TARGET")"
         exit 6
     fi
 done
