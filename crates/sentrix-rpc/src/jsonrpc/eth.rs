@@ -88,10 +88,7 @@ async fn eth_get_block_by_number(params: &Value, state: &SharedState) -> Dispatc
         match u64::from_str_radix(block_param.trim_start_matches("0x"), 16) {
             Ok(n) => n,
             Err(_) => {
-                return Err((
-                    -32602,
-                    format!("invalid block number: {block_param:?}").into(),
-                ));
+                return Err((-32602, format!("invalid block number: {block_param:?}")));
             }
         }
     };
@@ -313,7 +310,7 @@ async fn eth_send_raw_transaction(params: &Value, state: &SharedState) -> Dispat
     // and 9 wei unaccounted — the 9 wei was neither burned, refunded, nor
     // credited. Reject non-divisible amounts so the mismatch surfaces at
     // the boundary instead of becoming phantom loss.
-    if value_wei % 10_000_000_000u128 != 0 {
+    if !value_wei.is_multiple_of(10_000_000_000u128) {
         return Err((
             -32602,
             "tx value is not a whole number of sentri (must be divisible by 1e10 wei)".into(),
