@@ -54,6 +54,7 @@ HEX_ALLOW_PATHS=(
   "^src/.*test.*\\.rs$"               # all test modules (test vectors)
   "^tests/"                            # integration tests
   "^Cargo\\.lock$"                    # dependency hashes
+  "^tools/.*/Cargo\\.lock$"           # standalone-tool lockfiles carry the same hash shape
   "^docs/.*\\.md$"                    # docs may show example hashes
   "^CHANGELOG\\.md$"                  # commit hashes
   "^benchmark/.*\\.py$"               # benchmark scripts (after env-var migration)
@@ -81,6 +82,7 @@ ADDR_ALLOW_PATHS=(
   "^tests/"                            # integration tests
   "^docs/.*\\.md$"                    # docs may show example addresses
   "^benchmark/.*\\.py$"               # benchmark scripts use env var by default
+  "^tools/"                            # standalone tools (bench-tps etc.) — placeholder addresses
 )
 
 red()   { printf '\033[31m%s\033[0m' "$*"; }
