@@ -16,6 +16,11 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Node 20 removed from GitHub-hosted runners 2026-09-16; default flipped
+  # to Node 24 on 2026-06-02. Setting this explicitly silences the runtime
+  # deprecation warning that `actions/{upload,download}-artifact@v5` emit
+  # and pins us to the newer runtime ahead of the cutover.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   test:
@@ -73,6 +78,49 @@ jobs:
           name: sentrix-binary
           path: target/release/sentrix
           retention-days: 1
+
+  # RustSec advisory scan. Runs in parallel with Test so a newly-published
+  # advisory against any transitive dep surfaces in ≤ 1 CI run rather than
+  # waiting for the next manual `cargo audit` sweep. Non-blocking initially
+  # (continue-on-error: true) so transient CVSS-4.0 parse failures don't
+  # block every PR — promote to blocking once the backlog is clean.
+  audit:
+    name: cargo audit (advisory scan)
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/index
+          key: ${{ runner.os }}-cargo-audit-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run cargo audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Second-layer secret scan — complements .githooks/pre-commit which only
+  # runs on the contributor's machine. Gitleaks catches the case where
+  # someone bypasses pre-commit with `--no-verify` or pushes from an
+  # unsynced clone. Non-blocking initially; promote to blocking after a
+  # clean week per TODO.md hardening plan.
+  gitleaks:
+    name: gitleaks (secret scan)
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # gitleaks needs full history for commit-range scan
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Deploy job is disabled — deploys are now primary-pathed through
   # `scripts/fast-deploy.sh` on VPS4, which builds locally (warm cargo
@@ -167,11 +215,54 @@ jobs:
             echo 'VPS3 binary archived + replaced'
           "
 
-      # Phase 3: Rolling restart — one validator at a time so chain never stops.
-      # Mainnet has 3 PoA validators (Foundation VPS1, Treasury VPS2, Core VPS3).
-      # PoA round-robin keeps producing with 2 of 3 online during any single
-      # validator's restart. Each restart waits 30s for node to come back
-      # + sync before moving to the next.
+      # Phase 3: Rolling restart TESTNET FIRST (canary) — a bad binary
+      # shows up on testnet without touching mainnet. Only after testnet
+      # health is green does Phase 4 touch the mainnet cluster.
+      # BFT 4-val testnet keeps 3-of-4 supermajority during any single
+      # restart, same safety argument as the PoA mainnet cluster below.
+      - name: Rolling restart VPS3 testnet validators
+        run: |
+          ssh -i ~/.ssh/id_rsa_vps3 ${{ secrets.VPS3_USER }}@${{ secrets.VPS3_HOST }} "
+            for i in 1 2 3 4; do
+              SVC=sentrix-testnet-val\$i
+              PORT=\$((9544 + i))
+              if sudo systemctl is-enabled \$SVC > /dev/null 2>&1; then
+                echo \"== Rolling restart \$SVC (port \$PORT) ==\"
+                sudo systemctl restart \$SVC
+                echo \"restarted \$SVC, waiting 30s for warm-up...\"
+                sleep 30
+                curl -sf --max-time 10 http://localhost:\$PORT/health > /dev/null && echo \"  \$SVC health OK\" || echo \"  WARN: \$SVC health failed\"
+              else
+                echo \"\$SVC not enabled, skipping\"
+              fi
+            done
+          "
+
+      # Testnet health gate — require testnet height to advance by ≥ 1 block
+      # inside a 60 s window before allowing mainnet rollout. If testnet is
+      # stuck for any reason (BFT livelock, disk full, crash loop), we'd
+      # rather halt here than propagate the binary to mainnet.
+      - name: Testnet health gate
+        run: |
+          ssh -i ~/.ssh/id_rsa_vps3 ${{ secrets.VPS3_USER }}@${{ secrets.VPS3_HOST }} "
+            START_H=\$(curl -sf --max-time 5 http://localhost:9545/chain/info | grep -oE '\"height\":[0-9]+' | cut -d: -f2)
+            echo \"testnet height start: \$START_H\"
+            sleep 60
+            END_H=\$(curl -sf --max-time 5 http://localhost:9545/chain/info | grep -oE '\"height\":[0-9]+' | cut -d: -f2)
+            echo \"testnet height after 60s: \$END_H\"
+            if [ \"\$END_H\" -gt \"\$START_H\" ]; then
+              echo 'testnet health OK — height advanced'
+            else
+              echo 'ERROR: testnet height did not advance in 60s — aborting mainnet rollout'
+              exit 1
+            fi
+          "
+
+      # Phase 4: Rolling restart MAINNET — one validator at a time so chain
+      # never stops. Mainnet has 3 PoA validators (Foundation VPS1, Treasury
+      # VPS2, Core VPS3). PoA round-robin keeps producing with 2 of 3 online
+      # during any single validator's restart. Each restart waits 30s for
+      # node to come back + sync before moving to the next.
 
       - name: Rolling restart VPS3 (sentrix-core, Sentrix Core)
         run: |
@@ -205,26 +296,6 @@ jobs:
             echo 'restarted sentrix-node, waiting 30s for warm-up...'
             sleep 30
             curl -sf --max-time 10 http://localhost:8545/health > /dev/null && echo '  health OK' || (echo '  ERROR: health check failed' && exit 1)
-          "
-
-      # Phase 4: Rolling restart testnet validators (BFT — restart one at a time
-      # so 3-of-4 supermajority keeps consensus alive).
-      - name: Rolling restart VPS3 testnet validators
-        run: |
-          ssh -i ~/.ssh/id_rsa_vps3 ${{ secrets.VPS3_USER }}@${{ secrets.VPS3_HOST }} "
-            for i in 1 2 3 4; do
-              SVC=sentrix-testnet-val\$i
-              PORT=\$((9544 + i))
-              if sudo systemctl is-enabled \$SVC > /dev/null 2>&1; then
-                echo \"== Rolling restart \$SVC (port \$PORT) ==\"
-                sudo systemctl restart \$SVC
-                echo \"restarted \$SVC, waiting 30s for warm-up...\"
-                sleep 30
-                curl -sf --max-time 10 http://localhost:\$PORT/health > /dev/null && echo \"  \$SVC health OK\" || echo \"  WARN: \$SVC health failed\"
-              else
-                echo \"\$SVC not enabled, skipping\"
-              fi
-            done
           "
 
       # Phase 5: Final cluster-wide health check.
