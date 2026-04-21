@@ -4909,6 +4909,7 @@ dependencies = [
  "sentrix-core",
  "sentrix-evm",
  "sentrix-primitives",
+ "sentrix-rpc-types",
  "sentrix-storage",
  "sentrix-trie",
  "serde",
@@ -4919,6 +4920,13 @@ dependencies = [
  "tower 0.4.13",
  "tower-http",
  "tracing",
+]
+
+[[package]]
+name = "sentrix-rpc-types"
+version = "2.1.6"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
