@@ -817,14 +817,14 @@ impl Blockchain {
         let _sender = envelope.recover_signer().ok();
 
         // Build EVM tx
-        use alloy_primitives::U256;
+        use alloy_primitives::{B256, U256};
         use revm::context::TxEnv;
-        use revm::database::InMemoryDB;
-        use revm::primitives::{KECCAK_EMPTY, TxKind};
-        use revm::state::AccountInfo;
-        use sentrix_evm::database::parse_sentrix_address;
-        use sentrix_evm::executor::execute_tx;
+        use revm::primitives::TxKind;
+        use revm::state::Bytecode;
+        use sentrix_evm::database::{SentrixEvmDb, parse_sentrix_address};
+        use sentrix_evm::executor::execute_tx_with_state;
         use sentrix_evm::gas::INITIAL_BASE_FEE;
+        use sentrix_evm::writeback::commit_state_to_account_db;
 
         let from_addr =
             parse_sentrix_address(&tx.from_address).unwrap_or(alloy_primitives::Address::ZERO);
@@ -838,20 +838,57 @@ impl Blockchain {
             None => TxKind::Create,
         };
 
-        // Populate InMemoryDB with sender (gas + value) and target if contract
-        let mut in_mem_db = InMemoryDB::default();
-        let sender_balance = self.accounts.get_balance(&tx.from_address);
+        // Build EVM db from CURRENT AccountDB so the EVM sees real balances,
+        // nonces, and contract code pointers — not a fresh InMemoryDB as pre-fix.
+        // from_account_db handles sentri → wei scaling for all accounts.
+        let mut evm_db = SentrixEvmDb::from_account_db(&self.accounts);
         let sender_nonce = self.accounts.get_nonce(&tx.from_address);
-        in_mem_db.insert_account_info(
-            from_addr,
-            AccountInfo {
-                balance: U256::from(sender_balance).saturating_mul(U256::from(10_000_000_000u64)),
-                nonce: sender_nonce.saturating_sub(1), // already incremented by .transfer() above
-                code_hash: KECCAK_EMPTY,
-                account_id: None,
-                code: None,
-            },
-        );
+
+        // For Call txs, pre-load the target contract's bytecode + existing
+        // storage slots. Without this, revm sees an empty-code address and
+        // executes nothing useful. CREATE txs don't need pre-load — code
+        // comes from tx data and gets deployed by revm itself.
+        if let TxKind::Call(target_addr) = tx_kind {
+            let target_str = format!("0x{}", hex::encode(target_addr.as_slice()));
+            if let Some(target_account) = self.accounts.accounts.get(&target_str)
+                && target_account.code_hash != sentrix_primitives::EMPTY_CODE_HASH
+            {
+                let code_hash_hex = hex::encode(target_account.code_hash);
+                if let Some(bytecode) = self.accounts.get_contract_code(&code_hash_hex) {
+                    let code = Bytecode::new_raw(alloy_primitives::Bytes::from(bytecode.clone()));
+                    evm_db.insert_code(B256::from(target_account.code_hash), code);
+                }
+                // Pre-load storage slots whose key starts with "{target_addr}:".
+                // Sorted by slot_hex so the insertion order is deterministic
+                // across validator processes (HashMap iteration otherwise is
+                // non-deterministic; same pattern as init_trie backfill).
+                let prefix = format!("{}:", target_str);
+                let mut slots: Vec<(String, Vec<u8>)> = self
+                    .accounts
+                    .contract_storage
+                    .iter()
+                    .filter(|(k, _)| k.starts_with(&prefix))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                slots.sort_by(|a, b| a.0.cmp(&b.0));
+                for (key, value) in slots {
+                    if let Some(slot_hex) = key.strip_prefix(&prefix)
+                        && let Ok(slot) = U256::from_str_radix(slot_hex, 16)
+                    {
+                        // Left-pad short values with leading zeros to 32 bytes
+                        // (big-endian high bits on the left). Note: normally
+                        // values ARE already 32 bytes because we always store
+                        // them that way in writeback, but defensive for any
+                        // legacy entries or state-imports with short blobs.
+                        let mut val_bytes = [0u8; 32];
+                        let n = value.len().min(32);
+                        val_bytes[32 - n..].copy_from_slice(&value[..n]);
+                        let val = U256::from_be_slice(&val_bytes);
+                        evm_db.insert_storage(target_addr, slot, val);
+                    }
+                }
+            }
+        }
 
         let evm_tx = TxEnv::builder()
             .caller(from_addr)
@@ -864,8 +901,8 @@ impl Blockchain {
             .build()
             .unwrap_or_default();
 
-        match execute_tx(in_mem_db, evm_tx, INITIAL_BASE_FEE, self.chain_id) {
-            Ok(receipt) => {
+        match execute_tx_with_state(evm_db, evm_tx, INITIAL_BASE_FEE, self.chain_id) {
+            Ok((receipt, state)) => {
                 tracing::info!(
                     "EVM tx {}: success={} gas_used={} contract={:?}",
                     &tx.txid[..16.min(tx.txid.len())],
@@ -943,6 +980,24 @@ impl Blockchain {
                             .store_contract_code(&code_hash_hex, receipt.output.clone());
                         self.accounts.set_contract(&addr_str, code_hash);
                     }
+                }
+
+                // ── EVM state writeback (closes Bug #1) ─────────────
+                // On success, commit every touched account's balance,
+                // nonce, storage slots, and (for CREATE) bytecode back
+                // to AccountDB so the next tx / next block sees them.
+                // Skip on revert — EVM spec requires state changes to
+                // be discarded on revert; the gas fee was already
+                // debited by the native Pass-1 .transfer() call above,
+                // so there's nothing else to do.
+                //
+                // The EIP-170 guard above may flip the tx to failed
+                // even for a successful revm receipt — in that case
+                // we skip the writeback too. Check mark AFTER the
+                // EIP-170 block ran so "was marked failed" is
+                // authoritative.
+                if receipt.success && !self.accounts.is_evm_tx_failed(&tx.txid) {
+                    commit_state_to_account_db(&state, &mut self.accounts)?;
                 }
             }
             Err(e) => {
