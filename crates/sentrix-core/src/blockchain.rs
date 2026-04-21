@@ -614,24 +614,23 @@ impl Blockchain {
                 // header. Operators must recover via rsync chain.db from a
                 // healthy peer (whole-trie copy preserves the incremental
                 // shape) instead of state_import + reset.
-                if let Ok(block) = self.latest_block() {
-                    if block.index == height
-                        && let Some(stored_root) = block.state_root
-                        && backfilled_root != stored_root
-                    {
-                        return Err(SentrixError::Internal(format!(
-                            "trie backfill at height {} produced root {} but the \
-                             block header at that height records state_root {}. \
-                             The rebuilt trie disagrees with the canonical chain \
-                             (bug #3). Refusing to start to prevent a silent \
-                             state fork. Recovery: rsync /opt/sentrix/data/chain.db \
-                             from a healthy peer with all validators stopped, \
-                             instead of `sentrix state import` + reset_trie.",
-                            height,
-                            hex::encode(backfilled_root),
-                            hex::encode(stored_root)
-                        )));
-                    }
+                if let Ok(block) = self.latest_block()
+                    && block.index == height
+                    && let Some(stored_root) = block.state_root
+                    && backfilled_root != stored_root
+                {
+                    return Err(SentrixError::Internal(format!(
+                        "trie backfill at height {} produced root {} but the \
+                         block header at that height records state_root {}. \
+                         The rebuilt trie disagrees with the canonical chain \
+                         (bug #3). Refusing to start to prevent a silent \
+                         state fork. Recovery: rsync /opt/sentrix/data/chain.db \
+                         from a healthy peer with all validators stopped, \
+                         instead of `sentrix state import` + reset_trie.",
+                        height,
+                        hex::encode(backfilled_root),
+                        hex::encode(stored_root)
+                    )));
                 }
             }
         }
