@@ -683,6 +683,47 @@ impl Blockchain {
         let root = trie.commit(block_index)?;
         Ok(Some(root))
     }
+
+    /// Periodically reclaim trie storage. Called after every successful block
+    /// commit; only does work when the height is a multiple of TRIE_PRUNE_EVERY.
+    ///
+    /// `keep_versions` historical roots remain walkable; older ones and any
+    /// nodes/values exclusively referenced by them get GC'd.
+    ///
+    /// Pruning failure is logged but never propagated — a failed prune leaves
+    /// extra storage on disk but does not break consensus.
+    pub fn maybe_prune_trie(&self) {
+        const TRIE_PRUNE_EVERY: u64 = 1000;
+        const TRIE_KEEP_VERSIONS: u64 = 1000;
+
+        let height = self.height();
+        if height == 0 || !height.is_multiple_of(TRIE_PRUNE_EVERY) {
+            return;
+        }
+
+        let Some(trie) = self.state_trie.as_ref() else {
+            return;
+        };
+
+        match trie.prune(TRIE_KEEP_VERSIONS) {
+            Ok((roots, nodes)) if roots > 0 || nodes > 0 => {
+                tracing::info!(
+                    "trie maintenance at height {}: retired {} old roots, GC'd {} nodes/values",
+                    height,
+                    roots,
+                    nodes
+                );
+            }
+            Ok(_) => {} // nothing to do
+            Err(e) => {
+                tracing::warn!(
+                    "trie prune at height {} failed: {} (storage will continue to grow until next successful prune)",
+                    height,
+                    e
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
