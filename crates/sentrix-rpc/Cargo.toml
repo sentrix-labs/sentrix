@@ -10,6 +10,7 @@ publish = false
 sentrix-primitives = { path = "../sentrix-primitives" }
 sentrix-core = { path = "../sentrix-core" }
 sentrix-evm = { path = "../sentrix-evm" }
+sentrix-rpc-types = { path = "../sentrix-rpc-types" }
 sentrix-trie = { path = "../sentrix-trie" }
 sentrix-storage = { path = "../sentrix-storage" }
 bincode = "1.3"

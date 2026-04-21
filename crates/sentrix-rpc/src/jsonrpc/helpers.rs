@@ -2,62 +2,19 @@
 // (eth / net / web3 / sentrix). Pulled out of the monolithic
 // `jsonrpc.rs` during the backlog #11 refactor so each namespace file
 // can stay focused on its handlers.
+//
+// Pure hex / address / number conversion helpers moved to the new
+// `sentrix-rpc-types` crate (2026-04-22 split per CRATE_SPLIT_PLAN.md
+// Tier 1). Re-exported here as pub(super) shims so the existing
+// callers in eth.rs / sentrix.rs / net.rs / web3.rs don't need their
+// import paths changed in this PR. A follow-up PR will migrate call
+// sites to `use sentrix_rpc_types::*` directly and delete the shims.
 
 use serde_json::Value;
 
-pub(super) fn to_hex(n: u64) -> String {
-    format!("0x{:x}", n)
-}
-
-pub(super) fn to_hex_u128(n: u128) -> String {
-    format!("0x{:x}", n)
-}
-
-/// M-11: validate a JSON-RPC address parameter before it is used as a
-/// trie/DB lookup key. Accepts exactly `0x` + 40 hex lowercase and
-/// returns the normalised string, or `Err` with an error message suitable
-/// for JSON-RPC -32602 (Invalid params). Prevents oddly-shaped strings
-/// (empty, too-long, non-hex) from reaching the account store where
-/// they are merely a silent miss, wasting compute per malformed request
-/// under adversarial load.
-pub(super) fn normalize_rpc_address(s: &str) -> Result<String, &'static str> {
-    if s.len() != 42 {
-        return Err("address must be 42 chars (0x + 40 hex)");
-    }
-    let lower = s.to_lowercase();
-    if !lower.starts_with("0x") {
-        return Err("address must start with 0x");
-    }
-    if !lower[2..].chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err("address must be lowercase hex after 0x");
-    }
-    Ok(lower)
-}
-
-/// M-11: validate a JSON-RPC 32-byte hash parameter (tx hash, block
-/// hash). Same rationale as `normalize_rpc_address` — keeps malformed
-/// hex out of DB lookups.
-pub(super) fn normalize_rpc_hash(s: &str) -> Result<String, &'static str> {
-    let stripped = s.strip_prefix("0x").unwrap_or(s);
-    if stripped.len() != 64 {
-        return Err("hash must be 32 bytes (64 hex chars)");
-    }
-    if !stripped.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err("hash must be hex");
-    }
-    Ok(stripped.to_lowercase())
-}
-
-pub(super) fn parse_hex_u64(v: &Value) -> Option<u64> {
-    match v {
-        Value::String(s) => {
-            let s = s.trim_start_matches("0x");
-            u64::from_str_radix(s, 16).ok()
-        }
-        Value::Number(n) => n.as_u64(),
-        _ => None,
-    }
-}
+pub(super) use sentrix_rpc_types::{
+    normalize_rpc_address, normalize_rpc_hash, parse_hex_u64, to_hex, to_hex_u128,
+};
 
 pub(super) fn resolve_block_tag(v: Option<&Value>, latest: u64) -> Result<u64, &'static str> {
     match v {
