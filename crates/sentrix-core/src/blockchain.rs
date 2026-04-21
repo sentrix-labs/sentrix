@@ -2079,6 +2079,38 @@ mod tests {
             "error must name the backfill/stored-root mismatch: {msg}"
         );
     }
+
+    /// Cross-validator determinism invariant: two independent chains that
+    /// apply the same block sequence via the incremental path must compute
+    /// bit-identical state_roots at every height. If this ever breaks, any
+    /// source of non-determinism (HashMap iteration order, time-dependent
+    /// values, parallelism reorder, etc.) leaked into the block-apply path
+    /// and peers will fork as soon as they process the offending block.
+    #[test]
+    fn test_two_chains_same_blocks_reach_same_state_root() {
+        let (_dir1, mdbx1) = temp_mdbx();
+        let (_dir2, mdbx2) = temp_mdbx();
+        let mut bc1 = setup_chain();
+        let mut bc2 = setup_chain();
+        bc1.init_trie(Arc::clone(&mdbx1)).unwrap();
+        bc2.init_trie(Arc::clone(&mdbx2)).unwrap();
+
+        for _ in 0..5 {
+            let block = bc1.create_block("validator1").unwrap();
+            bc1.add_block(block.clone()).unwrap();
+            bc2.add_block(block).unwrap();
+        }
+
+        for h in 1u64..=5 {
+            let r1 = bc1.trie_root_at(h).map(hex::encode);
+            let r2 = bc2.trie_root_at(h).map(hex::encode);
+            assert_eq!(
+                r1, r2,
+                "state_root at height {h} must be identical across two validators \
+                 applying the same blocks — if this diverges, consensus is broken"
+            );
+        }
+    }
 }
 // fake addr 0x1234567890abcdef1234567890abcdef12345678
 // fake addr 0x1234567890abcdef1234567890abcdef12345678
