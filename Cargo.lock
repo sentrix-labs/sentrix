@@ -4846,6 +4846,7 @@ dependencies = [
  "alloy-primitives",
  "hex",
  "revm",
+ "sentrix-precompiles",
  "sentrix-primitives",
  "serde",
  "serde_json",
@@ -4886,6 +4887,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber 0.3.23",
  "zeroize",
+]
+
+[[package]]
+name = "sentrix-precompiles"
+version = "2.1.6"
+dependencies = [
+ "alloy-primitives",
 ]
 
 [[package]]

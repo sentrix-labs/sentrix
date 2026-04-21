@@ -8,6 +8,7 @@ repository = "https://github.com/sentrix-labs/sentrix"
 
 [dependencies]
 sentrix-primitives = { path = "../sentrix-primitives" }
+sentrix-precompiles = { path = "../sentrix-precompiles" }
 revm = { version = "37", default-features = false, features = ["std", "serde", "optional_balance_check", "optional_no_base_fee"] }
 alloy-primitives = "1.5"
 hex = "0.4"
