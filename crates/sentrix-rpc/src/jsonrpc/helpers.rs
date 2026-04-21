@@ -164,7 +164,7 @@ pub(super) fn collect_logs(
                 continue;
             }
         }
-        let Ok(log) = bincode::deserialize::<sentrix_evm::StoredLog>(&v) else {
+        let Ok(log) = sentrix_codec::decode::<sentrix_evm::StoredLog>(&v) else {
             continue;
         };
         if log_matches(&log, addrs, topics) {
@@ -199,7 +199,7 @@ pub(super) fn load_logs_for_tx(
         if k.len() < 8 || k[..8] != prefix {
             continue;
         }
-        let Ok(log) = bincode::deserialize::<sentrix_evm::StoredLog>(&v) else {
+        let Ok(log) = sentrix_codec::decode::<sentrix_evm::StoredLog>(&v) else {
             continue;
         };
         if log.tx_hash == target_hash {
