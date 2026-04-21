@@ -7,6 +7,7 @@
 
 mod accounts;
 mod auth;
+mod cache;
 mod chain;
 mod epoch;
 mod ops;
@@ -28,6 +29,7 @@ use accounts::{
 use chain::{chain_info, get_block, get_blocks, validate_chain};
 use epoch::{epoch_current, epoch_history};
 use ops::{START_TIME, get_admin_log, health, metrics, root};
+use cache::cache_control_middleware;
 use ratelimit::{ip_rate_limit_middleware, write_rate_limit_middleware};
 use staking::{get_validators, staking_delegations, staking_unbonding, staking_validators};
 use tokens::{
@@ -235,17 +237,27 @@ pub fn create_router(state: SharedState) -> Router {
         .nest("/explorer", explorer_router(state.clone()))
         // ── Write endpoints (stricter rate limit) ────────────────
         .merge(write_router)
-        .layer(cors)
-        // Global HTTP concurrency limit prevents CPU saturation from concurrent heavy requests (e.g. /chain/validate).
+        // Axum layer order: LAST `.layer()` call is OUTERMOST
+        // (sees request first, response last). We want:
+        //   cors           (outermost — 429/4xx/5xx responses MUST carry
+        //                   access-control-allow-origin or the browser
+        //                   reports CORS blocked instead of rate limit)
+        //   DefaultBodyLimit
+        //   Extension(global_limiter)
+        //   ip_rate_limit_middleware  (rejects 429 before entering the body)
+        //   ConcurrencyLimitLayer
+        //   cache_control_middleware  (inner — sets Cache-Control on 2xx
+        //                              GET responses from the handlers)
+        //   handler
+        .layer(axum::middleware::from_fn(cache_control_middleware))
         .layer(ConcurrencyLimitLayer::new(500))
-        // Per-IP rate limit (60 req/min, defense-in-depth behind nginx)
-        // Layer order: Extension (outer) → rate_limit middleware → concurrency → cors → handler
         .layer(axum::middleware::from_fn(ip_rate_limit_middleware))
         .layer(axum::Extension(global_limiter))
         // Reject request bodies larger than 1 MiB — prevents memory exhaustion from unbounded payloads.
         // Single transactions and JSON-RPC batches are well under this limit; legitimate clients
-        // are never affected.  Without this, an attacker can stream arbitrary bytes until the node OOMs.
+        // are never affected. Without this, an attacker can stream arbitrary bytes until the node OOMs.
         .layer(DefaultBodyLimit::max(1_048_576))
+        .layer(cors)
         .with_state(state)
 }
 
