@@ -1,0 +1,10 @@
+[package]
+name = "sentrix-precompiles"
+version = "2.1.6"
+edition = "2024"
+license = "BUSL-1.1"
+description = "Sentrix-specific EVM precompile addresses (staking, slashing, ...)"
+repository = "https://github.com/sentrix-labs/sentrix"
+
+[dependencies]
+alloy-primitives = "1.5"

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/sentrix-primitives", "crates/sentrix-wallet", "crates/sentrix-trie", "crates/sentrix-staking", "crates/sentrix-evm", "crates/sentrix-bft", "crates/sentrix-codec", "crates/sentrix-core", "crates/sentrix-network", "crates/sentrix-rpc", "crates/sentrix-rpc-types", "crates/sentrix-storage", "bin/sentrix"]
+members = [".", "crates/sentrix-primitives", "crates/sentrix-wallet", "crates/sentrix-trie", "crates/sentrix-staking", "crates/sentrix-evm", "crates/sentrix-bft", "crates/sentrix-codec", "crates/sentrix-core", "crates/sentrix-network", "crates/sentrix-precompiles", "crates/sentrix-rpc", "crates/sentrix-rpc-types", "crates/sentrix-storage", "bin/sentrix"]
 
 [package]
 name = "sentrix"
