@@ -29,7 +29,14 @@ pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) 
         }
         "eth_gasPrice" => Ok(json!(to_hex(1_000_000_000))),
         "eth_estimateGas" => {
-            let call_obj = &params[0];
+            // params[0] must be a call object. Before this check, passing a
+            // non-object (null, string, number) silently defaulted to 21_000
+            // via `Value::Null["data"].as_str() -> None`. That was safe but
+            // ambiguous; caller couldn't tell a malformed param from an empty
+            // calldata. Reject non-object params so the client sees the mistake.
+            let Some(call_obj) = params.get(0).filter(|v| v.is_object()) else {
+                return Err((-32602, "expected call object as first param".into()));
+            };
             let data_hex = call_obj["data"].as_str().unwrap_or("0x");
             if data_hex.len() > 2 {
                 Ok(json!(to_hex(100_000)))
@@ -520,7 +527,10 @@ async fn eth_fee_history(params: &Value, state: &SharedState) -> DispatchResult 
 }
 
 async fn eth_get_code(params: &Value, state: &SharedState) -> DispatchResult {
-    let address = params[0].as_str().unwrap_or("").to_lowercase();
+    let address = match normalize_rpc_address(params[0].as_str().unwrap_or("")) {
+        Ok(a) => a,
+        Err(e) => return Err((-32602, e.into())),
+    };
     let bc = state.read().await;
     if let Some(account) = bc.accounts.accounts.get(&address) {
         if account.is_contract() {
@@ -539,9 +549,19 @@ async fn eth_get_code(params: &Value, state: &SharedState) -> DispatchResult {
 }
 
 async fn eth_get_storage_at(params: &Value, state: &SharedState) -> DispatchResult {
-    let address = params[0].as_str().unwrap_or("").to_lowercase();
+    let address = match normalize_rpc_address(params[0].as_str().unwrap_or("")) {
+        Ok(a) => a,
+        Err(e) => return Err((-32602, e.into())),
+    };
     let slot = params[1].as_str().unwrap_or("0x0");
+    // Storage slot must be valid hex (≤ 64 chars = 32 bytes). Rejecting
+    // junk here keeps the downstream storage lookup from querying with
+    // a malformed key that quietly returns zero.
     let slot_hex = slot.trim_start_matches("0x");
+    if slot_hex.is_empty() || slot_hex.len() > 64 || !slot_hex.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err((-32602, "invalid storage slot (must be hex, ≤ 32 bytes)".into()));
+    }
     let bc = state.read().await;
     if let Some(value) = bc.accounts.get_contract_storage(&address, slot_hex) {
         Ok(json!(format!("0x{}", hex::encode(value))))

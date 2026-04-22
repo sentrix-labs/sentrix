@@ -1304,4 +1304,89 @@ mod tests {
         let pending = reg.get_pending_unbonding("0xdel1");
         assert_eq!(pending.len(), 2);
     }
+
+    /// Invariant: for every validator V, the sum of live delegation-entry
+    /// amounts to V across all delegators equals `validators[V].total_delegated`.
+    ///
+    /// `delegate` / `undelegate` / `redelegate` / `slash` each maintain this by
+    /// construction (checked_add on both sides in delegate, saturating_sub on
+    /// both sides in undelegate, atomic pair in redelegate, proportional in
+    /// slash). This test hammers a random mix of those ops and asserts the
+    /// invariant after every step, so a future refactor that breaks the
+    /// coupling is caught at test time instead of at a mainnet fork.
+    fn assert_delegation_sum_invariant(reg: &StakeRegistry) {
+        use std::collections::HashMap;
+        let mut sum_per_val: HashMap<&str, u128> = HashMap::new();
+        for entries in reg.delegations.values() {
+            for e in entries {
+                *sum_per_val.entry(e.validator.as_str()).or_insert(0) += e.amount as u128;
+            }
+        }
+        for (addr, val) in &reg.validators {
+            let expected = val.total_delegated as u128;
+            let actual = sum_per_val.get(addr.as_str()).copied().unwrap_or(0);
+            assert_eq!(
+                expected, actual,
+                "delegation sum invariant broken for validator {addr}: \
+                 total_delegated = {expected}, actual Σ entries = {actual}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_delegation_sum_invariant_under_random_ops() {
+        // Seed is fixed so the test is reproducible. If this fails in CI the
+        // seed + op-trace can be replayed locally.
+        //
+        // Using a tiny self-rolled LCG instead of pulling in `rand` as a
+        // dev-dep. Quality of randomness doesn't matter here — we just need
+        // cheap reproducible "whichever op next".
+        struct Lcg(u64);
+        impl Lcg {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                self.0 >> 33
+            }
+            fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {
+                &xs[self.next() as usize % xs.len()]
+            }
+        }
+
+        let mut rng = Lcg(0xdeadbeef_cafef00d);
+        let mut reg = new_registry();
+
+        // Seed 4 validators + 6 candidate delegators
+        let vals = ["0xv1", "0xv2", "0xv3", "0xv4"];
+        let dels = ["0xd1", "0xd2", "0xd3", "0xd4", "0xd5", "0xd6"];
+        for v in &vals {
+            register_val(&mut reg, v, MIN_SELF_STAKE);
+        }
+        assert_delegation_sum_invariant(&reg);
+
+        for height in 100u64..600u64 {
+            let op = rng.next() % 4;
+            let del = *rng.pick(&dels);
+            let val = *rng.pick(&vals);
+            // Bounded amounts so we don't overflow u64::MAX in sums but big
+            // enough to hit the non-trivial bookkeeping paths.
+            let amount: u64 = (rng.next() % 10_000 + 1) * 1_000;
+
+            let _ = match op {
+                0 => reg.delegate(del, val, amount, height),
+                1 => reg.undelegate(del, val, amount, height),
+                2 => {
+                    let val_to = *rng.pick(&vals);
+                    reg.redelegate(del, val, val_to, amount, height)
+                }
+                _ => {
+                    let bp: u16 = (rng.next() % 1001) as u16; // 0..=1000 bp
+                    reg.slash(val, bp).map(|_| ())
+                }
+            };
+
+            // Invariant must hold whether the op succeeded (state changed
+            // consistently) or failed (state unchanged).
+            assert_delegation_sum_invariant(&reg);
+        }
+    }
 }
