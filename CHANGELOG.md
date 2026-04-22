@@ -9,6 +9,24 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.8] — 2026-04-22 — Sentrix-style liveness thresholds
+
+Patch release over v2.1.7. Adds exactly one change: retuned the validator liveness-slashing thresholds from Tendermint's demo defaults to Sentrix-style values calibrated for 1-second block time + solo-operator ops. Config-only; no algorithm change.
+
+### Changed
+
+- **consensus(staking): retune liveness thresholds to Sentrix-style values** (`crates/sentrix-staking/src/slashing.rs`). Previous config was Tendermint's reference demo default (100-block window, 50% threshold) which at Sentrix's 1-second block time meant a ~50-second downtime budget before auto-jail — far too tight for realistic operator ops. New values:
+
+  ```
+  LIVENESS_WINDOW        100    → 14_400   (100s  → ~4h      @ 1s)
+  MIN_SIGNED_PER_WINDOW  50     → 4_320    (50%   → 30%)
+  DOWNTIME_SLASH_BP      100    → 10       (1%    → 0.1%)
+  DOWNTIME_JAIL_BLOCKS   200    → 600      (3.3m  → 10m     @ 1s)
+  DOUBLE_SIGN_SLASH_BP   2000             (unchanged, 20%)
+  ```
+
+  Tolerance contract: weekly 10-min deploys absorbed, 30-min emergency recoveries absorbed, 2-hour debugging sessions absorbed, 3-hour outages jailed. **Mainnet impact today: zero** — Pioneer PoA doesn't consult the staking/slashing registry (that's `authority_manager.rs`). Takes effect on Voyager activation. On testnet: active next deploy; should eliminate the auto-jail cascades observed during rolling `fast-deploy` today. PR #215.
+
 ## [2.1.7] — 2026-04-22 — Post-fork hardening (3-way state_root fork follow-up)
 
 Post-mortem release after the 2026-04-21 mainnet 3-way state_root fork. The fork itself was recovered ops-side via frozen-rsync of VPS1 canonical chain.db to VPS2 + VPS3 (see `founder-private/incidents/2026-04-21-mainnet-3way-fork.md`). This release closes the code-level gaps that let the incident develop silently on the v2.1.6 binary after a pre-v2.1.5 `state_import` had already damaged VPS3's trie.
