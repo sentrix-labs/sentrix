@@ -31,6 +31,44 @@ ignore = [
     # unreachable. Remove this ignore together with the GHSA one once
     # libp2p-yamux 0.48+ drops v0.12 compat.
     "RUSTSEC-2026-0097",
+
+    # ── Unmaintained transitive deps (informational advisories) ─────────
+    # 2026-04-22 sweep — these crates are functionally fine today but
+    # upstream has stopped maintaining them. Pinned transitively by our
+    # big dep families (libp2p, revm, arkworks) so we can't unilaterally
+    # replace them. Reviewed + accepted.
+
+    # RUSTSEC-2025-0141 — `bincode 1.3.3` unmaintained. Our own codebase
+    # uses bincode via `sentrix-codec` (v1 API). bincode 2.x has a
+    # breaking API change; migrating is a separate track (follow-up
+    # issue). Transitive pullers include libp2p and sled descendants.
+    "RUSTSEC-2025-0141",
+
+    # RUSTSEC-2026-0105 — `core2 0.4.0` unmaintained AND yanked upstream.
+    # Pulled only by `multihash 0.19.3` → libp2p-core. core2 is a no_std
+    # std::io::Read/Write shim; no unsafe / security surface. Will drop
+    # automatically when multihash 0.20+ releases with core2 removed.
+    "RUSTSEC-2026-0105",
+
+    # RUSTSEC-2024-0388 — `derivative 2.2.0` unmaintained (informational).
+    # Pulled transitively via arkworks ecosystem (ark-relations / ark-ff).
+    # Proc-macro only, compile-time expansion — no runtime code.
+    "RUSTSEC-2024-0388",
+
+    # RUSTSEC-2024-0436 — `paste 1.0.15` unmaintained (informational).
+    # Pulled transitively by too many crates to enumerate (revm, libp2p,
+    # arkworks all use it for name concatenation in proc-macros).
+    # Proc-macro only, compile-time expansion.
+    "RUSTSEC-2024-0436",
+
+    # RUSTSEC-2025-0055 — `tracing-subscriber 0.2.25` ANSI-escape log
+    # poisoning on user-controlled input. Pulled only by `ark-relations
+    # 0.5.1` (arkworks proof system). Our Sentrix binary initializes
+    # tracing-subscriber 0.3.23 (see bin/sentrix/Cargo.toml); the 0.2.25
+    # instance never gets `.init()` called on it, so the vulnerable
+    # formatter path is unreachable at runtime. Drops when ark-relations
+    # migrates to 0.3.x.
+    "RUSTSEC-2025-0055",
 ]
 
 # ── Licenses ────────────────────────────────────────────────
