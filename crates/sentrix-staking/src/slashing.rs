@@ -1,7 +1,27 @@
 // slashing.rs — Liveness tracking + double-sign detection (Voyager Phase 2a)
 //
-// Downtime: missed >50% in 100-block sliding window → 1% slash + 200 blocks jail
+// Downtime: missed >70% in 14_400-block sliding window → 0.1% slash + 600 blocks jail
 // Double-sign: two blocks same height from same validator → 20% slash + permaban
+//
+// 2026-04-22 tuning — Sentrix-style liveness (replaced Tendermint defaults).
+// The previous 100-block / 50% configuration was Tendermint's reference demo
+// default. At Sentrix's 1s block time that gave operators a ~50-second
+// downtime budget before auto-jail — far too tight for realistic ops
+// (kernel upgrades, VPS provider maintenance, fast-deploy rolling
+// restarts all routinely exceed it). Observed symptom: every `fast-deploy
+// testnet` restart rolled the 4 validators through their 3-5s startup,
+// which tripped the liveness threshold within a single deploy and
+// auto-jailed the whole set. Happened 3× today alone.
+//
+// New values are tuned for Sentrix's actual operating profile:
+//  - 1-second block time (faster than Cosmos's 6s, so we need a longer
+//    window to tolerate the same real-time downtime)
+//  - Solo-operator scale (not datacenter HA — occasional human-in-the-loop
+//    outages are normal)
+//  - Target validator count 21 (individual reliability matters)
+//  - Weekly deploy cadence (not quarterly)
+//
+// Rationale for each constant inline below.
 
 use crate::staking::StakeRegistry;
 use sentrix_primitives::{SentrixError, SentrixResult};
@@ -10,11 +30,74 @@ use std::collections::HashMap;
 
 // ── Constants ────────────────────────────────────────────────
 
-pub const LIVENESS_WINDOW: u64 = 100;
-pub const MIN_SIGNED_PER_WINDOW: u64 = 50; // 50%
-pub const DOWNTIME_SLASH_BP: u16 = 100; // 1% in basis points
-pub const DOWNTIME_JAIL_BLOCKS: u64 = 200; // ~10 minutes
-pub const DOUBLE_SIGN_SLASH_BP: u16 = 2000; // 20%
+/// Rolling window for liveness tracking, in blocks.
+///
+/// At 1s block time = ~4 hours. Long enough to absorb normal operational
+/// downtime (a weekly 10-minute deploy is 0.07% of the window; even a
+/// 30-minute emergency recovery is 12.5%). Short enough that a
+/// persistently offline validator still gets jailed within a half-day.
+///
+/// Comparable chains:
+///   - Tendermint default: 100 (≈100s — demo-tight)
+///   - Cosmos Hub:         10_000 (≈16.7h @ 6s block time)
+///   - Osmosis:            30_000 (≈41.7h @ 5s)
+///   - Sei:                10_000 (≈1.1h @ 400ms)
+///   - Sentrix (here):     14_400 (≈4h @ 1s)
+///
+/// Sentrix lands between Sei's tight-on-fast-blocks approach and Cosmos's
+/// generous-long-window approach, scaled for our 1s block cadence.
+pub const LIVENESS_WINDOW: u64 = 14_400;
+
+/// Minimum signed blocks required per window for a validator to stay out
+/// of jail. Expressed as an absolute block count, not a fraction, so the
+/// math stays integer-friendly.
+///
+/// 4_320 / 14_400 = 30% — validator must sign at least 30% of blocks in
+/// any rolling 4-hour window. Translated to downtime tolerance: up to
+/// ~70% of the window (≈2.8 hours) can be missed before jailing. That
+/// covers:
+///   - Weekly 10-minute deploy    →  ~0.07% downtime (absorbed)
+///   - Emergency 30-min recovery  →  12.5% downtime (absorbed)
+///   - Extended 2-hour debugging  →  50% downtime (absorbed)
+///   - Full 3-hour outage in 4h   →  75% downtime (jailed)
+///
+/// Cosmos Hub uses 5% (generous, built for massive validator sets).
+/// We go stricter because Sentrix's 21-validator target means each
+/// individual validator carries proportionally more responsibility —
+/// one flapping validator on a 21-node network is ~5% of producing
+/// capacity lost, which is significant.
+pub const MIN_SIGNED_PER_WINDOW: u64 = 4_320;
+
+/// Stake slashed on a liveness-downtime jail, in basis points.
+///
+/// 10 BP = 0.1% of stake. Gentle-but-not-zero: operators notice (a
+/// self-stake of 15_000 SRX becomes 14_985 SRX) without losing a life-
+/// changing amount. Cosmos Hub uses 1 BP (0.01%) which is symbolic;
+/// we go 10× stricter because individual reliability matters more at
+/// Sentrix's smaller validator count.
+///
+/// Compare to `DOUBLE_SIGN_SLASH_BP` (2000 BP / 20%) for equivocation —
+/// malicious behavior is punished 200× harder than negligence.
+pub const DOWNTIME_SLASH_BP: u16 = 10;
+
+/// Blocks jailed after a liveness failure.
+///
+/// 600 blocks = 10 minutes @ 1s block time. Matches Cosmos Hub's
+/// `downtime_jail_duration`. Long enough that the operator has to
+/// actively notice + investigate + file an unjail tx (can't just
+/// hot-reset and pretend nothing happened). Short enough that a
+/// legitimately-flapping validator recovers quickly after the root
+/// cause is fixed.
+pub const DOWNTIME_JAIL_BLOCKS: u64 = 600;
+
+/// Stake slashed on a proven equivocation (double-sign), in basis points.
+///
+/// 2000 BP = 20%. Unchanged from v2.1.6. Double-signing is provably
+/// malicious (not accidental), so punishment is deliberately harsh.
+/// Matches Cosmos Hub, Osmosis, Sei, and most BFT chains' standard.
+/// Usually followed by tombstone (permanent ban) so the validator
+/// can't re-enter the active set.
+pub const DOUBLE_SIGN_SLASH_BP: u16 = 2000;
 
 // ── Liveness Tracker ─────────────────────────────────────────
 
@@ -294,10 +377,17 @@ mod tests {
 
     // ── LivenessTracker tests ────────────────────────────────
 
+    // ── LivenessTracker tests ────────────────────────────────
+    // Tests use the LIVENESS_WINDOW / MIN_SIGNED_PER_WINDOW constants
+    // so they stay correct if those values are re-tuned. Iteration
+    // count is LIVENESS_WINDOW (= 14_400 currently); each record() is
+    // a ~nanosecond operation, so even the full-window tests finish
+    // under a millisecond.
+
     #[test]
     fn test_liveness_no_downtime() {
         let mut tracker = LivenessTracker::new();
-        for h in 0..100 {
+        for h in 0..LIVENESS_WINDOW {
             tracker.record("0xval1", h, true);
         }
         assert!(!tracker.is_downtime("0xval1"));
@@ -306,9 +396,10 @@ mod tests {
     #[test]
     fn test_liveness_downtime_detected() {
         let mut tracker = LivenessTracker::new();
-        // Sign 49 out of 100 (below 50% threshold)
-        for h in 0..100 {
-            tracker.record("0xval1", h, h < 49);
+        // Sign one below the minimum threshold — should trip downtime.
+        let signed_count = MIN_SIGNED_PER_WINDOW - 1;
+        for h in 0..LIVENESS_WINDOW {
+            tracker.record("0xval1", h, h < signed_count);
         }
         assert!(tracker.is_downtime("0xval1"));
     }
@@ -316,9 +407,9 @@ mod tests {
     #[test]
     fn test_liveness_exactly_threshold() {
         let mut tracker = LivenessTracker::new();
-        // Sign exactly 50 out of 100 (at threshold, should NOT be downtime)
-        for h in 0..100 {
-            tracker.record("0xval1", h, h < 50);
+        // Sign exactly MIN_SIGNED_PER_WINDOW (at threshold, NOT downtime).
+        for h in 0..LIVENESS_WINDOW {
+            tracker.record("0xval1", h, h < MIN_SIGNED_PER_WINDOW);
         }
         assert!(!tracker.is_downtime("0xval1"));
     }
@@ -326,8 +417,9 @@ mod tests {
     #[test]
     fn test_liveness_window_not_full() {
         let mut tracker = LivenessTracker::new();
-        // Only 50 entries, window not full — no downtime even if all missed
-        for h in 0..50 {
+        // Half-window of all-missed — not full yet, no downtime even though every entry is a miss.
+        let half = LIVENESS_WINDOW / 2;
+        for h in 0..half {
             tracker.record("0xval1", h, false);
         }
         assert!(!tracker.is_downtime("0xval1"));
@@ -336,14 +428,14 @@ mod tests {
     #[test]
     fn test_liveness_sliding_window() {
         let mut tracker = LivenessTracker::new();
-        // First 100 blocks: all missed
-        for h in 0..100 {
+        // First full window: all missed — downtime fires.
+        for h in 0..LIVENESS_WINDOW {
             tracker.record("0xval1", h, false);
         }
         assert!(tracker.is_downtime("0xval1"));
 
-        // Next 100 blocks: all signed (window slides)
-        for h in 100..200 {
+        // Next full window: all signed — sliding window replaces old entries, no more downtime.
+        for h in LIVENESS_WINDOW..(LIVENESS_WINDOW * 2) {
             tracker.record("0xval1", h, true);
         }
         assert!(!tracker.is_downtime("0xval1"));
@@ -363,12 +455,29 @@ mod tests {
     #[test]
     fn test_liveness_reset() {
         let mut tracker = LivenessTracker::new();
-        for h in 0..100 {
+        for h in 0..LIVENESS_WINDOW {
             tracker.record("0xval1", h, false);
         }
         assert!(tracker.is_downtime("0xval1"));
         tracker.reset("0xval1");
         assert!(!tracker.is_downtime("0xval1"));
+    }
+
+    /// 2026-04-22 Sentrix-style tuning regression test — 30-min outage
+    /// (1_800 blocks missed at end of window) is within tolerance.
+    #[test]
+    fn test_liveness_tolerates_30min_outage() {
+        let mut tracker = LivenessTracker::new();
+        // First 14_400 - 1_800 = 12_600 blocks signed, last 1_800 missed (30 min offline).
+        let signed_cutoff = LIVENESS_WINDOW - 1_800;
+        for h in 0..LIVENESS_WINDOW {
+            tracker.record("0xval1", h, h < signed_cutoff);
+        }
+        assert!(
+            !tracker.is_downtime("0xval1"),
+            "30-min outage in a 4-hour window must not auto-jail — \
+             that's the realistic recovery window for solo-dev ops"
+        );
     }
 
     #[test]
@@ -461,15 +570,16 @@ mod tests {
         let mut reg = setup_registry();
         let mut engine = SlashingEngine::new();
 
-        // val1 misses everything
-        for h in 0..100 {
+        // val1 misses everything in a FULL window. val2/val3 sign everything.
+        // Need LIVENESS_WINDOW entries to trip the "window-full" guard.
+        for h in 0..LIVENESS_WINDOW {
             engine.liveness.record("0xval1", h, false);
             engine.liveness.record("0xval2", h, true);
             engine.liveness.record("0xval3", h, true);
         }
 
         let active = vec!["0xval1".into(), "0xval2".into(), "0xval3".into()];
-        let slashed = engine.check_liveness(&mut reg, &active, 100);
+        let slashed = engine.check_liveness(&mut reg, &active, LIVENESS_WINDOW);
 
         assert_eq!(slashed.len(), 1);
         assert_eq!(slashed[0].0, "0xval1");
@@ -485,12 +595,12 @@ mod tests {
         // val1 already jailed
         reg.jail("0xval1", 500, 0).unwrap();
 
-        for h in 0..100 {
+        for h in 0..LIVENESS_WINDOW {
             engine.liveness.record("0xval1", h, false);
         }
 
         let active = vec!["0xval1".into()];
-        let slashed = engine.check_liveness(&mut reg, &active, 100);
+        let slashed = engine.check_liveness(&mut reg, &active, LIVENESS_WINDOW);
         assert!(slashed.is_empty()); // skipped because already jailed
     }
 
@@ -556,12 +666,12 @@ mod tests {
         let mut reg = setup_registry();
         let mut engine = SlashingEngine::new();
 
-        // Slash via liveness
-        for h in 0..100 {
+        // Slash via liveness — need full window to trip the window-full guard.
+        for h in 0..LIVENESS_WINDOW {
             engine.liveness.record("0xval1", h, false);
         }
         let active = vec!["0xval1".into()];
-        engine.check_liveness(&mut reg, &active, 100);
+        engine.check_liveness(&mut reg, &active, LIVENESS_WINDOW);
 
         assert!(engine.total_slashed > 0);
         let first_slash = engine.total_slashed;
