@@ -635,6 +635,34 @@ impl Blockchain {
             }
         }
 
+        // Boot-time integrity check — added post-2026-04-21 3-way fork.
+        // The existing checks above catch: (a) missing root entry in
+        // trie_roots, (b) missing root node in trie_nodes, (c) backfill
+        // root ≠ header state_root (bug #3 guard). What they DON'T catch
+        // is an orphan reference BELOW the root — e.g. the root exists
+        // and references a middle-layer node that was deleted by a
+        // pre-v2.1.5 state_import. A validator booting on that broken
+        // DB would produce blocks with `state_root=None` and get rejected
+        // by strict peers — the exact #1e CRITICAL pattern observed in
+        // the 2026-04-21 fork.
+        //
+        // Walk the current root once and refuse to boot past
+        // STATE_ROOT_FORK_HEIGHT if any orphan is found. Below the fork
+        // height the old hash format ignores state_root entirely, so a
+        // broken trie can't cause consensus divergence — warn-only there.
+        if let Err(e) = trie.verify_integrity() {
+            if height >= sentrix_primitives::block::STATE_ROOT_FORK_HEIGHT {
+                return Err(SentrixError::Internal(format!(
+                    "trie integrity check failed at height {height}: {e}"
+                )));
+            }
+            tracing::warn!(
+                "trie integrity warning at height {} (below fork height — allowed): {}",
+                height,
+                e
+            );
+        }
+
         self.state_trie = Some(trie);
         Ok(())
     }

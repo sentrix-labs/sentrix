@@ -438,6 +438,72 @@ impl SentrixTrie {
         Ok(self.cache.storage.load_node(hash)?.is_some())
     }
 
+    /// Walk the current root and verify that every referenced node + value is
+    /// loadable from persistent storage. Returns an error naming the first
+    /// missing reference.
+    ///
+    /// Added post-2026-04-21 mainnet 3-way fork. Root cause of that incident
+    /// was a pre-v2.1.5 `state_import` that left orphan references in the
+    /// trie — the root hash was recorded in `trie_roots` but some subtree
+    /// was missing from `trie_nodes` / `trie_values`. Blocks produced on
+    /// that broken database emitted `state_root=None`, which the stricter
+    /// peers then rejected with CRITICAL #1e — chain fork. This check
+    /// surfaces the same class of damage at boot instead of letting the
+    /// node produce broken blocks.
+    ///
+    /// Cost: walks every reachable node once; for a 256-level binary SMT
+    /// with ~N leaves this is O(N·log₂(keyspace)) MDBX reads ≈ a few hundred
+    /// ms on realistic mainnet state. Run once per boot in init_trie.
+    pub fn verify_integrity(&self) -> SentrixResult<()> {
+        use crate::node::empty_hash;
+        let root = self.root;
+        if root == empty_hash(0) {
+            return Ok(());
+        }
+        self.walk_verify(root, 0)
+    }
+
+    /// Recursive helper for verify_integrity. Visits every reachable node
+    /// exactly once along a unique path (binary SMT has no shared subtrees
+    /// across paths) and confirms each is present in `trie_nodes` and each
+    /// leaf's value is present in `trie_values`.
+    fn walk_verify(&self, hash: NodeHash, depth: usize) -> SentrixResult<()> {
+        use crate::node::empty_hash;
+        if hash == empty_hash(depth.min(256)) {
+            return Ok(());
+        }
+        let node = self.cache.storage.load_node(&hash)?.ok_or_else(|| {
+            SentrixError::Internal(format!(
+                "trie integrity: orphan node reference {} at depth {} \
+                 — the trie references a node that is missing from trie_nodes. \
+                 Chain.db is damaged (historical artifact of a pre-v2.1.5 state_import \
+                 or a crash mid-commit). Recover via rsync of chain.db from a healthy peer.",
+                hex::encode(hash),
+                depth
+            ))
+        })?;
+        match node {
+            TrieNode::Leaf { value_hash, .. } => {
+                if self.cache.storage.load_value(&value_hash)?.is_none() {
+                    return Err(SentrixError::Internal(format!(
+                        "trie integrity: orphan value reference {} from leaf {} at depth {} \
+                         — the trie references a value that is missing from trie_values. \
+                         Same recovery as orphan-node: rsync chain.db from a healthy peer.",
+                        hex::encode(value_hash),
+                        hex::encode(hash),
+                        depth
+                    )));
+                }
+                Ok(())
+            }
+            TrieNode::Internal { left, right, .. } => {
+                self.walk_verify(left, depth + 1)?;
+                self.walk_verify(right, depth + 1)?;
+                Ok(())
+            }
+        }
+    }
+
     /// Prune old trie roots and garbage-collect orphaned nodes.
     ///
     /// Keeps the last `keep_versions` committed roots (default 1000).
@@ -1036,6 +1102,93 @@ mod tests {
         let proof = trie_ref.prove(&key).unwrap();
         assert!(proof.found);
         assert!(proof.verify_membership(&root));
+    }
+
+    // ── Boot-time integrity check (post-2026-04-21 fork follow-up) ──
+
+    #[test]
+    fn test_verify_integrity_empty_trie() {
+        let (_dir, mdbx) = temp_mdbx();
+        let trie = SentrixTrie::open(mdbx, 0).unwrap();
+        // Empty trie is trivially intact — no references to verify.
+        trie.verify_integrity().unwrap();
+    }
+
+    #[test]
+    fn test_verify_integrity_intact_trie() {
+        // Populated trie with several accounts should pass integrity check.
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(mdbx, 0).unwrap();
+        for i in 1u8..=10 {
+            let addr = format!("0x{}", hex::encode([i; 20]));
+            let key = address_to_key(&addr);
+            let val = account_value_bytes(1_000_000 * i as u64, i as u64);
+            trie.insert(&key, &val).unwrap();
+        }
+        trie.verify_integrity().unwrap();
+    }
+
+    #[test]
+    fn test_verify_integrity_detects_orphan_node() {
+        // Simulate pre-v2.1.5 state_import damage: populate a trie, then
+        // manually delete one of its internal nodes. verify_integrity
+        // must surface the orphan reference.
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
+        for i in 1u8..=4 {
+            let addr = format!("0x{}", hex::encode([i; 20]));
+            let key = address_to_key(&addr);
+            trie.insert(&key, &account_value_bytes(1_000 * i as u64, 0)).unwrap();
+        }
+
+        // The root is an Internal node — delete it (or one of its children)
+        // to simulate orphan reference.
+        let root = trie.root;
+        let storage = &trie.cache.storage;
+        storage.delete_node(&root).unwrap();
+
+        let err = trie.verify_integrity().expect_err("must detect missing root node");
+        assert!(
+            format!("{err}").contains("orphan node reference"),
+            "error should name the orphan kind; got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_verify_integrity_detects_orphan_value() {
+        // Simulate: node structure survives but a leaf's value blob is
+        // missing from trie_values. This is what you'd see after a
+        // partial state_import that populated trie_nodes but failed mid-way
+        // through trie_values.
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
+        let addr = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let key = address_to_key(addr);
+        let val = account_value_bytes(777, 0);
+        trie.insert(&key, &val).unwrap();
+
+        // Walk from root to find the single Leaf and delete its value.
+        let mut node_hash = trie.root;
+        let storage = &trie.cache.storage;
+        loop {
+            let node = storage.load_node(&node_hash).unwrap().unwrap();
+            match node {
+                TrieNode::Leaf { value_hash, .. } => {
+                    storage.delete_value(&value_hash).unwrap();
+                    break;
+                }
+                TrieNode::Internal { left, right, .. } => {
+                    // Pick whichever side has a non-empty hash.
+                    node_hash = if left != NULL_HASH { left } else { right };
+                }
+            }
+        }
+
+        let err = trie.verify_integrity().expect_err("must detect missing value");
+        assert!(
+            format!("{err}").contains("orphan value reference"),
+            "error should name the orphan kind; got: {err}"
+        );
     }
 
     /// Clone preserves the original capacity rather than using a hardcoded default.
