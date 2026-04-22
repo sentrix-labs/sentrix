@@ -170,6 +170,21 @@ async fn eth_get_transaction_receipt(params: &Value, state: &SharedState) -> Dis
                 "0x1"
             };
             let (logs, bloom_hex) = load_logs_for_tx(&bc, block_index, &txid);
+            // EVM tx vs native tx: `data` starts with "EVM:" for alloy-decoded
+            // envelopes (see primitives/transaction.rs:198). Sentrix's EVM
+            // txs go through the EIP-1559 base_fee pipeline, so we surface
+            // type 0x2 + effectiveGasPrice = INITIAL_BASE_FEE for those. Native
+            // txs have no EIP-1559 semantics — type 0x0 + effectiveGasPrice 0.
+            let is_evm = tx_data["transaction"]["data"]
+                .as_str()
+                .map(|d| d.starts_with("EVM:"))
+                .unwrap_or(false);
+            let tx_type = if is_evm { "0x2" } else { "0x0" };
+            let effective_gas_price = if is_evm {
+                to_hex(sentrix_evm::gas::INITIAL_BASE_FEE)
+            } else {
+                "0x0".to_string()
+            };
             Ok(json!({
                 "transactionHash": format!("0x{}", txid),
                 "blockNumber": to_hex(block_index),
@@ -177,6 +192,8 @@ async fn eth_get_transaction_receipt(params: &Value, state: &SharedState) -> Dis
                 "status": status,
                 "gasUsed": to_hex(21_000),
                 "cumulativeGasUsed": to_hex(21_000),
+                "effectiveGasPrice": effective_gas_price,
+                "type": tx_type,
                 "logs": logs,
                 "logsBloom": bloom_hex,
             }))
@@ -240,6 +257,15 @@ async fn eth_get_block_receipts(params: &Value, state: &SharedState) -> Dispatch
         let (logs, bloom_hex) = load_logs_for_tx(&bc, block.index, &tx.txid);
         let gas_used: u64 = 21_000;
         cumulative = cumulative.saturating_add(gas_used);
+        // See eth_get_transaction_receipt above for the EVM-vs-native
+        // `type` + `effectiveGasPrice` rationale.
+        let is_evm = tx.is_evm_tx();
+        let tx_type = if is_evm { "0x2" } else { "0x0" };
+        let effective_gas_price = if is_evm {
+            to_hex(sentrix_evm::gas::INITIAL_BASE_FEE)
+        } else {
+            "0x0".to_string()
+        };
         receipts.push(json!({
             "transactionHash": format!("0x{}", tx.txid),
             "transactionIndex": to_hex(idx as u64),
@@ -250,6 +276,8 @@ async fn eth_get_block_receipts(params: &Value, state: &SharedState) -> Dispatch
             "status": status,
             "gasUsed": to_hex(gas_used),
             "cumulativeGasUsed": to_hex(cumulative),
+            "effectiveGasPrice": effective_gas_price,
+            "type": tx_type,
             "logs": logs,
             "logsBloom": bloom_hex,
         }));
