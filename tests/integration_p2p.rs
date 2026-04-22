@@ -9,7 +9,7 @@
 // This test prevents v1.3.0-style regressions where compilation and unit
 // tests pass but runtime P2P networking is broken.
 
-#![allow(clippy::expect_used, clippy::unwrap_used, missing_docs)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, missing_docs)]
 
 use sentrix::core::blockchain::Blockchain;
 use sentrix::network::libp2p_node::{LibP2pNode, make_multiaddr};
@@ -23,6 +23,40 @@ fn make_blockchain() -> SharedBlockchain {
     Arc::new(RwLock::new(Blockchain::new(
         "0x4f3319a747fd564136209cd5d9e7d1a1e4d142be".to_string(),
     )))
+}
+
+/// Bind a node on `127.0.0.1:0` (OS-assigned port) and return the actual
+/// port number the kernel assigned. Replaces the old pattern of hardcoding
+/// ports like 39101-39104 which collided when tests ran in parallel.
+///
+/// Polls `listen_addrs()` every 25ms (up to 2s) until the listener has
+/// bound — the `listen_on` call returns immediately but the swarm task
+/// needs a moment to actually bind the socket.
+async fn bind_random_port(node: &Arc<LibP2pNode>) -> u16 {
+    node.listen_on(make_multiaddr("127.0.0.1", 0).expect("make addr"))
+        .await
+        .expect("listen");
+
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        let addrs = node.listen_addrs().await;
+        for a in addrs {
+            if let Some(port) = multiaddr_tcp_port(&a) {
+                return port;
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+    }
+    panic!("bind_random_port: listener never reported a bound TCP address within 2s");
+}
+
+/// Extract the TCP port component from a multiaddr like `/ip4/127.0.0.1/tcp/39101`.
+fn multiaddr_tcp_port(addr: &libp2p::Multiaddr) -> Option<u16> {
+    use libp2p::multiaddr::Protocol;
+    addr.iter().find_map(|p| match p {
+        Protocol::Tcp(port) => Some(port),
+        _ => None,
+    })
 }
 
 /// Spawn a libp2p node listening on 127.0.0.1 with a random port.
@@ -69,13 +103,9 @@ async fn test_two_nodes_connect_and_verify_peers() {
     let node_a = Arc::new(LibP2pNode::new(kp_a, bc_a, etx_a).expect("node A"));
     let node_b = Arc::new(LibP2pNode::new(kp_b, bc_b, etx_b).expect("node B"));
 
-    // A listens on port 39101
-    let addr_a = make_multiaddr("127.0.0.1", 39101).expect("addr");
-    node_a.listen_on(addr_a).await.expect("A listen");
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-    // B connects to A
-    let dial_addr = make_multiaddr("127.0.0.1", 39101).expect("dial addr");
+    // A listens on an OS-assigned port; B dials whatever port A got.
+    let port_a = bind_random_port(&node_a).await;
+    let dial_addr = make_multiaddr("127.0.0.1", port_a).expect("dial addr");
     node_b.connect_peer(dial_addr).await.expect("B connect");
 
     // Wait for handshake events (up to 5 seconds)
@@ -155,16 +185,10 @@ async fn test_gossipsub_block_propagation() {
     let node_a = Arc::new(LibP2pNode::new(kp_a, bc_a, etx_a).expect("node A"));
     let node_b = Arc::new(LibP2pNode::new(kp_b, bc_b, etx_b).expect("node B"));
 
-    // A listens on port 39102
-    node_a
-        .listen_on(make_multiaddr("127.0.0.1", 39102).unwrap())
-        .await
-        .unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-    // B connects to A
+    // A listens on an OS-assigned port; B dials whatever port A got.
+    let port_a = bind_random_port(&node_a).await;
     node_b
-        .connect_peer(make_multiaddr("127.0.0.1", 39102).unwrap())
+        .connect_peer(make_multiaddr("127.0.0.1", port_a).unwrap())
         .await
         .unwrap();
 
@@ -219,20 +243,14 @@ async fn test_three_node_mesh() {
     let node_b = Arc::new(LibP2pNode::new(kp_b, bc_b, etx_b).expect("B"));
     let node_c = Arc::new(LibP2pNode::new(kp_c, bc_c, etx_c).expect("C"));
 
-    // A listens on 39103
-    node_a
-        .listen_on(make_multiaddr("127.0.0.1", 39103).unwrap())
-        .await
-        .unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-    // B and C connect to A
+    // A listens on an OS-assigned port; B and C both dial whatever port A got.
+    let port_a = bind_random_port(&node_a).await;
     node_b
-        .connect_peer(make_multiaddr("127.0.0.1", 39103).unwrap())
+        .connect_peer(make_multiaddr("127.0.0.1", port_a).unwrap())
         .await
         .unwrap();
     node_c
-        .connect_peer(make_multiaddr("127.0.0.1", 39103).unwrap())
+        .connect_peer(make_multiaddr("127.0.0.1", port_a).unwrap())
         .await
         .unwrap();
 
@@ -299,14 +317,9 @@ async fn test_chain_id_mismatch_rejected() {
     let node_a = Arc::new(LibP2pNode::new(kp_a, bc_a, etx_a).expect("A"));
     let _node_b = Arc::new(LibP2pNode::new(kp_b, bc_b, etx_b).expect("B"));
 
-    node_a
-        .listen_on(make_multiaddr("127.0.0.1", 39104).unwrap())
-        .await
-        .unwrap();
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
+    let port_a = bind_random_port(&node_a).await;
     _node_b
-        .connect_peer(make_multiaddr("127.0.0.1", 39104).unwrap())
+        .connect_peer(make_multiaddr("127.0.0.1", port_a).unwrap())
         .await
         .unwrap();
 
