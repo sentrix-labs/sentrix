@@ -28,22 +28,7 @@ pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) 
             Ok(json!(to_hex(bc.height())))
         }
         "eth_gasPrice" => Ok(json!(to_hex(1_000_000_000))),
-        "eth_estimateGas" => {
-            // params[0] must be a call object. Before this check, passing a
-            // non-object (null, string, number) silently defaulted to 21_000
-            // via `Value::Null["data"].as_str() -> None`. That was safe but
-            // ambiguous; caller couldn't tell a malformed param from an empty
-            // calldata. Reject non-object params so the client sees the mistake.
-            let Some(call_obj) = params.get(0).filter(|v| v.is_object()) else {
-                return Err((-32602, "expected call object as first param".into()));
-            };
-            let data_hex = call_obj["data"].as_str().unwrap_or("0x");
-            if data_hex.len() > 2 {
-                Ok(json!(to_hex(100_000)))
-            } else {
-                Ok(json!(to_hex(21_000)))
-            }
-        }
+        "eth_estimateGas" => eth_estimate_gas(params, state).await,
         "eth_getBalance" => {
             let address = match normalize_rpc_address(params[0].as_str().unwrap_or("")) {
                 Ok(a) => a,
@@ -390,13 +375,51 @@ async fn eth_send_raw_transaction(params: &Value, state: &SharedState) -> Dispat
     }
 }
 
-async fn eth_call(params: &Value, state: &SharedState) -> DispatchResult {
-    // Execute a read-only EVM call without state mutation.
-    // params[0] = {from, to, data, value, gas}
+/// Real gas estimation via EVM dry-run (replaces the pre-2026-04-22 flat
+/// 21_000 / 100_000 heuristic). Returns `receipt.gas_used` from an actual
+/// read-only `execute_call`. For reverting transactions, returns `-32000`
+/// with the revert reason — matches Geth semantics where a reverting tx
+/// has no meaningful gas estimate.
+async fn eth_estimate_gas(params: &Value, state: &SharedState) -> DispatchResult {
+    // params[0] must be a call object. Keep the existing input-validation
+    // rule from the 2026-04-22 hardening (PR #205) — reject non-object.
+    let Some(call_obj) = params.get(0).filter(|v| v.is_object()) else {
+        return Err((-32602, "expected call object as first param".into()));
+    };
+    match run_evm_dry_run(call_obj, state).await {
+        Ok(receipt) => {
+            // Match Geth: reverting tx has no meaningful gas estimate.
+            // Surface the revert with -32000 so wallets show the error
+            // instead of accepting a misleading "success" gas number.
+            if !receipt.success {
+                let reason = if receipt.output.is_empty() {
+                    "execution reverted".to_string()
+                } else {
+                    format!("execution reverted: 0x{}", hex::encode(&receipt.output))
+                };
+                return Err((-32000, reason));
+            }
+            Ok(json!(to_hex(receipt.gas_used)))
+        }
+        Err((code, msg)) => Err((code, msg)),
+    }
+}
+
+/// Build TxEnv + InMemoryDB from a call object and run an EVM dry-run under
+/// `execute_call` (read-only — no state mutation). Shared by `eth_call` and
+/// `eth_estimateGas`: eth_call projects `receipt.output`, eth_estimateGas
+/// projects `receipt.gas_used`.
+///
+/// Factored out 2026-04-22 so `eth_estimateGas` can stop returning the flat
+/// 21_000 / 100_000 heuristic and return real gas from actual execution.
+async fn run_evm_dry_run(
+    call_obj: &Value,
+    state: &SharedState,
+) -> Result<sentrix_evm::executor::TxReceipt, (i32, String)> {
     if !state.read().await.is_evm_active() {
         return Err((-32000, "EVM not active yet".into()));
     }
-    let call_obj = &params[0];
+
     let from_str = call_obj["from"]
         .as_str()
         .unwrap_or("0x0000000000000000000000000000000000000000");
@@ -406,11 +429,10 @@ async fn eth_call(params: &Value, state: &SharedState) -> DispatchResult {
         .unwrap_or("0x")
         .trim_start_matches("0x");
     let data_bytes = hex::decode(data_hex).unwrap_or_default();
-    // P1: cap eth_call gas_limit at BLOCK_GAS_LIMIT. Without the cap a
-    // client can request `u64::MAX` gas and force the EVM to run until
-    // it naturally OOGs, which at current INITIAL_BASE_FEE is a free
-    // long-running compute request against the validator — an
-    // asymmetric DoS: cheap for the client, expensive for the node.
+    // P1: cap at BLOCK_GAS_LIMIT. Without the cap a client can request
+    // `u64::MAX` gas and force the EVM to run until it naturally OOGs,
+    // which at current INITIAL_BASE_FEE is a free long-running compute
+    // request against the validator — asymmetric DoS.
     let gas_limit = call_obj["gas"]
         .as_str()
         .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
@@ -421,7 +443,6 @@ async fn eth_call(params: &Value, state: &SharedState) -> DispatchResult {
     use sentrix_evm::database::parse_sentrix_address;
 
     let chain_id = bc.chain_id;
-
     let from_addr = parse_sentrix_address(from_str).unwrap_or(alloy_primitives::Address::ZERO);
     let to_addr = parse_sentrix_address(to_str);
 
@@ -480,15 +501,31 @@ async fn eth_call(params: &Value, state: &SharedState) -> DispatchResult {
     }
     drop(bc);
 
-    match sentrix_evm::executor::execute_call(in_mem_db, tx, base_fee, chain_id) {
+    sentrix_evm::executor::execute_call(in_mem_db, tx, base_fee, chain_id)
+        .map_err(|e| (-32000, format!("EVM execution failed: {e}")))
+}
+
+async fn eth_call(params: &Value, state: &SharedState) -> DispatchResult {
+    // Execute a read-only EVM call without state mutation.
+    // params[0] = {from, to, data, value, gas}
+    match run_evm_dry_run(&params[0], state).await {
         Ok(receipt) => {
             let output_hex = format!("0x{}", hex::encode(&receipt.output));
             Ok(json!(output_hex))
         }
-        Err(e) => {
-            tracing::warn!("eth_call EVM execution failed: {}", e);
-            // Return empty result instead of error for compatibility
-            Ok(json!("0x"))
+        Err((code, msg)) => {
+            if code == -32000 && msg.starts_with("EVM execution failed") {
+                // Preserve pre-refactor behavior for eth_call specifically:
+                // return "0x" on runtime execution error so dApps that don't
+                // gracefully handle revert errors keep working. eth_estimateGas
+                // surfaces the same error loudly because a reverting tx has no
+                // meaningful gas estimate.
+                tracing::warn!("{msg}");
+                Ok(json!("0x"))
+            } else {
+                // Non-execution errors (EVM not active yet) still surface.
+                Err((code, msg))
+            }
         }
     }
 }
