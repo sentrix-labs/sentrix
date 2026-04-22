@@ -9,6 +9,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.7] — 2026-04-22 — Post-fork hardening (3-way state_root fork follow-up)
+
+Post-mortem release after the 2026-04-21 mainnet 3-way state_root fork. The fork itself was recovered ops-side via frozen-rsync of VPS1 canonical chain.db to VPS2 + VPS3 (see `founder-private/incidents/2026-04-21-mainnet-3way-fork.md`). This release closes the code-level gaps that let the incident develop silently on the v2.1.6 binary after a pre-v2.1.5 `state_import` had already damaged VPS3's trie.
+
+### Fork follow-ups
+
+- **fix(trie): boot-time integrity check — refuse to start on orphan trie references** (`crates/sentrix-trie/src/tree.rs`, `crates/sentrix-core/src/blockchain.rs`). New `SentrixTrie::verify_integrity()` walks the current root and fails fast if any referenced node or leaf-value is missing from `trie_nodes` / `trie_values`. Wired into `Blockchain::init_trie`: hard-fail past `STATE_ROOT_FORK_HEIGHT`, warn-only below. In the 2026-04-21 incident, VPS3's chain.db had a top-level root that existed but referenced an orphaned subtree, so the existing backfill-mismatch and missing-root-node guards didn't fire — it just produced `state_root=None` blocks that strict peers then rejected. PR #206.
+- **fix(cli): guard `sentrix state import` and `sentrix chain reset-trie` against non-genesis chain** (`bin/sentrix/src/main.rs`). Both commands now refuse on `height > 0` with an error pointing at rsync-from-peer as the correct recovery. Env-var escape hatch for devnet (`SENTRIX_ALLOW_STATE_IMPORT_ON_NONZERO_HEIGHT=1` / `SENTRIX_ALLOW_RESET_TRIE_ON_NONZERO_HEIGHT=1`), intentionally ugly names. PR #207.
+- **fix(network): boundary-reject state_root=None blocks past fork height** (`crates/sentrix-network/src/libp2p_node.rs`). New `block_boundary_reject_reason()` helper rejects obvious-bad blocks at network ingest (both RequestResponse and Gossipsub paths) before spawning an apply task. Moves the existing v2.1.5 execution-time state_root guard earlier in the pipeline — same blocks rejected, just without contending for the chain write lock and without the flood of CRITICAL logs that previously filled the journald cap within hours during an incident. PR #208.
+
+### Added
+
+- **feat(rpc): real gas estimation via EVM dry-run** (`crates/sentrix-rpc/src/jsonrpc/eth.rs`). `eth_estimateGas` now delegates to a shared `run_evm_dry_run()` helper that executes the call through `execute_call`, replacing the flat 21_000 / 100_000 heuristic with `receipt.gas_used`. Reverting transactions surface `-32000` with revert-data hex (Geth-compatible — a reverting tx has no meaningful gas estimate). PR #210.
+- **feat(rpc): add `effectiveGasPrice` + `type` to EVM tx receipts** (`crates/sentrix-rpc/src/jsonrpc/eth.rs`). MetaMask / ethers.js / web3.js now see `type = 0x2` for EVM-envelope txs, `0x0` for native, and `effectiveGasPrice = INITIAL_BASE_FEE` for EVM. `gasUsed` remains a flat `21_000` pending a per-tx schema change. PR #211.
+
+### Changed
+
+- **chore(rpc): tighten RPC input validation** (`crates/sentrix-rpc/src/jsonrpc/eth.rs`). `eth_estimateGas` rejects non-object params[0] with `-32602` instead of silently defaulting to `21_000`. `eth_getCode` and `eth_getStorageAt` now call `normalize_rpc_address` like the balance/nonce endpoints, rejecting malformed addresses at ingress. `eth_getStorageAt` also validates the storage slot is valid hex ≤ 32 bytes. PR #205.
+- **test(staking): add delegation-sum invariant proptest** (`crates/sentrix-staking/src/staking.rs`). Runs 500 random delegate/undelegate/redelegate/slash ops against 4 validators × 6 delegators and asserts `Σ per-delegator entries to V == validators[V].total_delegated` after each op. Fixed-seed LCG keeps it reproducible. 74 staking tests pass (was 73). PR #205.
+- **test(p2p): unhardcode integration-test ports via new `listen_addrs()` API** (`crates/sentrix-network/src/libp2p_node.rs`, `tests/integration_p2p.rs`). New `LibP2pNode::listen_addrs()` method + `bind_random_port()` test helper. All 4 P2P integration tests now bind on port 0 (OS-assigned) and dial the reported port, removing the parallel-run port collisions that used to happen on 39101-39104. PR #209.
+
+### Dependencies
+
+- **chore(deps): audit + clean deny.toml skip[] list** (`deny.toml`). Removed 4 stale skip entries whose duplicates have resolved (`bitflags`, `parking_lot`, `parking_lot_core`, `redox_syscall`). Kept 11 entries with per-entry justification comments explaining the upstream split + what needs to happen for the skip to drop. PR #212.
+- **deps: sweep open security advisories (2026-04-22)** (`deny.toml`, `Cargo.lock`). One real vulnerability fixed: `RUSTSEC-2026-0104` (rustls-webpki 0.103.12 CRL parsing panic) bumped to 0.103.13 via `cargo update`. Five informational / unmaintained advisories documented + ignored with per-advisory reachability analysis: `RUSTSEC-2025-0055` (tracing-subscriber 0.2 ANSI — never `.init()`ed), `RUSTSEC-2026-0105` (core2 yanked — no security surface), `RUSTSEC-2025-0141` (bincode unmaintained — sentrix-codec wraps v1 API pending migration), `RUSTSEC-2024-0388` + `RUSTSEC-2024-0436` (derivative / paste — proc-macro only). `cargo deny check` now passes all four sections. PR #213.
+
 ## [2.1.6] — 2026-04-21 — RPC validation hardening
 
 ### Fixed
