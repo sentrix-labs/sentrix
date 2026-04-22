@@ -2416,6 +2416,51 @@ fn cmd_chain_reset_trie() -> anyhow::Result<()> {
     if !storage.has_blockchain() {
         anyhow::bail!("Chain not initialized.");
     }
+
+    // 2026-04-21 mainnet 3-way fork root cause: pre-v2.1.5 `state_import` on
+    // production validators reset the trie to empty and re-populated it from
+    // the imported account set. The backfilled trie produced a state_root
+    // that disagreed with peers whose trie was built incrementally from
+    // genesis — silent fork. v2.1.5 added a boot-time backfill-vs-header
+    // guard, and PR #206 added a full trie-reachability check, but the
+    // cleanest protection is to refuse reset-trie on a production chain
+    // in the first place. The rsync-from-peer recovery preserves the
+    // incremental trie shape and is the canonical path for mainnet.
+    let height = storage
+        .load_height()
+        .map_err(|e| anyhow::anyhow!("reading chain height: {e}"))?;
+    if height > 0 {
+        // The env-var escape hatch is checked INSIDE this branch — a prior
+        // draft of this guard checked it *after* `bail!` which meant the
+        // override was dead code. Keep the check here and nowhere else.
+        let override_set = std::env::var("SENTRIX_ALLOW_RESET_TRIE_ON_NONZERO_HEIGHT")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if !override_set {
+            anyhow::bail!(
+                "Refusing reset-trie on a chain at height {height} > 0.\n\
+                 This command wipes trie_nodes/trie_values/trie_roots and rebuilds \
+                 from AccountDB on next boot. On a chain past genesis the rebuilt \
+                 trie CAN differ from peers' incrementally-built tries (see the \
+                 2026-04-21 3-way fork incident for what that looks like in prod).\n\
+                 \n\
+                 Correct recoveries for a damaged trie on a non-genesis chain:\n\
+                 1. Stop this node.\n\
+                 2. rsync /opt/sentrix/data/chain.db from a healthy peer (all validators stopped).\n\
+                 3. Restart. The boot-time integrity check will confirm the copy is intact.\n\
+                 \n\
+                 If you REALLY need reset-trie on a non-genesis chain (devnet / \
+                 isolated testing only), set `SENTRIX_ALLOW_RESET_TRIE_ON_NONZERO_HEIGHT=1` \
+                 in your environment. This flag does not exist on release builds \
+                 that operators should be using."
+            );
+        }
+        tracing::warn!(
+            "reset-trie proceeding on non-zero height (h={height}) via env override — \
+             you are on your own; fork is very likely on a shared chain"
+        );
+    }
+
     storage.reset_trie()?;
     println!(
         "Trie state cleared. Start the node normally — it will rebuild the trie from AccountDB."
@@ -2460,6 +2505,51 @@ fn cmd_state_import(input: &str, force: bool) -> anyhow::Result<()> {
     Blockchain::verify_snapshot(&snapshot)?;
 
     let storage = Storage::open(&get_db_path())?;
+
+    // 2026-04-21 mainnet 3-way fork root cause: pre-v2.1.5 `state_import` on
+    // production validators re-populated the account set without rebuilding
+    // the trie identically to peers'. The v2.1.5 trie-reset-on-import fix
+    // + v2.1.6 strict state_root enforcement + PR #206 boot-time integrity
+    // check now catch the damage, but the safest contract is: never allow
+    // state_import on a non-genesis chain at all. On mainnet / an existing
+    // network, the right recovery is rsync-from-peer (preserves incremental
+    // trie shape, matches peers bit-for-bit). state_import is only correct
+    // for fresh genesis bootstrapping or isolated devnet testing.
+    let current_height = storage
+        .load_height()
+        .map_err(|e| anyhow::anyhow!("reading chain height: {e}"))?;
+    if current_height > 0 {
+        // Env override check lives INSIDE this branch. A prior draft ordered
+        // `bail!` first and the override after, making the override dead code.
+        let override_set = std::env::var("SENTRIX_ALLOW_STATE_IMPORT_ON_NONZERO_HEIGHT")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if !override_set {
+            anyhow::bail!(
+                "Refusing state import on a chain at height {current_height} > 0.\n\
+                 This command wipes and rebuilds AccountDB from the snapshot, \
+                 then resets the trie so init_trie rebuilds it on next boot. On \
+                 a chain past genesis that rebuild CAN produce a state_root that \
+                 disagrees with peers who built their trie incrementally block by \
+                 block (see the 2026-04-21 3-way fork incident for what that \
+                 looks like — took ~30h to recover).\n\
+                 \n\
+                 Correct recoveries on a non-genesis chain:\n\
+                 1. Stop this node.\n\
+                 2. rsync /opt/sentrix/data/chain.db from a healthy peer (all validators stopped).\n\
+                 3. Restart. Boot-time integrity check confirms the copy is intact.\n\
+                 \n\
+                 If you really need state_import on a non-genesis chain (isolated \
+                 devnet / one-off testing only), set `SENTRIX_ALLOW_STATE_IMPORT_ON_NONZERO_HEIGHT=1` \
+                 in your environment. There is no supported use of this flag on a shared chain."
+            );
+        }
+        tracing::warn!(
+            "state import proceeding on non-zero height (h={current_height}) via env override — \
+             fork is very likely on a shared chain"
+        );
+    }
+
     let mut bc = storage
         .load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
