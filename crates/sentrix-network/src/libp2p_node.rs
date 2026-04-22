@@ -35,7 +35,7 @@ use crate::behaviour::{
     SentrixRequest, SentrixResponse, TXS_TOPIC,
 };
 use crate::node::{NodeEvent, SharedBlockchain};
-use sentrix_primitives::block::Block;
+use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::transaction::Transaction;
 
@@ -652,6 +652,21 @@ async fn on_swarm_event(
             if topic == BLOCKS_TOPIC {
                 match bincode::deserialize::<GossipBlock>(&message.data) {
                     Ok(gossip) => {
+                        // Mirror the boundary-reject the RequestResponse path
+                        // uses — reject obvious-bad blocks before spawning an
+                        // apply task. See `block_boundary_reject_reason` for
+                        // the 2026-04-21 state_root=None fork rationale.
+                        if let Some(reason) =
+                            block_boundary_reject_reason(&gossip.block, our_chain_id)
+                        {
+                            tracing::warn!(
+                                "gossip: dropping block {} from {}: {}",
+                                gossip.block.index,
+                                propagation_source,
+                                reason
+                            );
+                            return;
+                        }
                         let bc = blockchain.clone();
                         let etx = event_tx.clone();
                         let peer = propagation_source;
@@ -883,24 +898,23 @@ async fn on_inbound_request(
         }
 
         // ── NewBlock — apply to chain (spawned to avoid blocking swarm) ──
-        // H-01: fast-reject cross-chain blocks at the network boundary.
-        // The transaction-level `tx.validate(.., chain_id)` inside add_block
-        // still catches this downstream, but rejecting up front avoids
-        // acquiring the chain write lock and spawning a doomed task.
+        // Fast-reject at the network boundary: H-01 cross-chain + 2026-04-21
+        // state_root=None. The transaction-level validate() / execution-time
+        // state_root guard still catch these downstream, but rejecting up
+        // front avoids acquiring the chain write lock and spawning a doomed
+        // task, and it emits ONE clean WARN at ingest instead of a flood of
+        // execution-path errors across every peer.
         SentrixRequest::NewBlock { block } => {
             let _ = swarm
                 .behaviour_mut()
                 .rr
                 .send_response(channel, SentrixResponse::Ack);
-            if let Some(tx) = block.transactions.iter().find(|t| !t.is_coinbase())
-                && tx.chain_id != our_chain_id
-            {
+            if let Some(reason) = block_boundary_reject_reason(&block, our_chain_id) {
                 tracing::warn!(
-                    "libp2p: dropping block {} from {}: chain_id mismatch ({} vs {})",
+                    "libp2p: dropping block {} from {}: {}",
                     block.index,
                     peer,
-                    tx.chain_id,
-                    our_chain_id
+                    reason
                 );
                 return;
             }
@@ -1094,6 +1108,47 @@ async fn is_active_bft_signer(blockchain: &SharedBlockchain, addr: &str) -> bool
     bc.authority.is_active_validator(addr)
 }
 
+/// Fast-reject a block at the network boundary if it fails cheap sanity
+/// checks that don't need the chain write lock. Returns `Some(reason)` if the
+/// block should be dropped on the floor, `None` if it's worth forwarding to
+/// `add_block_from_peer`.
+///
+/// Cheap checks only — expensive ones (signature, state-root math, trie
+/// apply) still run inside `add_block_from_peer` under the write lock.
+/// The purpose here is to kill the obvious-bad blocks before they
+/// contend for the lock or spawn a doomed apply task.
+///
+/// Added 2026-04-22 after the 3-way state_root fork: a validator running on
+/// a damaged chain.db was producing blocks with `state_root=None` above
+/// `STATE_ROOT_FORK_HEIGHT`, and peers were accepting them into the ingest
+/// pipeline before the execution-time guard caught and rejected them. With
+/// this check, bad blocks are rejected *before* propagation/apply so the
+/// signal reaches operators ~instantly instead of waiting for an execution
+/// failure that may be hidden by log noise.
+fn block_boundary_reject_reason(block: &Block, our_chain_id: u64) -> Option<&'static str> {
+    // H-01: cross-chain block. find the first non-coinbase tx and check its
+    // chain_id. (If every tx is coinbase, skip this check — coinbase has
+    // no chain_id-bound semantics.)
+    if let Some(tx) = block.transactions.iter().find(|t| !t.is_coinbase())
+        && tx.chain_id != our_chain_id
+    {
+        return Some("chain_id mismatch");
+    }
+
+    // 2026-04-21 3-way fork guard: past STATE_ROOT_FORK_HEIGHT, every valid
+    // block must carry a state_root; missing = producer's trie is broken.
+    // The execution-time guard in block_executor.rs also catches this, but
+    // gating at the network boundary means we never spend a write lock or
+    // apply-task on the bad block — and, more importantly, we don't log it
+    // at ERROR from every peer's execution path. One clean WARN at ingest
+    // is easier to spot than a flood of mismatches.
+    if block.index >= STATE_ROOT_FORK_HEIGHT && block.state_root.is_none() {
+        return Some("missing state_root past STATE_ROOT_FORK_HEIGHT (sender's trie is broken)");
+    }
+
+    None
+}
+
 // ── Inbound response handler ─────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -1226,6 +1281,59 @@ mod tests {
     fn test_make_multiaddr_invalid_ip_fails() {
         let result = make_multiaddr("not_an_ip", 30303);
         assert!(result.is_err(), "invalid IP should fail");
+    }
+
+    // ── block_boundary_reject_reason ─────────────────────
+    // 2026-04-22 fork follow-up tests.
+
+    fn make_test_block(index: u64, state_root: Option<[u8; 32]>) -> Block {
+        Block {
+            index,
+            timestamp: 1_700_000_000,
+            transactions: vec![],
+            previous_hash: "0".to_string(),
+            hash: "h".to_string(),
+            merkle_root: "m".to_string(),
+            validator: "v".to_string(),
+            state_root,
+            round: 0,
+            justification: None,
+        }
+    }
+
+    #[test]
+    fn test_block_boundary_valid_above_fork_with_state_root() {
+        let block = make_test_block(STATE_ROOT_FORK_HEIGHT + 1, Some([0u8; 32]));
+        assert_eq!(block_boundary_reject_reason(&block, 7119), None);
+    }
+
+    #[test]
+    fn test_block_boundary_rejects_missing_state_root_above_fork() {
+        let block = make_test_block(STATE_ROOT_FORK_HEIGHT + 1, None);
+        let reason = block_boundary_reject_reason(&block, 7119);
+        assert!(reason.is_some(), "must reject above fork when state_root None");
+        assert!(
+            reason.unwrap().contains("state_root"),
+            "reason should mention state_root; got: {:?}",
+            reason
+        );
+    }
+
+    #[test]
+    fn test_block_boundary_allows_missing_state_root_below_fork() {
+        // Below fork height, state_root=None is the old hash format — valid.
+        let block = make_test_block(STATE_ROOT_FORK_HEIGHT - 1, None);
+        assert_eq!(block_boundary_reject_reason(&block, 7119), None);
+    }
+
+    #[test]
+    fn test_block_boundary_at_exact_fork_height_requires_state_root() {
+        // Boundary case: fork height itself requires state_root.
+        let block = make_test_block(STATE_ROOT_FORK_HEIGHT, None);
+        assert!(
+            block_boundary_reject_reason(&block, 7119).is_some(),
+            "fork-height block with None state_root must reject"
+        );
     }
 
     // ── LibP2pNode creation ──────────────────────────────
