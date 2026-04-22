@@ -67,25 +67,41 @@ highlight = "all"
 # Hard-ban unsafe/legacy crypto
 deny = []
 
+# Each entry must carry a one-line WHY — if the underlying duplicate resolves
+# upstream, we want to notice (via a re-surfaced warning) and drop the skip.
+# Audit 2026-04-22: removed 4 stale entries whose duplicates had resolved
+# (bitflags — single version now; parking_lot, parking_lot_core, redox_syscall —
+# not in the tree anymore). Kept r-efi and windows-sys after cargo-deny
+# confirmed they're still duplicated.
 skip = [
-    # secp256k1 and libp2p bring in different versions of common crates
-    { name = "bitflags" },
-    { name = "getrandom" },   # libp2p pulls in 0.2, 0.3, 0.4 transitively
-    # libp2p transitive duplicates
+    # libp2p transitive ecosystem pulls 0.2/0.3/0.4. Drops once libp2p
+    # unifies on 0.3+ across its tree.
+    { name = "getrandom" },
+    # libp2p uses 0.2, aes-gcm 0.10 pulls 0.3. Crypto-ecosystem split.
     { name = "cpufeatures" },
-    { name = "parking_lot" },
-    { name = "parking_lot_core" },
-    { name = "r-efi" },
+    # rand/rand_chacha/rand_core ecosystem split: crypto crates (pbkdf2 0.12,
+    # argon2 0.5, aes-gcm 0.10) still on rand 0.8; libp2p + revm on rand 0.9+.
     { name = "rand" },
     { name = "rand_chacha" },
     { name = "rand_core" },
-    { name = "redox_syscall" },
-
+    # r-efi 5.3.0 held by one of libp2p-tcp's deps, 6.0.0 by another.
+    # Tiny crate, no security surface — clears when libp2p unifies.
+    { name = "r-efi" },
+    # thiserror 1.x held by older deps, 2.x held by newer ones. Both safe.
     { name = "thiserror" },
     { name = "thiserror-impl" },
+    # axum 0.8 → tower 0.5, tower-http 0.6 → tower 0.4. Transitive via axum stack.
     { name = "tower" },
+    # libp2p transitive; 0.7 + 0.8 coexist until libp2p unifies.
     { name = "unsigned-varint" },
+    # windows-sys: 0.52, 0.60, 0.61 all in-tree via Windows-only deps that
+    # haven't aligned yet. No runtime impact on Linux validators; still
+    # warnings-worth-watching if they ever reduce to a single version.
     { name = "windows-sys" },
+    # libp2p-yamux 0.47 pulls both 0.12 + 0.13 unconditionally. The 0.12
+    # decoder is never wired to a live socket (`Config::default()` returns
+    # the 0.13 variant) — already covered by RUSTSEC-2026-0097 +
+    # GHSA-vxx9-2994-q338 ignores. Drops when libp2p-yamux 0.48 ships.
     { name = "yamux" },
 ]
 
