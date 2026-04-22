@@ -66,6 +66,10 @@ enum SwarmCommand {
     /// Trigger a Kademlia bootstrap (random walk).
     KadBootstrap,
     GetPeerCount(tokio::sync::oneshot::Sender<usize>),
+    /// Query the swarm's current listen addresses. Useful for tests that
+    /// bind on port 0 (OS-assigned) and need the actual port back, and
+    /// for ops who want to know the node's externally-reachable addrs.
+    GetListenAddrs(tokio::sync::oneshot::Sender<Vec<Multiaddr>>),
     /// Re-dial bootstrap peers that are no longer connected.
     ReconnectPeers(Vec<Multiaddr>),
     /// Trigger an out-of-band block sync from the first verified peer.
@@ -219,6 +223,28 @@ impl LibP2pNode {
             rx.await.unwrap_or(0)
         } else {
             0
+        }
+    }
+
+    /// Returns the swarm's current listen addresses (after bind completes).
+    ///
+    /// Useful for:
+    /// - Tests that bind on port 0 (OS-assigned) and need the actual port
+    ///   back for peer-dialing instead of hardcoding a fragile port number.
+    /// - Ops tooling that wants to know what the node is reachable on.
+    ///
+    /// Returns an empty Vec if the swarm task has exited.
+    pub async fn listen_addrs(&self) -> Vec<Multiaddr> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self
+            .cmd_tx
+            .send(SwarmCommand::GetListenAddrs(tx))
+            .await
+            .is_ok()
+        {
+            rx.await.unwrap_or_default()
+        } else {
+            Vec::new()
         }
     }
 }
@@ -413,6 +439,10 @@ async fn run_swarm(
                     }
                     Some(SwarmCommand::GetPeerCount(reply)) => {
                         let _ = reply.send(verified_peers.len());
+                    }
+                    Some(SwarmCommand::GetListenAddrs(reply)) => {
+                        let addrs: Vec<Multiaddr> = swarm.listeners().cloned().collect();
+                        let _ = reply.send(addrs);
                     }
                     Some(SwarmCommand::ReconnectPeers(addrs)) => {
                         for addr in addrs {
