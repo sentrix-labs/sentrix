@@ -749,17 +749,27 @@ impl Blockchain {
                         // Received block: verify peer's state_root matches ours (V7-C-01).
                         // State root mismatch is fatal — reject the block to prevent accepting a diverged chain state
                         if received_root != computed_root {
+                            let block_index = last.index;
                             tracing::error!(
                                 "CRITICAL #1e: state_root mismatch at block {} — received {} \
                                  vs computed {}. Local trie and peer's trie disagree on the \
                                  post-block state. Rejecting.",
-                                last.index,
+                                block_index,
                                 hex::encode(received_root),
                                 hex::encode(computed_root),
                             );
+                            // 2026-04-23 divergence rate-alarm: per-event ERROR
+                            // line above is truthful but gets lost in log noise
+                            // during a real divergence (~1/s). Record the
+                            // rejection in the rolling tracker, which emits a
+                            // LOUD rate-limited alarm pointing at the rsync
+                            // recovery playbook when the rate crosses threshold.
+                            // See `DivergenceTracker` in blockchain.rs for the
+                            // full rationale.
+                            self.divergence_tracker.record_rejection(block_index);
                             return Err(SentrixError::ChainValidationFailed(format!(
                                 "state_root mismatch at block {}: received {}, computed {}",
-                                last.index,
+                                block_index,
                                 hex::encode(received_root),
                                 hex::encode(computed_root),
                             )));
