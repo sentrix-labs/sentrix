@@ -577,6 +577,31 @@ impl SentrixTrie {
     pub fn reset_to_empty(&mut self) {
         self.root = empty_hash(0);
     }
+
+    /// Force the in-memory `root` pointer to `target_root` without
+    /// touching persistent storage. Intended for Pass-2 rollback in
+    /// block_executor: if a block's apply() fails partway through
+    /// `update_trie_for_block`, the caller captures the current
+    /// `root_hash()` BEFORE mutating and, on error, uses this method
+    /// to restore the trie's view to pre-block state.
+    ///
+    /// Nodes written by the failed block remain in MDBX storage as
+    /// orphans — unreachable from any committed root. The next
+    /// scheduled `prune(keep_versions)` at a height multiple of
+    /// TRIE_PRUNE_EVERY (1000 by default) garbage-collects them.
+    ///
+    /// Unlike `reset_to_empty`, this is NON-DESTRUCTIVE for the
+    /// existing committed state — it just re-points `self.root` at a
+    /// known-good root that the storage already contains.
+    ///
+    /// Caller must ensure `target_root` is reachable in storage
+    /// (typically: the current root before any mutations happened,
+    /// or a root loaded via `root_at_version`). Passing a fabricated
+    /// hash here will produce a trie that can't be walked — `insert`
+    /// will fail with "missing node" on the next call.
+    pub fn set_root(&mut self, target_root: NodeHash) {
+        self.root = target_root;
+    }
 }
 
 // ── Trait impls ──────────────────────────────────────────────
@@ -1189,6 +1214,66 @@ mod tests {
             format!("{err}").contains("orphan value reference"),
             "error should name the orphan kind; got: {err}"
         );
+    }
+
+    /// Regression for the 2026-04-24 trie-rollback-on-Pass2-failure fix.
+    /// Previously the Blockchain's Pass-2 error path restored `accounts`
+    /// but not `state_trie`, leaving the in-memory root pointing at a
+    /// half-updated state. `set_root` is the hook for block_executor to
+    /// rewind. This test pins the observable contract: after set_root,
+    /// `get` returns the value that was committed at the target root
+    /// (not the half-applied overlay that came after).
+    #[test]
+    fn test_set_root_rewinds_to_known_committed_root() {
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
+
+        // Commit initial state: k_a = "one"
+        let k_a = [1u8; 32];
+        let v_a_1 = b"one".to_vec();
+        trie.insert(&k_a, &v_a_1).unwrap();
+        let committed_root = trie.commit(1).unwrap();
+
+        // Simulate a mid-block mutation that we later want to abort:
+        // overwrite k_a to "two", then insert k_b. No commit yet.
+        let v_a_2 = b"two".to_vec();
+        let k_b = [2u8; 32];
+        let v_b = b"other".to_vec();
+        trie.insert(&k_a, &v_a_2).unwrap();
+        trie.insert(&k_b, &v_b).unwrap();
+
+        // Sanity: before rewind, trie reflects the overlay.
+        assert_eq!(trie.get(&k_a).unwrap(), Some(v_a_2));
+        assert_eq!(trie.get(&k_b).unwrap(), Some(v_b));
+
+        // Rewind to the committed root (what block_executor does on
+        // Pass-2 failure).
+        trie.set_root(committed_root);
+
+        // After rewind: k_a is back to "one", k_b is gone (it was only
+        // in the uncommitted overlay).
+        assert_eq!(
+            trie.get(&k_a).unwrap(),
+            Some(v_a_1),
+            "set_root must restore the value that was committed at the target root"
+        );
+        assert_eq!(
+            trie.get(&k_b).unwrap(),
+            None,
+            "keys inserted after the target commit must not be visible after rewind"
+        );
+
+        // And we can keep working: inserting + committing at a higher
+        // version builds cleanly on the restored root.
+        let k_c = [3u8; 32];
+        trie.insert(&k_c, b"post_rewind").unwrap();
+        let new_root = trie.commit(2).unwrap();
+        assert_ne!(new_root, committed_root);
+        assert_eq!(trie.get(&k_c).unwrap(), Some(b"post_rewind".to_vec()));
+        // k_a still the original; k_b still absent — the uncommitted
+        // overlay from the aborted "block" never came back.
+        assert_eq!(trie.get(&k_a).unwrap(), Some(b"one".to_vec()));
+        assert_eq!(trie.get(&k_b).unwrap(), None);
     }
 
     /// Clone preserves the original capacity rather than using a hardcoded default.
