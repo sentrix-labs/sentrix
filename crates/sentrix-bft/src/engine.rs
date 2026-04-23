@@ -373,6 +373,28 @@ impl BftEngine {
             return BftAction::Wait; // wrong proposer, ignore
         }
 
+        // V3 defense-in-depth: even if `weighted_proposer` returns this
+        // address (active_set order matched), refuse the proposal if the
+        // validator is currently jailed or tombstoned. Normally
+        // `update_active_set` is called right after jail/slash/unjail/
+        // tombstone so `active_set` shouldn't contain them — but a race
+        // between "apply slash" and "next proposal arrives" could leave
+        // a stale view. This check is cheap (single HashMap lookup) and
+        // makes the rule invariant-by-construction: a jailed validator
+        // cannot drive the protocol forward regardless of active_set
+        // freshness.
+        if let Some(v) = stake_registry.get_validator(proposer) {
+            if v.is_jailed || v.is_tombstoned {
+                return BftAction::Wait;
+            }
+        } else {
+            // Proposer not in registry at all — also reject. This is a
+            // separate pathology (probably a removed validator still
+            // sending stale messages) but the safe answer is the same:
+            // don't accept the proposal.
+            return BftAction::Wait;
+        }
+
         self.accept_proposal(block_hash)
     }
 
@@ -1582,6 +1604,67 @@ mod tests {
             matches!(action, BftAction::BroadcastPrevote(ref p) if p.round == 1),
             "legacy path should catch up to peer_round - 1, got {:?}",
             action,
+        );
+    }
+
+    /// V3 regression: `on_proposal` must reject a proposal whose
+    /// proposer address is currently jailed, even if `weighted_proposer`
+    /// happens to return that address (e.g. stale active_set). Before
+    /// the fix, the only gate was "expected == proposer"; nothing
+    /// cross-referenced the jail flag, so a jailed validator could
+    /// push a block through purely by being in the right rotation slot.
+    ///
+    /// Race scenario being guarded: slashing applies → jail() sets
+    /// is_jailed + calls update_active_set, but a proposal already in
+    /// flight from the now-jailed validator arrives before the next
+    /// height boundary. The BFT engine's view of active_set may be a
+    /// snapshot from before the jail; the defense-in-depth check
+    /// ensures the proposal is still refused.
+    #[test]
+    fn test_jailed_proposer_rejected_at_on_proposal() {
+        let (mut engine, mut reg) = setup();
+        // Pick the proposer for (height=100, round=0) — that's what
+        // setup() initializes the engine with.
+        let proposer = reg.weighted_proposer(100, 0).expect("active_set not empty");
+
+        // Simulate the race: active_set still contains the proposer
+        // (engine hasn't been told about the jail yet), but the
+        // StakeRegistry has is_jailed=true set on them.
+        reg.validators
+            .get_mut(&proposer)
+            .expect("proposer registered")
+            .is_jailed = true;
+        // Do NOT call reg.update_active_set() — this simulates the
+        // stale-view race. The jailed validator is still in active_set.
+        assert!(
+            reg.active_set.contains(&proposer),
+            "precondition: active_set still includes jailed proposer"
+        );
+
+        let action = engine.on_proposal("blockhash_abc", &proposer, &reg);
+        assert!(
+            matches!(action, BftAction::Wait),
+            "jailed proposer's proposal must be Wait (rejected), got {:?}",
+            action
+        );
+    }
+
+    /// V3 regression: proposer address not in the stake registry at all
+    /// (e.g. a removed validator replaying an old gossip message) is
+    /// also rejected.
+    #[test]
+    fn test_unregistered_proposer_rejected_at_on_proposal() {
+        let (mut engine, reg) = setup();
+        // Force active_set to include an unregistered address, then
+        // call on_proposal with that. This mirrors the "removed
+        // validator still in active_set" edge case.
+        let mut reg = reg;
+        reg.active_set.insert(0, "0xdeadbeef".to_string());
+        let action = engine.on_proposal("blockhash_abc", "0xdeadbeef", &reg);
+        assert!(
+            matches!(action, BftAction::Wait),
+            "unregistered proposer must be Wait, got {:?}",
+            action
         );
     }
 }

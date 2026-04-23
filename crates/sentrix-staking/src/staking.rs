@@ -493,6 +493,11 @@ impl StakeRegistry {
             }
         }
 
+        // V3: slashing may have pushed self_stake below MIN_SELF_STAKE,
+        // which makes `is_active_eligible()` false. Refresh active_set so
+        // the now-ineligible validator is evicted immediately.
+        self.update_active_set();
+
         Ok(slash_amount)
     }
 
@@ -508,6 +513,10 @@ impl StakeRegistry {
             .ok_or_else(|| SentrixError::InvalidTransaction("validator not found".into()))?;
         val.is_jailed = true;
         val.jail_until = current_height.saturating_add(duration);
+        // V3: refresh active_set so the jailed validator is evicted from
+        // proposer rotation immediately. Without this, a validator jailed
+        // mid-epoch stays eligible to propose until the next epoch tick.
+        self.update_active_set();
         Ok(())
     }
 
@@ -519,6 +528,8 @@ impl StakeRegistry {
         val.is_jailed = true;
         val.is_tombstoned = true;
         val.jail_until = u64::MAX;
+        // V3: same reasoning as jail() — immediate active_set eviction.
+        self.update_active_set();
         Ok(())
     }
 
@@ -545,6 +556,10 @@ impl StakeRegistry {
         }
         val.is_jailed = false;
         val.jail_until = 0;
+        // V3: refresh active_set so the unjailed validator re-enters
+        // proposer rotation immediately rather than waiting for the
+        // next epoch tick.
+        self.update_active_set();
         Ok(())
     }
 
@@ -1238,6 +1253,82 @@ mod tests {
         // every epoch, not just epoch 0).
         let r5 = reg.update_commission("0xval1", start + 600, h_next_epoch + 1);
         assert!(r5.is_err(), "2nd call in epoch 1 must also fail");
+    }
+
+    /// V3 regression: jail() must immediately evict the validator from
+    /// active_set so the proposer rotation skips them. Before the fix,
+    /// active_set only updated on explicit `update_active_set()` calls
+    /// (typically at epoch boundaries), leaving a jailed validator
+    /// eligible to propose for up to EPOCH_LENGTH blocks.
+    #[test]
+    fn test_jail_evicts_from_active_set_immediately() {
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        register_val(&mut reg, "0xval2", MIN_SELF_STAKE);
+        register_val(&mut reg, "0xval3", MIN_SELF_STAKE);
+        register_val(&mut reg, "0xval4", MIN_SELF_STAKE);
+        reg.update_active_set();
+        assert_eq!(reg.active_count(), 4);
+        assert!(reg.is_active("0xval2"));
+
+        // Jail val2 mid-epoch.
+        reg.jail("0xval2", 100, 50).unwrap();
+
+        // active_set must have dropped val2 without an explicit
+        // update_active_set() call from the caller.
+        assert!(
+            !reg.is_active("0xval2"),
+            "jailed validator must be evicted immediately"
+        );
+        assert_eq!(reg.active_count(), 3);
+
+        // weighted_proposer must now never return val2.
+        for h in 0..100 {
+            for r in 0..4 {
+                let p = reg.weighted_proposer(h, r);
+                assert_ne!(p.as_deref(), Some("0xval2"));
+            }
+        }
+    }
+
+    /// V3 regression: tombstone() must also evict immediately AND must
+    /// not be reversible by unjail() (covered elsewhere but asserted
+    /// here for completeness).
+    #[test]
+    fn test_tombstone_evicts_permanently() {
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        register_val(&mut reg, "0xval2", MIN_SELF_STAKE);
+        register_val(&mut reg, "0xval3", MIN_SELF_STAKE);
+        register_val(&mut reg, "0xval4", MIN_SELF_STAKE);
+        reg.update_active_set();
+
+        reg.tombstone("0xval3").unwrap();
+        assert!(!reg.is_active("0xval3"));
+
+        // Unjail must refuse tombstoned validators.
+        let r = reg.unjail("0xval3", u64::MAX - 1);
+        assert!(r.is_err(), "tombstoned validator cannot be unjailed");
+        assert!(!reg.is_active("0xval3"));
+    }
+
+    /// V3 regression: unjail() re-admits the validator to active_set
+    /// immediately (subject to the normal eligibility checks).
+    #[test]
+    fn test_unjail_readmits_to_active_set() {
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE * 2);
+        register_val(&mut reg, "0xval2", MIN_SELF_STAKE);
+        reg.update_active_set();
+        reg.jail("0xval2", 50, 100).unwrap();
+        assert!(!reg.is_active("0xval2"));
+
+        // Jail period expired — unjail at height > jail_until.
+        reg.unjail("0xval2", 151).unwrap();
+        assert!(
+            reg.is_active("0xval2"),
+            "unjailed + eligible validator must rejoin active_set immediately"
+        );
     }
 
     #[test]
