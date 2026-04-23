@@ -383,3 +383,143 @@ fn replay_and_compare() {
         println!("CUMULATIVE_MISMATCH count={} range={}..={}", mismatches, from, to);
     }
 }
+
+/// Snapshot-seed env-repro test. Sidesteps the 7K-block `TABLE_META`
+/// gap (BACKLOG #16) that blocks `replay_and_compare` from reaching
+/// post-fork-height blocks via genesis replay.
+///
+/// Design:
+///   - `TEST_STATE_DB` is a chain.db whose `load_blockchain()` returns a
+///     trusted state snapshot at some height H (e.g. the VPS2 forensic
+///     backup at h=378,003 that was canonical-at-halt).
+///   - `TEST_BLOCK_SOURCE_DB` is a chain.db that contains blocks
+///     `H+1 .. TIP` (e.g. VPS1 live at ~h=420K). Blocks are read via
+///     `Storage::load_block(h)` so they bypass the in-memory sliding
+///     window and come directly from `TABLE_META`.
+///   - For each height in `TEST_HEIGHT_FROM..=TEST_HEIGHT_TO`, admit the
+///     source block via `add_block_from_peer` and compare
+///     `bc.trie_root_at(h)` against `block.state_root`.
+///
+/// Running on VPS1 (Ubuntu 22.04 / kernel 5.15 / KVM) vs VPS4 (Ubuntu
+/// 24.04 / kernel 6.8 / glibc 2.39 / AMD EPYC — exact VPS3 env match)
+/// against the SAME two chain.db snapshots produces the decisive env
+/// signal for the VPS3 RCA:
+///   - VPS4 outputs match VPS1 → userspace env is NOT the divergence
+///     source; narrow to VPS3-hardware (memory ECC, SSD firmware) or
+///     deeper-than-userspace (kernel MDBX interaction).
+///   - VPS4 outputs differ from VPS1 → env IS a source; narrow by
+///     swapping one variable at a time (kernel vs glibc vs CPU).
+///
+/// Operator workflow:
+///   1. Halt all 3 mainnet validators briefly, rsync VPS1's current
+///      chain.db to VPS4 staging, restart. (Required because MDBX
+///      doesn't guarantee consistent online copies.)
+///   2. Stage VPS2 forensic backup OR a halt-time VPS1 snapshot to both
+///      VPS1 and VPS4 at `/path/to/state.db`.
+///   3. Pick a block range `FROM..TO` that's (a) past
+///      STATE_ROOT_FORK_HEIGHT=100_000, (b) FULLY inside the 7K-gap
+///      free window, (c) includes at least one Core-produced block
+///      (every 3rd height). Known divergence window: h=388340..388400
+///      from the 2026-04-23 incident.
+///   4. Run on each host:
+///      ```
+///      SENTRIX_ALLOW_UNENCRYPTED_DISK=true \
+///      TEST_STATE_DB=/path/to/state.db \
+///      TEST_BLOCK_SOURCE_DB=/path/to/live-chain.db \
+///      TEST_HEIGHT_FROM=388340 TEST_HEIGHT_TO=388400 \
+///      cargo test --release -p sentrix-core --test rca_vps3_env_repro \
+///        snapshot_seed_env_repro -- --ignored --nocapture
+///      ```
+///   5. Diff the per-block MISMATCH / CUMULATIVE_OK lines across hosts.
+#[test]
+#[ignore = "requires two real chain.db snapshots + operator prep — manual run per file header"]
+fn snapshot_seed_env_repro() {
+    let state_path = std::env::var("TEST_STATE_DB")
+        .expect("set TEST_STATE_DB=/path/to/starting-state/chain.db");
+    let block_src_path = std::env::var("TEST_BLOCK_SOURCE_DB")
+        .expect("set TEST_BLOCK_SOURCE_DB=/path/to/block-source/chain.db");
+    let from: u64 = std::env::var("TEST_HEIGHT_FROM")
+        .expect("set TEST_HEIGHT_FROM=<start block index>")
+        .parse()
+        .expect("TEST_HEIGHT_FROM must be an integer");
+    let to: u64 = std::env::var("TEST_HEIGHT_TO")
+        .expect("set TEST_HEIGHT_TO=<end block index, inclusive>")
+        .parse()
+        .expect("TEST_HEIGHT_TO must be an integer");
+    assert!(to >= from, "TEST_HEIGHT_TO must be ≥ TEST_HEIGHT_FROM");
+
+    // Seed blockchain state from TEST_STATE_DB directly. load_blockchain
+    // reconstructs Blockchain at that DB's tip height, including the
+    // full `accounts` map + `authority` registry. Trie is bound to the
+    // SAME mdbx so `trie_root_at(h)` can answer for pre-seed heights.
+    let state_storage =
+        Storage::open(&state_path).expect("state snapshot chain.db open failed");
+    let mut bc = state_storage
+        .load_blockchain()
+        .expect("state snapshot load_blockchain failed")
+        .expect("state snapshot chain.db has no persisted state");
+    let state_tip = bc.height();
+    bc.init_trie(state_storage.mdbx_arc())
+        .expect("state snapshot init_trie failed");
+
+    assert!(
+        from == state_tip + 1,
+        "TEST_HEIGHT_FROM must be exactly state_tip + 1 \
+         (state_tip={}, got FROM={}) — the first block to apply must \
+         chain on top of the seeded state's tip",
+        state_tip,
+        from
+    );
+
+    let block_source =
+        Storage::open(&block_src_path).expect("block source chain.db open failed");
+
+    println!("STATE_DB={}", state_path);
+    println!("STATE_TIP={}", state_tip);
+    println!("BLOCK_SOURCE_DB={}", block_src_path);
+    println!("RANGE={}..={}", from, to);
+
+    let mut mismatches: u64 = 0;
+    let mut applied: u64 = 0;
+    for h in from..=to {
+        let block = match load_block_by_height(&block_source, h) {
+            Some(b) => b,
+            None => {
+                println!("BLOCK_SOURCE_GAP h={} — block missing from source TABLE_META; \
+                          stopping. Pick a range fully inside a contiguous range \
+                          (see BACKLOG #16 for the mainnet-wide 7K gap).", h);
+                break;
+            }
+        };
+        let stamped = block.state_root;
+        match bc.add_block_from_peer(block) {
+            Ok(()) => {
+                applied += 1;
+                let computed = bc.trie_root_at(h);
+                let stamped_hex = stamped.map(hex::encode);
+                let computed_hex = computed.map(hex::encode);
+                if stamped_hex != computed_hex {
+                    println!(
+                        "MISMATCH h={} stamped={:?} computed={:?}",
+                        h, stamped_hex, computed_hex
+                    );
+                    mismatches += 1;
+                }
+            }
+            Err(e) => {
+                println!("APPLY_REJECT h={} err={}", h, e);
+                mismatches += 1;
+                break;
+            }
+        }
+    }
+
+    if mismatches == 0 {
+        println!("CUMULATIVE_OK blocks_applied={}", applied);
+    } else {
+        println!(
+            "CUMULATIVE_MISMATCH count={} applied={} range={}..={}",
+            mismatches, applied, from, to
+        );
+    }
+}
