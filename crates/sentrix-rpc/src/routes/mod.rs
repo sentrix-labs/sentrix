@@ -26,7 +26,7 @@ use accounts::{
     get_address_history, get_address_info, get_address_proof, get_balance, get_nonce, get_richlist,
     get_state_root, get_wallet_info, list_transactions,
 };
-use chain::{chain_info, get_block, get_blocks, validate_chain};
+use chain::{chain_info, get_block, get_blocks, get_finalized_height, validate_chain};
 use epoch::{epoch_current, epoch_history};
 use ops::{START_TIME, get_admin_log, health, metrics, root};
 use cache::cache_control_middleware;
@@ -154,6 +154,7 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/chain/info", get(chain_info))
         .route("/chain/blocks", get(get_blocks))
         .route("/chain/blocks/{index}", get(get_block))
+        .route("/chain/finalized-height", get(get_finalized_height))
         .route("/chain/validate", get(validate_chain))
         .route("/accounts/{address}/balance", get(get_balance))
         .route("/accounts/{address}/nonce", get(get_nonce))

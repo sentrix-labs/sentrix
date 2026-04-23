@@ -20,6 +20,58 @@ pub(super) async fn chain_info(State(state): State<SharedState>) -> Json<serde_j
     Json(bc.chain_stats())
 }
 
+/// REST alias for `sentrix_getFinalizedHeight` (JSON-RPC). Returns the
+/// highest block index whose finality is established on the active
+/// consensus profile:
+///
+/// * Pioneer PoA: every committed block is implicitly final → returns
+///   the current chain tip.
+/// * Voyager BFT: only blocks carrying a populated `justification`
+///   qualify → walks back from the tip to find the newest justified
+///   block.
+///
+/// Added so light clients and non-JSON-RPC consumers (curl, Prometheus
+/// exporters, simple web dashboards) don't need to speak JSON-RPC to
+/// learn how far behind finality they are.
+pub(super) async fn get_finalized_height(
+    State(state): State<SharedState>,
+) -> Json<serde_json::Value> {
+    let bc = state.read().await;
+    let latest = match bc.latest_block() {
+        Ok(b) => b.clone(),
+        Err(_) => {
+            return Json(serde_json::json!({
+                "error": "chain empty",
+            }));
+        }
+    };
+    let next_height = latest.index.saturating_add(1);
+    let bft_active = sentrix_core::blockchain::Blockchain::is_voyager_height(next_height);
+
+    let (finalized_height, finalized_hash) = if !bft_active {
+        (latest.index, latest.hash.clone())
+    } else {
+        let mut h = 0u64;
+        let mut hash = String::new();
+        for b in bc.chain.iter().rev() {
+            if b.justification.is_some() {
+                h = b.index;
+                hash = b.hash.clone();
+                break;
+            }
+        }
+        (h, hash)
+    };
+
+    Json(serde_json::json!({
+        "finalized_height": finalized_height,
+        "finalized_hash": finalized_hash,
+        "latest_height": latest.index,
+        "blocks_behind_finality": latest.index.saturating_sub(finalized_height),
+        "consensus": if bft_active { "BFT" } else { "PoA" },
+    }))
+}
+
 // Paginated block listing — default 20, max 100, newest first
 pub(super) async fn get_blocks(
     State(state): State<SharedState>,
