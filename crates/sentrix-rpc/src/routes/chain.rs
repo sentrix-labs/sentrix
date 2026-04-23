@@ -169,7 +169,7 @@ pub(super) async fn validate_chain(
     Json(serde_json::json!({
         "valid": valid,
         "height": height,
-        "total_blocks": bc.chain.len(),
+        "total_blocks": bc.height() + 1, // match cached path: true total from block index
         "cached": false,
     }))
 }

@@ -1752,7 +1752,12 @@ async fn cmd_start(
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!("create_block failed: {}", e);
+                                tracing::warn!(
+                                    "create_block failed at height {} round {}: {}",
+                                    next_height,
+                                    bft.round(),
+                                    e
+                                );
                                 drop(bc);
                             }
                         }
