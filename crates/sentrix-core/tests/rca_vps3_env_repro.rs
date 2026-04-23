@@ -108,6 +108,94 @@ fn load_block_by_height(
     storage.load_block(height).ok().flatten()
 }
 
+/// Walk every height from 1 to `tip` and count the ones whose
+/// `TABLE_META` key `block:{N}` is missing from MDBX. Surfaces silent
+/// write-failure gaps — discovered during the VPS3 env-repro run at
+/// h=32,690 (RCA addendum #4). Prints the first 200 missing heights,
+/// the last 200, total counts, and cluster shape (longest contiguous
+/// run of missing) so the operator can tell at a glance whether gaps
+/// are isolated (one per restart?) or systemic (every N blocks?).
+///
+/// Use `TEST_SWEEP_STRIDE` to downsample if the full 1..=height walk
+/// is too slow — e.g. `TEST_SWEEP_STRIDE=100` checks every 100th
+/// height first for a shape estimate before a full pass.
+#[test]
+#[ignore = "requires real chain.db — run manually; full 388K walk is a few minutes"]
+fn sweep_mdbx_block_gaps() {
+    let path = std::env::var("TEST_CHAIN_DB")
+        .expect("set TEST_CHAIN_DB=/path/to/chain.db");
+    let stride: u64 = std::env::var("TEST_SWEEP_STRIDE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let storage = Storage::open(&path).expect("chain.db open failed");
+    let tip = storage
+        .load_blockchain()
+        .expect("load_blockchain failed")
+        .expect("chain.db has no persisted state")
+        .height();
+
+    println!("CHAIN_DB={}", path);
+    println!("TIP={}", tip);
+    println!("STRIDE={}", stride);
+
+    let mut missing: Vec<u64> = Vec::new();
+    let mut found: u64 = 0;
+    let mut h = 1u64;
+    while h <= tip {
+        if load_block_by_height(&storage, h).is_none() {
+            missing.push(h);
+        } else {
+            found += 1;
+        }
+        h = h.saturating_add(stride);
+    }
+
+    println!("FOUND={} MISSING={}", found, missing.len());
+
+    // Cluster shape: longest contiguous run of missing heights.
+    let mut longest_run_start = 0u64;
+    let mut longest_run_len = 0u64;
+    let mut cur_start = 0u64;
+    let mut cur_len = 0u64;
+    for pair in missing.windows(2) {
+        if pair[1] == pair[0] + stride {
+            if cur_len == 0 {
+                cur_start = pair[0];
+                cur_len = 1;
+            }
+            cur_len += 1;
+            if cur_len > longest_run_len {
+                longest_run_len = cur_len;
+                longest_run_start = cur_start;
+            }
+        } else {
+            cur_len = 0;
+        }
+    }
+    println!(
+        "LONGEST_RUN start={} len={}",
+        longest_run_start, longest_run_len
+    );
+
+    // Print first 200 + last 200 missing heights (or all if fewer).
+    let head_n = missing.len().min(200);
+    for m in &missing[..head_n] {
+        println!("MISSING h={}", m);
+    }
+    if missing.len() > 400 {
+        println!("... ({} more) ...", missing.len() - 400);
+        let tail_start = missing.len() - 200;
+        for m in &missing[tail_start..] {
+            println!("MISSING h={}", m);
+        }
+    } else if missing.len() > head_n {
+        for m in &missing[head_n..] {
+            println!("MISSING h={}", m);
+        }
+    }
+}
+
 /// Replay a range of blocks from a chain.db snapshot and diff the
 /// recomputed state_root against the value stamped on each block.
 ///
