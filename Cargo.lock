@@ -4865,6 +4865,7 @@ dependencies = [
  "sentrix-bft",
  "sentrix-core",
  "sentrix-primitives",
+ "sentrix-wire",
  "serde",
  "serde_json",
  "tokio",
@@ -5003,6 +5004,16 @@ dependencies = [
  "sha2",
  "sha3 0.11.0",
  "zeroize",
+]
+
+[[package]]
+name = "sentrix-wire"
+version = "2.1.9"
+dependencies = [
+ "bincode",
+ "sentrix-bft",
+ "sentrix-primitives",
+ "serde",
 ]
 
 [[package]]
