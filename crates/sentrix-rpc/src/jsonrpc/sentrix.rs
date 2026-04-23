@@ -37,8 +37,19 @@ pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) 
             }
         }
         "sentrix_getBalance" => {
-            // alias for eth_getBalance — returns SRX in wei hex
-            let address = params[0].as_str().unwrap_or("").to_lowercase();
+            // alias for eth_getBalance — returns SRX in wei hex.
+            //
+            // Normalise the address through the same path eth_getBalance
+            // uses (`normalize_rpc_address`): enforces the 42-char
+            // 0x-prefixed 40-hex format + lowercases. Without this,
+            // malformed addresses silently returned `0 SRX`, masking
+            // client bugs and wasting lookup cycles on pathological
+            // strings.
+            use super::helpers::normalize_rpc_address;
+            let address = match normalize_rpc_address(params[0].as_str().unwrap_or("")) {
+                Ok(a) => a,
+                Err(e) => return Err((-32602, e.into())),
+            };
             let bc = state.read().await;
             let balance = bc.accounts.get_balance(&address);
             let wei = balance as u128 * 10_000_000_000u128;
