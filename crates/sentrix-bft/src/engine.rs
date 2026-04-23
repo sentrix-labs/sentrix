@@ -60,8 +60,14 @@ pub struct BftRoundState {
     pub proposed_hash: Option<String>,
     /// Prevotes collected: validator → (block_hash option, stake_weight)
     pub prevotes: HashMap<String, (Option<String>, u64)>,
-    /// Precommits collected: validator → (block_hash option, stake_weight)
-    pub precommits: HashMap<String, (Option<String>, u64)>,
+    /// Precommits collected: validator → (block_hash option, signature bytes, stake_weight).
+    /// Signature is the ECDSA bytes from the peer's `Precommit` message
+    /// — kept alongside the vote so that when a 2/3+ supermajority lands
+    /// we can emit a `BlockJustification` with REAL signatures, not
+    /// `vec![]` placeholders. Closes V1 Voyager-blocker (empty
+    /// justification signatures — silent-reorg surface when Voyager
+    /// activates).
+    pub precommits: HashMap<String, (Option<String>, Vec<u8>, u64)>,
     /// Our own vote cast this round (prevent double-voting)
     pub our_prevote_cast: bool,
     pub our_precommit_cast: bool,
@@ -579,7 +585,11 @@ impl BftEngine {
 
         self.state.precommits.insert(
             precommit.validator.clone(),
-            (precommit.block_hash.clone(), stake),
+            (
+                precommit.block_hash.clone(),
+                precommit.signature.clone(),
+                stake,
+            ),
         );
         self.collector
             .add_precommit(precommit.block_hash.clone(), stake);
@@ -596,8 +606,17 @@ impl BftEngine {
                         self.state.round,
                         block_hash.clone(),
                     );
-                    for (val, (_, w)) in &self.state.precommits {
-                        justification.add_precommit(val.clone(), vec![], *w);
+                    // V1: emit REAL signatures. Only include precommits
+                    // that voted for the finalized hash — nil precommits
+                    // and precommits for other hashes don't belong in
+                    // this block's justification. The aggregated stake
+                    // across included entries is what a verifier will
+                    // weigh against `total_active_stake` to reconstruct
+                    // the 2/3+ supermajority.
+                    for (val, (vote_hash, sig, w)) in &self.state.precommits {
+                        if vote_hash.as_deref() == Some(block_hash.as_str()) {
+                            justification.add_precommit(val.clone(), sig.clone(), *w);
+                        }
                     }
 
                     self.state.phase = BftPhase::Finalize;
@@ -1647,6 +1666,98 @@ mod tests {
             "jailed proposer's proposal must be Wait (rejected), got {:?}",
             action
         );
+    }
+
+    /// V1 regression: BlockJustification emitted at finalization must
+    /// contain the REAL precommit signature bytes, not `vec![]`
+    /// placeholders. Before the fix, the emit loop at the 2/3+ pivot
+    /// passed `vec![]` to `add_precommit` regardless of what signature
+    /// each peer actually sent, so the justification was cryptographically
+    /// meaningless — a silent-reorg surface the moment Voyager activated.
+    ///
+    /// Also verifies that nil precommits and precommits for a different
+    /// hash are NOT included in the finalized block's justification
+    /// (only the winning hash's backers should be counted).
+    #[test]
+    fn test_finalize_emits_real_precommit_signatures() {
+        let (mut engine, _) = setup();
+        let total = engine.state.total_active_stake;
+        engine.state.phase = BftPhase::Precommit;
+
+        let per_val = total / 21;
+        let threshold = supermajority_threshold(total);
+        let needed = ((threshold / per_val) + 1) as usize;
+
+        let winning_hash = "hash_abc".to_string();
+
+        // Throw in one nil-precommit and one wrong-hash precommit FIRST —
+        // they should land in state.precommits but NOT in the final
+        // justification.
+        let nil_pc = Precommit {
+            height: 100,
+            round: 0,
+            block_hash: None,
+            validator: "0xval100".into(),
+            signature: vec![0xDE, 0xAD],
+        };
+        // 0xval100 isn't in active_set but that's OK for this unit —
+        // we're just stuffing the state map directly via on_precommit.
+        // The nil precommit lands because the dedup is per-validator.
+        // Use an address the engine doesn't gate on active_set membership for;
+        // on_precommit_weighted doesn't check membership.
+        let _ = engine.on_precommit_weighted(&nil_pc, per_val);
+
+        let wrong_pc = Precommit {
+            height: 100,
+            round: 0,
+            block_hash: Some("hash_xyz_wrong".into()),
+            validator: "0xval101".into(),
+            signature: vec![0xBE, 0xEF],
+        };
+        let _ = engine.on_precommit_weighted(&wrong_pc, per_val);
+
+        // Now the winning hash precommits — each with a DIFFERENT
+        // signature so we can spot preservation.
+        let mut final_justification = None;
+        for i in 0..needed {
+            let sig: Vec<u8> = vec![0xA0 + i as u8, 0xB0 + i as u8, 0xC0 + i as u8];
+            let pc = Precommit {
+                height: 100,
+                round: 0,
+                block_hash: Some(winning_hash.clone()),
+                validator: format!("0xval{:03}", i),
+                signature: sig.clone(),
+            };
+            let action = engine.on_precommit_weighted(&pc, per_val);
+            if let BftAction::FinalizeBlock { justification, .. } = action {
+                final_justification = Some(justification);
+                break;
+            }
+        }
+
+        let just = final_justification.expect("supermajority should finalize");
+
+        // Every included precommit MUST have a non-empty signature.
+        for sp in &just.precommits {
+            assert!(
+                !sp.signature.is_empty(),
+                "justification must not contain vec![] placeholder sigs (V1)"
+            );
+            // And each signature must start with the 0xA0+i / 0xB0+i / 0xC0+i
+            // pattern we sent — confirming the bytes were preserved, not
+            // regenerated or zeroed.
+            assert_eq!(sp.signature.len(), 3);
+            assert_eq!(sp.signature[0] & 0xF0, 0xA0);
+        }
+
+        // Nil precommit and wrong-hash precommit MUST NOT appear.
+        let validators_in_just: Vec<&str> =
+            just.precommits.iter().map(|p| p.validator.as_str()).collect();
+        assert!(!validators_in_just.contains(&"0xval100"), "nil precommit leaked into justification");
+        assert!(!validators_in_just.contains(&"0xval101"), "wrong-hash precommit leaked into justification");
+
+        // And the reported block_hash matches the winning hash.
+        assert_eq!(just.block_hash, winning_hash);
     }
 
     /// V3 regression: proposer address not in the stake registry at all
