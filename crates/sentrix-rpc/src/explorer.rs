@@ -6,6 +6,7 @@ use axum::{
     extract::{Path, State},
     response::Html,
 };
+use sentrix_core::blockchain::Blockchain;
 use serde::Serialize;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -51,28 +52,26 @@ fn srx(sentri: u64) -> f64 {
     sentri as f64 / 100_000_000.0
 }
 
-/// Known address labels
-fn address_label(addr: &str) -> Option<&'static str> {
-    match addr {
-        a if a.starts_with("0x753f2f") => Some("Sentrix Foundation"),
-        a if a.starts_with("0x0804a0") => Some("Sentrix Treasury"),
-        a if a.starts_with("0xdd3cd7") => Some("Nusantara Node"),
-        a if a.starts_with("0x7be6d0") => Some("BlockForge Asia"),
-        a if a.starts_with("0x7dcc4f") => Some("PacificStake"),
-        a if a.starts_with("0xd2116b") => Some("Archipelago Network"),
-        a if a.starts_with("0x87c997") => Some("Sentrix Core"),
-        a if a.starts_with("0xeb70fd") => Some("Ecosystem Fund"),
-        _ => None,
-    }
-}
-
-/// Render address with optional label badge
-fn addr_with_label(addr: &str) -> String {
-    match address_label(addr) {
-        Some(label) => format!(
+/// Render address with optional label badge.
+///
+/// Labels come from the on-chain validator registry
+/// (`bc.authority.validators[addr].name`), not a hardcoded match table.
+/// Adding / renaming / removing a validator via `sentrix validator add`
+/// (or the admin-ops equivalent) updates the explorer automatically —
+/// no binary rebuild, no `address_label` fork. Non-validator addresses
+/// render as plain monospace hex with no badge.
+fn addr_with_label(addr: &str, bc: &Blockchain) -> String {
+    let label = bc
+        .authority
+        .validators
+        .get(addr)
+        .map(|v| v.name.as_str())
+        .filter(|n| !n.is_empty());
+    match label {
+        Some(name) => format!(
             r#"{} <span style="background:#1a2a1a;color:#4ade80;font-size:11px;padding:1px 6px;border-radius:4px;margin-left:4px">{}</span>"#,
             html_escape(addr),
-            label
+            html_escape(name)
         ),
         None => html_escape(addr).to_string(),
     }
@@ -795,7 +794,7 @@ pub async fn explorer_address(
     {}
     </table>"#,
         nav_tabs(""),
-        addr_with_label(&address),
+        addr_with_label(&address, &bc),
         srx(balance),
         balance,
         nonce,
@@ -1065,7 +1064,7 @@ pub async fn explorer_richlist(State(state): State<SharedState>) -> Html<String>
             </tr>"#,
             rank + 1,
             html_escape(address),
-            addr_with_label(address),
+            addr_with_label(address, &bc),
             balance_srx,
             pct,
         ));
