@@ -9,6 +9,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **staking(commission): rate-limit `update_commission` to one change per epoch per validator** (`crates/sentrix-staking/src/staking.rs`). Previously an operator could call `update_commission` repeatedly within one block — each call stayed inside the 2% per-step cap (`MAX_COMMISSION_CHANGE_PER_EPOCH`), but cumulative drift was unbounded (N × 2% per block). This closes the V5 Voyager-blocker entry from the 2026-04-20 audit. New regression test `test_commission_stepping_attack_rejected_same_epoch` pins the invariant. `update_commission` now takes a `current_height: u64` argument; the existing `test_commission_update` was refreshed to thread the height through. New field `last_commission_change_height: u64` on `ValidatorStake` (0 = never changed) tracks the throttle; marked `#[serde(default)]` so fresh-deploy chains can slot the field in without a hard migration.
+
 ## [2.1.11] — 2026-04-23 — MIN_ACTIVE_VALIDATORS: 3 → 1 (bootstrap-friendly)
 
 Patch release. Unlocks a legitimate ops pattern that the previous hard floor blocked: running the chain with as few as one validator during bootstrap, disaster-recovery, or a deliberate centralisation window.

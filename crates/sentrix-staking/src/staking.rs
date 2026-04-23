@@ -53,6 +53,14 @@ pub struct ValidatorStake {
     pub blocks_missed: u64,
     pub pending_rewards: u64, // accumulated, unclaimed
     pub registration_height: u64,
+    /// Block height of the last successful `update_commission` call.
+    /// 0 = never changed. Used to rate-limit commission churn to at
+    /// most one change per epoch — defends against the N-call stepping
+    /// attack where an operator calls `update_commission(+2%)` many
+    /// times within one block to inflate commission unboundedly while
+    /// each individual call stays inside `MAX_COMMISSION_CHANGE_PER_EPOCH`.
+    #[serde(default)]
+    pub last_commission_change_height: u64,
 }
 
 impl ValidatorStake {
@@ -164,6 +172,7 @@ impl StakeRegistry {
                 blocks_missed: 0,
                 pending_rewards: 0,
                 registration_height: current_height,
+                last_commission_change_height: 0,
             },
         );
 
@@ -678,7 +687,25 @@ impl StakeRegistry {
 
     // ── Commission ───────────────────────────────────────────
 
-    pub fn update_commission(&mut self, validator: &str, new_rate: u16) -> SentrixResult<()> {
+    /// Change `validator`'s commission rate. Enforces:
+    ///   1. `new_rate ∈ [MIN_COMMISSION, MAX_COMMISSION]` (invariant)
+    ///   2. `new_rate ≤ max_commission_rate` (operator-declared ceiling)
+    ///   3. |new − old| ≤ `MAX_COMMISSION_CHANGE_PER_EPOCH` (single-step cap)
+    ///   4. At most one successful call per epoch per validator — closes
+    ///      the N-call stepping attack where each step stayed inside (3)
+    ///      but cumulative drift exceeded the per-epoch intent.
+    ///
+    /// `current_height` is the block height at which the transaction
+    /// carrying this commission change is being applied. The caller
+    /// (block executor or test fixture) is responsible for passing the
+    /// authoritative height — this function is stateless w.r.t. the
+    /// global chain head.
+    pub fn update_commission(
+        &mut self,
+        validator: &str,
+        new_rate: u16,
+        current_height: u64,
+    ) -> SentrixResult<()> {
         let val = self
             .validators
             .get_mut(validator)
@@ -704,7 +731,25 @@ impl StakeRegistry {
             )));
         }
 
+        // Rate-limit: reject if already changed within the current epoch.
+        // `last_commission_change_height == 0` is the "never changed"
+        // sentinel and must pass through (no previous change to compare).
+        // `current_height == 0` is genesis and registration-time only —
+        // no user-initiated commission change can land at genesis so this
+        // is effectively unreachable in production, but kept defensive.
+        if val.last_commission_change_height > 0 {
+            let last_epoch = val.last_commission_change_height / crate::epoch::EPOCH_LENGTH;
+            let current_epoch = current_height / crate::epoch::EPOCH_LENGTH;
+            if last_epoch == current_epoch {
+                return Err(SentrixError::InvalidTransaction(format!(
+                    "commission already changed in epoch {} (at height {}); at most one change per epoch",
+                    current_epoch, val.last_commission_change_height
+                )));
+            }
+        }
+
         val.commission_rate = new_rate;
+        val.last_commission_change_height = current_height;
         Ok(())
     }
 
@@ -1131,12 +1176,68 @@ mod tests {
         let mut reg = new_registry();
         register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
 
-        // Within bounds
-        reg.update_commission("0xval1", 1200).unwrap(); // +2%
+        // Within bounds — single call in epoch 0 succeeds
+        reg.update_commission("0xval1", 1200, 100).unwrap(); // +2% at h=100
         assert_eq!(reg.validators["0xval1"].commission_rate, 1200);
 
-        // Too large a change
-        assert!(reg.update_commission("0xval1", 1500).is_err()); // +3%, max is 2%
+        // Too large a change — but also would fail same-epoch rule;
+        // use a fresh epoch to isolate the size-cap assertion.
+        let h = crate::epoch::EPOCH_LENGTH; // epoch 1
+        assert!(reg.update_commission("0xval1", 1500, h).is_err()); // +3%, max is 2%
+    }
+
+    /// Regression test for V5 commission-stepping attack. Before the
+    /// per-epoch throttle, an operator could call `update_commission`
+    /// repeatedly within one block, each call clearing the per-step
+    /// 2% diff check while cumulatively inflating the commission far
+    /// beyond the per-epoch intent. After the fix: only the first
+    /// call per epoch lands; subsequent calls in the same epoch are
+    /// rejected regardless of size.
+    ///
+    /// This test MUST FAIL on main (before the fix) because the 2nd
+    /// and 3rd in-epoch calls would succeed, raising commission from
+    /// 1000 → 1600 within one epoch. After the fix, only call #1 lands.
+    #[test]
+    fn test_commission_stepping_attack_rejected_same_epoch() {
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        // Start at 10% commission (set by register_val / default).
+        let start = reg.validators["0xval1"].commission_rate;
+
+        // First call in epoch 0 — lands.
+        reg.update_commission("0xval1", start + 200, 50).unwrap();
+        let after_first = reg.validators["0xval1"].commission_rate;
+        assert_eq!(after_first, start + 200);
+
+        // Second call, still epoch 0, small step — must be REJECTED.
+        let r2 = reg.update_commission("0xval1", start + 400, 100);
+        assert!(r2.is_err(), "2nd call in same epoch must fail");
+        let msg2 = format!("{:?}", r2.unwrap_err());
+        assert!(
+            msg2.contains("epoch") && msg2.contains("one change"),
+            "expected per-epoch rate-limit error, got: {}",
+            msg2
+        );
+        assert_eq!(
+            reg.validators["0xval1"].commission_rate,
+            after_first,
+            "rate must not have advanced past first call"
+        );
+
+        // Third call, still epoch 0 — also rejected.
+        let r3 = reg.update_commission("0xval1", start + 600, 150);
+        assert!(r3.is_err(), "3rd call in same epoch must fail");
+
+        // Advance to epoch 1 — next small step should now succeed.
+        let h_next_epoch = crate::epoch::EPOCH_LENGTH + 10;
+        reg.update_commission("0xval1", start + 400, h_next_epoch)
+            .unwrap();
+        assert_eq!(reg.validators["0xval1"].commission_rate, start + 400);
+
+        // Another call in epoch 1 — rejected again (rate-limit applies
+        // every epoch, not just epoch 0).
+        let r5 = reg.update_commission("0xval1", start + 600, h_next_epoch + 1);
+        assert!(r5.is_err(), "2nd call in epoch 1 must also fail");
     }
 
     #[test]
