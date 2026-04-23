@@ -39,6 +39,56 @@ pub const TXS_TOPIC: &str = "sentrix/txs/1";
 /// Hard cap on a single message (10 MiB) — matches `MAX_MESSAGE_SIZE` in node.rs.
 const MAX_MESSAGE_BYTES: usize = 10 * 1024 * 1024;
 
+/// Build the gossipsub ConfigBuilder used by both `new` and `new_with_keypair`.
+///
+/// Tuning rationale for Sentrix's small validator meshes (mainnet + testnet
+/// run separate gossipsub meshes — different chain_ids, no cross-talk):
+///   - mainnet mesh: 3 validators (VPS1 Foundation / VPS2 Treasury / VPS3 Core)
+///   - testnet mesh: 4 validators (all co-located on VPS3)
+///
+/// Tuning targets both — neither grows past ~double digits pre-Voyager.
+/// Config here is aggressive-for-tiny-mesh and will need revisiting when
+/// the active set reaches 21 (Voyager target) or external validators join.
+///
+/// * `heartbeat_interval(300ms)` — was 5s. 5s meant mesh repair fired 5× slower
+///   than block time, so a freshly-reconnected peer missed the next proposer's
+///   verified_peers set (observed as the #1d livelock). 300ms gives ~3 heartbeat
+///   ticks per 1s block — enough mesh churn handling without CPU waste on a
+///   tiny mesh.
+/// * `flood_publish(true)` — publish to every known peer immediately, bypassing
+///   mesh routing. For a 3- or 4-node mesh the bandwidth cost is negligible and
+///   block propagation drops from mesh-relay latency to single-hop. Revisit at
+///   validator growth >~15 when flood bandwidth starts mattering.
+/// * `mesh_n_low(2)` — with only 3-4 validators, default low of 5 leaves no
+///   slack when one goes offline. 2 keeps the mesh valid during churn.
+/// * `history_*` trimmed — 1s block time means iHAVE beyond 3 ticks is dead
+///   weight.
+fn gossipsub_config() -> gossipsub::Config {
+    gossipsub::ConfigBuilder::default()
+        .heartbeat_interval(Duration::from_millis(300))
+        .heartbeat_initial_delay(Duration::from_millis(100))
+        .flood_publish(true)
+        .mesh_n(6)
+        .mesh_n_low(2)
+        .mesh_n_high(8)
+        .mesh_outbound_min(1)
+        .gossip_factor(0.25)
+        .history_length(6)
+        .history_gossip(3)
+        .validation_mode(gossipsub::ValidationMode::Strict)
+        .max_transmit_size(MAX_MESSAGE_BYTES)
+        .build()
+        .expect("valid gossipsub config")
+}
+
+/// Request-response timeout for the unified BFT-vote / block-sync protocol.
+///
+/// Was 60s. BFT votes get an immediate Ack from the peer (see libp2p_node.rs
+/// SentrixRequest handling), so 60s only slowed down detection of dead peers
+/// and tied up connection slots. 15s is still comfortable for small-block
+/// sync responses while freeing connections quickly when a peer goes dark.
+const RR_REQUEST_TIMEOUT_SECS: u64 = 15;
+
 // ── Request / Response enums ─────────────────────────────
 
 /// Messages a node sends to a peer (requests).
@@ -235,18 +285,12 @@ impl SentrixBehaviour {
         let kademlia = kad::Behaviour::with_config(local_peer_id, store, kad_config);
 
         // Gossipsub for block + tx propagation
-        let gossipsub_config = gossipsub::ConfigBuilder::default()
-            .heartbeat_interval(Duration::from_secs(5))
-            .validation_mode(gossipsub::ValidationMode::Strict)
-            .max_transmit_size(MAX_MESSAGE_BYTES)
-            .build()
-            .expect("valid gossipsub config");
         let mut gossipsub = gossipsub::Behaviour::new(
             gossipsub::MessageAuthenticity::Signed(
                 // Placeholder — real keypair injected via new_with_keypair
                 libp2p::identity::Keypair::generate_ed25519(),
             ),
-            gossipsub_config,
+            gossipsub_config(),
         )
         .expect("valid gossipsub behaviour");
 
@@ -259,8 +303,8 @@ impl SentrixBehaviour {
         gossipsub.subscribe(&txs_topic).expect("subscribe txs");
 
         // Request-response for sync + handshake
-        let rr_config =
-            request_response::Config::default().with_request_timeout(Duration::from_secs(60));
+        let rr_config = request_response::Config::default()
+            .with_request_timeout(Duration::from_secs(RR_REQUEST_TIMEOUT_SECS));
         let rr = request_response::Behaviour::new(
             [(SENTRIX_PROTOCOL.to_string(), ProtocolSupport::Full)],
             rr_config,
@@ -294,15 +338,9 @@ impl SentrixBehaviour {
         let kademlia = kad::Behaviour::with_config(local_peer_id, store, kad_config);
 
         // Gossipsub with real keypair
-        let gossipsub_config = gossipsub::ConfigBuilder::default()
-            .heartbeat_interval(Duration::from_secs(5))
-            .validation_mode(gossipsub::ValidationMode::Strict)
-            .max_transmit_size(MAX_MESSAGE_BYTES)
-            .build()
-            .expect("valid gossipsub config");
         let mut gossipsub = gossipsub::Behaviour::new(
             gossipsub::MessageAuthenticity::Signed(keypair.clone()),
-            gossipsub_config,
+            gossipsub_config(),
         )
         .expect("valid gossipsub behaviour");
 
@@ -314,8 +352,8 @@ impl SentrixBehaviour {
         gossipsub.subscribe(&txs_topic).expect("subscribe txs");
 
         // Request-response
-        let rr_config =
-            request_response::Config::default().with_request_timeout(Duration::from_secs(60));
+        let rr_config = request_response::Config::default()
+            .with_request_timeout(Duration::from_secs(RR_REQUEST_TIMEOUT_SECS));
         let rr = request_response::Behaviour::new(
             [(SENTRIX_PROTOCOL.to_string(), ProtocolSupport::Full)],
             rr_config,
