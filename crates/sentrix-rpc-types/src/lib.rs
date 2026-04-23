@@ -68,11 +68,25 @@ pub fn normalize_rpc_hash(s: &str) -> Result<String, &'static str> {
 /// Accept either a `String` (hex-encoded) or a JSON `Number` and return
 /// it as `u64`. Used for the many JSON-RPC parameters that accept both
 /// `"0x..."` hex strings AND plain numbers (`block tag`, gas limits).
+///
+/// Strictness: trim outer whitespace, strip an optional `0x`/`0X` prefix,
+/// reject if the remainder contains anything other than `[0-9a-fA-F]`.
+/// Previously `u64::from_str_radix` already rejected most garbage, but
+/// it silently accepted strings whose only difference from a valid hex
+/// was trailing whitespace (on some libc locales) — now the hex-digit
+/// check is explicit so valid input is unambiguous.
 pub fn parse_hex_u64(v: &Value) -> Option<u64> {
     match v {
         Value::String(s) => {
-            let s = s.trim_start_matches("0x");
-            u64::from_str_radix(s, 16).ok()
+            let trimmed = s.trim();
+            let digits = trimmed
+                .strip_prefix("0x")
+                .or_else(|| trimmed.strip_prefix("0X"))
+                .unwrap_or(trimmed);
+            if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            u64::from_str_radix(digits, 16).ok()
         }
         Value::Number(n) => n.as_u64(),
         _ => None,

@@ -143,13 +143,27 @@ impl Keystore {
             }
         }
 
-        // Verify MAC before decryption
+        // Verify MAC before decryption.
+        //
+        // Constant-time compare via `subtle::ConstantTimeEq` so a
+        // timing side-channel can't leak prefix-match length of the
+        // stored MAC. String `!=` short-circuits on the first
+        // differing byte; iterating a password-guessing attack against
+        // a keystore would, in principle, let the attacker read the
+        // stored MAC one byte at a time from response-time curves.
         use sha2::{Digest, Sha256 as Sha256Hasher};
+        use subtle::ConstantTimeEq;
         let mut mac_input = Vec::new();
         mac_input.extend_from_slice(&key_bytes[16..32]);
         mac_input.extend_from_slice(&ciphertext);
         let computed_mac = hex::encode(Sha256Hasher::digest(&mac_input));
-        if computed_mac != self.crypto.mac {
+        let stored = self.crypto.mac.as_bytes();
+        let computed = computed_mac.as_bytes();
+        // Length mismatch is treated as failure BEFORE the constant-time
+        // compare so `ct_eq` sees equal-length inputs (its contract). A
+        // length leak here is negligible — stored MACs are always 64 hex
+        // chars — but the explicit check keeps the invariant tight.
+        if stored.len() != computed.len() || computed.ct_eq(stored).unwrap_u8() != 1 {
             return Err(SentrixError::WrongPassword);
         }
 

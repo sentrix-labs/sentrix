@@ -881,7 +881,16 @@ async fn on_inbound_request(
                 .send_response(channel, resp)
                 .is_ok()
             {
-                verified_peers.insert(peer);
+                // Only fire PeerConnected + SyncNeeded when this is a
+                // newly-verified peer. Bidirectional connections (both
+                // inbound and outbound Handshake completing on each
+                // side) would otherwise double-insert + emit duplicate
+                // events, confusing downstream consumers that assume
+                // one event per peer.
+                let newly_added = verified_peers.insert(peer);
+                if !newly_added {
+                    return;
+                }
                 let _ = event_tx
                     .send(NodeEvent::PeerConnected(peer.to_string()))
                     .await;
@@ -1181,6 +1190,24 @@ async fn on_inbound_response(
         if blocks.is_empty() {
             return None;
         }
+        // DoS guard: the server-side GetBlocks handler caps responses at
+        // 50 blocks (libp2p_node.rs: SentrixRequest::GetBlocks branch).
+        // A malicious peer could still encode more blocks per response
+        // up to MAX_MESSAGE_BYTES (~10 MB = ~20K small blocks) and
+        // expect us to apply them all sequentially under a single write
+        // lock, stalling the swarm event loop for minutes. Reject any
+        // response that violates our own server's contract.
+        const MAX_ACCEPTED_BATCH: usize = 50;
+        if blocks.len() > MAX_ACCEPTED_BATCH {
+            tracing::warn!(
+                "libp2p sync: peer {} sent {} blocks in a single BlocksResponse \
+                 (cap is {}); dropping response to prevent swarm-loop stall",
+                sync_peer,
+                blocks.len(),
+                MAX_ACCEPTED_BATCH
+            );
+            return None;
+        }
         let block_count = blocks.len();
         let bc = blockchain.clone();
         let etx = event_tx.clone();
@@ -1239,7 +1266,12 @@ async fn on_inbound_response(
             return None;
         }
         let our_height = blockchain.read().await.height();
-        verified_peers.insert(peer);
+        // Only emit PeerConnected + SyncNeeded for newly-verified peers
+        // (see inbound-handshake path for the race-condition rationale).
+        let newly_added = verified_peers.insert(peer);
+        if !newly_added {
+            return None;
+        }
         let _ = event_tx
             .send(NodeEvent::PeerConnected(peer.to_string()))
             .await;
