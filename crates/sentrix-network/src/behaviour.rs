@@ -39,42 +39,93 @@ pub const TXS_TOPIC: &str = "sentrix/txs/1";
 /// Hard cap on a single message (10 MiB) — matches `MAX_MESSAGE_SIZE` in node.rs.
 const MAX_MESSAGE_BYTES: usize = 10 * 1024 * 1024;
 
-/// Build the gossipsub ConfigBuilder used by both `new` and `new_with_keypair`.
-///
-/// Tuning rationale for Sentrix's small validator meshes (mainnet + testnet
-/// run separate gossipsub meshes — different chain_ids, no cross-talk):
-///   - mainnet mesh: 3 validators (VPS1 Foundation / VPS2 Treasury / VPS3 Core)
-///   - testnet mesh: 4 validators (all co-located on VPS3)
-///
-/// Tuning targets both — neither grows past ~double digits pre-Voyager.
-/// Config here is aggressive-for-tiny-mesh and will need revisiting when
-/// the active set reaches 21 (Voyager target) or external validators join.
-///
-/// * `heartbeat_interval(300ms)` — was 5s. 5s meant mesh repair fired 5× slower
-///   than block time, so a freshly-reconnected peer missed the next proposer's
-///   verified_peers set (observed as the #1d livelock). 300ms gives ~3 heartbeat
-///   ticks per 1s block — enough mesh churn handling without CPU waste on a
-///   tiny mesh.
-/// * `flood_publish(true)` — publish to every known peer immediately, bypassing
-///   mesh routing. For a 3- or 4-node mesh the bandwidth cost is negligible and
-///   block propagation drops from mesh-relay latency to single-hop. Revisit at
-///   validator growth >~15 when flood bandwidth starts mattering.
-/// * `mesh_n_low(2)` — with only 3-4 validators, default low of 5 leaves no
-///   slack when one goes offline. 2 keeps the mesh valid during churn.
-/// * `history_*` trimmed — 1s block time means iHAVE beyond 3 ticks is dead
-///   weight.
+// ── Tunable gossipsub + RR parameters ─────────────────────────
+//
+// Default values below are aggressively tuned for Sentrix's current small
+// validator meshes (3 mainnet + 4 testnet, separate meshes per chain_id).
+// When the active set grows (external validators onboarding, Voyager DPoS
+// post-fork, hundreds-to-thousands of validators later), several of these
+// become actively harmful — most notably `flood_publish`, which at 1000
+// nodes turns block broadcast into a 1000-peer flood per publish (~500 MB/s
+// per publishing validator at 1 block/s — self-DDoS).
+//
+// Every tunable is overridable via env var so operators can retune for
+// their actual mesh size WITHOUT rebuilding the binary:
+//
+//   SENTRIX_GOSSIP_HEARTBEAT_MS      default 300   — raise to 1000+ at >100 nodes
+//   SENTRIX_GOSSIP_FLOOD_PUBLISH     default true  — SET "false" at >~30 nodes
+//   SENTRIX_GOSSIP_MESH_N            default 6     — standard libp2p value
+//   SENTRIX_GOSSIP_MESH_N_LOW        default 2     — raise to 5 at >~30 nodes
+//   SENTRIX_GOSSIP_MESH_N_HIGH       default 8     — raise to 12 at >~30 nodes
+//   SENTRIX_GOSSIP_HISTORY_LENGTH    default 6     — raise to 10+ at scale (memory cheap, bandwidth dear)
+//   SENTRIX_GOSSIP_HISTORY_GOSSIP    default 3     — standard libp2p value
+//   SENTRIX_RR_REQUEST_TIMEOUT_SECS  default 15    — already safe at scale
+//
+// Recommended rollout at network growth:
+//   3-30 nodes:   defaults (tiny-mesh tuning — what's shipped today)
+//   30-100 nodes: FLOOD_PUBLISH=false, MESH_N_LOW=5, MESH_N_HIGH=12, HISTORY_LENGTH=10
+//   >100 nodes:   + HEARTBEAT_MS=1000 (libp2p default, less CPU per-node)
+
+/// Parse an env var as T, falling back to `default` on missing / unparseable input.
+/// Emits a WARN trace if the value was set but didn't parse — otherwise silent.
+fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
+    match std::env::var(key) {
+        Ok(raw) => match raw.parse::<T>() {
+            Ok(v) => v,
+            Err(_) => {
+                tracing::warn!(
+                    "sentrix-network: {} set to {:?} but failed to parse — using default",
+                    key, raw
+                );
+                default
+            }
+        },
+        Err(_) => default,
+    }
+}
+
+/// Parse a boolean env var — accepts "true" / "1" / "yes" (case-insensitive) as true,
+/// "false" / "0" / "no" as false. Anything else falls back to `default`.
+fn env_bool(key: &str, default: bool) -> bool {
+    match std::env::var(key) {
+        Ok(raw) => match raw.trim().to_lowercase().as_str() {
+            "true" | "1" | "yes" => true,
+            "false" | "0" | "no" => false,
+            _ => {
+                tracing::warn!(
+                    "sentrix-network: {} set to {:?} but not a boolean — using default {}",
+                    key, raw, default
+                );
+                default
+            }
+        },
+        Err(_) => default,
+    }
+}
+
+/// Build the gossipsub config used by both `new` and `new_with_keypair`.
+/// Reads all tunables via env vars; see the module-level comment above for
+/// the full parameter list + recommended values per mesh size.
 fn gossipsub_config() -> gossipsub::Config {
+    let heartbeat_ms: u64 = env_or("SENTRIX_GOSSIP_HEARTBEAT_MS", 300);
+    let flood_publish = env_bool("SENTRIX_GOSSIP_FLOOD_PUBLISH", true);
+    let mesh_n: usize = env_or("SENTRIX_GOSSIP_MESH_N", 6);
+    let mesh_n_low: usize = env_or("SENTRIX_GOSSIP_MESH_N_LOW", 2);
+    let mesh_n_high: usize = env_or("SENTRIX_GOSSIP_MESH_N_HIGH", 8);
+    let history_length: usize = env_or("SENTRIX_GOSSIP_HISTORY_LENGTH", 6);
+    let history_gossip: usize = env_or("SENTRIX_GOSSIP_HISTORY_GOSSIP", 3);
+
     gossipsub::ConfigBuilder::default()
-        .heartbeat_interval(Duration::from_millis(300))
+        .heartbeat_interval(Duration::from_millis(heartbeat_ms))
         .heartbeat_initial_delay(Duration::from_millis(100))
-        .flood_publish(true)
-        .mesh_n(6)
-        .mesh_n_low(2)
-        .mesh_n_high(8)
+        .flood_publish(flood_publish)
+        .mesh_n(mesh_n)
+        .mesh_n_low(mesh_n_low)
+        .mesh_n_high(mesh_n_high)
         .mesh_outbound_min(1)
         .gossip_factor(0.25)
-        .history_length(6)
-        .history_gossip(3)
+        .history_length(history_length)
+        .history_gossip(history_gossip)
         .validation_mode(gossipsub::ValidationMode::Strict)
         .max_transmit_size(MAX_MESSAGE_BYTES)
         .build()
@@ -83,11 +134,13 @@ fn gossipsub_config() -> gossipsub::Config {
 
 /// Request-response timeout for the unified BFT-vote / block-sync protocol.
 ///
-/// Was 60s. BFT votes get an immediate Ack from the peer (see libp2p_node.rs
-/// SentrixRequest handling), so 60s only slowed down detection of dead peers
-/// and tied up connection slots. 15s is still comfortable for small-block
-/// sync responses while freeing connections quickly when a peer goes dark.
-const RR_REQUEST_TIMEOUT_SECS: u64 = 15;
+/// Overridable via `SENTRIX_RR_REQUEST_TIMEOUT_SECS`. Default 15s — BFT votes
+/// get an immediate Ack from the peer, so 60s (the libp2p default) only
+/// slowed dead-peer detection. 15s is comfortable for small-block sync
+/// responses and already safe at scale — no need to retune at network growth.
+fn rr_request_timeout_secs() -> u64 {
+    env_or("SENTRIX_RR_REQUEST_TIMEOUT_SECS", 15u64)
+}
 
 // ── Request / Response enums ─────────────────────────────
 
@@ -304,7 +357,7 @@ impl SentrixBehaviour {
 
         // Request-response for sync + handshake
         let rr_config = request_response::Config::default()
-            .with_request_timeout(Duration::from_secs(RR_REQUEST_TIMEOUT_SECS));
+            .with_request_timeout(Duration::from_secs(rr_request_timeout_secs()));
         let rr = request_response::Behaviour::new(
             [(SENTRIX_PROTOCOL.to_string(), ProtocolSupport::Full)],
             rr_config,
@@ -353,7 +406,7 @@ impl SentrixBehaviour {
 
         // Request-response
         let rr_config = request_response::Config::default()
-            .with_request_timeout(Duration::from_secs(RR_REQUEST_TIMEOUT_SECS));
+            .with_request_timeout(Duration::from_secs(rr_request_timeout_secs()));
         let rr = request_response::Behaviour::new(
             [(SENTRIX_PROTOCOL.to_string(), ProtocolSupport::Full)],
             rr_config,
