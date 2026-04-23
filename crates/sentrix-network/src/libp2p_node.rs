@@ -966,11 +966,19 @@ async fn on_inbound_request(
         }
 
         // ── GetBlocks — respond with up to 50 blocks (reduced from 100 to stay under 10MB) ──
+        //
+        // BACKLOG #14: use get_block_any so evicted blocks (older than
+        // CHAIN_WINDOW_SIZE) are served from MDBX instead of silently
+        // dropped. The previous `get_block(i).cloned()` path returned
+        // an empty BlocksResponse for any fresh or forensic-restored
+        // peer requesting a deep history back-fill — those peers
+        // stalled indefinitely because gossipsub only delivers new
+        // blocks to in-mesh subscribers.
         SentrixRequest::GetBlocks { from_height } => {
             let bc = blockchain.read().await;
             let to = bc.height().min(from_height.saturating_add(49));
             let blocks: Vec<Block> = (from_height..=to)
-                .filter_map(|i| bc.get_block(i).cloned())
+                .filter_map(|i| bc.get_block_any(i))
                 .collect();
             drop(bc);
             let _ = swarm
