@@ -9,6 +9,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.10] — 2026-04-23 — Network tuning + sentrix-wire split
+
+Patch release bundling three network-layer improvements. Zero consensus impact — all changes are network/observability config or pure refactors.
+
+### Added
+
+- **network: tune gossipsub + RR for small validator mesh** (`crates/sentrix-network/src/behaviour.rs`). Defaults retuned for Sentrix's current mesh sizes (3 mainnet, 4 testnet — separate meshes per chain_id). Heartbeat 5s→300ms, flood_publish true, mesh_n_low 5→2, history trimmed, RR request timeout 60s→15s. Addresses the #1d rebroadcast-livelock symptom. PR #219.
+- **network: env-var overrides for gossipsub + RR tunables** (`crates/sentrix-network/src/behaviour.rs`). Every tunable overridable via `SENTRIX_GOSSIP_*` / `SENTRIX_RR_REQUEST_TIMEOUT_SECS` env vars so operators can retune for mesh growth (hundreds-to-thousands of validators) WITHOUT rebuilding the binary. Defaults preserve PR #219 values; no behavior change today. PR #220.
+
+### Changed
+
+- **refactor(network): split sentrix-wire crate (Tier 1 #5)** (`crates/sentrix-wire/`, `crates/sentrix-network/src/behaviour.rs`). Extracts `SentrixRequest`, `SentrixResponse`, `GossipBlock`, `GossipTransaction`, `SENTRIX_PROTOCOL`, `BLOCKS_TOPIC`, `TXS_TOPIC`, `MAX_MESSAGE_BYTES` into their own crate so downstream tooling (future `sentrix-sdk`, monitoring, light clients) can reference canonical wire types without pulling the full libp2p stack. Back-compat shim keeps existing imports working. Pure refactor; bincode encoding unchanged. PR #221.
+
 ## [2.1.9] — 2026-04-23 — Divergence rate-alarm for silent state_root drift
 
 Patch release over v2.1.8. Single change: adds a rate-limited LOUD alarm when a validator rejects peer blocks at a sustained rate — motivated by the 2026-04-23 mainnet fork investigation, where VPS3 had been silently rejecting peer blocks for ≥4 hours (~4000 state_root mismatches per hour) without any operator signal. The existing per-event `CRITICAL #1e` log line was accurate but emitted at ~1/s during real divergence, filling journald rotation so the earliest mismatches were evicted before the operator checked.
