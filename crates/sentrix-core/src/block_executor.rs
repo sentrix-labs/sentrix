@@ -31,10 +31,18 @@ pub enum BlockSource {
 /// C-03: snapshot of the mutable Blockchain state taken immediately
 /// before Pass 2 of `add_block`. If any step in Pass 2 returns `Err`,
 /// the snapshot is restored so the chain never observes a partial
-/// block-commit on disk-cache or in memory. The snapshot is scoped to
-/// the fields Pass 2 actually mutates; `state_trie` self-heals on the
-/// next successful `update_trie_for_block` because the trie is rebuilt
-/// from `accounts` (which is included here) on each subsequent call.
+/// block-commit on disk-cache or in memory.
+///
+/// The `trie_root` field was added 2026-04-24 after the post-PR #184
+/// audit found the original "self-heal" claim was wrong: the trie is
+/// NOT rebuilt from `accounts` on each `update_trie_for_block` call —
+/// insert/delete walk against the current in-memory root, so a partial
+/// insert/delete left behind by a failed Pass 2 would silently combine
+/// with the next block's updates and diverge from the restored
+/// `accounts` state. Capturing the pre-mutation root and restoring it
+/// on failure closes that gap. Nodes persisted by the failed block
+/// remain in MDBX as unreachable orphans until the next
+/// `prune(keep_versions)` GC pass.
 pub(crate) struct BlockchainSnapshot {
     accounts: AccountDB,
     contracts: ContractRegistry,
@@ -42,6 +50,10 @@ pub(crate) struct BlockchainSnapshot {
     mempool: VecDeque<Transaction>,
     total_minted: u64,
     chain_len: usize,
+    /// Pre-Pass-2 trie root, captured only if a trie is initialised.
+    /// Restored via `SentrixTrie::set_root` on Pass 2 failure so the
+    /// next block's `update_trie_for_block` walks the correct state.
+    trie_root: Option<[u8; 32]>,
 }
 
 impl Blockchain {
@@ -510,10 +522,18 @@ impl Blockchain {
         // `Err`, the snapshot is restored before propagating the error,
         // so the chain never observes a partial commit (half-applied
         // transactions, fee credit without fee debit, contract state
-        // updated without the tx that triggered it, etc.). The trie is
-        // not snapshotted: it is rebuilt from `accounts` on the next
-        // successful `update_trie_for_block`, so a failed trie commit
-        // self-heals when the same or a later block succeeds.
+        // updated without the tx that triggered it, etc.).
+        //
+        // As of 2026-04-24 the trie's in-memory root is ALSO snapshotted
+        // (see `BlockchainSnapshot::trie_root`). An earlier comment here
+        // claimed the trie "self-heals" because it's rebuilt from
+        // `accounts` on each `update_trie_for_block` call — that claim
+        // was wrong post-PR #184 (trie insert/delete walks the current
+        // root; it is NOT recomputed from scratch). Without the
+        // root snapshot + restore, a Pass 2 failure partway through
+        // `update_trie_for_block` would leave the trie's in-memory
+        // `root` pointing at a half-updated state while `accounts`
+        // was reverted — silent divergence on the next block.
         let snap = BlockchainSnapshot {
             accounts: self.accounts.clone(),
             contracts: self.contracts.clone(),
@@ -521,6 +541,7 @@ impl Blockchain {
             mempool: self.mempool.clone(),
             total_minted: self.total_minted,
             chain_len: self.chain.len(),
+            trie_root: self.state_trie.as_ref().map(|t| t.root_hash()),
         };
 
         match self.apply_block_pass2(block) {
@@ -532,6 +553,13 @@ impl Blockchain {
                 self.mempool = snap.mempool;
                 self.total_minted = snap.total_minted;
                 self.chain.truncate(snap.chain_len);
+                // Rewind trie to pre-Pass-2 root if one was captured.
+                // Orphan nodes from the failed block's partial inserts
+                // remain in MDBX but are unreachable from any committed
+                // root; next `prune(keep_versions)` GCs them.
+                if let (Some(trie), Some(root)) = (self.state_trie.as_mut(), snap.trie_root) {
+                    trie.set_root(root);
+                }
                 Err(e)
             }
         }
