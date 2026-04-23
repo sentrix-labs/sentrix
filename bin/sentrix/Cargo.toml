@@ -19,7 +19,7 @@ panic          = "deny"
 sentrix = { path = "../.." }
 
 # CLI
-clap = { version = "4.0", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 anyhow = "1.0"
 
 # Async
