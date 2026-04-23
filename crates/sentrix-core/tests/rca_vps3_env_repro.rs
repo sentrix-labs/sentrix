@@ -267,35 +267,91 @@ fn replay_and_compare() {
     println!("RANGE={}..={}", from, to);
     println!("REPLAY_WARMUP 1..{}", from);
 
-    // Warmup: replay 1..FROM so the fresh chain reaches the canonical
-    // state at FROM-1. Uses add_block_from_peer which includes the
-    // state_root verify — if any warmup block diverges, fail fast
-    // rather than surfacing a confusing result at FROM.
+    // Warmup: replay 1..FROM so the fresh chain reaches the state at FROM-1.
+    // Gap-aware mode (2026-04-23): instead of panic on a missing block, stop
+    // cleanly with a GAP_STOP line. Instead of silently trusting that
+    // applied blocks match the source's stamped roots, diff per-block
+    // during warmup too — any divergence HERE is an env-repro signal
+    // because the warmup range is usually pre-STATE_ROOT_FORK_HEIGHT and
+    // fully deterministic.
+    let mut warmup_mismatches: u64 = 0;
+    let mut gap_stop: Option<u64> = None;
     for h in 1..from {
-        let block = load_block_by_height(&source, h)
-            .unwrap_or_else(|| panic!("source chain.db missing block {} in warmup", h));
-        bc.add_block_from_peer(block).unwrap_or_else(|e| {
-            panic!(
-                "warmup: add_block_from_peer failed at h={}: {} — \
-                 source DB's blocks up to FROM-1 must apply cleanly on a fresh chain; \
-                 if this fails the harness needs a snapshot-based seed, not genesis replay",
-                h, e
-            )
-        });
+        let block = match load_block_by_height(&source, h) {
+            Some(b) => b,
+            None => {
+                println!("GAP_STOP h={} — block missing from source TABLE_META; \
+                          cannot proceed past this point via replay. \
+                          (See BACKLOG #16 for the mainnet-wide 7K gap.)", h);
+                gap_stop = Some(h);
+                break;
+            }
+        };
+        let stamped = block.state_root;
+        match bc.add_block_from_peer(block) {
+            Ok(()) => {
+                // Diff recomputed vs stamped at every warmup step — env-repro
+                // fires HERE if the host's apply_block_pass2 produces a
+                // different root than the block producer stamped.
+                let computed = bc.trie_root_at(h);
+                let stamped_hex = stamped.map(hex::encode);
+                let computed_hex = computed.map(hex::encode);
+                if stamped_hex != computed_hex {
+                    println!(
+                        "WARMUP_MISMATCH h={} stamped={:?} computed={:?}",
+                        h, stamped_hex, computed_hex
+                    );
+                    warmup_mismatches += 1;
+                }
+            }
+            Err(e) => {
+                println!("WARMUP_APPLY_REJECT h={} err={}", h, e);
+                gap_stop = Some(h);
+                break;
+            }
+        }
         if h.is_multiple_of(10_000) {
             println!("WARMUP_PROGRESS h={}", h);
         }
     }
+    if let Some(g) = gap_stop {
+        println!(
+            "WARMUP_INTERRUPTED at h={} (out of requested warmup 1..{}). \
+             Replayed {} blocks cleanly, {} mismatches observed in that range.",
+            g,
+            from,
+            g.saturating_sub(1),
+            warmup_mismatches
+        );
+        if warmup_mismatches > 0 {
+            println!(
+                "ENV_SIGNAL: at least one block pre-gap had diverging recomputed root — \
+                 this host's apply_block_pass2 produces different state_root than \
+                 the block producer stamped. Rerun on a different-env host with the \
+                 same source chain.db to confirm env as the divergence source."
+            );
+        }
+        return;
+    }
     if from > 1 {
-        println!("WARMUP_DONE at h={}", from.saturating_sub(1));
+        println!(
+            "WARMUP_DONE at h={} ({} mismatches in warmup)",
+            from.saturating_sub(1),
+            warmup_mismatches
+        );
     }
 
     // Compare window: admit FROM..=TO one block at a time, diffing the
     // stamped vs recomputed root per block.
-    let mut mismatches: u64 = 0;
+    let mut mismatches: u64 = warmup_mismatches;
     for h in from..=to {
-        let block = load_block_by_height(&source, h)
-            .unwrap_or_else(|| panic!("source chain.db missing block {}", h));
+        let block = match load_block_by_height(&source, h) {
+            Some(b) => b,
+            None => {
+                println!("COMPARE_GAP_STOP h={} — block missing from source TABLE_META", h);
+                break;
+            }
+        };
         let stamped = block.state_root;
 
         match bc.add_block_from_peer(block) {
