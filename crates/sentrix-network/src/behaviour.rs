@@ -22,22 +22,18 @@ use libp2p::{
 };
 use serde::{Deserialize, Serialize};
 
-use sentrix_bft::messages::{Precommit, Prevote, Proposal};
-use sentrix_primitives::block::Block;
-use sentrix_primitives::transaction::Transaction;
+// Wire types (SentrixRequest/SentrixResponse/GossipBlock/GossipTransaction)
+// moved to `sentrix-wire`; their associated primitives imports live there
+// too. Anything still needed here comes through the re-exports below.
 
-// ── Protocol identifier ──────────────────────────────────
-/// Protocol version string — bumped to 2.0.0 for bincode wire format.
-pub const SENTRIX_PROTOCOL: &str = "/sentrix/2.0.0";
-
-// ── Gossipsub topic names ────────────────────────────────
-/// Topic for block propagation via gossipsub.
-pub const BLOCKS_TOPIC: &str = "sentrix/blocks/1";
-/// Topic for transaction propagation via gossipsub.
-pub const TXS_TOPIC: &str = "sentrix/txs/1";
-
-/// Hard cap on a single message (10 MiB) — matches `MAX_MESSAGE_SIZE` in node.rs.
-const MAX_MESSAGE_BYTES: usize = 10 * 1024 * 1024;
+// ── Protocol identifier + topic names + size cap ─────────
+//
+// These were moved to the `sentrix-wire` crate 2026-04-23 (Tier 1 split #5
+// per `founder-private/architecture/CRATE_SPLIT_PLAN.md`). Re-exported here
+// so existing call sites (`use sentrix_network::behaviour::BLOCKS_TOPIC`)
+// keep working during the migration window. Follow-up PR will switch all
+// imports to the canonical `sentrix_wire::*` path and drop these shims.
+pub use sentrix_wire::{BLOCKS_TOPIC, MAX_MESSAGE_BYTES, SENTRIX_PROTOCOL, TXS_TOPIC};
 
 // ── Tunable gossipsub + RR parameters ─────────────────────────
 //
@@ -143,61 +139,10 @@ fn rr_request_timeout_secs() -> u64 {
 }
 
 // ── Request / Response enums ─────────────────────────────
-
-/// Messages a node sends to a peer (requests).
-///
-/// Mirrors [`crate::network::node::Message`] but split into request/response
-/// halves so libp2p's `RequestResponse` behaviour can track correlation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SentrixRequest {
-    /// Initial handshake — carries chain_id for network partitioning.
-    Handshake {
-        host: String,
-        port: u16,
-        height: u64,
-        chain_id: u64,
-    },
-    /// Push a freshly mined block.
-    NewBlock { block: Box<Block> },
-    /// Push a new mempool transaction.
-    NewTransaction { transaction: Transaction },
-    /// Ask for blocks starting at `from_height`.
-    GetBlocks { from_height: u64 },
-    /// Ask for the peer's current chain height.
-    GetHeight,
-    /// Liveness probe.
-    Ping,
-    /// BFT: block proposal from the round proposer
-    BftProposal { proposal: Box<Proposal> },
-    /// BFT: prevote for a block (or nil)
-    BftPrevote { prevote: Prevote },
-    /// BFT: precommit for a block (or nil)
-    BftPrecommit { precommit: Precommit },
-    /// BFT: periodic round status announcement for round synchronization
-    BftRoundStatus {
-        status: sentrix_bft::messages::RoundStatus,
-    },
-}
-
-/// Responses returned by a peer for the above requests.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SentrixResponse {
-    /// Handshake acknowledgement — peer echoes their own chain state.
-    Handshake {
-        host: String,
-        port: u16,
-        height: u64,
-        chain_id: u64,
-    },
-    /// Batch of blocks answering a `GetBlocks` request.
-    BlocksResponse { blocks: Vec<Block> },
-    /// Answer to `GetHeight`.
-    HeightResponse { height: u64 },
-    /// Answer to `Ping`.
-    Pong { height: u64 },
-    /// Generic acknowledgement for fire-and-forget messages (NewBlock, NewTx, BFT).
-    Ack,
-}
+//
+// Moved to `sentrix-wire` 2026-04-23. Re-exported for back-compat; the
+// codec impls below still need them as `Self::Request` / `Self::Response`.
+pub use sentrix_wire::{SentrixRequest, SentrixResponse};
 
 // ── Wire codec ───────────────────────────────────────────
 //
@@ -424,23 +369,19 @@ impl SentrixBehaviour {
 // ── Gossipsub message types ─────────────────────────────
 // Gossipsub carries bincode-encoded envelopes on the two topics.
 
-/// Envelope for gossipsub block messages.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GossipBlock {
-    pub block: Block,
-}
-
-/// Envelope for gossipsub transaction messages.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GossipTransaction {
-    pub transaction: Transaction,
-}
+// Gossipsub envelopes moved to `sentrix-wire` 2026-04-23. Re-exported for
+// back-compat.
+pub use sentrix_wire::{GossipBlock, GossipTransaction};
 
 // ── Tests ────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
     use super::*;
     use libp2p::identity;
+    // Primitives needed by the roundtrip tests below — not used at top
+    // level of the module anymore (wire types moved to sentrix-wire).
+    use sentrix_primitives::block::Block;
+    use sentrix_primitives::transaction::Transaction;
     use libp2p::request_response::Codec;
 
     fn make_keypair() -> identity::Keypair {

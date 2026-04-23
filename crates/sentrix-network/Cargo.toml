@@ -10,6 +10,7 @@ publish = false
 sentrix-primitives = { path = "../sentrix-primitives" }
 sentrix-bft = { path = "../sentrix-bft" }
 sentrix-core = { path = "../sentrix-core" }
+sentrix-wire = { path = "../sentrix-wire" }
 
 libp2p = { version = "0.56", features = ["tcp", "noise", "yamux", "gossipsub", "kad", "identify", "tokio", "request-response", "macros"] }
 tokio = { version = "1.0", features = ["full"] }

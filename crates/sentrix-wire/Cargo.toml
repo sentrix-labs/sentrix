@@ -1,0 +1,30 @@
+[package]
+name = "sentrix-wire"
+version = "2.1.9"
+edition = "2024"
+license = "BUSL-1.1"
+description = "Sentrix libp2p wire protocol types — request/response enums, gossipsub envelopes, protocol version + topic constants. No libp2p dep."
+repository = "https://github.com/sentrix-labs/sentrix"
+
+# Why this crate exists
+# -------------------------
+# Extracted from `sentrix-network::behaviour` during the 45-crate split (Tier 1
+# template #5 per `founder-private/architecture/CRATE_SPLIT_PLAN.md`). Lives
+# separately so other crates (e.g. future `sentrix-sdk`, monitoring tools)
+# can reference the canonical wire types WITHOUT pulling the full libp2p
+# network stack as a transitive dep. The framing codec (`SentrixCodec`) and
+# all libp2p-specific machinery stay in `sentrix-network`.
+#
+# Breaking-change policy: wire types are part of the on-network protocol
+# surface. Any additive variant must be rolled out testnet-first with a
+# version bump on `SENTRIX_PROTOCOL`. Removing a variant requires a hard
+# fork at a pinned height — never just drop it.
+
+[dependencies]
+sentrix-primitives = { path = "../sentrix-primitives" }
+sentrix-bft = { path = "../sentrix-bft" }
+
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+bincode = "1.3"
