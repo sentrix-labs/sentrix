@@ -116,7 +116,22 @@ enum Commands {
         /// P2P port
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
-        /// Bootstrap peers (comma-separated host:port)
+        /// Bootstrap peers (comma-separated host:port).
+        ///
+        /// This is a SEED list for the first-time connect; it is NOT the
+        /// validator set and does NOT need to be kept in sync with it.
+        /// After any one of these peers is reachable, Kademlia DHT
+        /// auto-discovers every other peer on the mesh (periodic 60 s
+        /// random walk + Identify-driven routing-table updates). Adding
+        /// a new validator therefore only requires (a) the new node
+        /// boots with `--peers` pointing at ONE existing operator's
+        /// public endpoint, and (b) the admin runs
+        /// `sentrix validator add`. No existing validator needs a
+        /// systemd-unit edit, a restart, or a `--peers` update.
+        ///
+        /// Recommended: point at 1–3 stable reference bootnodes rather
+        /// than every known validator, so the list doesn't churn when
+        /// the operator community grows.
         #[arg(long, default_value = "")]
         peers: String,
         /// Optional path to a genesis TOML. When absent, the binary uses the
