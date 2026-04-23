@@ -84,7 +84,10 @@ async fn eth_get_block_by_number(params: &Value, state: &SharedState) -> Dispatc
             }
         }
     };
-    match bc.get_block(index) {
+    // BACKLOG #15: get_block_any so historical blocks outside the
+    // in-memory sliding window are served from MDBX, not silently
+    // returned as null.
+    match bc.get_block_any(index) {
         Some(block) => Ok(json!({
             "number": to_hex(block.index),
             "hash": format!("0x{}", block.hash),
@@ -203,7 +206,8 @@ async fn eth_get_block_receipts(params: &Value, state: &SharedState) -> Dispatch
                 Ok(h) => h,
                 Err(e) => return Err((-32602, e.into())),
             };
-            bc.get_block(height).cloned()
+            // BACKLOG #15: MDBX fallback for historical queries.
+            bc.get_block_any(height)
         }
     } else if let Some(obj) = params[0].as_object() {
         if let Some(h) = obj.get("blockHash").and_then(|v| v.as_str()) {
@@ -215,7 +219,7 @@ async fn eth_get_block_receipts(params: &Value, state: &SharedState) -> Dispatch
                 Ok(h) => h,
                 Err(e) => return Err((-32602, e.into())),
             };
-            bc.get_block(height).cloned()
+            bc.get_block_any(height)
         } else {
             return Err((-32602, "expected blockHash or blockNumber".into()));
         }

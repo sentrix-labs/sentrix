@@ -2404,8 +2404,8 @@ fn cmd_chain_block(index: u64) -> anyhow::Result<()> {
     let bc = storage
         .load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
-    match bc.get_block(index) {
-        Some(block) => println!("{}", serde_json::to_string_pretty(block)?),
+    match bc.get_block_any(index) {
+        Some(block) => println!("{}", serde_json::to_string_pretty(&block)?),
         None => println!("Block {} not found", index),
     }
     Ok(())
