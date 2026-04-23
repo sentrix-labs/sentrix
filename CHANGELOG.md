@@ -9,6 +9,14 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.9] — 2026-04-23 — Divergence rate-alarm for silent state_root drift
+
+Patch release over v2.1.8. Single change: adds a rate-limited LOUD alarm when a validator rejects peer blocks at a sustained rate — motivated by the 2026-04-23 mainnet fork investigation, where VPS3 had been silently rejecting peer blocks for ≥4 hours (~4000 state_root mismatches per hour) without any operator signal. The existing per-event `CRITICAL #1e` log line was accurate but emitted at ~1/s during real divergence, filling journald rotation so the earliest mismatches were evicted before the operator checked.
+
+### Added
+
+- **core: divergence rate-alarm** (`crates/sentrix-core/src/blockchain.rs`, `crates/sentrix-core/src/block_executor.rs`). New `DivergenceTracker` records state_root-mismatch rejections in a rolling 5-minute window; when the count crosses 100 within the window, emits one `ERROR`-level alarm with the rsync-from-peer recovery playbook inline. Rate-limited to one alarm per 60 seconds so the signal stays punchy rather than spamming. Counter is in-memory only (resets on restart — a validator that diverged 6h ago but is clean now shouldn't keep alarming). Not a consensus change; pure observability. PR #217.
+
 ## [2.1.8] — 2026-04-22 — Sentrix-style liveness thresholds
 
 Patch release over v2.1.7. Adds exactly one change: retuned the validator liveness-slashing thresholds from Tendermint's demo defaults to Sentrix-style values calibrated for 1-second block time + solo-operator ops. Config-only; no algorithm change.
