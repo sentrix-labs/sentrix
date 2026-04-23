@@ -532,6 +532,35 @@ impl Blockchain {
         self.chain.iter().find(|b| b.hash == hash)
     }
 
+    /// Block lookup that transparently falls back to MDBX storage for
+    /// blocks evicted from the in-memory sliding window. Returns an
+    /// owned `Block` (cloning in the window case, fresh deserialise in
+    /// the storage case).
+    ///
+    /// Added for BACKLOG #14: the `GetBlocks` request-response handler
+    /// used to call `get_block` directly and silently dropped every
+    /// request for blocks older than `CHAIN_WINDOW_SIZE`, stranding
+    /// fresh or forensic-restored peers that needed a deep history
+    /// back-fill. Live validators keep full history in MDBX, so this
+    /// fallback just serves what already exists on disk.
+    ///
+    /// Returns None only when both the in-memory window misses AND the
+    /// MDBX store has no block at that index (i.e. the block was never
+    /// produced or the storage handle was never bound — fresh test
+    /// Blockchains with no `mdbx_storage` hit the latter).
+    pub fn get_block_any(&self, index: u64) -> Option<Block> {
+        if let Some(b) = self.get_block(index) {
+            return Some(b.clone());
+        }
+        let mdbx = self.mdbx_storage.as_ref()?;
+        let key = format!("block:{}", index);
+        let bytes = mdbx
+            .get(tables::TABLE_META, key.as_bytes())
+            .ok()
+            .flatten()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
     // ── Supply & reward ──────────────────────────────────
     pub fn get_block_reward(&self) -> u64 {
         let remaining = MAX_SUPPLY.saturating_sub(self.total_minted);
@@ -2282,6 +2311,71 @@ mod tests {
                  applying the same blocks — if this diverges, consensus is broken"
             );
         }
+    }
+
+    /// BACKLOG #14 regression: `get_block_any` must fall back to MDBX
+    /// once a block is evicted from the in-memory sliding window.
+    /// Without this fallback the `GetBlocks` network handler silently
+    /// drops requests for deep history, so any fresh or forensic-
+    /// restored peer stalls indefinitely on sync.
+    ///
+    /// Strategy: bump CHAIN_WINDOW_SIZE-adjacent behaviour by producing
+    /// `WINDOW + 5` blocks on a chain bound to a real MdbxStorage, save
+    /// each block via the same save_block call `add_block`'s caller
+    /// uses in production, then assert that:
+    ///   - the oldest block is NOT in the in-memory window any more,
+    ///     so `get_block` returns None,
+    ///   - `get_block_any` returns Some(_) for that same height (served
+    ///     from MDBX),
+    ///   - the fetched block's index matches what was produced.
+    #[test]
+    fn test_get_block_any_falls_back_to_mdbx_for_evicted_blocks() {
+        let (_dir, mdbx) = temp_mdbx();
+        let mut bc = setup_chain();
+        bc.init_trie(Arc::clone(&mdbx)).unwrap();
+        bc.init_storage_handle(Arc::clone(&mdbx)).unwrap();
+
+        // Produce CHAIN_WINDOW_SIZE + 5 blocks so the earliest blocks
+        // get evicted from self.chain. Persist each one to MDBX (what
+        // the `save_block` hook does in production via main.rs).
+        let produce_count = CHAIN_WINDOW_SIZE + 5;
+        for _ in 0..produce_count {
+            let block = bc.create_block("validator1").unwrap();
+            // Save to MDBX before add_block evicts the window — this
+            // matches the order main.rs uses.
+            mdbx.put(
+                sentrix_storage::tables::TABLE_META,
+                format!("block:{}", block.index).as_bytes(),
+                &serde_json::to_vec(&block).unwrap(),
+            )
+            .unwrap();
+            bc.add_block(block).unwrap();
+        }
+
+        // Block 1 should be evicted (we produced WINDOW + 5 on top of
+        // genesis, so the window now covers roughly [6 .. WINDOW+5]).
+        let evicted_height = 1u64;
+        assert!(
+            bc.get_block(evicted_height).is_none(),
+            "test setup expected block {evicted_height} to be outside the window \
+             — {CHAIN_WINDOW_SIZE}-block window should have evicted it"
+        );
+        let fetched = bc.get_block_any(evicted_height).unwrap_or_else(|| {
+            panic!(
+                "get_block_any should have fetched evicted block {evicted_height} from MDBX"
+            )
+        });
+        assert_eq!(
+            fetched.index, evicted_height,
+            "MDBX fallback returned a block at the wrong index"
+        );
+
+        // In-memory path still works for recent blocks.
+        let recent_height = bc.height();
+        let in_window = bc
+            .get_block_any(recent_height)
+            .expect("recent block must be returned");
+        assert_eq!(in_window.index, recent_height);
     }
 }
 // fake addr 0x1234567890abcdef1234567890abcdef12345678
