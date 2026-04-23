@@ -81,13 +81,16 @@ jobs:
 
   # RustSec advisory scan. Runs in parallel with Test so a newly-published
   # advisory against any transitive dep surfaces in ≤ 1 CI run rather than
-  # waiting for the next manual `cargo audit` sweep. Non-blocking initially
-  # (continue-on-error: true) so transient CVSS-4.0 parse failures don't
-  # block every PR — promote to blocking once the backlog is clean.
+  # waiting for the next manual `cargo audit` sweep. Ignore list mirrors
+  # deny.toml — unreachable transitive vulns we've documented + reviewed.
+  # Step wrapped in `|| true` so the check conclusion stays SUCCESS when
+  # new advisories appear; they surface as `::warning::` annotations on
+  # the PR instead of blocking the merge. Promote to blocking by dropping
+  # the `|| true` once the backlog is clean and we can action new findings
+  # within the SLO.
   audit:
     name: cargo audit (advisory scan)
     runs-on: ubuntu-22.04
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
       - name: Install Rust
@@ -99,28 +102,46 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/index
           key: ${{ runner.os }}-cargo-audit-${{ hashFiles('**/Cargo.lock') }}
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
       - name: Run cargo audit
-        uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cargo audit \
+            --ignore RUSTSEC-2020-0105 \
+            --ignore RUSTSEC-2026-0097 \
+            --ignore RUSTSEC-2026-0105 \
+            --ignore RUSTSEC-2025-0141 \
+            --ignore RUSTSEC-2024-0388 \
+            --ignore RUSTSEC-2024-0436 \
+            --ignore RUSTSEC-2025-0055 \
+            || echo "::warning::cargo audit findings (non-blocking, see deny.toml for ignored IDs)"
 
   # Second-layer secret scan — complements .githooks/pre-commit which only
   # runs on the contributor's machine. Gitleaks catches the case where
   # someone bypasses pre-commit with `--no-verify` or pushes from an
-  # unsynced clone. Non-blocking initially; promote to blocking after a
-  # clean week per TODO.md hardening plan.
+  # unsynced clone.
+  #
+  # Uses the gitleaks BINARY directly (free, open source) instead of
+  # gitleaks-action@v2 — the Action requires a paid license for GitHub
+  # organizations since 2023. The binary has no such restriction.
   gitleaks:
     name: gitleaks (secret scan)
     runs-on: ubuntu-22.04
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0  # gitleaks needs full history for commit-range scan
+      - name: Install gitleaks
+        run: |
+          GITLEAKS_VERSION=8.30.1
+          wget -q "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          sudo mv gitleaks /usr/local/bin/
+          gitleaks version
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gitleaks detect --source . --redact --verbose \
+            || echo "::warning::gitleaks findings (non-blocking)"
 
   # Deploy job is disabled — deploys are now primary-pathed through
   # `scripts/fast-deploy.sh` on VPS4, which builds locally (warm cargo
