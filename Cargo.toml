@@ -62,7 +62,7 @@ serde_json = "1.0"
 sentrix-storage = { path = "crates/sentrix-storage" }
 
 # Networking
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.52", features = ["full"] }
 libp2p = { version = "0.56", features = ["tcp", "noise", "yamux", "gossipsub", "kad", "identify", "tokio", "request-response", "macros"] }
 
 # API
