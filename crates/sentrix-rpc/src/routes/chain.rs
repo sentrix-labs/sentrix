@@ -75,7 +75,7 @@ pub(super) async fn get_block(
     Path(index): Path<u64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let bc = state.read().await;
-    match bc.get_block(index) {
+    match bc.get_block_any(index) {
         Some(block) => serde_json::to_value(block)
             .map(Json)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR),

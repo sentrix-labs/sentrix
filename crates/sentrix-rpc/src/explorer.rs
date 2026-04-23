@@ -300,7 +300,7 @@ pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
     let mut sample_newest_ts: u64 = 0;
 
     for i in 0..=height {
-        if let Some(block) = bc.get_block(i) {
+        if let Some(block) = bc.get_block_any(i) {
             let non_cb = block
                 .transactions
                 .iter()
@@ -337,7 +337,7 @@ pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
     let mut blocks_html = String::new();
     let start = height.saturating_sub(19);
     for i in (start..=height).rev() {
-        if let Some(block) = bc.get_block(i) {
+        if let Some(block) = bc.get_block_any(i) {
             blocks_html.push_str(&format!(
                 r#"<tr>
                 <td><a href="/explorer/block/{}">{}</a></td>
@@ -450,7 +450,7 @@ pub async fn stats_daily(State(state): State<SharedState>) -> Json<Vec<DailyStat
     // UTC clock (previously used WIB / UTC+7 which off-by-one'd the chart
     // around 17:00 UTC).
     let today_day = bc
-        .get_block(height)
+        .get_block_any(height)
         .map(|b| b.timestamp / 86400)
         .unwrap_or(0);
 
@@ -459,7 +459,7 @@ pub async fn stats_daily(State(state): State<SharedState>) -> Json<Vec<DailyStat
     if today_day > 0 {
         let earliest = today_day.saturating_sub(13);
         for i in 0..=height {
-            if let Some(block) = bc.get_block(i) {
+            if let Some(block) = bc.get_block_any(i) {
                 let day = block.timestamp / 86400;
                 if day >= earliest && day <= today_day {
                     let e = map.entry(day).or_insert((0, 0));
@@ -519,7 +519,7 @@ pub async fn explorer_blocks(State(state): State<SharedState>) -> Html<String> {
     let mut rows = String::new();
     let start = height.saturating_sub(49);
     for i in (start..=height).rev() {
-        if let Some(block) = bc.get_block(i) {
+        if let Some(block) = bc.get_block_any(i) {
             rows.push_str(&format!(
                 r#"<tr>
                 <td><a href="/explorer/block/{}">{}</a></td>
@@ -566,7 +566,7 @@ pub async fn explorer_transactions(State(state): State<SharedState>) -> Html<Str
     let mut regular_rows = String::new();
 
     for i in (scan_start..=height).rev() {
-        if let Some(block) = bc.get_block(i) {
+        if let Some(block) = bc.get_block_any(i) {
             for tx in &block.transactions {
                 let is_cb = tx.is_coinbase();
                 let data_str = &tx.data;
@@ -676,7 +676,7 @@ pub async fn explorer_block(
     Path(index): Path<u64>,
 ) -> Html<String> {
     let bc = state.read().await;
-    match bc.get_block(index) {
+    match bc.get_block_any(index) {
         Some(block) => {
             let mut txs_html = String::new();
             for tx in &block.transactions {
