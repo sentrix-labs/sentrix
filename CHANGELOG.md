@@ -9,6 +9,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.11] — 2026-04-23 — MIN_ACTIVE_VALIDATORS: 3 → 1 (bootstrap-friendly)
+
+Patch release. Unlocks a legitimate ops pattern that the previous hard floor blocked: running the chain with as few as one validator during bootstrap, disaster-recovery, or a deliberate centralisation window.
+
+### Changed
+
+- **core(authority): MIN_ACTIVE_VALIDATORS 3 → 1** (`crates/sentrix-core/src/authority.rs`). The guard now only stops the admin from deactivating or removing the *last* validator — anything above that is fine. The old floor of 3 baked a specific topology into the protocol and wouldn't let the operator scale back under it even when consensus was fine with any count ≥ 1. Round-robin math (`height % active.len()`) already handled any validator count, so this is a CLI-only guard change — consensus, block validation, and gossip paths are untouched.
+- Four test expectations refreshed to the new floor: `test_h03_toggle_cannot_deactivate_last_validator`, `test_v501_remove_enforces_min_active_validators`, `test_v501_toggle_enforces_min_active_validators`, `test_h03_toggle_allows_deactivate_with_others`. All now assert the MIN=1 boundary.
+
+### Operator note
+
+`sentrix validator toggle` / `remove` must be run on every validator's chain DB to keep the `is_active` flag consistent cluster-wide — admin ops are local-node-state, not transactions. Centralising to one validator means zero fault tolerance (the single host is a hard single point of failure); treat it as a temporary state, not a destination.
+
 ## [2.1.10] — 2026-04-23 — Network tuning + sentrix-wire split
 
 Patch release bundling three network-layer improvements. Zero consensus impact — all changes are network/observability config or pure refactors.

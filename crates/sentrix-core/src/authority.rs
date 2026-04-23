@@ -6,7 +6,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // Minimum active validators for collusion resistance (PoA N/2+1 design)
-pub const MIN_ACTIVE_VALIDATORS: usize = 3;
+/// Minimum active validators the authority manager will keep alive.
+///
+/// Kept at 1 so the network can be operated with as few as one
+/// validator during bootstrap, disaster-recovery, or deliberate
+/// centralisation windows. The guard exists only to prevent the
+/// admin from deactivating / removing the *last* validator, which
+/// would leave the round-robin scheduler with nothing to pick and
+/// halt the chain permanently. Scaling back up is a matter of
+/// running `validator add` — the protocol handles any count ≥ 1.
+pub const MIN_ACTIVE_VALIDATORS: usize = 1;
 // Admin log size is bounded to prevent unbounded memory growth
 pub const MAX_ADMIN_LOG_SIZE: usize = 10_000;
 
@@ -580,7 +589,7 @@ mod tests {
         assert!(result.is_err());
         let err_str = result.unwrap_err().to_string();
         assert!(
-            err_str.contains("at least 3"),
+            err_str.contains("at least 1"),
             "Expected min validator error, got: {}",
             err_str
         );
@@ -721,30 +730,35 @@ mod tests {
 
     #[test]
     fn test_v501_remove_enforces_min_active_validators() {
-        let mut mgr = setup(); // exactly 3 validators = MIN_ACTIVE_VALIDATORS
-        let addr = mgr.active_validators()[0].address.clone();
-        // Removing one would leave 2 < MIN_ACTIVE_VALIDATORS
+        // Single-validator setup — removing the only one would leave 0,
+        // below MIN_ACTIVE_VALIDATORS and would halt the round-robin.
+        let mut mgr = AuthorityManager::new("admin".to_string());
+        let (addr, pk) = gen_validator_keypair();
+        mgr.add_validator("admin", addr.clone(), "V1".to_string(), pk)
+            .unwrap();
         let result = mgr.remove_validator("admin", &addr);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("at least 3"),
-            "Expected min 3 error, got: {}",
+            err.contains("at least 1"),
+            "Expected min 1 error, got: {}",
             err
         );
     }
 
     #[test]
     fn test_v501_toggle_enforces_min_active_validators() {
-        let mut mgr = setup(); // exactly 3 validators = MIN_ACTIVE_VALIDATORS
-        let addr = mgr.active_validators()[0].address.clone();
-        // Deactivating one would leave 2 < MIN_ACTIVE_VALIDATORS
+        // Same as above but via toggle_validator.
+        let mut mgr = AuthorityManager::new("admin".to_string());
+        let (addr, pk) = gen_validator_keypair();
+        mgr.add_validator("admin", addr.clone(), "V1".to_string(), pk)
+            .unwrap();
         let result = mgr.toggle_validator("admin", &addr);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("at least 3"),
-            "Expected min 3 error, got: {}",
+            err.contains("at least 1"),
+            "Expected min 1 error, got: {}",
             err
         );
     }
@@ -854,24 +868,31 @@ mod tests {
 
     #[test]
     fn test_h03_toggle_allows_deactivate_with_others() {
-        // 4 validators so toggling one leaves 3 ≥ MIN_ACTIVE_VALIDATORS
+        // 4 validators — can deactivate down to exactly 1 (the MIN),
+        // trying to deactivate the last one fails.
         let mut mgr = setup_4();
-        let addr1 = mgr.active_validators()[0].address.clone();
-        let addr2 = mgr.active_validators()[1].address.clone();
+        let mut remaining: Vec<String> = mgr
+            .active_validators()
+            .iter()
+            .map(|v| v.address.clone())
+            .collect();
         assert_eq!(mgr.active_count(), 4);
 
-        // Deactivating one leaves 3 — should succeed
-        let result = mgr.toggle_validator("admin", &addr1);
-        assert!(result.is_ok());
-        assert_eq!(mgr.active_count(), 3);
+        // Deactivate three of the four — each should succeed.
+        for _ in 0..3 {
+            let addr = remaining.remove(0);
+            mgr.toggle_validator("admin", &addr).unwrap();
+        }
+        assert_eq!(mgr.active_count(), 1);
 
-        // Deactivating another would leave 2 < 3 — should fail
-        let result = mgr.toggle_validator("admin", &addr2);
+        // Last one left — deactivating would drop below MIN_ACTIVE_VALIDATORS=1.
+        let last = remaining.remove(0);
+        let result = mgr.toggle_validator("admin", &last);
         assert!(result.is_err());
         let err_str = result.unwrap_err().to_string();
         assert!(
-            err_str.contains("at least 3"),
-            "Expected min 3 error, got: {}",
+            err_str.contains("at least 1"),
+            "Expected min 1 error, got: {}",
             err_str
         );
     }
