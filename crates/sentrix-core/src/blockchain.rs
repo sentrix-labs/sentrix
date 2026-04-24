@@ -466,11 +466,41 @@ impl Blockchain {
     /// One-shot backfill — walk every stored block from genesis to the current
     /// height and populate the txid_index for any tx that does not already
     /// have an entry. Idempotent. Called once at startup.
+    ///
+    /// Fast path (issue #268): on a warm chain the index is already populated,
+    /// so scanning every block is 500K+ redundant MDBX reads with zero writes.
+    /// Before committing to the full scan, sample the LATEST block's last tx
+    /// and check whether it's already indexed. If yes, assume warm and return
+    /// immediately. A single deliberate gap in the tail is vanishingly unlikely
+    /// to matter for UX (the next block's txs will be indexed via the regular
+    /// `add_block` path); the next restart re-samples and heals any drift.
+    ///
+    /// Slow path logs progress every 50K blocks so operators see activity
+    /// rather than a silent several-minute freeze during a cold-start
+    /// backfill on a large chain.
     pub fn backfill_txid_index(&self, mdbx: &MdbxStorage) -> SentrixResult<usize> {
         if self.mdbx_storage.is_none() {
             return Ok(0);
         }
         let height = self.height();
+
+        // Fast path: is the latest block's last tx already indexed?
+        if let Some(latest) = self.latest_block().ok()
+            && let Some(last_tx) = latest.transactions.last()
+            && mdbx
+                .get(tables::TABLE_TX_INDEX, last_tx.txid.as_bytes())
+                .map_err(|e| SentrixError::StorageError(e.to_string()))?
+                .is_some()
+        {
+            return Ok(0);
+        }
+
+        tracing::info!(
+            "txid_index: scanning {} blocks for backfill (this can take minutes on large chains)",
+            height + 1
+        );
+
+        const PROGRESS_STEP: u64 = 50_000;
         let mut written = 0usize;
         for i in 0..=height {
             let key = format!("block:{}", i);
@@ -499,6 +529,14 @@ impl Blockchain {
                     .map_err(|e| SentrixError::StorageError(e.to_string()))?;
                     written += 1;
                 }
+            }
+            if i > 0 && i.is_multiple_of(PROGRESS_STEP) {
+                tracing::info!(
+                    "txid_index: scanned {}/{} blocks ({} entries written so far)",
+                    i,
+                    height + 1,
+                    written
+                );
             }
         }
         Ok(written)

@@ -39,6 +39,7 @@ impl Storage {
     }
 
     pub fn load_blockchain(&self) -> SentrixResult<Option<Blockchain>> {
+        tracing::info!("Loading blockchain state from MDBX...");
         // Try loading state
         let mut bc: Blockchain = match self
             .chain
@@ -52,6 +53,7 @@ impl Storage {
                 return Ok(None);
             }
         };
+        tracing::info!("Blockchain state loaded: height {}", bc.height());
 
         // Load only the sliding window (last CHAIN_WINDOW_SIZE blocks) into RAM.
         let height = self
