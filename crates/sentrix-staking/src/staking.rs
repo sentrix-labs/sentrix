@@ -107,6 +107,18 @@ pub struct StakeRegistry {
     pub redelegate_cooldowns: HashMap<String, u64>,
     /// Current active validator set (top 21 by stake)
     pub active_set: Vec<String>,
+    /// V4 Step 1: per-delegator accumulated rewards, pending claim.
+    /// delegator_address → total reward across all validators they delegate to.
+    /// Persists across blocks. Cleared when the delegator successfully calls
+    /// `claim_rewards` (Step 3 in the V4 rollout — not wired yet).
+    ///
+    /// `#[serde(default)]` so chains with older chain.db can upgrade without
+    /// a migration event. Field populated at epoch boundary (Step 2 wiring
+    /// in `distribute_reward` v2) once that lands.
+    ///
+    /// Design: `audits/reward-distribution-fix-design.md`
+    #[serde(default)]
+    pub delegator_rewards: HashMap<String, u64>,
 }
 
 impl StakeRegistry {
@@ -810,6 +822,33 @@ impl StakeRegistry {
     /// `active_set` order is deterministic (sorted by stake desc with
     /// address-asc tie-break — see `compute_active_set`), so all nodes
     /// pick the same proposer for any given `(height, round)`.
+    /// V4 Step 1 helper: list all delegations TO a specific validator.
+    /// Existing `self.delegations` is delegator-keyed, so finding all
+    /// delegators of a validator requires scanning every delegator's
+    /// entries. This helper encapsulates that scan so call sites in
+    /// `distribute_reward` v2 (Step 2) stay readable.
+    ///
+    /// O(total delegation entries). Sufficient at current scale; a
+    /// validator-keyed secondary index would drop it to O(per-validator)
+    /// if profiling shows it matters.
+    pub fn delegations_to(&self, validator: &str) -> Vec<&DelegationEntry> {
+        self.delegations
+            .values()
+            .flatten()
+            .filter(|e| e.validator == validator)
+            .collect()
+    }
+
+    /// V4 Step 1 helper: claim pending rewards for a delegator.
+    /// Returns amount claimed (cleared from `delegator_rewards`).
+    /// Wiring into balance-credit (so the claimed amount lands in
+    /// the delegator's SRX balance) happens in Step 3 via the CLI
+    /// transaction + blockchain::apply side — this helper just
+    /// consumes the accumulator.
+    pub fn take_delegator_rewards(&mut self, delegator: &str) -> u64 {
+        self.delegator_rewards.remove(delegator).unwrap_or(0)
+    }
+
     pub fn weighted_proposer(&self, height: u64, round: u32) -> Option<String> {
         if self.active_set.is_empty() {
             return None;
@@ -915,6 +954,62 @@ mod tests {
         assert_eq!(reg.validators["0xval1"].total_delegated, 1_000_000);
         assert_eq!(reg.delegations["0xdel1"].len(), 1);
         assert_eq!(reg.delegations["0xdel1"][0].amount, 1_000_000);
+    }
+
+    /// V4 Step 1 regression: `delegations_to` returns every delegation
+    /// entry whose validator matches, across all delegators.
+    #[test]
+    fn test_v4_delegations_to_aggregates_across_delegators() {
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        register_val(&mut reg, "0xval2", MIN_SELF_STAKE);
+        reg.delegate("0xdelA", "0xval1", 1_000, 100).unwrap();
+        reg.delegate("0xdelB", "0xval1", 2_000, 101).unwrap();
+        reg.delegate("0xdelC", "0xval2", 5_000, 102).unwrap();
+
+        let to_val1 = reg.delegations_to("0xval1");
+        assert_eq!(to_val1.len(), 2);
+        let total_to_val1: u64 = to_val1.iter().map(|e| e.amount).sum();
+        assert_eq!(total_to_val1, 3_000);
+
+        let to_val2 = reg.delegations_to("0xval2");
+        assert_eq!(to_val2.len(), 1);
+        assert_eq!(to_val2[0].amount, 5_000);
+
+        let to_unknown = reg.delegations_to("0xnobody");
+        assert!(to_unknown.is_empty());
+    }
+
+    /// V4 Step 1 regression: `take_delegator_rewards` drains the
+    /// accumulator and returns the amount (for later balance-credit
+    /// in Step 3's claim flow).
+    #[test]
+    fn test_v4_take_delegator_rewards_drains_accumulator() {
+        let mut reg = new_registry();
+        reg.delegator_rewards.insert("0xdelA".to_string(), 12_345);
+        reg.delegator_rewards.insert("0xdelB".to_string(), 7_890);
+
+        let claimed_a = reg.take_delegator_rewards("0xdelA");
+        assert_eq!(claimed_a, 12_345);
+        assert!(!reg.delegator_rewards.contains_key("0xdelA"));
+
+        // re-claim returns 0
+        assert_eq!(reg.take_delegator_rewards("0xdelA"), 0);
+
+        // unaffected entry still there
+        assert_eq!(reg.delegator_rewards["0xdelB"], 7_890);
+
+        // unknown delegator returns 0
+        assert_eq!(reg.take_delegator_rewards("0xunknown"), 0);
+    }
+
+    /// V4 Step 1 backward-compat: StakeRegistry::default() produces
+    /// empty delegator_rewards; existing tests building registries via
+    /// default() continue to work without migration.
+    #[test]
+    fn test_v4_delegator_rewards_default_empty() {
+        let reg = StakeRegistry::default();
+        assert!(reg.delegator_rewards.is_empty());
     }
 
     #[test]
