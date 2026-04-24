@@ -13,6 +13,14 @@ use super::{ApiKey, SharedState};
 
 pub(super) static START_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
+/// BACKLOG #16 counter: incremented by main.rs whenever a P2P-received
+/// block fails to persist to MDBX. Exposed as `sentrix_peer_block_save_fails_total`
+/// on the /metrics endpoint so Prometheus can alert on `rate(... > 0)`.
+/// Gap-creating events are otherwise silent (block advances in memory,
+/// disk persistence fails, CHAIN_WINDOW_SIZE rolls → permanent gap).
+pub static PEER_BLOCK_SAVE_FAILS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 pub(super) async fn root() -> Json<serde_json::Value> {
     let chain_id = sentrix_core::blockchain::get_chain_id();
     let consensus = if chain_id == 7119 { "PoA" } else { "BFT" };
@@ -205,7 +213,11 @@ pub(super) async fn metrics(State(state): State<SharedState>) -> axum::response:
          sentrix_total_burned_sentri {total_burned_sentri}\n\
          # HELP sentrix_circulating_supply_sentri Currently circulating SRX = total_minted − total_burned.\n\
          # TYPE sentrix_circulating_supply_sentri gauge\n\
-         sentrix_circulating_supply_sentri {circulating_sentri}\n"
+         sentrix_circulating_supply_sentri {circulating_sentri}\n\
+         # HELP sentrix_peer_block_save_fails_total Count of P2P-received blocks whose MDBX save failed (BACKLOG #16). Rate>0 means chain history is developing TABLE_META gaps — investigate MDBX disk / lock / permissions immediately.\n\
+         # TYPE sentrix_peer_block_save_fails_total counter\n\
+         sentrix_peer_block_save_fails_total {peer_save_fails}\n",
+        peer_save_fails = PEER_BLOCK_SAVE_FAILS.load(std::sync::atomic::Ordering::Relaxed)
     );
 
     axum::response::Response::builder()

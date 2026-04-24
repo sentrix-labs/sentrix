@@ -2298,7 +2298,43 @@ async fn cmd_start(
                 NodeEvent::NewBlock(block) => {
                     tracing::info!("Block {} received from peer", block.index);
                     if let Err(e) = storage_for_p2p.save_block(&block) {
-                        tracing::warn!("failed to persist P2P block {}: {}", block.index, e);
+                        // BACKLOG #16: a `warn` here was silent enough that the
+                        // 2026-04-20-era mainnet chain.db ended up with 7,352
+                        // missing `block:N` TABLE_META keys (longest contiguous
+                        // run 5,042 blocks at h=139,703 per PR #226's sweep
+                        // test). Root cause pattern: the block IS already
+                        // applied to in-memory state via
+                        // `add_block_from_peer` in the spawned gossip task
+                        // (libp2p_node.rs:675) BEFORE this handler runs — so
+                        // by the time save_block fails here, the chain has
+                        // already advanced. If MDBX writes fail for a
+                        // contiguous window, CHAIN_WINDOW_SIZE (1000 blocks)
+                        // later rolls that block out of in-memory history
+                        // too, leaving a permanent gap invisible to any
+                        // validator that restarts.
+                        //
+                        // ERROR level surfaces the failure to journalctl +
+                        // any grep/alert. Incrementing `PEER_BLOCK_SAVE_FAILS`
+                        // lets Prometheus alert on `rate(... > 0)` — gap
+                        // gets caught at the moment of accident, not weeks
+                        // later via sweep test.
+                        //
+                        // Durable fix is making `add_block_from_peer` atomic
+                        // with `save_block` (apply rolls back on persist
+                        // failure). That needs storage plumbing into
+                        // sentrix-core and is out of scope for this observability
+                        // patch.
+                        tracing::error!(
+                            "BACKLOG #16: failed to persist P2P block {} (hash={}): {}. \
+                             Chain state has ALREADY advanced in memory — this will \
+                             leave a permanent TABLE_META gap once CHAIN_WINDOW_SIZE \
+                             rolls past. Check MDBX disk / lock / permissions.",
+                            block.index,
+                            block.hash,
+                            e
+                        );
+                        sentrix::api::routes::ops::PEER_BLOCK_SAVE_FAILS
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 }
                 NodeEvent::NewTransaction(_) => {}
