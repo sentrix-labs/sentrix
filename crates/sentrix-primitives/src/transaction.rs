@@ -67,6 +67,15 @@ pub enum StakingOp {
         amount: u64,
     },
     Unjail,
+    /// V4 Step 3: delegator claims accumulated rewards.
+    /// No parameters — sender address (tx.from) is the delegator.
+    /// Apply-block flow drains `stake_registry.delegator_rewards[sender]`
+    /// into the delegator's SRX balance. Dispatch wire still pending —
+    /// the StakingOp enum has multiple variants defined (Delegate,
+    /// Undelegate, Redelegate, Unjail, SubmitEvidence, ClaimRewards)
+    /// but no apply-block dispatch implementation yet. Shipping the
+    /// variant now so the wire format is stable ahead of dispatch.
+    ClaimRewards,
     SubmitEvidence {
         height: u64,
         block_hash_a: String,
