@@ -607,8 +607,45 @@ impl Blockchain {
             (coinbase.amount, block.validator.clone())
         };
 
-        // Apply coinbase reward
-        self.accounts.credit(&coinbase_validator, coinbase_amount)?;
+        // Apply coinbase reward.
+        //
+        // V4 Step 3 / reward-v2 hard-fork: at/after VOYAGER_REWARD_V2_HEIGHT,
+        // mint goes to PROTOCOL_TREASURY instead of directly to the proposer.
+        // distribute_reward then updates in-registry accumulators
+        // (pending_rewards + delegator_rewards) which are claims against
+        // the treasury; ClaimRewards dispatch below transfers treasury →
+        // claimer's balance on claim.
+        //
+        // Pre-fork behaviour is preserved exactly: proposer's balance gets
+        // the full block_reward at commit time, same as v2.1.x today.
+        //
+        // Accumulator reset at fork activation: on the FIRST post-fork
+        // block, zero out every pre-existing pending_rewards +
+        // delegator_rewards entry. Pre-fork accumulator values represented
+        // rewards that were ALREADY credited via coinbase → proposer
+        // balance, so they are not real claims against the new treasury.
+        // Reset keeps the supply invariant
+        //   `accounts[TREASURY] == sum(pending_rewards) + sum(delegator_rewards)`
+        // load-bearing from block 0 of the post-fork era onward.
+        if Self::is_reward_v2_height(block.index)
+            && !Self::is_reward_v2_height(block.index.saturating_sub(1))
+        {
+            for v in self.stake_registry.validators.values_mut() {
+                v.pending_rewards = 0;
+            }
+            self.stake_registry.delegator_rewards.clear();
+            tracing::info!(
+                "V4 reward-v2 fork activated at height {} — pre-fork pending_rewards + delegator_rewards cleared (supply invariant reset)",
+                block.index
+            );
+        }
+
+        let coinbase_recipient = if Self::is_reward_v2_height(block.index) {
+            sentrix_primitives::transaction::PROTOCOL_TREASURY
+        } else {
+            coinbase_validator.as_str()
+        };
+        self.accounts.credit(coinbase_recipient, coinbase_amount)?;
         self.total_minted += coinbase_amount;
 
         // Apply all transactions
@@ -681,6 +718,52 @@ impl Blockchain {
                             amount,
                         )?;
                     }
+                }
+            }
+
+            // V4 Step 3: StakingOp dispatch. Only ClaimRewards wired in
+            // this patch — other variants (Delegate, Undelegate,
+            // Redelegate, Unjail, SubmitEvidence) are defined in
+            // primitives but unwired here; a separate staking-via-tx
+            // dispatch PR will handle those.
+            //
+            // Gated on `is_reward_v2_height(block.index)` — pre-fork
+            // chains ignore the op entirely (same as today's pre-V4
+            // behaviour where StakingOp has no runtime effect).
+            if Self::is_reward_v2_height(block.index)
+                && let Some(staking_op) = sentrix_primitives::transaction::StakingOp::decode(&tx.data)
+            {
+                use sentrix_primitives::transaction::StakingOp;
+                match staking_op {
+                    StakingOp::ClaimRewards => {
+                        let claimer = tx.from_address.clone();
+                        let delegator_amount = self.stake_registry.take_delegator_rewards(&claimer);
+                        let validator_amount = self
+                            .stake_registry
+                            .validators
+                            .get_mut(&claimer)
+                            .map(|v| std::mem::take(&mut v.pending_rewards))
+                            .unwrap_or(0);
+                        let total_claim = delegator_amount.saturating_add(validator_amount);
+                        if total_claim > 0 {
+                            // Transfer treasury → claimer (zero fee on the
+                            // claim itself; sender's own fee was already
+                            // paid via the outer tx.fee at `transfer` above).
+                            self.accounts.transfer(
+                                sentrix_primitives::transaction::PROTOCOL_TREASURY,
+                                &claimer,
+                                total_claim,
+                                0,
+                            )?;
+                        }
+                    }
+                    // Unwired variants — accepted at tx-decode time but
+                    // silently no-op at apply time. Prevents accidental
+                    // state mutations while the dispatch framework lands
+                    // in follow-up PRs. Caller's fee still burns (via the
+                    // outer `transfer` above) so this isn't a free-tx
+                    // surface.
+                    _ => {}
                 }
             }
 
@@ -1114,6 +1197,35 @@ mod tests {
         bc.authority
             .add_validator_unchecked("v1".to_string(), "V1".to_string(), "pk1".to_string());
         bc
+    }
+
+    /// V4 Step 3 regression: default reward-v2 fork height must be
+    /// u64::MAX so a node without `VOYAGER_REWARD_V2_HEIGHT` env var
+    /// never activates the treasury-escrow path. This pins the
+    /// mainnet-safe default and prevents a silent consensus drift if
+    /// someone inadvertently flips the default.
+    #[test]
+    fn test_v4_reward_v2_fork_height_default_disabled() {
+        // Ensure env var is not set for this test — if other tests
+        // set it we'd need serial_test, but currently no test does.
+        // Defensive: read the actual function and assert the
+        // mainnet-safe default.
+        unsafe {
+            std::env::remove_var("VOYAGER_REWARD_V2_HEIGHT");
+        }
+        assert_eq!(
+            crate::blockchain::get_reward_v2_fork_height(),
+            u64::MAX,
+            "default must keep mainnet on pre-V4 behaviour until operator opts in"
+        );
+        assert!(
+            !Blockchain::is_reward_v2_height(0),
+            "height 0 must be pre-fork with default env"
+        );
+        assert!(
+            !Blockchain::is_reward_v2_height(1_000_000_000),
+            "even huge heights must be pre-fork with default env"
+        );
     }
 
     // Pass 1 rejection must not mutate state

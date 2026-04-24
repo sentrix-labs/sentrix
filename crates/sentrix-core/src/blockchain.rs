@@ -38,6 +38,16 @@ const VOYAGER_DPOS_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// u64::MAX = disabled. Override via VOYAGER_EVM_HEIGHT env var.
 const VOYAGER_EVM_HEIGHT_DEFAULT: u64 = u64::MAX;
 
+/// V4 Step 3 / reward-v2 hard-fork height — coinbase routes to
+/// `PROTOCOL_TREASURY` at/after this height, ClaimRewards dispatch
+/// becomes valid. u64::MAX = disabled (Pioneer + v2.1.x accumulator-only
+/// behaviour). Override via `VOYAGER_REWARD_V2_HEIGHT` env var.
+///
+/// This is a CONSENSUS CHANGE. Every validator on the same chain must
+/// set the same value; mismatch produces a fork. Coordinated operator
+/// rollout required.
+const VOYAGER_REWARD_V2_HEIGHT_DEFAULT: u64 = u64::MAX;
+
 /// Read Voyager fork height from env, default u64::MAX (mainnet safe).
 /// Testnet sets VOYAGER_FORK_HEIGHT=<height> in systemd service.
 pub fn get_voyager_fork_height() -> u64 {
@@ -54,6 +64,17 @@ pub fn get_evm_fork_height() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(VOYAGER_EVM_HEIGHT_DEFAULT)
+}
+
+/// V4 Step 3: read reward-v2 hard-fork height from env, default
+/// u64::MAX (disabled — keeps current accumulator-only behaviour).
+/// Post-fork: coinbase → `PROTOCOL_TREASURY`, ClaimRewards dispatch
+/// becomes consensus-valid.
+pub fn get_reward_v2_fork_height() -> u64 {
+    std::env::var("VOYAGER_REWARD_V2_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(VOYAGER_REWARD_V2_HEIGHT_DEFAULT)
 }
 
 /// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
@@ -506,6 +527,18 @@ impl Blockchain {
     /// Is the current chain past the Voyager fork?
     pub fn is_voyager_active(&self) -> bool {
         Self::is_voyager_height(self.height())
+    }
+
+    /// V4 Step 3: is the given height at or after the reward-v2 fork?
+    /// Post-fork: coinbase routes to PROTOCOL_TREASURY, ClaimRewards
+    /// dispatch is consensus-valid.
+    pub fn is_reward_v2_height(height: u64) -> bool {
+        let fork = get_reward_v2_fork_height();
+        fork != u64::MAX && height >= fork
+    }
+
+    pub fn is_reward_v2_active(&self) -> bool {
+        Self::is_reward_v2_height(self.height())
     }
 
     /// Is the given height at or after the EVM fork?

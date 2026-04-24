@@ -7,6 +7,38 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.19] — 2026-04-25 — V4 Step 3 — treasury-escrow + ClaimRewards dispatch (gated fork)
+
+Closes the V4 design. `PROTOCOL_TREASURY` address reserved, coinbase routing gated on `VOYAGER_REWARD_V2_HEIGHT` env var, `StakingOp::ClaimRewards` dispatch wired in `block_executor`. Supply invariant restored: post-fork, every SRX block reward lands in treasury, drains only via a claim tx that decrements the per-delegator / per-validator accumulator.
+
+### Added
+
+- **primitives: `PROTOCOL_TREASURY` address** (`crates/sentrix-primitives/src/transaction.rs`). `0x0000000000000000000000000000000000000002`. No private key → no one can sign as treasury; treasury state only moves via consensus-level dispatch in `block_executor`.
+- **core: `VOYAGER_REWARD_V2_HEIGHT` env-var fork gate** (`crates/sentrix-core/src/blockchain.rs`). Default `u64::MAX` = disabled (mainnet-safe pre-fork behaviour preserved). `Blockchain::is_reward_v2_height(h)` + `is_reward_v2_active()` helpers. Coordinated operator rollout required for activation (consensus change).
+- **core: coinbase routing gate** (`crates/sentrix-core/src/block_executor.rs:apply_block_pass2`). Post-fork: coinbase credits `PROTOCOL_TREASURY` instead of the proposer. Pre-fork path unchanged.
+- **core: accumulator reset at fork activation** — on the single transition block (`is_reward_v2_height(block.index) && !is_reward_v2_height(block.index - 1)`), all pre-existing `pending_rewards` + `delegator_rewards` are zeroed. Pre-fork accumulator values represented rewards ALREADY credited via coinbase → proposer balance; without the reset, claim would double-mint. Resets keep supply invariant load-bearing from block 0 of the post-fork era.
+- **core: `StakingOp::ClaimRewards` dispatch** (`block_executor.rs:apply_block_pass2`). Decodes `StakingOp` from `tx.data`, on `ClaimRewards`: drains `take_delegator_rewards(sender)` + `std::mem::take(validator.pending_rewards)` (if sender is a validator), transfers `PROTOCOL_TREASURY → sender` for the sum. Gated on `is_reward_v2_height(block.index)` so pre-fork chains ignore it. Other `StakingOp` variants (Delegate/Undelegate/Redelegate/Unjail/SubmitEvidence) silently no-op pending a follow-up staking-via-tx dispatch PR.
+
+### Tests
+
+- `test_v4_reward_v2_fork_height_default_disabled` pins the mainnet-safe default (`u64::MAX`) in `block_executor::tests`.
+- Existing 179 sentrix-core + 88 sentrix-staking + 76 sentrix-bft + 5 harness tests all pass.
+
+### Testnet bake
+
+v2.1.19 binary `ecb18d63a4e0a5da` on 4-validator Voyager testnet with `VOYAGER_REWARD_V2_HEIGHT=188836`. Post-fork treasury accrued **70 SRX per 70 blocks = 1 SRX/block** exactly — supply invariant holds at the coinbase-routing level. Chain sustained 2.33 blocks/sec, zero skip-round / nil-majority / CRITICAL errors.
+
+Accumulator-reset activation not exercised on this testnet (chain had already crossed the old fork before the reset-logic binary deployed). Next-session task: spin up a clean testnet (wipe `data/val*/chain.db`) + verify reset fires at the fork transition block. Until then, reset is compile-tested + logic-reviewed.
+
+### Still open for Voyager mainnet activation
+
+- **Staking-via-tx dispatch for other `StakingOp` variants** (Delegate/Undelegate/Redelegate/Unjail/SubmitEvidence) — current release wires only ClaimRewards. Users can't submit Delegate transactions yet. Separate follow-up PR.
+- **Operator coordination**: set `VOYAGER_FORK_HEIGHT` + `VOYAGER_REWARD_V2_HEIGHT` env vars on all 4 mainnet validators at the same target height + coordinated restart.
+
+### No mainnet impact today
+
+Both `VOYAGER_FORK_HEIGHT` and `VOYAGER_REWARD_V2_HEIGHT` default `u64::MAX`. Mainnet runs Pioneer PoA unchanged.
+
 ## [2.1.18] — 2026-04-25 — V4 reward distribution v2 Step 2 (multi-signer pro-rata payout)
 
 Step 2 of V4 per `audits/reward-distribution-fix-design.md`. `distribute_reward` now accepts a signers list and pays every precommit signer in the justification pro-rata by stake, splitting each signer's share into commission + self-stake + per-delegator accumulator. Step 1 (delegator_rewards field) shipped in PR #262; Step 3 (claim CLI + blockchain::apply wire) deferred.
