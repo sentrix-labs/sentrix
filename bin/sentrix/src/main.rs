@@ -1206,6 +1206,72 @@ async fn cmd_start(
             use sentrix::core::bft_messages::{BftMessage, Proposal};
             use sentrix::core::block::Block;
 
+            // V2 M-15 Step 4+5 helper: produce a signed Proposal for the
+            // current (height, round). If the engine is locked and has a
+            // cached block (populated via Step 3 promotion), re-broadcast
+            // the cached bytes — this is what breaks the locked-nil-prevote
+            // livelock pattern when a locked validator rotates into the
+            // proposer slot at a later round. Otherwise fall through to the
+            // existing `create_block_voyager` path.
+            //
+            // Design: audits/v2-locked-block-repropose-implementation-plan.md
+            fn build_or_reuse_proposal(
+                bft: &BftEngine,
+                bc: &mut Blockchain,
+                wallet_address: &str,
+                validator_sk: &secp256k1::SecretKey,
+                height: u64,
+            ) -> Option<(Block, Proposal)> {
+                if let Some((cached_hash, cached_bytes)) = bft.locked_proposal_bytes() {
+                    match bincode::deserialize::<Block>(&cached_bytes) {
+                        Ok(block) => {
+                            tracing::info!(
+                                "V2 M-15: re-proposing locked block {:.16}... at height {} round {}",
+                                cached_hash,
+                                height,
+                                bft.round()
+                            );
+                            let mut proposal = Proposal {
+                                height,
+                                round: bft.round(),
+                                block_hash: cached_hash,
+                                block_data: cached_bytes,
+                                proposer: wallet_address.to_string(),
+                                signature: vec![],
+                            };
+                            proposal.sign(validator_sk);
+                            return Some((block, proposal));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "V2 re-propose: cached bytes failed to deserialize: {} — falling back to create_block_voyager",
+                                e
+                            );
+                        }
+                    }
+                }
+                match bc.create_block_voyager(wallet_address) {
+                    Ok(block) => {
+                        let block_hash = block.hash.clone();
+                        let block_data = bincode::serialize(&block).unwrap_or_default();
+                        let mut proposal = Proposal {
+                            height,
+                            round: bft.round(),
+                            block_hash,
+                            block_data,
+                            proposer: wallet_address.to_string(),
+                            signature: vec![],
+                        };
+                        proposal.sign(validator_sk);
+                        Some((block, proposal))
+                    }
+                    Err(e) => {
+                        tracing::warn!("create_block_voyager failed: {}", e);
+                        None
+                    }
+                }
+            }
+
             let mut voyager_activated = false;
             let mut evm_activated = false;
             // Persistent BFT state for Voyager mode
@@ -1432,21 +1498,22 @@ async fn cmd_start(
                     drop(bc);
 
                     if we_are_proposer {
-                        // We're the proposer — create block (Voyager: skip Pioneer authority)
+                        // We're the proposer — create block (Voyager: skip Pioneer authority).
+                        // V2 M-15 Step 4+5: helper checks locked_proposal_bytes first
+                        // and re-broadcasts the cached block if we're locked, which is
+                        // what unsticks the chain when an earlier round's prevote
+                        // supermajority didn't precommit.
                         let mut bc = shared_clone.write().await;
-                        match bc.create_block_voyager(&wallet.address) {
-                            Ok(block) => {
+                        match build_or_reuse_proposal(
+                            &bft,
+                            &mut bc,
+                            &wallet.address,
+                            &validator_secret_key,
+                            next_height,
+                        ) {
+                            Some((block, proposal)) => {
                                 let block_hash = block.hash.clone();
-                                let block_data = bincode::serialize(&block).unwrap_or_default();
-                                let mut proposal = Proposal {
-                                    height: next_height,
-                                    round: bft.round(),
-                                    block_hash: block_hash.clone(),
-                                    block_data,
-                                    proposer: wallet.address.clone(),
-                                    signature: vec![],
-                                };
-                                proposal.sign(&validator_secret_key);
+                                let block_data = proposal.block_data.clone();
                                 proposed_block = Some(block);
                                 drop(bc);
 
@@ -1458,6 +1525,10 @@ async fn cmd_start(
                                 proposal_broadcast_at = Some(std::time::Instant::now());
                                 proposal_rebroadcast_count = 0;
 
+                                // V2 M-15: stash bytes so if prevote-supermajority
+                                // forms on this hash, they get promoted into
+                                // locked_block for a future round's re-propose.
+                                bft.stash_proposal_bytes(&block_hash, block_data);
                                 // Self-vote: on_own_proposal triggers prevote
                                 let initial_action = bft.on_own_proposal(&block_hash);
 
@@ -1676,21 +1747,17 @@ async fn cmd_start(
                                             drop(bc_r);
                                             if we_propose {
                                                 let mut bc = shared_clone.write().await;
-                                                if let Ok(block) =
-                                                    bc.create_block_voyager(&wallet.address)
+                                                if let Some((block, proposal)) =
+                                                    build_or_reuse_proposal(
+                                                        &bft,
+                                                        &mut bc,
+                                                        &wallet.address,
+                                                        &validator_secret_key,
+                                                        bft.height(),
+                                                    )
                                                 {
                                                     let block_hash = block.hash.clone();
-                                                    let block_data = bincode::serialize(&block)
-                                                        .unwrap_or_default();
-                                                    let mut proposal = Proposal {
-                                                        height: bft.height(),
-                                                        round: bft.round(),
-                                                        block_hash: block_hash.clone(),
-                                                        block_data,
-                                                        proposer: wallet.address.clone(),
-                                                        signature: vec![],
-                                                    };
-                                                    proposal.sign(&validator_secret_key);
+                                                    let block_data = proposal.block_data.clone();
                                                     drop(bc);
                                                     lp2p_clone
                                                         .broadcast_bft_proposal(&proposal)
@@ -1699,6 +1766,10 @@ async fn cmd_start(
                                                         Some(std::time::Instant::now());
                                                     proposal_rebroadcast_count = 0;
                                                     proposed_block = Some(block);
+                                                    bft.stash_proposal_bytes(
+                                                        &block_hash,
+                                                        block_data,
+                                                    );
                                                     let _ = bft.on_own_proposal(&block_hash);
                                                     tracing::info!(
                                                         "BFT: proposed block after timeout \
@@ -1724,21 +1795,17 @@ async fn cmd_start(
                                             drop(bc_r);
                                             if we_propose {
                                                 let mut bc = shared_clone.write().await;
-                                                if let Ok(block) =
-                                                    bc.create_block_voyager(&wallet.address)
+                                                if let Some((block, proposal)) =
+                                                    build_or_reuse_proposal(
+                                                        &bft,
+                                                        &mut bc,
+                                                        &wallet.address,
+                                                        &validator_secret_key,
+                                                        bft.height(),
+                                                    )
                                                 {
                                                     let block_hash = block.hash.clone();
-                                                    let block_data = bincode::serialize(&block)
-                                                        .unwrap_or_default();
-                                                    let mut proposal = Proposal {
-                                                        height: bft.height(),
-                                                        round: bft.round(),
-                                                        block_hash: block_hash.clone(),
-                                                        block_data,
-                                                        proposer: wallet.address.clone(),
-                                                        signature: vec![],
-                                                    };
-                                                    proposal.sign(&validator_secret_key);
+                                                    let block_data = proposal.block_data.clone();
                                                     drop(bc);
                                                     lp2p_clone
                                                         .broadcast_bft_proposal(&proposal)
@@ -1747,6 +1814,10 @@ async fn cmd_start(
                                                         Some(std::time::Instant::now());
                                                     proposal_rebroadcast_count = 0;
                                                     proposed_block = Some(block);
+                                                    bft.stash_proposal_bytes(
+                                                        &block_hash,
+                                                        block_data,
+                                                    );
                                                     let _ = bft.on_own_proposal(&block_hash);
                                                     tracing::info!(
                                                         "BFT: proposed block after skip-round \
@@ -1765,13 +1836,10 @@ async fn cmd_start(
                                     }
                                 }
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "create_block failed at height {} round {}: {}",
-                                    next_height,
-                                    bft.round(),
-                                    e
-                                );
+                            None => {
+                                // build_or_reuse_proposal already tracing::warn!'d
+                                // the specific failure reason (deserialize of
+                                // cached bytes or create_block_voyager Err).
                                 drop(bc);
                             }
                         }
@@ -1803,6 +1871,17 @@ async fn cmd_start(
                                     bincode::deserialize::<Block>(&proposal.block_data)
                                 {
                                     proposed_block = Some(block);
+                                    // V2 M-15 Step 4: stash the block bytes so
+                                    // if prevote-supermajority forms on this
+                                    // proposal's hash (Step 3 in engine.rs),
+                                    // they get promoted into locked_block and
+                                    // remain available for re-propose when we
+                                    // become proposer in a later round at this
+                                    // height.
+                                    bft.stash_proposal_bytes(
+                                        &proposal.block_hash,
+                                        proposal.block_data.clone(),
+                                    );
                                     let bc = shared_clone.read().await;
                                     let a = bft.on_proposal(
                                         &proposal.block_hash,
@@ -2043,25 +2122,21 @@ async fn cmd_start(
                                     drop(bc_r);
                                     if we_propose {
                                         let mut bc = shared_clone.write().await;
-                                        if let Ok(block) = bc.create_block_voyager(&wallet.address)
-                                        {
+                                        if let Some((block, proposal)) = build_or_reuse_proposal(
+                                            &bft,
+                                            &mut bc,
+                                            &wallet.address,
+                                            &validator_secret_key,
+                                            bft.height(),
+                                        ) {
                                             let block_hash = block.hash.clone();
-                                            let block_data =
-                                                bincode::serialize(&block).unwrap_or_default();
-                                            let mut proposal = Proposal {
-                                                height: bft.height(),
-                                                round: bft.round(),
-                                                block_hash: block_hash.clone(),
-                                                block_data,
-                                                proposer: wallet.address.clone(),
-                                                signature: vec![],
-                                            };
-                                            proposal.sign(&validator_secret_key);
+                                            let block_data = proposal.block_data.clone();
                                             drop(bc);
                                             lp2p_clone.broadcast_bft_proposal(&proposal).await;
                                             proposal_broadcast_at = Some(std::time::Instant::now());
                                             proposal_rebroadcast_count = 0;
                                             proposed_block = Some(block);
+                                            bft.stash_proposal_bytes(&block_hash, block_data);
                                             let _ = bft.on_own_proposal(&block_hash);
                                             tracing::info!(
                                                 "BFT: proposed block for new round {}",
@@ -2085,25 +2160,21 @@ async fn cmd_start(
                                     drop(bc_r);
                                     if we_propose {
                                         let mut bc = shared_clone.write().await;
-                                        if let Ok(block) = bc.create_block_voyager(&wallet.address)
-                                        {
+                                        if let Some((block, proposal)) = build_or_reuse_proposal(
+                                            &bft,
+                                            &mut bc,
+                                            &wallet.address,
+                                            &validator_secret_key,
+                                            bft.height(),
+                                        ) {
                                             let block_hash = block.hash.clone();
-                                            let block_data =
-                                                bincode::serialize(&block).unwrap_or_default();
-                                            let mut proposal = Proposal {
-                                                height: bft.height(),
-                                                round: bft.round(),
-                                                block_hash: block_hash.clone(),
-                                                block_data,
-                                                proposer: wallet.address.clone(),
-                                                signature: vec![],
-                                            };
-                                            proposal.sign(&validator_secret_key);
+                                            let block_data = proposal.block_data.clone();
                                             drop(bc);
                                             lp2p_clone.broadcast_bft_proposal(&proposal).await;
                                             proposal_broadcast_at = Some(std::time::Instant::now());
                                             proposal_rebroadcast_count = 0;
                                             proposed_block = Some(block);
+                                            bft.stash_proposal_bytes(&block_hash, block_data);
                                             let _ = bft.on_own_proposal(&block_hash);
                                             tracing::info!(
                                                 "BFT: proposed block after skip-round at round {}",
@@ -2221,25 +2292,21 @@ async fn cmd_start(
                                     drop(bc_r);
                                     if we_propose {
                                         let mut bc = shared_clone.write().await;
-                                        if let Ok(block) = bc.create_block_voyager(&wallet.address)
-                                        {
+                                        if let Some((block, proposal)) = build_or_reuse_proposal(
+                                            &bft,
+                                            &mut bc,
+                                            &wallet.address,
+                                            &validator_secret_key,
+                                            bft.height(),
+                                        ) {
                                             let block_hash = block.hash.clone();
-                                            let block_data =
-                                                bincode::serialize(&block).unwrap_or_default();
-                                            let mut proposal = Proposal {
-                                                height: bft.height(),
-                                                round: bft.round(),
-                                                block_hash: block_hash.clone(),
-                                                block_data,
-                                                proposer: wallet.address.clone(),
-                                                signature: vec![],
-                                            };
-                                            proposal.sign(&validator_secret_key);
+                                            let block_data = proposal.block_data.clone();
                                             drop(bc);
                                             lp2p_clone.broadcast_bft_proposal(&proposal).await;
                                             proposal_broadcast_at = Some(std::time::Instant::now());
                                             proposal_rebroadcast_count = 0;
                                             proposed_block = Some(block);
+                                            bft.stash_proposal_bytes(&block_hash, block_data);
                                             let _ = bft.on_own_proposal(&block_hash);
                                             tracing::info!(
                                                 "BFT: proposed block after timeout at round {}",
@@ -2265,25 +2332,21 @@ async fn cmd_start(
                                     drop(bc_r);
                                     if we_propose {
                                         let mut bc = shared_clone.write().await;
-                                        if let Ok(block) = bc.create_block_voyager(&wallet.address)
-                                        {
+                                        if let Some((block, proposal)) = build_or_reuse_proposal(
+                                            &bft,
+                                            &mut bc,
+                                            &wallet.address,
+                                            &validator_secret_key,
+                                            bft.height(),
+                                        ) {
                                             let block_hash = block.hash.clone();
-                                            let block_data =
-                                                bincode::serialize(&block).unwrap_or_default();
-                                            let mut proposal = Proposal {
-                                                height: bft.height(),
-                                                round: bft.round(),
-                                                block_hash: block_hash.clone(),
-                                                block_data,
-                                                proposer: wallet.address.clone(),
-                                                signature: vec![],
-                                            };
-                                            proposal.sign(&validator_secret_key);
+                                            let block_data = proposal.block_data.clone();
                                             drop(bc);
                                             lp2p_clone.broadcast_bft_proposal(&proposal).await;
                                             proposal_broadcast_at = Some(std::time::Instant::now());
                                             proposal_rebroadcast_count = 0;
                                             proposed_block = Some(block);
+                                            bft.stash_proposal_bytes(&block_hash, block_data);
                                             let _ = bft.on_own_proposal(&block_hash);
                                             tracing::info!(
                                                 "BFT: proposed block after skip-round at \
