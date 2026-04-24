@@ -683,11 +683,24 @@ impl Blockchain {
                     }
                 }
             }
-            let _ = storage.put(
+            // TABLE_BLOOM is a query-side optimization (feeds
+            // `eth_getLogs` fast-path); a put failure is non-consensus
+            // (block still commits, logs still stored in TABLE_LOGS,
+            // queries just fall back to linear scan). Log at WARN so
+            // an MDBX write pathology shows up in journalctl instead of
+            // sitting silent under a `let _ =`.
+            if let Err(e) = storage.put(
                 sentrix_storage::tables::TABLE_BLOOM,
                 &block.index.to_be_bytes(),
                 &bloom,
-            );
+            ) {
+                tracing::warn!(
+                    "TABLE_BLOOM put failed for block {}: {} — eth_getLogs \
+                     will fall back to linear scan for this block",
+                    block.index,
+                    e
+                );
+            }
         }
 
         // Burn gets ceiling division, validator gets floor — all fees distributed with no rounding loss
