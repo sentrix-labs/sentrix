@@ -379,25 +379,30 @@ impl BftEngine {
             return BftAction::Wait; // wrong proposer, ignore
         }
 
-        // V3 defense-in-depth: even if `weighted_proposer` returns this
-        // address (active_set order matched), refuse the proposal if the
-        // validator is currently jailed or tombstoned. Normally
-        // `update_active_set` is called right after jail/slash/unjail/
-        // tombstone so `active_set` shouldn't contain them — but a race
-        // between "apply slash" and "next proposal arrives" could leave
-        // a stale view. This check is cheap (single HashMap lookup) and
-        // makes the rule invariant-by-construction: a jailed validator
-        // cannot drive the protocol forward regardless of active_set
-        // freshness.
-        if let Some(v) = stake_registry.get_validator(proposer) {
-            if v.is_jailed || v.is_tombstoned {
-                return BftAction::Wait;
-            }
-        } else {
-            // Proposer not in registry at all — also reject. This is a
-            // separate pathology (probably a removed validator still
-            // sending stale messages) but the safe answer is the same:
-            // don't accept the proposal.
+        // V3 defense-in-depth: refuse proposals from a jailed or
+        // tombstoned validator even if `weighted_proposer` returned
+        // their address. This is the original #236 intent.
+        //
+        // #247 follow-up (2026-04-25 bisect): the ORIGINAL #236 patch
+        // ALSO rejected when the proposer was missing from
+        // `stake_registry` entirely (the `else` branch). Testnet
+        // bisect showed that branch was the v2.1.12 livelock trigger:
+        // registry-vs-active_set drift happens in real operational
+        // state, and the cure is worse than the disease.
+        // `weighted_proposer` ALREADY gated the proposer address
+        // against `active_set` at line 377, so trusting that gate is
+        // safe. A genuinely-rogue proposer can't slip through because
+        // their address won't match `weighted_proposer(height, round)`
+        // in the first place.
+        //
+        // Invariant preserved: jailed/tombstoned validators cannot
+        // drive consensus.
+        // Invariant dropped: proposer must be in stake_registry
+        //   (replaced by: proposer must match weighted_proposer,
+        //   which is already enforced via active_set membership).
+        if let Some(v) = stake_registry.get_validator(proposer)
+            && (v.is_jailed || v.is_tombstoned)
+        {
             return BftAction::Wait;
         }
 
@@ -1762,19 +1767,31 @@ mod tests {
 
     /// V3 regression: proposer address not in the stake registry at all
     /// (e.g. a removed validator replaying an old gossip message) is
-    /// also rejected.
+    /// post-#247 bisect: if a validator sits in active_set but is
+    /// missing from `stake_registry.validators`, the proposal is
+    /// now ACCEPTED (not rejected). Rationale: `weighted_proposer`
+    /// already gated the proposer address against active_set at
+    /// line 377. active_set mutation requires privileged admin
+    /// access — a wire-level attacker cannot inject a rogue
+    /// proposer here. The old behaviour (reject on registry-miss)
+    /// caused testnet livelock when registry lagged active_set
+    /// (the 2026-04-25 v2.1.12 regression tracked in issue #247).
     #[test]
-    fn test_unregistered_proposer_rejected_at_on_proposal() {
+    fn test_active_set_proposer_accepted_when_missing_from_registry_validators() {
         let (mut engine, reg) = setup();
-        // Force active_set to include an unregistered address, then
-        // call on_proposal with that. This mirrors the "removed
-        // validator still in active_set" edge case.
+        engine.state.phase = BftPhase::Propose;
         let mut reg = reg;
-        reg.active_set.insert(0, "0xdeadbeef".to_string());
+        // Force weighted_proposer(100, 0) to return "0xdeadbeef" by
+        // putting it at the slot the round-robin picks, then call
+        // on_proposal with that address. With the old #236 behaviour
+        // this would return Wait; with the #247 bisect fix it must
+        // accept (weighted_proposer already gated the rotation).
+        reg.active_set.clear();
+        reg.active_set.push("0xdeadbeef".to_string());
         let action = engine.on_proposal("blockhash_abc", "0xdeadbeef", &reg);
         assert!(
-            matches!(action, BftAction::Wait),
-            "unregistered proposer must be Wait, got {:?}",
+            !matches!(action, BftAction::Wait),
+            "active-set proposer should be accepted even if not in registry.validators (post-#247 bisect); got {:?}",
             action
         );
     }
