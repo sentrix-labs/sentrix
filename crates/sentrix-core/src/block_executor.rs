@@ -630,10 +630,7 @@ impl Blockchain {
         if Self::is_reward_v2_height(block.index)
             && !Self::is_reward_v2_height(block.index.saturating_sub(1))
         {
-            for v in self.stake_registry.validators.values_mut() {
-                v.pending_rewards = 0;
-            }
-            self.stake_registry.delegator_rewards.clear();
+            self.reset_reward_accumulators_for_fork_activation();
             tracing::info!(
                 "V4 reward-v2 fork activated at height {} — pre-fork pending_rewards + delegator_rewards cleared (supply invariant reset)",
                 block.index
@@ -1062,6 +1059,25 @@ impl Blockchain {
         Ok(())
     }
 
+    /// V4 reward-v2 fork activation reset. Zeros every pre-existing
+    /// `pending_rewards` + the full `delegator_rewards` map. Pre-fork
+    /// accumulator values represented rewards that were ALREADY credited
+    /// via coinbase → proposer balance, so they are NOT real claims
+    /// against the new `PROTOCOL_TREASURY`. Reset keeps the supply
+    /// invariant
+    ///   `accounts[TREASURY] == sum(pending_rewards) + sum(delegator_rewards)`
+    /// load-bearing from block 0 of the post-fork era onward.
+    ///
+    /// Called exactly once by `apply_block_pass2` on the single
+    /// transition block, gated by
+    /// `is_reward_v2_height(block.index) && !is_reward_v2_height(block.index - 1)`.
+    fn reset_reward_accumulators_for_fork_activation(&mut self) {
+        for v in self.stake_registry.validators.values_mut() {
+            v.pending_rewards = 0;
+        }
+        self.stake_registry.delegator_rewards.clear();
+    }
+
     /// Execute an EVM transaction (from eth_sendRawTransaction) within a block.
     /// Decodes the original RLP tx from the signature field, runs it through revm,
     /// applies state changes (contract creation, storage updates, balance transfers).
@@ -1341,6 +1357,88 @@ mod tests {
         assert!(
             !Blockchain::is_reward_v2_height(1_000_000_000),
             "even huge heights must be pre-fork with default env"
+        );
+    }
+
+    /// V4 Step 3 regression: the fork-activation reset must zero EVERY
+    /// validator's `pending_rewards` and clear the full
+    /// `delegator_rewards` map. Pre-fork values represented rewards
+    /// already credited via coinbase → proposer; carrying them forward
+    /// past the fork would double-mint when a `ClaimRewards` tx drains
+    /// treasury for stale pre-fork claims.
+    ///
+    /// Scope: unit-tests the helper in isolation. The gate predicate
+    /// `is_reward_v2_height(h) && !is_reward_v2_height(h-1)` fires at
+    /// exactly one block per fork boundary; verifying the gate under
+    /// real block production belongs to the clean-testnet bake (see
+    /// CHANGELOG v2.1.19).
+    #[test]
+    fn test_v4_accumulator_reset_zeros_pre_fork_state() {
+        use sentrix_staking::staking::ValidatorStake;
+
+        let mut bc = setup();
+
+        bc.stake_registry.validators.insert(
+            "val_a".to_string(),
+            ValidatorStake {
+                address: "val_a".to_string(),
+                self_stake: 15_000,
+                total_delegated: 0,
+                commission_rate: 1000,
+                max_commission_rate: 2000,
+                is_jailed: false,
+                jail_until: 0,
+                is_tombstoned: false,
+                blocks_signed: 0,
+                blocks_missed: 0,
+                pending_rewards: 12_345,
+                registration_height: 0,
+                last_commission_change_height: 0,
+            },
+        );
+        bc.stake_registry.validators.insert(
+            "val_b".to_string(),
+            ValidatorStake {
+                address: "val_b".to_string(),
+                self_stake: 15_000,
+                total_delegated: 0,
+                commission_rate: 1000,
+                max_commission_rate: 2000,
+                is_jailed: false,
+                jail_until: 0,
+                is_tombstoned: false,
+                blocks_signed: 0,
+                blocks_missed: 0,
+                pending_rewards: 999,
+                registration_height: 0,
+                last_commission_change_height: 0,
+            },
+        );
+        bc.stake_registry
+            .delegator_rewards
+            .insert("del_x".to_string(), 500);
+        bc.stake_registry
+            .delegator_rewards
+            .insert("del_y".to_string(), 250);
+
+        bc.reset_reward_accumulators_for_fork_activation();
+
+        assert_eq!(
+            bc.stake_registry.validators["val_a"].pending_rewards, 0,
+            "val_a pending_rewards must be zeroed"
+        );
+        assert_eq!(
+            bc.stake_registry.validators["val_b"].pending_rewards, 0,
+            "val_b pending_rewards must be zeroed"
+        );
+        assert!(
+            bc.stake_registry.delegator_rewards.is_empty(),
+            "delegator_rewards must be fully cleared"
+        );
+        assert_eq!(
+            bc.stake_registry.validators.len(),
+            2,
+            "validators themselves must NOT be removed — only their reward accumulators zeroed"
         );
     }
 
