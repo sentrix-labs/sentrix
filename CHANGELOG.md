@@ -7,6 +7,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.14] — 2026-04-25 — Revert PR #237 (V1 reopened) — close v2.1.12 livelock
+
+Second bisect pass over v2.1.12 exposed PR #237 (real precommit signatures) as the underlying cause of the prevote→nil-precommit flip livelock that v2.1.13's #236 trim did not fully close. Reverting #237's tuple extension and restoring the pre-V1 blanket `vec![]` placeholder emit loop allows 4-validator testnet to produce at baseline rate (2.69 blocks/sec sustained, 484 blocks over 180 seconds, zero skip-round warnings).
+
+V1 (empty justification signatures, Voyager blocker) is REOPENED by this revert. Voyager activation is gated on V1 plus the remaining P0 blockers. A follow-up PR must re-implement real-sig emission without triggering the precommit flip — the obvious suspects are (a) tuple widening on `BftRoundState.precommits` interacting with dedup timing under libp2p message fan-in, or (b) the finalize-emit filter on `vote_hash == block_hash` excluding precommits that should still count. Next-session work.
+
+Everything else in v2.1.12's bundle stays shipped: #215 V6 liveness retune, #235 V5 commission rate-limit, #238 C-03 trie-root rollback, #239 REST finalized-height, #240 audit log context, #241 TABLE_BLOOM visibility, #242 supply + burn metrics, #243 peer-save fail alerting, #244 BACKLOG #16 durable persist, #245 REST/JSON-RPC parity. And v2.1.13's #236 trim stays (jailed/tombstoned check preserved, miss-from-registry rejection dropped).
+
+### Reverted
+
+- **bft: revert PR #237's real precommit signatures** (`crates/sentrix-bft/src/engine.rs`). `BftRoundState.precommits` tuple restored to `(Option<String>, u64)`. Finalize emit loop restored to blanket `add_precommit(val, vec![], w)` over all precommits. `test_finalize_emits_real_precommit_signatures` marked `#[ignore]` pending V1 re-implementation. V3 jail-check (#236) and V5 commission (#235) unaffected.
+
 ## [2.1.13] — 2026-04-25 — Fix v2.1.12 testnet livelock (#247 partial)
 
 v2.1.12 bundled 10 PRs and was reproducibly livelocked on 4-validator BFT testnet bake — validators prevoted block, precommitted nil 12s later, rounds skipped forever. The v2.1.12 GitHub release is flagged `--prerelease` with operator warning.
