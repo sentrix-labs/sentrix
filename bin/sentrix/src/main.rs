@@ -2168,7 +2168,7 @@ async fn cmd_start(
                                     if we_propose {
                                         let mut bc = shared_clone.write().await;
                                         if let Some((block, proposal)) = build_or_reuse_proposal(
-                                            &bft,
+                                            bft,
                                             &mut bc,
                                             &wallet.address,
                                             &validator_secret_key,
@@ -2206,7 +2206,7 @@ async fn cmd_start(
                                     if we_propose {
                                         let mut bc = shared_clone.write().await;
                                         if let Some((block, proposal)) = build_or_reuse_proposal(
-                                            &bft,
+                                            bft,
                                             &mut bc,
                                             &wallet.address,
                                             &validator_secret_key,
@@ -2338,7 +2338,7 @@ async fn cmd_start(
                                     if we_propose {
                                         let mut bc = shared_clone.write().await;
                                         if let Some((block, proposal)) = build_or_reuse_proposal(
-                                            &bft,
+                                            bft,
                                             &mut bc,
                                             &wallet.address,
                                             &validator_secret_key,
@@ -2378,7 +2378,7 @@ async fn cmd_start(
                                     if we_propose {
                                         let mut bc = shared_clone.write().await;
                                         if let Some((block, proposal)) = build_or_reuse_proposal(
-                                            &bft,
+                                            bft,
                                             &mut bc,
                                             &wallet.address,
                                             &validator_secret_key,

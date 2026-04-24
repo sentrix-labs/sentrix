@@ -591,12 +591,12 @@ impl BftEngine {
                 // the cache populated here; callers that didn't stash
                 // leave `locked_block` None and fall back to
                 // build-new-block behaviour in the validator loop.
-                if let Some((staged_hash, staged_bytes)) = self.state.staging_block.take() {
-                    if &staged_hash == h {
-                        self.state.locked_block = Some(staged_bytes);
-                    }
-                    // Staging for a different hash is discarded —
-                    // proposer rotated or we saw PoLC on an alternate.
+                // Staging for a different hash is discarded (take() leaves
+                // None regardless); promote only if hashes match.
+                if let Some((staged_hash, staged_bytes)) = self.state.staging_block.take()
+                    && &staged_hash == h
+                {
+                    self.state.locked_block = Some(staged_bytes);
                 }
             }
 
