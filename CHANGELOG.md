@@ -7,6 +7,21 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.15] — 2026-04-25 — Closes #252 livelock (revert #244 hot-path persist) + #253 liveness signers fix
+
+Third bisect pass on the v2.1.12 bundle found **PR #244** (BACKLOG #16 inline durable persist) as the residual trigger. Without #244, testnet runs at 4.47 blocks/sec sustained for 180s with zero skip-round / nil-majority warnings (955 blocks / 6 minutes clean). With all of #236-else / #237 / #244 reverted, the remaining bundle is safe to ship.
+
+Also closes the deterministic Voyager-chain cascade-jail from #253: `record_block_signatures` now receives the full list of precommit signers from `justification.precommits` instead of `vec![proposer]`, so non-proposer validators stop being counted as MISSED every block.
+
+### Fixed
+
+- **core(block_executor): remove inline `persist_block_durable` from commit hot path (#252)** (`crates/sentrix-core/src/block_executor.rs`). PR #244's inline persist did 3 MDBX puts + 1 `sync()` on every block under the blockchain write-lock. On a 4-validator Voyager testnet that pushed BFT rounds past the 12s precommit timeout under sustained load, producing the prevote→nil-precommit flip livelock pattern tracked in #252. The gap-formation risk it was guarding against (BACKLOG #16 / PR #226's 7,352 missing `block:N` keys) is already covered without hot-lock cost via #243 (loud save_block failure + Prometheus alert) and #225 (GetBlocks serves evicted blocks from MDBX for peer sync recovery). `persist_block_durable` stays on `Blockchain` as an opt-in tool for CLI / recovery flows.
+- **bft/staking: count ALL precommit signers in liveness, not just proposer (#253)** (`bin/sentrix/src/main.rs`, `crates/sentrix-staking/src/slashing.rs`). Both BFT FinalizeBlock call sites were passing `signers = vec![proposer]` to `record_block_signatures`, so on a 4-validator chain each validator was counted as SIGNED only 25% of blocks vs the 30% `MIN_SIGNED_PER_WINDOW` threshold — deterministic cascade-jail every 14400 blocks (~80 min at 3 blocks/sec). Fix extracts signers from `justification.precommits`. Two regression tests pin the semantics: `test_full_justification_no_cascade_jail` (healthy) + `test_proposer_only_signers_triggers_cascade_jail` (load-bearing proof the old model was broken).
+
+### Added (test infrastructure)
+
+- **4-validator in-memory BFT harness** (`crates/sentrix-bft/tests/four_validator_harness.rs`). 5 tests drive `BftEngine` through full Propose→Prevote→Precommit→Finalize cycles with a shared `StakeRegistry`, no libp2p. The missing infrastructure that would have caught #237 pre-merge. Happy path, three-consecutive-heights, round-advance, prevote + precommit dedup.
+
 ## [2.1.14] — 2026-04-25 — Revert PR #237 (V1 reopened) — close v2.1.12 livelock
 
 Second bisect pass over v2.1.12 exposed PR #237 (real precommit signatures) as the underlying cause of the prevote→nil-precommit flip livelock that v2.1.13's #236 trim did not fully close. Reverting #237's tuple extension and restoring the pre-V1 blanket `vec![]` placeholder emit loop allows 4-validator testnet to produce at baseline rate (2.69 blocks/sec sustained, 484 blocks over 180 seconds, zero skip-round warnings).

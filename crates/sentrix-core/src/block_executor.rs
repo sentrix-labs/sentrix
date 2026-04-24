@@ -546,41 +546,34 @@ impl Blockchain {
 
         match self.apply_block_pass2(block) {
             Ok(()) => {
-                // BACKLOG #16 durable fix: persist the just-committed block
-                // to MDBX in the same scope that holds `snap`. If persist
-                // fails, we roll back in-memory state via the same
-                // mechanism as the Pass-2-Err branch below — chain state
-                // and disk stay in lock-step, so a crash + restart sees
-                // a consistent tip. No more "applied-in-memory-but-not-
-                // persisted" orphan windows that create the 7,352-block
-                // TABLE_META gap pattern surfaced by PR #226's sweep test.
+                // #252 / #244-revert: the earlier BACKLOG #16 "durable"
+                // fix called `persist_block_durable` here under the
+                // blockchain write-lock — three MDBX puts + one fsync
+                // on every single commit. On a 4-validator Voyager
+                // testnet that pushed BFT rounds past the 12s
+                // precommit timeout under sustained load, causing the
+                // prevote→nil-precommit flip livelock tracked in #252.
                 //
-                // `mdbx_storage` is None only in unit-test paths that
-                // don't bind storage. `persist_block_durable` returns Err
-                // in that case; production callers always bind storage
-                // via `init_storage_handle`. Treat the None case as a
-                // test harness and skip — no gap risk because there's no
-                // disk path at all.
-                if self.mdbx_storage.is_some()
-                    && let Some(just_committed) = self.chain.last().cloned()
-                    && let Err(e) = self.persist_block_durable(&just_committed)
-                {
-                    tracing::error!(
-                        "BACKLOG #16 durable fix triggered: persist failed for block {}: {}; rolling back in-memory state",
-                        just_committed.index,
-                        e
-                    );
-                    self.accounts = snap.accounts;
-                    self.contracts = snap.contracts;
-                    self.authority = snap.authority;
-                    self.mempool = snap.mempool;
-                    self.total_minted = snap.total_minted;
-                    self.chain.truncate(snap.chain_len);
-                    if let (Some(trie), Some(root)) = (self.state_trie.as_mut(), snap.trie_root) {
-                        trie.set_root(root);
-                    }
-                    return Err(e);
-                }
+                // The gap-formation risk it was guarding against
+                // (BACKLOG #16, PR #226 sweep found 7,352 missing
+                // `block:N` keys) is already covered without blocking
+                // the hot path:
+                //   - #243 turned the silent peer-block save_block
+                //     failure into `error!` + Prometheus counter +
+                //     alert rule, so gaps get caught at the moment
+                //     of formation.
+                //   - #225 taught `GetBlocks` to serve evicted blocks
+                //     from MDBX, so gaps that do form can be healed
+                //     via p2p sync instead of requiring an operator
+                //     rsync.
+                // Durability + observability + recovery without the
+                // hot-lock fsync cost.
+                //
+                // `persist_block_durable` remains on `Blockchain` as
+                // an opt-in tool — operator CLI ops, recovery
+                // scripts, and explicit admin flows can still call
+                // it when they genuinely need an immediate fsync.
+                // The validator loop does not.
                 Ok(())
             }
             Err(e) => {
