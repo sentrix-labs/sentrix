@@ -9,6 +9,8 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [2.1.21] — 2026-04-24 — Observability + startup perf (no consensus change)
 
+> **🚨 DEPLOYMENT FROZEN** — 2026-04-24 Beacon canary (VPS5) triggered immediate `CRITICAL #1e: state_root mismatch` against v2.1.15 peers even with fork envs unset. Rolled back to v2.1.15; divergence persisted through 3 rsync recovery attempts. Root cause remains unresolved — see GitHub issue #268. Do NOT deploy v2.1.21 to any mainnet VPS until the issue closes.
+
 Maintenance patch collecting three bite-sized improvements merged over the 2026-04-24 session. No consensus, wire, or storage format change; `VOYAGER_*_HEIGHT` env vars remain the sole activation gates for Voyager behaviour.
 
 ### Added (#269)
