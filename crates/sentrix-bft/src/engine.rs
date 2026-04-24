@@ -70,6 +70,27 @@ pub struct BftRoundState {
     /// Locked value: if we precommitted for a hash, we're locked on it
     pub locked_hash: Option<String>,
     pub locked_round: Option<u32>,
+    /// V2 M-15 Step 1: block bytes cached alongside `locked_hash` so a
+    /// locked validator elected proposer in a later round can RE-PROPOSE
+    /// the cached block instead of building a fresh one (whose timestamp
+    /// → different hash would trigger the lock-nil-prevote livelock).
+    /// See `audits/v2-locked-block-repropose-implementation-plan.md`.
+    ///
+    /// Populated from `staging_block` at the moment prevote-supermajority
+    /// fires. Cleared on `new_height`. Preserved across `advance_round`
+    /// (same semantics as `locked_hash`). `#[serde(default)]` for
+    /// forward-compat — `BftRoundState` is in-memory-only today but the
+    /// planned WAL (M-16 follow-up) will persist this field.
+    #[serde(default)]
+    pub locked_block: Option<Vec<u8>>,
+    /// V2 M-15 Step 1: temporary hold for a proposal's block bytes
+    /// between `on_proposal` arrival and prevote-supermajority. If the
+    /// staged hash matches the hash that crosses 2/3+ prevote threshold,
+    /// bytes are promoted to `locked_block`. Cleared on `advance_round`
+    /// and `new_height`. Not wired yet — Step 2 adds the on_proposal /
+    /// on_own_proposal parameters to stash bytes here.
+    #[serde(default)]
+    pub staging_block: Option<(String, Vec<u8>)>,
     /// Total stake of current active set (for threshold calculation)
     pub total_active_stake: u64,
 }
@@ -87,6 +108,8 @@ impl BftRoundState {
             our_precommit_cast: false,
             locked_hash: None,
             locked_round: None,
+            locked_block: None,
+            staging_block: None,
             total_active_stake,
         }
     }
@@ -99,7 +122,10 @@ impl BftRoundState {
         self.precommits.clear();
         self.our_prevote_cast = false;
         self.our_precommit_cast = false;
-        // locked_hash and locked_round persist across rounds
+        // locked_hash, locked_round, and locked_block persist across rounds
+        // (same PoLC semantics). staging_block is per-round and cleared here —
+        // next round's proposal will re-stash.
+        self.staging_block = None;
     }
 
     pub fn advance_height(&mut self, new_height: u64, total_active_stake: u64) {
