@@ -84,6 +84,29 @@ pub enum SentrixRequest {
     BftRoundStatus { status: RoundStatus },
 }
 
+impl SentrixRequest {
+    /// Static tag used in diagnostic logs and metrics labels. Needed by
+    /// bug #1d investigation — OutboundFailure logs today say "outbound
+    /// failure to {peer}: {err}" with no hint which request variant was
+    /// in flight, so we can't tell if BFT proposals are the ones timing
+    /// out or unrelated background traffic (e.g. periodic GetBlocks).
+    /// See `audits/bug-1d-proposer-request-response-design.md`.
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            SentrixRequest::Handshake { .. } => "Handshake",
+            SentrixRequest::NewBlock { .. } => "NewBlock",
+            SentrixRequest::NewTransaction { .. } => "NewTransaction",
+            SentrixRequest::GetBlocks { .. } => "GetBlocks",
+            SentrixRequest::GetHeight => "GetHeight",
+            SentrixRequest::Ping => "Ping",
+            SentrixRequest::BftProposal { .. } => "BftProposal",
+            SentrixRequest::BftPrevote { .. } => "BftPrevote",
+            SentrixRequest::BftPrecommit { .. } => "BftPrecommit",
+            SentrixRequest::BftRoundStatus { .. } => "BftRoundStatus",
+        }
+    }
+}
+
 /// Responses returned by a peer for the above requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SentrixResponse {
