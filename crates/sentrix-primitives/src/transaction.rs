@@ -10,6 +10,23 @@ pub const MIN_TX_FEE: u64 = 10_000; // 0.0001 SRX in sentri
 pub const COINBASE_ADDRESS: &str = "COINBASE";
 pub const TOKEN_OP_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 
+/// V4 Step 3 reward-v2 escrow address. After `VOYAGER_REWARD_V2_HEIGHT`
+/// activates, coinbase credits go here instead of directly to the
+/// proposer's balance. `distribute_reward` updates in-registry
+/// accumulators (`pending_rewards`, `delegator_rewards`) which are
+/// receivables against this treasury. `StakingOp::ClaimRewards` drains
+/// the claimer's accumulator by transferring `PROTOCOL_TREASURY →
+/// claimer`.
+///
+/// No private key exists for this address — `tx.from_address ==
+/// PROTOCOL_TREASURY` is rejected at signature-verify time (nothing
+/// can sign as treasury). Treasury is drained only via the consensus-
+/// level claim dispatch in `block_executor::apply_block_pass2`.
+///
+/// Supply invariant post-fork:
+///   accounts[PROTOCOL_TREASURY] == sum(pending_rewards) + sum(delegator_rewards)
+pub const PROTOCOL_TREASURY: &str = "0x0000000000000000000000000000000000000002";
+
 // ── Token operation types (encoded in Transaction.data field) ──
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
