@@ -132,6 +132,11 @@ pub(super) async fn metrics(State(state): State<SharedState>) -> axum::response:
     let mempool = bc.mempool_size();
     let chain_id = bc.chain_id;
     let deployed_tokens = bc.list_tokens().len();
+    let total_minted_sentri = bc.total_minted;
+    let total_burned_sentri = bc.accounts.total_burned;
+    // Circulating = minted − burned. Cheap to compute here so Prometheus/Grafana
+    // can chart it directly without users learning the burn semantics.
+    let circulating_sentri = total_minted_sentri.saturating_sub(total_burned_sentri);
 
     // Compute avg block time from last 10 blocks in the window.
     let mut block_times: Vec<u64> = Vec::new();
@@ -191,7 +196,16 @@ pub(super) async fn metrics(State(state): State<SharedState>) -> axum::response:
          sentrix_uptime_seconds {uptime}\n\
          # HELP sentrix_chain_id Chain identifier.\n\
          # TYPE sentrix_chain_id gauge\n\
-         sentrix_chain_id {chain_id}\n"
+         sentrix_chain_id {chain_id}\n\
+         # HELP sentrix_total_minted_sentri Total SRX ever minted by the chain (coinbase rewards + genesis premine). 1 SRX = 100_000_000 sentri.\n\
+         # TYPE sentrix_total_minted_sentri counter\n\
+         sentrix_total_minted_sentri {total_minted_sentri}\n\
+         # HELP sentrix_total_burned_sentri Total SRX burned (50% of each tx fee + explicit burns). Monotonically increasing counter.\n\
+         # TYPE sentrix_total_burned_sentri counter\n\
+         sentrix_total_burned_sentri {total_burned_sentri}\n\
+         # HELP sentrix_circulating_supply_sentri Currently circulating SRX = total_minted − total_burned.\n\
+         # TYPE sentrix_circulating_supply_sentri gauge\n\
+         sentrix_circulating_supply_sentri {circulating_sentri}\n"
     );
 
     axum::response::Response::builder()

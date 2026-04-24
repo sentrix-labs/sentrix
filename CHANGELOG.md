@@ -19,6 +19,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **rpc(rest): `GET /chain/finalized-height`** — REST alias for the existing `sentrix_getFinalizedHeight` JSON-RPC method. Closes the A5 audit finding. Returns `finalized_height` / `finalized_hash` / `latest_height` / `blocks_behind_finality` / `consensus`. On Pioneer PoA every committed block is final — endpoint returns the tip. On Voyager BFT walks back from the tip for the newest block with `justification.is_some()`. Lets light clients + dashboards + Prometheus exporters learn finality lag without speaking JSON-RPC.
+- **rpc(metrics): supply + burn counters exposed at `/metrics`** — three new Prometheus gauges/counters: `sentrix_total_minted_sentri` (counter, all SRX ever minted), `sentrix_total_burned_sentri` (counter, all SRX burned from fee split + explicit burns), `sentrix_circulating_supply_sentri` (gauge = minted − burned). Unlocks supply-curve and burn-rate charts in Grafana + lets Prometheus alert on supply-invariant violations (e.g. `sentrix_total_minted_sentri > MAX_SUPPLY_sentri` should NEVER fire on a healthy chain). Raw sentri integers (not SRX floats) so rates/deltas stay exact across 1 SRX = 100M sentri scale.
 
 ## [2.1.11] — 2026-04-23 — MIN_ACTIVE_VALIDATORS: 3 → 1 (bootstrap-friendly)
 
