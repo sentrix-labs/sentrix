@@ -7,6 +7,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.13] — 2026-04-25 — Fix v2.1.12 testnet livelock (#247 partial)
+
+v2.1.12 bundled 10 PRs and was reproducibly livelocked on 4-validator BFT testnet bake — validators prevoted block, precommitted nil 12s later, rounds skipped forever. The v2.1.12 GitHub release is flagged `--prerelease` with operator warning.
+
+Bisected to PR #236's `on_proposal` check: the else-branch (reject when proposer is missing from `stake_registry.validators`) was too strict for real operational state where registry-vs-active_set drift happens. `weighted_proposer` already gated the proposer upstream, so the extra registry-miss reject was belt-and-suspenders that tripped itself.
+
+Fix preserves the original #236 intent (jailed/tombstoned validators cannot drive consensus) and drops the else-branch rejection. No other runtime logic changed.
+
+### Fixed
+
+- **bft: drop `stake_registry.get_validator()` miss-reject in `on_proposal`** (`crates/sentrix-bft/src/engine.rs`, #248). Bisected root cause of the v2.1.12 testnet livelock. With the else-branch removed, testnet immediately produced clean blocks at baseline rate for the first 82 blocks of bake before a separate cascade (PR #215 tight liveness thresholds interacting with PR #236 `update_active_set()` eviction) surfaced — documented in issue #247 for next-session follow-up. Regression test flipped: `test_unregistered_proposer_rejected_at_on_proposal` retired, replaced with `test_active_set_proposer_accepted_when_missing_from_registry_validators` pinning the new invariant. 71/71 BFT tests green.
+
 ## [2.1.12] — 2026-04-24 — Voyager-blocker sweep + BACKLOG #16 durable + REST/JSON-RPC parity
 
 Patch release bundling the 2026-04-24 late-night marathon: three Voyager blockers closed (V1 real precommit signatures, V3 jailing enforcement at consensus, V5 commission rate-limit), the C-03 trie-root rollback gap sealed, BACKLOG #16 gap formation eliminated at the durable fix point (atomic apply + MDBX persist with rollback), fresh-brain review follow-up aligning REST `/chain/finalized-height` semantics with JSON-RPC, plus observability + metrics surface work (supply + burn counters, silent P2P block-save alerting, TABLE_BLOOM visibility).
