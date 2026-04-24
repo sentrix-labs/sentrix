@@ -661,6 +661,88 @@ mod tests {
         assert_eq!(m2, 1);
     }
 
+    /// #253 regression: a 4-validator BFT chain where every block's
+    /// justification carries all four precommits should NOT trigger
+    /// downtime jail on any validator, even after a full LIVENESS_WINDOW.
+    ///
+    /// Before #253's fix, `main.rs` called `record_block_signatures`
+    /// with `signers = vec![proposer]`, so each non-proposer validator
+    /// was counted as MISSED every block. On a 4-validator chain, that
+    /// put each validator at 25% signed vs the 30% MIN_SIGNED_PER_WINDOW
+    /// threshold → deterministic cascade-jail every 14400 blocks
+    /// (~80min at 3 blocks/sec). This test pins the correct semantics:
+    /// every precommit signer in the justification counts as "signed".
+    #[test]
+    fn test_full_justification_no_cascade_jail() {
+        let mut engine = SlashingEngine::new();
+        let active = vec![
+            "0xval1".into(),
+            "0xval2".into(),
+            "0xval3".into(),
+            "0xval4".into(),
+        ];
+
+        // Simulate a full LIVENESS_WINDOW of blocks where every
+        // validator signs every block (healthy 4/4 justification).
+        for h in 0..LIVENESS_WINDOW {
+            engine.record_block_signatures(&active, &active, h);
+        }
+
+        for v in &active {
+            assert!(
+                !engine.liveness.is_downtime(v),
+                "#253: validator {} must not be downtime when all 4 precommits are recorded \
+                 every block — got downtime after LIVENESS_WINDOW of full participation",
+                v
+            );
+            let (signed, missed) = engine.liveness.get_stats(v);
+            assert_eq!(
+                signed, LIVENESS_WINDOW,
+                "#253: {} should show full signed_count, got signed={} missed={}",
+                v, signed, missed
+            );
+        }
+    }
+
+    /// #253 regression: the BROKEN pre-fix model (`signers = vec![proposer]`
+    /// where proposer rotates round-robin) deterministically cascade-jails
+    /// every validator. This test pins that the broken model WAS indeed
+    /// below threshold so the fix is load-bearing, not cosmetic.
+    #[test]
+    fn test_proposer_only_signers_triggers_cascade_jail() {
+        let mut engine = SlashingEngine::new();
+        let active: Vec<String> =
+            (0..4).map(|i| format!("0xval{}", i + 1)).collect();
+
+        // Simulate LIVENESS_WINDOW blocks with the BROKEN model:
+        // only the rotating proposer goes into `signers`.
+        for h in 0..LIVENESS_WINDOW {
+            let proposer_idx = (h as usize) % active.len();
+            let signers = vec![active[proposer_idx].clone()];
+            engine.record_block_signatures(&active, &signers, h);
+        }
+
+        // Each validator signed exactly 1/4 of blocks = 25% < 30% threshold.
+        for v in &active {
+            let (signed, _) = engine.liveness.get_stats(v);
+            let expected = LIVENESS_WINDOW / 4;
+            // Allow ±1 for integer division of LIVENESS_WINDOW / 4.
+            assert!(
+                signed.abs_diff(expected) <= 1,
+                "#253 broken-model pin: {} signed {} blocks; expected ≈{}",
+                v,
+                signed,
+                expected
+            );
+            assert!(
+                engine.liveness.is_downtime(v),
+                "#253 broken-model pin: {} must be flagged downtime under the old \
+                 signers=vec![proposer] scheme (25% signed < 30% threshold)",
+                v
+            );
+        }
+    }
+
     #[test]
     fn test_total_slashed_accumulates() {
         let mut reg = setup_registry();

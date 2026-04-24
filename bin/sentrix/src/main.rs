@@ -1536,7 +1536,21 @@ async fn cmd_start(
 
                                                         let active =
                                                             bc.stake_registry.active_set.clone();
-                                                        let signers = vec![proposer.clone()];
+                                                        // #253: liveness-signers bug — the old
+                                                        // `signers = vec![proposer]` marked every
+                                                        // non-proposer as MISSED each block, so on
+                                                        // a 4-validator BFT chain each validator
+                                                        // signed only 25% of blocks vs the 30%
+                                                        // MIN_SIGNED_PER_WINDOW threshold, driving
+                                                        // deterministic cascade-jail every 14400
+                                                        // blocks (~80min). Correct model: every
+                                                        // precommit signer in the justification
+                                                        // signed the block, not just the proposer.
+                                                        let signers: Vec<String> = justification
+                                                            .precommits
+                                                            .iter()
+                                                            .map(|p| p.validator.clone())
+                                                            .collect();
                                                         bc.slashing.record_block_signatures(
                                                             &active, &signers, height,
                                                         );
@@ -1906,7 +1920,13 @@ async fn cmd_start(
                                                 bc.epoch_manager.record_block(reward);
 
                                                 let active = bc.stake_registry.active_set.clone();
-                                                let signers = vec![proposer.clone()];
+                                                // #253: see the sibling site above for rationale.
+                                                // Peer-finalize branch — same fix, same model.
+                                                let signers: Vec<String> = justification
+                                                    .precommits
+                                                    .iter()
+                                                    .map(|p| p.validator.clone())
+                                                    .collect();
                                                 bc.slashing.record_block_signatures(
                                                     &active, &signers, height,
                                                 );
