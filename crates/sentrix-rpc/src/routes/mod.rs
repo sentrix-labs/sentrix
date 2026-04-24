@@ -10,7 +10,7 @@ mod auth;
 mod cache;
 mod chain;
 mod epoch;
-mod ops;
+pub mod ops;
 mod ratelimit;
 mod staking;
 mod tokens;
