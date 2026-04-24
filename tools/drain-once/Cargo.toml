@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "drain-once"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+sentrix-primitives = { path = "../../crates/sentrix-primitives" }
+sentrix-wallet = { path = "../../crates/sentrix-wallet" }
+secp256k1 = { version = "0.31", features = ["rand", "serde"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+hex = "0.4"
+clap = { version = "4", features = ["derive"] }
