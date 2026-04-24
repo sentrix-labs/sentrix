@@ -60,14 +60,10 @@ pub struct BftRoundState {
     pub proposed_hash: Option<String>,
     /// Prevotes collected: validator → (block_hash option, stake_weight)
     pub prevotes: HashMap<String, (Option<String>, u64)>,
-    /// Precommits collected: validator → (block_hash option, signature bytes, stake_weight).
-    /// Signature is the ECDSA bytes from the peer's `Precommit` message
-    /// — kept alongside the vote so that when a 2/3+ supermajority lands
-    /// we can emit a `BlockJustification` with REAL signatures, not
-    /// `vec![]` placeholders. Closes V1 Voyager-blocker (empty
-    /// justification signatures — silent-reorg surface when Voyager
-    /// activates).
-    pub precommits: HashMap<String, (Option<String>, Vec<u8>, u64)>,
+    /// Precommits collected: validator → (block_hash option, stake_weight).
+    /// BISECT #247: PR #237's signature-bytes extension REVERTED here to
+    /// test hypothesis it caused the v2.1.12 precommit-flip livelock.
+    pub precommits: HashMap<String, (Option<String>, u64)>,
     /// Our own vote cast this round (prevent double-voting)
     pub our_prevote_cast: bool,
     pub our_precommit_cast: bool,
@@ -590,11 +586,7 @@ impl BftEngine {
 
         self.state.precommits.insert(
             precommit.validator.clone(),
-            (
-                precommit.block_hash.clone(),
-                precommit.signature.clone(),
-                stake,
-            ),
+            (precommit.block_hash.clone(), stake),
         );
         self.collector
             .add_precommit(precommit.block_hash.clone(), stake);
@@ -611,17 +603,11 @@ impl BftEngine {
                         self.state.round,
                         block_hash.clone(),
                     );
-                    // V1: emit REAL signatures. Only include precommits
-                    // that voted for the finalized hash — nil precommits
-                    // and precommits for other hashes don't belong in
-                    // this block's justification. The aggregated stake
-                    // across included entries is what a verifier will
-                    // weigh against `total_active_stake` to reconstruct
-                    // the 2/3+ supermajority.
-                    for (val, (vote_hash, sig, w)) in &self.state.precommits {
-                        if vote_hash.as_deref() == Some(block_hash.as_str()) {
-                            justification.add_precommit(val.clone(), sig.clone(), *w);
-                        }
+                    // BISECT #247: PR #237 filtered+added real sigs here;
+                    // reverted to pre-V1 blanket vec![] placeholder to test
+                    // whether the tuple-widening caused the livelock.
+                    for (val, (_, w)) in &self.state.precommits {
+                        justification.add_precommit(val.clone(), vec![], *w);
                     }
 
                     self.state.phase = BftPhase::Finalize;
@@ -1684,6 +1670,7 @@ mod tests {
     /// hash are NOT included in the finalized block's justification
     /// (only the winning hash's backers should be counted).
     #[test]
+    #[ignore = "BISECT #247: #237 temporarily reverted while diagnosing livelock"]
     fn test_finalize_emits_real_precommit_signatures() {
         let (mut engine, _) = setup();
         let total = engine.state.total_active_stake;
