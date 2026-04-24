@@ -48,11 +48,16 @@ pub(super) async fn get_finalized_height(
     let next_height = latest.index.saturating_add(1);
     let bft_active = sentrix_core::blockchain::Blockchain::is_voyager_height(next_height);
 
+    // Fallback to latest when BFT is active but no justified block sits
+    // in the sliding window yet. Mirrors `sentrix_getFinalizedHeight`
+    // JSON-RPC semantics exactly — querying either endpoint must return
+    // the same value, otherwise light clients hitting REST see
+    // `finalized_height=0` on a chain JSON-RPC reports as finalized at tip.
     let (finalized_height, finalized_hash) = if !bft_active {
         (latest.index, latest.hash.clone())
     } else {
-        let mut h = 0u64;
-        let mut hash = String::new();
+        let mut h = latest.index;
+        let mut hash = latest.hash.clone();
         for b in bc.chain.iter().rev() {
             if b.justification.is_some() {
                 h = b.index;
