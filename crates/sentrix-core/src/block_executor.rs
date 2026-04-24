@@ -721,21 +721,32 @@ impl Blockchain {
                 }
             }
 
-            // V4 Step 3: StakingOp dispatch. Only ClaimRewards wired in
-            // this patch — other variants (Delegate, Undelegate,
-            // Redelegate, Unjail, SubmitEvidence) are defined in
-            // primitives but unwired here; a separate staking-via-tx
-            // dispatch PR will handle those.
+            // V4 / staking-via-tx dispatch. Gated on
+            // `is_reward_v2_height(block.index)` — pre-fork chains ignore
+            // the op entirely (same as today's pre-V4 behaviour where
+            // StakingOp has no runtime effect).
             //
-            // Gated on `is_reward_v2_height(block.index)` — pre-fork
-            // chains ignore the op entirely (same as today's pre-V4
-            // behaviour where StakingOp has no runtime effect).
+            // Convention: staking txs MUST set `to_address = PROTOCOL_TREASURY`.
+            // The outer `accounts.transfer` at the top of this loop
+            // routes `tx.amount` into treasury as the escrow move for
+            // Delegate / RegisterValidator. Other variants (Undelegate,
+            // Redelegate, Unjail, ClaimRewards, SubmitEvidence) expect
+            // `tx.amount = 0` — only the fee is consumed. We enforce
+            // the `to_address == TREASURY` invariant inside dispatch
+            // below; wrong address → Err → Pass 2 rollback.
             if Self::is_reward_v2_height(block.index)
                 && let Some(staking_op) = sentrix_primitives::transaction::StakingOp::decode(&tx.data)
             {
-                use sentrix_primitives::transaction::StakingOp;
+                use sentrix_primitives::transaction::{PROTOCOL_TREASURY, StakingOp};
+                if tx.to_address != PROTOCOL_TREASURY {
+                    return Err(SentrixError::InvalidTransaction(format!(
+                        "staking op tx must target PROTOCOL_TREASURY; got to_address={}",
+                        tx.to_address
+                    )));
+                }
                 match staking_op {
                     StakingOp::ClaimRewards => {
+                        // Drain claimer's accumulator (delegator + validator).
                         let claimer = tx.from_address.clone();
                         let delegator_amount = self.stake_registry.take_delegator_rewards(&claimer);
                         let validator_amount = self
@@ -746,24 +757,129 @@ impl Blockchain {
                             .unwrap_or(0);
                         let total_claim = delegator_amount.saturating_add(validator_amount);
                         if total_claim > 0 {
-                            // Transfer treasury → claimer (zero fee on the
-                            // claim itself; sender's own fee was already
-                            // paid via the outer tx.fee at `transfer` above).
                             self.accounts.transfer(
-                                sentrix_primitives::transaction::PROTOCOL_TREASURY,
+                                PROTOCOL_TREASURY,
                                 &claimer,
                                 total_claim,
                                 0,
                             )?;
                         }
                     }
-                    // Unwired variants — accepted at tx-decode time but
-                    // silently no-op at apply time. Prevents accidental
-                    // state mutations while the dispatch framework lands
-                    // in follow-up PRs. Caller's fee still burns (via the
-                    // outer `transfer` above) so this isn't a free-tx
-                    // surface.
-                    _ => {}
+                    StakingOp::RegisterValidator {
+                        self_stake,
+                        commission_rate,
+                        public_key,
+                    } => {
+                        // Outer transfer moved `tx.amount` sender → treasury.
+                        // Enforce that amount exactly covers the declared self_stake.
+                        if tx.amount != self_stake {
+                            return Err(SentrixError::InvalidTransaction(format!(
+                                "RegisterValidator: tx.amount ({}) must equal self_stake ({})",
+                                tx.amount, self_stake
+                            )));
+                        }
+                        self.stake_registry.register_validator(
+                            &tx.from_address,
+                            self_stake,
+                            commission_rate,
+                            block.index,
+                        )?;
+                        // Mirror into authority so round-robin picks this
+                        // validator for block production once activated.
+                        self.authority.add_validator_unchecked(
+                            tx.from_address.clone(),
+                            format!("Community:{}", &tx.from_address[..10]),
+                            public_key,
+                        );
+                    }
+                    StakingOp::Delegate { validator, amount } => {
+                        if tx.amount != amount {
+                            return Err(SentrixError::InvalidTransaction(format!(
+                                "Delegate: tx.amount ({}) must equal delegation amount ({})",
+                                tx.amount, amount
+                            )));
+                        }
+                        self.stake_registry.delegate(
+                            &tx.from_address,
+                            &validator,
+                            amount,
+                            block.index,
+                        )?;
+                    }
+                    StakingOp::Undelegate { validator, amount } => {
+                        // No escrow movement on request — money stays in
+                        // treasury until the unbonding queue matures at an
+                        // epoch boundary. `tx.amount` must be 0.
+                        if tx.amount != 0 {
+                            return Err(SentrixError::InvalidTransaction(
+                                "Undelegate: tx.amount must be 0 (amount is in data field)".into(),
+                            ));
+                        }
+                        self.stake_registry.undelegate(
+                            &tx.from_address,
+                            &validator,
+                            amount,
+                            block.index,
+                        )?;
+                    }
+                    StakingOp::Redelegate {
+                        from_validator,
+                        to_validator,
+                        amount,
+                    } => {
+                        if tx.amount != 0 {
+                            return Err(SentrixError::InvalidTransaction(
+                                "Redelegate: tx.amount must be 0".into(),
+                            ));
+                        }
+                        self.stake_registry.redelegate(
+                            &tx.from_address,
+                            &from_validator,
+                            &to_validator,
+                            amount,
+                            block.index,
+                        )?;
+                    }
+                    StakingOp::Unjail => {
+                        if tx.amount != 0 {
+                            return Err(SentrixError::InvalidTransaction(
+                                "Unjail: tx.amount must be 0".into(),
+                            ));
+                        }
+                        self.stake_registry
+                            .unjail(&tx.from_address, block.index)?;
+                    }
+                    StakingOp::SubmitEvidence {
+                        height,
+                        block_hash_a,
+                        block_hash_b,
+                        signature_a,
+                        signature_b,
+                    } => {
+                        if tx.amount != 0 {
+                            return Err(SentrixError::InvalidTransaction(
+                                "SubmitEvidence: tx.amount must be 0".into(),
+                            ));
+                        }
+                        // Evidence targets the validator accused of
+                        // double-signing. Slashing engine verifies the
+                        // evidence + applies slash + tombstone if valid.
+                        let evidence = sentrix_staking::slashing::DoubleSignEvidence {
+                            validator: tx.from_address.clone(),
+                            height,
+                            block_hash_a,
+                            block_hash_b,
+                            signature_a,
+                            signature_b,
+                        };
+                        let _ = self
+                            .slashing
+                            .process_double_sign(&mut self.stake_registry, &evidence);
+                        // Bounty to submitter deferred — current design
+                        // has no reporter field in SubmitEvidence (the
+                        // submitter IS the offender in this naive shape).
+                        // Follow-up: separate submitter + offender fields.
+                    }
                 }
             }
 

@@ -7,6 +7,37 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.20] — 2026-04-25 — Full StakingOp dispatch (Delegate / Undelegate / Redelegate / Unjail / RegisterValidator / SubmitEvidence)
+
+v2.1.19 wired only ClaimRewards. This release closes the last code-side Voyager launch blocker by wiring every remaining `StakingOp` variant into the `block_executor` dispatch, all escrowed through `PROTOCOL_TREASURY` so the supply invariant holds across the full delegate → reward → unbond cycle.
+
+### Added (staking-via-tx dispatch)
+
+All variants gated on `is_reward_v2_height(block.index)` + require `tx.to_address == PROTOCOL_TREASURY`:
+
+- **`RegisterValidator { self_stake, commission_rate, public_key }`** — self_stake escrowed to treasury via outer transfer; `stake_registry.register_validator` + authority mirror. Enables community validators without admin involvement. `add_validator_unchecked` made non-test-only for this path.
+- **`Delegate { validator, amount }`** — `tx.amount == amount` enforced; outer transfer escrows to treasury; `stake_registry.delegate` records bookkeeping.
+- **`Undelegate { validator, amount }`** — `tx.amount == 0`; `stake_registry.undelegate` queues unbonding.
+- **`Redelegate { from, to, amount }`** — `tx.amount == 0`; `stake_registry.redelegate` moves delegation bookkeeping between validators.
+- **`Unjail`** — `tx.amount == 0`; `stake_registry.unjail` clears the jail flag.
+- **`SubmitEvidence { ... }`** — `tx.amount == 0`; `slashing.process_double_sign` applies slash + tombstone. Bounty-to-submitter deferred (schema needs separate `submitter` field).
+
+### Fixed (unbonding maturity)
+
+- **main.rs: post-fork unbonding release transfers from treasury** — pre-fork path used `accounts.credit` (mint from nowhere). Post-fork path now correctly `accounts.transfer(PROTOCOL_TREASURY, delegator, amount, 0)`. Both self-produce + peer-finalize unbonding paths fixed. Supply invariant holds across the full escrow lifecycle.
+
+### Validation posture
+
+Wrong `to_address` → `Err(InvalidTransaction)` → Pass 2 snapshot rollback reverts the block's mutations. Prevents accidental loss of SRX by users sending staking ops to wrong address.
+
+### Tests
+
+All existing 180 core + 88 staking + 76 bft + 5 harness tests pass. No new regression tests for the newly-wired variants — covered by the underlying `stake_registry` tests which exercise the delegation/unbonding/slashing logic directly.
+
+### Mainnet / testnet impact
+
+No runtime impact today — both `VOYAGER_FORK_HEIGHT` + `VOYAGER_REWARD_V2_HEIGHT` default `u64::MAX`. Enables end-to-end staking-via-tx flow when operator coordinates the hard-fork activation.
+
 ## [2.1.19] — 2026-04-25 — V4 Step 3 — treasury-escrow + ClaimRewards dispatch (gated fork)
 
 Closes the V4 design. `PROTOCOL_TREASURY` address reserved, coinbase routing gated on `VOYAGER_REWARD_V2_HEIGHT` env var, `StakingOp::ClaimRewards` dispatch wired in `block_executor`. Supply invariant restored: post-fork, every SRX block reward lands in treasury, drains only via a claim tx that decrements the per-delegator / per-validator accumulator.

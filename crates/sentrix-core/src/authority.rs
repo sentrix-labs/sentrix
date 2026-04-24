@@ -430,9 +430,15 @@ impl AuthorityManager {
         Ok(())
     }
 
-    /// Test-only helper: add a validator without public key crypto validation.
-    /// Use this in unit tests where you want to control the address string directly.
-    #[cfg(test)]
+    /// Add a validator without admin check. Originally test-only but now
+    /// also used by the staking-via-tx dispatch in `block_executor`
+    /// (StakingOp::RegisterValidator): there the caller's eligibility is
+    /// proven via stake deposit into `PROTOCOL_TREASURY`, not admin
+    /// signature, so `add_validator` (which demands admin caller) is
+    /// wrong shape.
+    ///
+    /// Still unchecked w.r.t. duplicates — caller (`register_validator`
+    /// in staking) handles the "already registered" error.
     pub fn add_validator_unchecked(&mut self, address: String, name: String, public_key: String) {
         self.validators
             .insert(address.clone(), Validator::new(address, name, public_key));
