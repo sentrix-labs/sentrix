@@ -7,6 +7,30 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.16] — 2026-04-25 — V2 M-15 locked-block re-propose shipped (Voyager liveness)
+
+Closes the second of four Voyager mainnet blockers from the 2026-04-20 audit. V2 M-15 was the "locked-block re-propose" liveness gap — when an earlier round reached 2/3+ prevote quorum but failed precommit, locked validators would prevote nil on later rounds' fresh-built blocks (safety invariant), leaving the chain stuck until the lock expired. With V2, a locked validator elected proposer in a later round re-broadcasts the CACHED block bytes from the round it locked on. Chain unsticks at tempo.
+
+### Added
+
+- **bft: V2 M-15 locked-block re-propose, end-to-end** (`crates/sentrix-bft/src/engine.rs` + `bin/sentrix/src/main.rs`). Four-step rollout across PRs #257, #258, and this release:
+  - Step 1 (#257): `BftRoundState.locked_block` + `staging_block` fields with `#[serde(default)]` backward-compat + lifecycle hooks (`new`, `advance_round`, `advance_height`).
+  - Step 2 (#258): `stash_proposal_bytes(hash, bytes)` method — validator loop stashes before routing proposal hash into on_proposal.
+  - Step 3 (#258): prevote-supermajority branch promotes `staging_block` → `locked_block` when the staged hash matches. Wrong-hash staging discarded (byzantine protection).
+  - Step 4+5 (this release): main.rs `build_or_reuse_proposal` helper replaces 7 proposer call-sites — checks `locked_proposal_bytes()` first, re-broadcasts cached block if locked, else calls `create_block_voyager`. Peer-proposal path at `BftMessage::Propose` also stashes bytes via `stash_proposal_bytes`.
+- 5 new BFT engine regression tests pin: promotion on supermajority, advance_round preserves locked clears staging, new_height clears both, unlocked returns None, wrong-hash staging discarded.
+
+Evidence: 4-validator testnet deploy produces 1.6-1.8 blocks/sec sustained over 8+ minutes with 7 V2 re-propose events observed in logs (`V2 M-15: re-proposing locked block <hash>... at height N round K`). Chain recovers from skip-round conditions that previously would have livelocked — same class as the symptom tracked in issue #252.
+
+### Impact on Voyager mainnet launch
+
+- **Closed:** V2 M-15 (this release)
+- **Closed:** V3 jailing enforcement (#236 trim in v2.1.13)
+- **Closed:** V5 commission rate-limit (#235 in v2.1.12)
+- **Still open:** V1 real precommit signatures (#251) + V4 reward distribution v2 (design exists)
+
+Mainnet today is Pioneer PoA (VOYAGER_FORK_HEIGHT=u64::MAX env var). V2 wiring only exercises on the Voyager BFT path, so this release is a no-op at runtime on the current mainnet chain. It's loaded for the future Voyager activation moment.
+
 ## [2.1.15] — 2026-04-25 — Closes #252 livelock (revert #244 hot-path persist) + #253 liveness signers fix
 
 Third bisect pass on the v2.1.12 bundle found **PR #244** (BACKLOG #16 inline durable persist) as the residual trigger. Without #244, testnet runs at 4.47 blocks/sec sustained for 180s with zero skip-round / nil-majority warnings (955 blocks / 6 minutes clean). With all of #236-else / #237 / #244 reverted, the remaining bundle is safe to ship.

@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-node"
-version = "2.1.15"
+version = "2.1.16"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Sentrix blockchain node CLI"
@@ -37,6 +37,12 @@ serde_json = "1.0"
 hex = "0.4"
 axum = "0.8"
 bincode = "1.3"
+# V2 M-15 helper uses the SecretKey type from secp256k1 in its signature.
+# The wallet crate returns the same type from `get_secret_key`, but bin/
+# doesn't transitively re-export it, so we depend on the workspace version
+# directly. Pinned to match sentrix-wallet / sentrix-bft to avoid two
+# incompatible copies.
+secp256k1 = { version = "0.31", features = ["rand", "recovery", "serde"] }
 # Wraps the env-var validator key so the source `String`'s heap allocation
 # is wiped after we derive the `Wallet` (C-06 hardening).
 zeroize = "1.7"
