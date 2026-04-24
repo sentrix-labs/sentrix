@@ -349,6 +349,63 @@ impl Blockchain {
         Ok(())
     }
 
+    /// BACKLOG #16 durable fix: atomically persist a block's MDBX record
+    /// (TABLE_META + TABLE_BLOCK_HASHES + height bump + sync). Returns Ok
+    /// only if all four mutations committed cleanly. Called from
+    /// `add_block_impl` AFTER Pass-2 commit — paired with the existing
+    /// `BlockchainSnapshot` rollback path so a persist failure here
+    /// triggers in-memory rollback, keeping chain state and disk in
+    /// lock-step.
+    ///
+    /// Returns `Err(StorageNotInitialised)` if `mdbx_storage` was never
+    /// bound (unit tests with no storage backing). Callers should treat
+    /// that as "skip persist" — no gap risk because there's no disk at
+    /// all. A real production path always has `mdbx_storage` set via
+    /// `init_storage_handle`, so any Err here is a real MDBX failure
+    /// (disk full, lock contention, permissions, corruption).
+    pub fn persist_block_durable(&self, block: &Block) -> SentrixResult<()> {
+        let mdbx = self.mdbx_storage.as_ref().ok_or_else(|| {
+            SentrixError::Internal(
+                "persist_block_durable: mdbx_storage not initialised".into(),
+            )
+        })?;
+
+        let key = format!("block:{}", block.index);
+        let block_json = serde_json::to_vec(block).map_err(|e| {
+            SentrixError::Internal(format!("persist_block_durable: serialize block: {e}"))
+        })?;
+
+        // Same byte layout as `Storage::save_block` in sentrix-storage: (1)
+        // block bytes in TABLE_META, (2) reverse hash→height index in
+        // TABLE_BLOCK_HASHES, (3) height marker in TABLE_META, (4) sync.
+        mdbx.put(tables::TABLE_META, key.as_bytes(), &block_json)
+            .map_err(|e| {
+                SentrixError::Internal(format!("persist_block_durable: TABLE_META put: {e}"))
+            })?;
+        mdbx.put(
+            tables::TABLE_BLOCK_HASHES,
+            block.hash.as_bytes(),
+            &height_key(block.index),
+        )
+        .map_err(|e| {
+            SentrixError::Internal(format!(
+                "persist_block_durable: TABLE_BLOCK_HASHES put: {e}"
+            ))
+        })?;
+        mdbx.put(
+            tables::TABLE_META,
+            b"height",
+            &block.index.to_be_bytes(),
+        )
+        .map_err(|e| {
+            SentrixError::Internal(format!("persist_block_durable: height put: {e}"))
+        })?;
+        mdbx.sync().map_err(|e| {
+            SentrixError::Internal(format!("persist_block_durable: sync: {e}"))
+        })?;
+        Ok(())
+    }
+
     /// Record a tx → block_index mapping. Called by `add_block` for each
     /// tx in a freshly committed block. No-op if `init_storage_handle` was
     /// never called (e.g. unit tests with no storage backing).

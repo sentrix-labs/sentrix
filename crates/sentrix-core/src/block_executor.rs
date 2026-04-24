@@ -545,7 +545,44 @@ impl Blockchain {
         };
 
         match self.apply_block_pass2(block) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                // BACKLOG #16 durable fix: persist the just-committed block
+                // to MDBX in the same scope that holds `snap`. If persist
+                // fails, we roll back in-memory state via the same
+                // mechanism as the Pass-2-Err branch below — chain state
+                // and disk stay in lock-step, so a crash + restart sees
+                // a consistent tip. No more "applied-in-memory-but-not-
+                // persisted" orphan windows that create the 7,352-block
+                // TABLE_META gap pattern surfaced by PR #226's sweep test.
+                //
+                // `mdbx_storage` is None only in unit-test paths that
+                // don't bind storage. `persist_block_durable` returns Err
+                // in that case; production callers always bind storage
+                // via `init_storage_handle`. Treat the None case as a
+                // test harness and skip — no gap risk because there's no
+                // disk path at all.
+                if self.mdbx_storage.is_some()
+                    && let Some(just_committed) = self.chain.last().cloned()
+                    && let Err(e) = self.persist_block_durable(&just_committed)
+                {
+                    tracing::error!(
+                        "BACKLOG #16 durable fix triggered: persist failed for block {}: {}; rolling back in-memory state",
+                        just_committed.index,
+                        e
+                    );
+                    self.accounts = snap.accounts;
+                    self.contracts = snap.contracts;
+                    self.authority = snap.authority;
+                    self.mempool = snap.mempool;
+                    self.total_minted = snap.total_minted;
+                    self.chain.truncate(snap.chain_len);
+                    if let (Some(trie), Some(root)) = (self.state_trie.as_mut(), snap.trie_root) {
+                        trie.set_root(root);
+                    }
+                    return Err(e);
+                }
+                Ok(())
+            }
             Err(e) => {
                 self.accounts = snap.accounts;
                 self.contracts = snap.contracts;
