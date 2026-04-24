@@ -375,6 +375,12 @@ async fn run_swarm(
     let mut pending_handshakes: HashMap<OutboundRequestId, PeerId> = HashMap::new();
     // Track outbound GetBlocks requests by ID so responses can be matched to the originating peer.
     let mut pending_syncs: HashMap<OutboundRequestId, PeerId> = HashMap::new();
+    // Bug #1d diagnostic: remember which `SentrixRequest` variant each
+    // in-flight outbound request was, so `OutboundFailure` can log the
+    // specific variant instead of the generic "outbound failure to X".
+    // Without this we cannot tell whether BFT proposals are the ones
+    // timing out or unrelated background traffic.
+    let mut pending_variants: HashMap<OutboundRequestId, &'static str> = HashMap::new();
 
     // Per-IP rate limiter for connection flood protection.
     let mut ip_limiter = IpRateLimiter::new();
@@ -401,8 +407,13 @@ async fn run_swarm(
                     }
                     Some(SwarmCommand::Broadcast(req)) => {
                         let peers: Vec<PeerId> = verified_peers.iter().cloned().collect();
+                        let variant = req.variant_name();
                         for peer_id in peers {
-                            swarm.behaviour_mut().rr.send_request(&peer_id, req.clone());
+                            let req_id = swarm
+                                .behaviour_mut()
+                                .rr
+                                .send_request(&peer_id, req.clone());
+                            pending_variants.insert(req_id, variant);
                         }
                     }
                     Some(SwarmCommand::GossipBlock(block)) => {
@@ -461,13 +472,14 @@ async fn run_swarm(
                         } else {
                             let our_height = blockchain.read().await.height();
                             if let Some(&peer_id) = verified_peers.iter().next() {
-                                let req_id = swarm.behaviour_mut().rr.send_request(
-                                    &peer_id,
-                                    SentrixRequest::GetBlocks {
-                                        from_height: our_height + 1,
-                                    },
-                                );
+                                let req = SentrixRequest::GetBlocks {
+                                    from_height: our_height + 1,
+                                };
+                                let variant = req.variant_name();
+                                let req_id =
+                                    swarm.behaviour_mut().rr.send_request(&peer_id, req);
                                 pending_syncs.insert(req_id, peer_id);
+                                pending_variants.insert(req_id, variant);
                                 tracing::info!(
                                     "libp2p trigger_sync: requested blocks from {} starting at {}",
                                     peer_id,
@@ -493,6 +505,7 @@ async fn run_swarm(
                     &mut verified_peers,
                     &mut pending_handshakes,
                     &mut pending_syncs,
+                    &mut pending_variants,
                     our_chain_id,
                     &mut ip_limiter,
                 )
@@ -507,11 +520,13 @@ async fn run_swarm(
                 }
                 let our_height = blockchain.read().await.height();
                 if let Some(&peer_id) = verified_peers.iter().next() {
-                    let req_id = swarm.behaviour_mut().rr.send_request(
-                        &peer_id,
-                        SentrixRequest::GetBlocks { from_height: our_height + 1 },
-                    );
+                    let req = SentrixRequest::GetBlocks {
+                        from_height: our_height + 1,
+                    };
+                    let variant = req.variant_name();
+                    let req_id = swarm.behaviour_mut().rr.send_request(&peer_id, req);
                     pending_syncs.insert(req_id, peer_id);
+                    pending_variants.insert(req_id, variant);
                 }
             }
 
@@ -536,6 +551,7 @@ async fn on_swarm_event(
     verified_peers: &mut HashSet<PeerId>,
     pending_handshakes: &mut HashMap<OutboundRequestId, PeerId>,
     pending_syncs: &mut HashMap<OutboundRequestId, PeerId>,
+    pending_variants: &mut HashMap<OutboundRequestId, &'static str>,
     our_chain_id: u64,
     ip_limiter: &mut IpRateLimiter,
 ) {
@@ -577,8 +593,10 @@ async fn on_swarm_event(
                 height,
                 chain_id: our_chain_id,
             };
+            let variant = req.variant_name();
             let req_id = swarm.behaviour_mut().rr.send_request(&peer_id, req);
             pending_handshakes.insert(req_id, peer_id);
+            pending_variants.insert(req_id, variant);
         }
 
         SwarmEvent::ConnectionClosed {
@@ -611,6 +629,7 @@ async fn on_swarm_event(
                 verified_peers,
                 pending_handshakes,
                 pending_syncs,
+                pending_variants,
                 our_chain_id,
             )
             .await;
@@ -736,6 +755,7 @@ async fn on_rr_event(
     verified_peers: &mut HashSet<PeerId>,
     pending_handshakes: &mut HashMap<OutboundRequestId, PeerId>,
     pending_syncs: &mut HashMap<OutboundRequestId, PeerId>,
+    pending_variants: &mut HashMap<OutboundRequestId, &'static str>,
     our_chain_id: u64,
 ) {
     use request_response::{Event as RrEvent, Message as RrMessage};
@@ -772,6 +792,11 @@ async fn on_rr_event(
                 },
             ..
         } => {
+            // Bug #1d diagnostic: release variant slot on successful response.
+            // Without this the map would grow unbounded across the process
+            // lifetime.
+            pending_variants.remove(&request_id);
+
             // Check if this response matches a pending GetBlocks sync request
             let followup = on_inbound_response(
                 peer,
@@ -787,11 +812,11 @@ async fn on_rr_event(
             .await;
             // If sync returned more blocks to fetch, send another GetBlocks
             if let Some((next_peer, from_height)) = followup {
-                let req_id = swarm
-                    .behaviour_mut()
-                    .rr
-                    .send_request(&next_peer, SentrixRequest::GetBlocks { from_height });
+                let req = SentrixRequest::GetBlocks { from_height };
+                let variant = req.variant_name();
+                let req_id = swarm.behaviour_mut().rr.send_request(&next_peer, req);
                 pending_syncs.insert(req_id, next_peer);
+                pending_variants.insert(req_id, variant);
             }
         }
 
@@ -803,10 +828,29 @@ async fn on_rr_event(
         } => {
             pending_handshakes.remove(&request_id);
             pending_syncs.remove(&request_id);
-            tracing::warn!("libp2p: outbound failure to {}: {}", peer, error);
+            // Bug #1d diagnostic: log the request variant that failed.
+            // "outbound failure to X: timeout" by itself is unactionable
+            // — we cannot tell if BFT proposals are timing out or unrelated
+            // background traffic (e.g. periodic GetBlocks for sync). Until
+            // the variant shows up in logs, investigation of the real
+            // latency hotspot is blind.
+            let variant = pending_variants
+                .remove(&request_id)
+                .unwrap_or("Unknown");
+            tracing::warn!(
+                "libp2p: outbound failure to {} ({}): {}",
+                peer,
+                variant,
+                error
+            );
         }
 
         RrEvent::InboundFailure { peer, error, .. } => {
+            // Inbound failures are on requests a PEER sent us that we
+            // failed to respond to — we never had pending_variants state
+            // for them (variant lives in the request the peer sent, which
+            // request_response drops on our side before surfacing this
+            // event). Peer-side logs have the variant on their end.
             tracing::warn!("libp2p: inbound failure from {}: {}", peer, error);
         }
 
