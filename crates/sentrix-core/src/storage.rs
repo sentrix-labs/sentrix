@@ -53,7 +53,6 @@ impl Storage {
                 return Ok(None);
             }
         };
-        tracing::info!("Blockchain state loaded: height {}", bc.height());
 
         // Load only the sliding window (last CHAIN_WINDOW_SIZE blocks) into RAM.
         let height = self
@@ -96,6 +95,11 @@ impl Storage {
             }
         }
         bc.chain = blocks;
+        tracing::info!(
+            "Blockchain state loaded: height {} ({} blocks in window)",
+            bc.height(),
+            bc.chain.len()
+        );
 
         // M-05: validate the in-memory chain window on load so a
         // corrupted DB is surfaced instead of silently serving stale
