@@ -1308,9 +1308,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.12"
+version = "0.103.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8279bb85272c9f10811ae6a6c547ff594d6a7f3c6c6b02ee9726d1d0dcfcdd06"
+checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -1390,7 +1390,7 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "sentrix-primitives"
-version = "2.1.4"
+version = "2.1.20"
 dependencies = [
  "hex",
  "secp256k1",
@@ -1404,7 +1404,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-wallet"
-version = "2.1.4"
+version = "2.1.20"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -1417,6 +1417,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sha3",
+ "subtle",
  "zeroize",
 ]
 
