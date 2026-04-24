@@ -60,10 +60,17 @@ pub struct BftRoundState {
     pub proposed_hash: Option<String>,
     /// Prevotes collected: validator → (block_hash option, stake_weight)
     pub prevotes: HashMap<String, (Option<String>, u64)>,
-    /// Precommits collected: validator → (block_hash option, stake_weight).
-    /// BISECT #247: PR #237's signature-bytes extension REVERTED here to
-    /// test hypothesis it caused the v2.1.12 precommit-flip livelock.
-    pub precommits: HashMap<String, (Option<String>, u64)>,
+    /// Precommits collected: validator → (block_hash option, signature bytes, stake_weight).
+    /// V1 (re-applied 2026-04-25 on v2.1.16 base): signature bytes kept
+    /// alongside vote so `BlockJustification` emits REAL signatures at
+    /// finalize, not `vec![]` placeholders. Closes V1 Voyager blocker.
+    ///
+    /// Prior v2.1.14 revert was the wrong diagnosis — the real v2.1.12
+    /// livelock trigger was PR #244's hot-path fsync (closed v2.1.15).
+    /// With V2 M-15 locked-block re-propose now shipped in v2.1.16 too,
+    /// the locked-validator-prevote-nil scenario self-unsticks via
+    /// re-propose instead of livelocking.
+    pub precommits: HashMap<String, (Option<String>, Vec<u8>, u64)>,
     /// Our own vote cast this round (prevent double-voting)
     pub our_prevote_cast: bool,
     pub our_precommit_cast: bool,
@@ -625,7 +632,11 @@ impl BftEngine {
 
         self.state.precommits.insert(
             precommit.validator.clone(),
-            (precommit.block_hash.clone(), stake),
+            (
+                precommit.block_hash.clone(),
+                precommit.signature.clone(),
+                stake,
+            ),
         );
         self.collector
             .add_precommit(precommit.block_hash.clone(), stake);
@@ -642,11 +653,19 @@ impl BftEngine {
                         self.state.round,
                         block_hash.clone(),
                     );
-                    // BISECT #247: PR #237 filtered+added real sigs here;
-                    // reverted to pre-V1 blanket vec![] placeholder to test
-                    // whether the tuple-widening caused the livelock.
-                    for (val, (_, w)) in &self.state.precommits {
-                        justification.add_precommit(val.clone(), vec![], *w);
+                    // V1 (re-applied 2026-04-25 on v2.1.16 base): emit REAL
+                    // signatures. Filter to precommits that voted for the
+                    // finalized hash — nil precommits and precommits for
+                    // other hashes don't belong in this block's justification.
+                    // With V2 locked-block re-propose now shipped in v2.1.16,
+                    // the locked-validator-prevote-nil scenario self-unsticks
+                    // via re-propose instead of livelocking, so this emission
+                    // path no longer has the timing vulnerability that
+                    // surfaced in the v2.1.12 bake.
+                    for (val, (vote_hash, sig, w)) in &self.state.precommits {
+                        if vote_hash.as_deref() == Some(block_hash.as_str()) {
+                            justification.add_precommit(val.clone(), sig.clone(), *w);
+                        }
                     }
 
                     self.state.phase = BftPhase::Finalize;
@@ -1879,7 +1898,7 @@ mod tests {
     /// hash are NOT included in the finalized block's justification
     /// (only the winning hash's backers should be counted).
     #[test]
-    #[ignore = "BISECT #247: #237 temporarily reverted while diagnosing livelock"]
+    
     fn test_finalize_emits_real_precommit_signatures() {
         let (mut engine, _) = setup();
         let total = engine.state.total_active_stake;

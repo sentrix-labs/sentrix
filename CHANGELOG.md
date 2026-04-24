@@ -7,6 +7,35 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.17] — 2026-04-25 — V1 real precommit signatures (Voyager #251 closed)
+
+Re-applies PR #237's precommit-tuple widening + finalize-emit filter on top of v2.1.16's V2 M-15. The prior bisect wrongly pinned V1 as the v2.1.12 livelock cause — the real trigger was PR #244's hot-path fsync (closed v2.1.15), and the secondary livelock that v2.1.14 exposed was the V2 locked-block-re-propose scenario (closed v2.1.16). With both of those gone, V1 is now a pure emission-path improvement with no runtime consequences for consensus timing.
+
+Closes issue #251 and the last of four originally-flagged Voyager BFT blockers from the 2026-04-20 audit (V1, V2, V3, V5 — all now shipped).
+
+### Fixed
+
+- **bft: emit REAL precommit signatures in BlockJustification (#251)** (`crates/sentrix-bft/src/engine.rs`). `BftRoundState.precommits` tuple widened from `(Option<String>, u64)` to `(Option<String>, Vec<u8>, u64)` so the ECDSA sig bytes from each peer's Precommit message are stored alongside the vote + stake. At finalize, the emit loop filters to precommits that voted for the winning hash and attaches their real signatures to the emitted `BlockJustification`. Nil precommits and precommits for other hashes are correctly excluded. The previous `vec![]` placeholder was unforgeable-but-unverifiable — a silent-reorg surface at Voyager activation. `test_finalize_emits_real_precommit_signatures` un-`#[ignore]`'d.
+
+### Testnet bake evidence
+
+4-validator Voyager docker stack on v2.1.17 binary `7181d37e56b00316`: **1318 blocks / 10 min sustained at 2.2 blocks/sec**, zero skip-round / nil-majority / CRITICAL warnings, zero state_root mismatches. V2 M-15 re-propose events fired where appropriate (2 events in first 5min window) — chain recovers from partial-quorum situations without stalling.
+
+### Voyager blocker ledger (all shipped)
+
+| # | Blocker | Release |
+|---|---|---|
+| V1 | Real precommit signatures | **v2.1.17** (this) |
+| V2 | Locked-block re-propose | v2.1.16 |
+| V3 | Jailing enforcement at consensus | v2.1.13 |
+| V5 | Commission rate-limit | v2.1.12 |
+| V6 | Liveness thresholds retune | v2.1.12 (#215) |
+
+### Remaining before Voyager activation
+
+- **V4 reward distribution v2** (delegator reverse-lookup + claim flow) — 2-3 week scope, design at `audits/reward-distribution-fix-design.md`.
+- Operator coordination: `VOYAGER_FORK_HEIGHT` env var set on all 4 mainnet validators + coordinated restart window.
+
 ## [2.1.16] — 2026-04-25 — V2 M-15 locked-block re-propose shipped (Voyager liveness)
 
 Closes the second of four Voyager mainnet blockers from the 2026-04-20 audit. V2 M-15 was the "locked-block re-propose" liveness gap — when an earlier round reached 2/3+ prevote quorum but failed precommit, locked validators would prevote nil on later rounds' fresh-built blocks (safety invariant), leaving the chain stuck until the lock expired. With V2, a locked validator elected proposer in a later round re-broadcasts the CACHED block bytes from the round it locked on. Chain unsticks at tempo.
