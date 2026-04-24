@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use libp2p::Multiaddr;
 use sentrix::api::routes::{SharedState, create_router};
 use sentrix::core::blockchain::{BLOCK_TIME_SECS, Blockchain};
-use sentrix::core::transaction::{TOKEN_OP_ADDRESS, TokenOp, Transaction};
+use sentrix::core::transaction::{PROTOCOL_TREASURY, TOKEN_OP_ADDRESS, TokenOp, Transaction};
 use sentrix::network::libp2p_node::{LibP2pNode, make_multiaddr};
 use sentrix::network::node::{DEFAULT_PORT, NodeEvent};
 use sentrix::storage::db::Storage;
@@ -1649,8 +1649,22 @@ async fn cmd_start(
                                                             tracing::info!("Epoch boundary at height {} — transitioning", height);
                                                             let released = bc.stake_registry.process_unbonding(height);
                                                             for (delegator, amount) in &released {
-                                                                bc.accounts.credit(delegator, *amount)
-                                                                    .unwrap_or_else(|e| tracing::warn!("unbonding credit failed: {}", e));
+                                                                // V4 Step 3: post-reward-v2 fork, unbonded
+                                                                // stake returns from treasury (where it
+                                                                // was escrowed on Delegate), not a fresh
+                                                                // mint. Pre-fork path keeps legacy credit
+                                                                // behaviour for existing chain.db state.
+                                                                let r = if Blockchain::is_reward_v2_height(height) {
+                                                                    bc.accounts.transfer(
+                                                                        PROTOCOL_TREASURY,
+                                                                        delegator,
+                                                                        *amount,
+                                                                        0,
+                                                                    )
+                                                                } else {
+                                                                    bc.accounts.credit(delegator, *amount)
+                                                                };
+                                                                r.unwrap_or_else(|e| tracing::warn!("unbonding release failed: {}", e));
                                                             }
                                                             if !released.is_empty() {
                                                                 tracing::info!("Released {} unbonding entries", released.len());
@@ -2040,8 +2054,20 @@ async fn cmd_start(
                                                     tracing::info!("Epoch boundary at height {} — transitioning", height);
                                                     let released = bc.stake_registry.process_unbonding(height);
                                                     for (delegator, amount) in &released {
-                                                        bc.accounts.credit(delegator, *amount)
-                                                            .unwrap_or_else(|e| tracing::warn!("unbonding credit failed: {}", e));
+                                                        // V4 Step 3 — mirror of the self-produced
+                                                        // finalize handler above; unbonded stake
+                                                        // returns from treasury post-fork.
+                                                        let r = if Blockchain::is_reward_v2_height(height) {
+                                                            bc.accounts.transfer(
+                                                                PROTOCOL_TREASURY,
+                                                                delegator,
+                                                                *amount,
+                                                                0,
+                                                            )
+                                                        } else {
+                                                            bc.accounts.credit(delegator, *amount)
+                                                        };
+                                                        r.unwrap_or_else(|e| tracing::warn!("unbonding release failed: {}", e));
                                                     }
                                                     if !released.is_empty() {
                                                         tracing::info!("Released {} unbonding entries", released.len());
