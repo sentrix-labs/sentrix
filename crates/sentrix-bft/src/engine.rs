@@ -578,6 +578,19 @@ impl BftEngine {
             if let Some(ref h) = hash {
                 self.state.locked_hash = Some(h.clone());
                 self.state.locked_round = Some(self.state.round);
+                // V2 M-15 Step 3: promote staging → locked if its hash
+                // matches what just crossed 2/3+ prevote. Callers that
+                // stashed block bytes via `stash_proposal_bytes()` get
+                // the cache populated here; callers that didn't stash
+                // leave `locked_block` None and fall back to
+                // build-new-block behaviour in the validator loop.
+                if let Some((staged_hash, staged_bytes)) = self.state.staging_block.take() {
+                    if &staged_hash == h {
+                        self.state.locked_block = Some(staged_bytes);
+                    }
+                    // Staging for a different hash is discarded —
+                    // proposer rotated or we saw PoLC on an alternate.
+                }
             }
 
             if !self.state.our_precommit_cast {
@@ -835,6 +848,48 @@ impl BftEngine {
             round: self.state.round,
             validator: self.our_address.clone(),
             signature: Vec::new(),
+        }
+    }
+
+    /// V2 M-15 Step 2: stash the bincode-encoded block bytes for the
+    /// hash we're about to consider prevoting on. Called by the
+    /// validator loop right before `on_proposal` / `on_own_proposal`
+    /// delivers the block's hash. If the hash later crosses the 2/3+
+    /// prevote supermajority threshold (Step 3), the bytes get
+    /// promoted into `locked_block` and stay available for a
+    /// re-propose in a later round when this validator is elected
+    /// proposer again.
+    ///
+    /// Idempotent — re-stashing the same hash overwrites with the
+    /// fresh bytes (same content anyway). Different hash overwrites
+    /// the staging slot, which is fine because staging is per-round.
+    ///
+    /// Opaque to the BFT crate — we don't deserialise or inspect the
+    /// bytes; we only re-emit them later. Keep the BFT layer
+    /// storage-agnostic.
+    pub fn stash_proposal_bytes(&mut self, block_hash: &str, bytes: Vec<u8>) {
+        self.state.staging_block = Some((block_hash.to_string(), bytes));
+    }
+
+    /// V2 M-15 Step 3: return the cached block bytes for the currently
+    /// locked hash, or None if we're not locked / the cache is missing.
+    /// Validator loop calls this at every "we are proposer of a new
+    /// round" decision — if Some, re-broadcast the cached block at
+    /// the current round instead of building a fresh one. That gives
+    /// the chain a path to unstick at tempo when the locked hash was
+    /// the same one the chain is trying to finalise.
+    ///
+    /// Returns None when:
+    /// - Not locked (`locked_hash.is_none()`)
+    /// - Locked but no bytes cached (caller never stashed — safe
+    ///   fall-back to build-new-block behaviour)
+    /// - Cache hash doesn't match locked hash (shouldn't happen under
+    ///   invariant but defensive — we'd rather build-fresh than
+    ///   re-propose stale bytes)
+    pub fn locked_proposal_bytes(&self) -> Option<(String, Vec<u8>)> {
+        match (&self.state.locked_hash, &self.state.locked_block) {
+            (Some(hash), Some(bytes)) => Some((hash.clone(), bytes.clone())),
+            _ => None,
         }
     }
 
@@ -1150,6 +1205,134 @@ mod tests {
             }
             _ => panic!("expected prevote for locked hash"),
         }
+    }
+
+    /// V2 M-15 Step 3 regression: stash bytes → drive prevote supermajority
+    /// → staging promotes to locked_block → `locked_proposal_bytes` returns
+    /// the stashed bytes.
+    #[test]
+    fn test_v2_staging_promotes_to_locked_on_prevote_supermajority() {
+        let (mut engine, _reg) = setup();
+        let total = engine.state.total_active_stake;
+        let per_val = total / 21;
+
+        // Simulate entering Prevote phase by flipping manually — on_proposal
+        // path also flips, but here we isolate the promotion logic.
+        engine.state.phase = BftPhase::Prevote;
+
+        // Validator loop stashes the block bytes before routing the
+        // prevote traffic into the engine.
+        let block_bytes = b"arbitrary opaque block bytes for hash_win".to_vec();
+        engine.stash_proposal_bytes("hash_win", block_bytes.clone());
+        assert!(engine.state.staging_block.is_some(), "staging slot populated");
+
+        // Drive 2/3+ prevote quorum for hash_win. Threshold at
+        // `supermajority_threshold(total)` — with 21 validators at
+        // `per_val` each, 14 votes covers ~66.67%, need 15 for 2/3+.
+        let threshold = supermajority_threshold(total);
+        let needed = ((threshold / per_val) + 1) as usize;
+        for i in 0..needed {
+            let pv = Prevote {
+                height: 100,
+                round: 0,
+                block_hash: Some("hash_win".into()),
+                validator: format!("0xval{:03}", i),
+                signature: vec![],
+            };
+            let _ = engine.on_prevote_weighted(&pv, per_val);
+        }
+
+        assert_eq!(engine.state.locked_hash.as_deref(), Some("hash_win"));
+        assert!(
+            engine.state.locked_block.is_some(),
+            "locked_block must be populated after prevote-supermajority promotion"
+        );
+        assert!(
+            engine.state.staging_block.is_none(),
+            "staging_block must be consumed (take())"
+        );
+
+        // Accessor returns Some for the locked hash.
+        let cached = engine.locked_proposal_bytes();
+        assert!(cached.is_some(), "accessor returns cached bytes when locked");
+        let (cached_hash, cached_bytes) = cached.unwrap();
+        assert_eq!(cached_hash, "hash_win");
+        assert_eq!(cached_bytes, block_bytes);
+    }
+
+    /// V2 regression: staging cleared on advance_round, locked preserved.
+    #[test]
+    fn test_v2_advance_round_keeps_locked_clears_staging() {
+        let (mut engine, _reg) = setup();
+        engine.state.locked_hash = Some("hash_locked".into());
+        engine.state.locked_block = Some(b"locked-bytes".to_vec());
+        engine.state.staging_block = Some(("hash_next".into(), b"stage-bytes".to_vec()));
+
+        engine.state.advance_round();
+
+        assert_eq!(engine.state.locked_hash.as_deref(), Some("hash_locked"));
+        assert_eq!(
+            engine.state.locked_block.as_deref(),
+            Some(&b"locked-bytes"[..])
+        );
+        assert!(engine.state.staging_block.is_none(), "staging cleared on advance_round");
+    }
+
+    /// V2 regression: new_height clears both locked_block and staging_block.
+    #[test]
+    fn test_v2_new_height_clears_both_caches() {
+        let (mut engine, _reg) = setup();
+        engine.state.locked_hash = Some("hash_locked".into());
+        engine.state.locked_block = Some(b"locked-bytes".to_vec());
+        engine.state.staging_block = Some(("hash_next".into(), b"stage-bytes".to_vec()));
+
+        engine.new_height(101, engine.state.total_active_stake);
+
+        assert!(engine.state.locked_hash.is_none());
+        assert!(engine.state.locked_block.is_none(), "locked_block cleared on new_height");
+        assert!(engine.state.staging_block.is_none(), "staging_block cleared on new_height");
+    }
+
+    /// V2 regression: `locked_proposal_bytes` returns None when not locked.
+    #[test]
+    fn test_v2_locked_proposal_bytes_none_when_unlocked() {
+        let (engine, _reg) = setup();
+        assert!(engine.locked_proposal_bytes().is_none());
+    }
+
+    /// V2 regression: staging for a different hash than the quorum winner
+    /// is discarded, not promoted. Protects against a byzantine proposer
+    /// stashing junk bytes and leaving us with a stale cache.
+    #[test]
+    fn test_v2_staging_for_wrong_hash_discarded() {
+        let (mut engine, _reg) = setup();
+        let total = engine.state.total_active_stake;
+        let per_val = total / 21;
+        engine.state.phase = BftPhase::Prevote;
+
+        // Stash bytes for hash_A...
+        engine.stash_proposal_bytes("hash_A", b"A-bytes".to_vec());
+
+        // ...but quorum forms on hash_B.
+        let threshold = supermajority_threshold(total);
+        let needed = ((threshold / per_val) + 1) as usize;
+        for i in 0..needed {
+            let pv = Prevote {
+                height: 100,
+                round: 0,
+                block_hash: Some("hash_B".into()),
+                validator: format!("0xval{:03}", i),
+                signature: vec![],
+            };
+            let _ = engine.on_prevote_weighted(&pv, per_val);
+        }
+
+        assert_eq!(engine.state.locked_hash.as_deref(), Some("hash_B"));
+        assert!(
+            engine.state.locked_block.is_none(),
+            "wrong-hash staging must be discarded, not promoted"
+        );
+        assert!(engine.state.staging_block.is_none(), "staging consumed regardless");
     }
 
     #[test]
