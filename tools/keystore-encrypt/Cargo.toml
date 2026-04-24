@@ -1,0 +1,11 @@
+[workspace]
+
+[package]
+name = "keystore-encrypt"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+sentrix-wallet = { path = "../../crates/sentrix-wallet" }
+clap = { version = "4", features = ["derive"] }
