@@ -7,6 +7,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.18] — 2026-04-25 — V4 reward distribution v2 Step 2 (multi-signer pro-rata payout)
+
+Step 2 of V4 per `audits/reward-distribution-fix-design.md`. `distribute_reward` now accepts a signers list and pays every precommit signer in the justification pro-rata by stake, splitting each signer's share into commission + self-stake + per-delegator accumulator. Step 1 (delegator_rewards field) shipped in PR #262; Step 3 (claim CLI + blockchain::apply wire) deferred.
+
+### Changed
+
+- **staking: distribute_reward now takes `signers: &[(String, u64)]`** (`crates/sentrix-staking/src/staking.rs`). Legacy single-proposer payout kicks in when signers is empty (Pioneer chains with no justification). Voyager path extracts signers from `block.justification.precommits`. Back-compat preserved for integration test + Pioneer chain.db state.
+- **bft finalize path in main.rs** passes `justification.precommits` as `(validator, stake_weight)` tuples into `distribute_reward` at both BFT FinalizeBlock call-sites.
+
+### Fixed (economics, not user-visible today)
+
+Every signer gets their pro-rata share split between their commission (`pending_rewards`), their self-stake share (also `pending_rewards`), and their delegators' pool (accumulated into `delegator_rewards[delegator]`). Pre-V4 behaviour concentrated all reward on the proposer and dropped delegator share entirely. V4 Step 2 fixes the accumulation — Step 3 will fix the claim path so delegators can drain accumulated rewards into SRX balance.
+
+### Tests (4 new V4 regression)
+
+- `test_v4_distribute_reward_multi_signer_equal_stakes` — 4-validator chain, equal stakes, asserts each validator gets commission+self-share and each delegator gets pro-rata accumulator entry.
+- `test_v4_distribute_reward_unknown_signer_skipped` — defensive skip of signers not in stake_registry.
+- `test_v4_distribute_reward_empty_signers_legacy_fallback` — Pioneer back-compat.
+- `test_v4_claim_rewards_after_distribute` — end-to-end accumulator drain via `take_delegator_rewards`.
+
+88/88 sentrix-staking tests pass. Testnet bake: 556 blocks / 5 min sustained 1.85 blocks/sec on v2.1.18, one V2 skip-round recovered cleanly.
+
+### No mainnet impact today
+
+Mainnet runs Pioneer PoA with no BFT finalize path → `reward_signers` always empty → legacy fallback preserves old payout behaviour.
+
 ## [2.1.17] — 2026-04-25 — V1 real precommit signatures (Voyager #251 closed)
 
 Re-applies PR #237's precommit-tuple widening + finalize-emit filter on top of v2.1.16's V2 M-15. The prior bisect wrongly pinned V1 as the v2.1.12 livelock cause — the real trigger was PR #244's hot-path fsync (closed v2.1.15), and the secondary livelock that v2.1.14 exposed was the V2 locked-block-re-propose scenario (closed v2.1.16). With both of those gone, V1 is now a pure emission-path improvement with no runtime consequences for consensus timing.

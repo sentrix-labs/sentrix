@@ -649,43 +649,181 @@ impl StakeRegistry {
 
     // ── Rewards ──────────────────────────────────────────────
 
+    /// V4 Step 2: reward distribution v2 — pay every signer in the
+    /// justification pro-rata by stake, split each signer's share into
+    /// commission + self-stake + delegator pool, and accumulate per-
+    /// delegator share into `delegator_rewards` (which Step 3's claim
+    /// CLI drains into SRX balances).
+    ///
+    /// Back-compat: if `signers` is empty (e.g. Pioneer PoA path where
+    /// blocks have no justification), fall through to the legacy
+    /// single-proposer payout so this function stays usable on
+    /// pre-Voyager chains.
+    ///
+    /// Design: `audits/reward-distribution-fix-design.md`.
     pub fn distribute_reward(
         &mut self,
         proposer: &str,
+        signers: &[(String, u64)],
         block_reward: u64,
         validator_fee_share: u64,
     ) -> SentrixResult<()> {
-        let val = self.validators.get(proposer).ok_or_else(|| {
-            SentrixError::InvalidTransaction("proposer not found in stake registry".into())
-        })?;
-
         let total_reward = block_reward.saturating_add(validator_fee_share);
+
+        // ── Pioneer/legacy path ───────────────────────────────────
+        if signers.is_empty() {
+            return self.distribute_to_single_validator(proposer, total_reward);
+        }
+
+        // ── Voyager v2 path: multi-signer pro-rata ────────────────
+        let total_signer_stake: u64 = signers.iter().map(|(_, s)| *s).sum();
+        if total_signer_stake == 0 {
+            // Degenerate — no stake to weight on; fall back.
+            return self.distribute_to_single_validator(proposer, total_reward);
+        }
+
+        for (addr, signer_stake) in signers {
+            if *signer_stake == 0 {
+                continue;
+            }
+            let signer_share = (total_reward as u128)
+                .saturating_mul(*signer_stake as u128)
+                / total_signer_stake as u128;
+            let signer_share = signer_share as u64;
+            if signer_share == 0 {
+                continue;
+            }
+            self.pay_one_signer(addr, signer_share)?;
+        }
+        Ok(())
+    }
+
+    /// Legacy single-validator payout (commission + self-stake to val,
+    /// delegator pool dropped). Used by the Pioneer fallback above.
+    fn distribute_to_single_validator(
+        &mut self,
+        validator_addr: &str,
+        total_reward: u64,
+    ) -> SentrixResult<()> {
+        let val = self.validators.get(validator_addr).ok_or_else(|| {
+            SentrixError::InvalidTransaction(
+                "proposer not found in stake registry".into(),
+            )
+        })?;
         let commission =
             (total_reward as u128).saturating_mul(val.commission_rate as u128) / 10_000;
         let commission = commission as u64;
         let delegator_pool = total_reward.saturating_sub(commission);
-
-        // Commission goes to validator's pending rewards
-        let val = self
-            .validators
-            .get_mut(proposer)
-            .ok_or_else(|| SentrixError::InvalidTransaction("proposer not found".into()))?;
-        val.pending_rewards = val.pending_rewards.saturating_add(commission);
-
-        // Delegator pool distributed proportionally
         let total_stake = val.total_stake();
+        let self_stake = val.self_stake;
+
+        let val_mut = self
+            .validators
+            .get_mut(validator_addr)
+            .ok_or_else(|| SentrixError::InvalidTransaction("proposer not found".into()))?;
+        val_mut.pending_rewards = val_mut.pending_rewards.saturating_add(commission);
+
         if total_stake == 0 || delegator_pool == 0 {
             return Ok(());
         }
-
-        // Self-stake portion goes to validator too
         let self_share =
-            (delegator_pool as u128).saturating_mul(val.self_stake as u128) / (total_stake as u128);
-        val.pending_rewards = val.pending_rewards.saturating_add(self_share as u64);
+            (delegator_pool as u128).saturating_mul(self_stake as u128) / total_stake as u128;
+        val_mut.pending_rewards = val_mut.pending_rewards.saturating_add(self_share as u64);
+        Ok(())
+    }
 
-        // Remaining distributed to delegators (tracked off-chain for now, claimable later)
-        // For Phase 2a, we accumulate at the validator level and delegators claim proportionally
-        // Full per-delegator reward tracking comes in a follow-up
+    /// V4 Step 2: split one signer's pro-rata share into commission +
+    /// self-stake + per-delegator accumulator.
+    fn pay_one_signer(
+        &mut self,
+        validator_addr: &str,
+        signer_share: u64,
+    ) -> SentrixResult<()> {
+        // Fetch validator state (pre-mutation so we can read then write).
+        let (commission_rate, self_stake, total_stake) = {
+            let val = match self.validators.get(validator_addr) {
+                Some(v) => v,
+                None => {
+                    // Signer not in our registry (stale justification?) — drop
+                    // this share rather than panic. Won't happen on a healthy
+                    // chain because justification signers are filtered to
+                    // active_set at emit time.
+                    return Ok(());
+                }
+            };
+            (val.commission_rate, val.self_stake, val.total_stake())
+        };
+
+        // 1. Commission off the top.
+        let commission =
+            (signer_share as u128).saturating_mul(commission_rate as u128) / 10_000;
+        let commission = commission as u64;
+        let pool = signer_share.saturating_sub(commission);
+
+        // 2. Commission credited to validator.
+        {
+            let val = self
+                .validators
+                .get_mut(validator_addr)
+                .expect("validator present, just read above");
+            val.pending_rewards = val.pending_rewards.saturating_add(commission);
+        }
+
+        if total_stake == 0 || pool == 0 {
+            return Ok(());
+        }
+
+        // 3. Self-stake portion credited to validator.
+        let self_share =
+            (pool as u128).saturating_mul(self_stake as u128) / total_stake as u128;
+        let self_share = self_share as u64;
+        {
+            let val = self
+                .validators
+                .get_mut(validator_addr)
+                .expect("validator present");
+            val.pending_rewards = val.pending_rewards.saturating_add(self_share);
+        }
+
+        // 4. Delegator pool distributed per-delegator into accumulator.
+        let delegator_pool = pool.saturating_sub(self_share);
+        if delegator_pool == 0 {
+            return Ok(());
+        }
+
+        // Sum of delegations to this validator (denominator for pro-rata).
+        let total_delegated: u64 = self
+            .delegations
+            .values()
+            .flatten()
+            .filter(|e| e.validator == validator_addr)
+            .map(|e| e.amount)
+            .sum();
+        if total_delegated == 0 {
+            return Ok(());
+        }
+
+        // Collect (delegator, amount) pairs first to avoid double-borrow
+        // of self when writing into delegator_rewards.
+        let shares: Vec<(String, u64)> = self
+            .delegations
+            .values()
+            .flatten()
+            .filter(|e| e.validator == validator_addr)
+            .map(|e| {
+                let share = (delegator_pool as u128).saturating_mul(e.amount as u128)
+                    / total_delegated as u128;
+                (e.delegator.clone(), share as u64)
+            })
+            .collect();
+
+        for (delegator, share) in shares {
+            if share == 0 {
+                continue;
+            }
+            let entry = self.delegator_rewards.entry(delegator).or_insert(0);
+            *entry = entry.saturating_add(share);
+        }
 
         Ok(())
     }
@@ -1271,14 +1409,127 @@ mod tests {
             .unwrap();
         reg.update_active_set();
 
-        // 10% commission, reward = 100_000_000 (1 SRX)
-        reg.distribute_reward("0xval1", 100_000_000, 0).unwrap();
+        // Legacy Pioneer-path (empty signers) — 10% commission, reward = 1 SRX
+        reg.distribute_reward("0xval1", &[], 100_000_000, 0).unwrap();
 
         let val = &reg.validators["0xval1"];
         // Commission = 10% of 100M = 10M
         // Self-stake share of delegator pool: 50% of 90M = 45M
         // Total pending = 10M + 45M = 55M
         assert_eq!(val.pending_rewards, 55_000_000);
+    }
+
+    /// V4 Step 2 regression: multi-signer reward distribution v2.
+    /// 4-validator chain, all 4 signers with equal stake, 100M reward.
+    /// Each signer gets 25M share; with 10% commission + 50% self-stake
+    /// split (validator's own self_stake vs delegations) and per-validator
+    /// delegator accumulation.
+    #[test]
+    fn test_v4_distribute_reward_multi_signer_equal_stakes() {
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        register_val(&mut reg, "0xval2", MIN_SELF_STAKE);
+        register_val(&mut reg, "0xval3", MIN_SELF_STAKE);
+        register_val(&mut reg, "0xval4", MIN_SELF_STAKE);
+        // Each validator has one delegator with MIN_SELF_STAKE delegated
+        reg.delegate("0xdelA", "0xval1", MIN_SELF_STAKE, 100).unwrap();
+        reg.delegate("0xdelB", "0xval2", MIN_SELF_STAKE, 100).unwrap();
+        reg.delegate("0xdelC", "0xval3", MIN_SELF_STAKE, 100).unwrap();
+        reg.delegate("0xdelD", "0xval4", MIN_SELF_STAKE, 100).unwrap();
+        reg.update_active_set();
+
+        // All 4 signers with equal stake weight.
+        let signers = vec![
+            ("0xval1".to_string(), MIN_SELF_STAKE * 2),
+            ("0xval2".to_string(), MIN_SELF_STAKE * 2),
+            ("0xval3".to_string(), MIN_SELF_STAKE * 2),
+            ("0xval4".to_string(), MIN_SELF_STAKE * 2),
+        ];
+        reg.distribute_reward("0xval1", &signers, 100_000_000, 0).unwrap();
+
+        // Each signer's share = 100M / 4 = 25M
+        // Commission (10%) = 2.5M → validator pending
+        // Pool = 22.5M → split 50/50 self vs delegator
+        // Self share = 11.25M → validator pending (so validator total = 2.5 + 11.25 = 13.75M)
+        // Delegator pool = 11.25M → delegator accumulator
+        for v in ["0xval1", "0xval2", "0xval3", "0xval4"] {
+            assert_eq!(
+                reg.validators[v].pending_rewards, 13_750_000,
+                "validator {} must get commission+self share",
+                v
+            );
+        }
+        for d in ["0xdelA", "0xdelB", "0xdelC", "0xdelD"] {
+            assert_eq!(
+                reg.delegator_rewards[d], 11_250_000,
+                "delegator {} must get pro-rata share",
+                d
+            );
+        }
+    }
+
+    /// V4 Step 2 regression: signers outside the stake_registry are
+    /// silently skipped (defensive — won't happen on a healthy chain
+    /// because justification signers are filtered to active_set at
+    /// emit time, but we don't want a panic if it does slip through).
+    #[test]
+    fn test_v4_distribute_reward_unknown_signer_skipped() {
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        reg.update_active_set();
+
+        let signers = vec![
+            ("0xval1".to_string(), MIN_SELF_STAKE),
+            ("0xrogue".to_string(), MIN_SELF_STAKE), // not registered
+        ];
+        // Should not error, should silently skip rogue.
+        reg.distribute_reward("0xval1", &signers, 100_000_000, 0).unwrap();
+
+        // val1 got 50M share; rogue got 0 (skipped).
+        // Commission 10% = 5M; pool 45M; self-share = 45M × SELF/SELF = 45M (no delegators).
+        // Total = 5 + 45 = 50M.
+        assert_eq!(reg.validators["0xval1"].pending_rewards, 50_000_000);
+        assert!(!reg.delegator_rewards.contains_key("0xrogue"));
+    }
+
+    /// V4 Step 2 regression: empty signers falls back to legacy
+    /// single-validator path (so Pioneer chains keep working).
+    #[test]
+    fn test_v4_distribute_reward_empty_signers_legacy_fallback() {
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        reg.update_active_set();
+
+        // Empty signers vec = Pioneer fallback = pay proposer only (legacy).
+        reg.distribute_reward("0xval1", &[], 100_000_000, 0).unwrap();
+        // Same as test_distribute_reward with no delegators:
+        // commission 10M + self-share (all of pool since no delegators share) = 100M.
+        assert_eq!(reg.validators["0xval1"].pending_rewards, 100_000_000);
+    }
+
+    /// V4 Step 3 regression: claim flow drains accumulator.
+    #[test]
+    fn test_v4_claim_rewards_after_distribute() {
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        reg.delegate("0xdelA", "0xval1", MIN_SELF_STAKE, 100).unwrap();
+        reg.update_active_set();
+
+        // One signer, full reward to them.
+        let signers = vec![("0xval1".to_string(), MIN_SELF_STAKE * 2)];
+        reg.distribute_reward("0xval1", &signers, 100_000_000, 0).unwrap();
+
+        // Delegator should have accumulated a share.
+        let accumulated = reg.delegator_rewards.get("0xdelA").copied().unwrap_or(0);
+        assert!(accumulated > 0, "delegator should have pending rewards");
+
+        // Claim drains.
+        let claimed = reg.take_delegator_rewards("0xdelA");
+        assert_eq!(claimed, accumulated);
+        assert!(!reg.delegator_rewards.contains_key("0xdelA"));
+
+        // Re-claim returns 0.
+        assert_eq!(reg.take_delegator_rewards("0xdelA"), 0);
     }
 
     #[test]

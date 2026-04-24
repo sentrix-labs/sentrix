@@ -1626,10 +1626,21 @@ async fn cmd_start(
                                                             &active, &signers, height,
                                                         );
 
+                                                        // V4 Step 2: pay every signer pro-rata
+                                                        // by stake, not just the proposer. Extract
+                                                        // (validator, stake_weight) tuples from the
+                                                        // justification's precommit list.
+                                                        let reward_signers: Vec<(String, u64)> =
+                                                            justification
+                                                                .precommits
+                                                                .iter()
+                                                                .map(|p| (p.validator.clone(), p.stake_weight))
+                                                                .collect();
                                                         let validator_fee = 0;
                                                         let _ =
                                                             bc.stake_registry.distribute_reward(
                                                                 &proposer,
+                                                                &reward_signers,
                                                                 reward,
                                                                 validator_fee,
                                                             );
@@ -2010,9 +2021,17 @@ async fn cmd_start(
                                                     &active, &signers, height,
                                                 );
 
+                                                // V4 Step 2 — see sibling site above for rationale.
+                                                let reward_signers: Vec<(String, u64)> =
+                                                    justification
+                                                        .precommits
+                                                        .iter()
+                                                        .map(|p| (p.validator.clone(), p.stake_weight))
+                                                        .collect();
                                                 let validator_fee = 0;
                                                 let _ = bc.stake_registry.distribute_reward(
                                                     &proposer,
+                                                    &reward_signers,
                                                     reward,
                                                     validator_fee,
                                                 );

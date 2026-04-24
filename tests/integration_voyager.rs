@@ -219,7 +219,8 @@ fn test_reward_distribution_with_commission() {
     let block_reward = 100_000_000; // 1 SRX
     let fee_share = 50_000_000; // 0.5 SRX from fees
 
-    reg.distribute_reward("0xproposer", block_reward, fee_share)
+    // V4 Step 2: Pioneer fallback path (empty signers) preserves legacy behaviour.
+    reg.distribute_reward("0xproposer", &[], block_reward, fee_share)
         .unwrap();
 
     let v = reg.get_validator("0xproposer").unwrap();
