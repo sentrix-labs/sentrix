@@ -7,6 +7,39 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.21] — 2026-04-24 — Observability + startup perf (no consensus change)
+
+Maintenance patch collecting three bite-sized improvements merged over the 2026-04-24 session. No consensus, wire, or storage format change; `VOYAGER_*_HEIGHT` env vars remain the sole activation gates for Voyager behaviour.
+
+### Added (#269)
+
+- **`Blockchain::reset_reward_accumulators_for_fork_activation` extracted helper** with a unit test pinning the V4 Step 3 accumulator-reset invariant: both `pending_rewards` and `delegator_rewards` zeroed, validator entries themselves preserved. Closes the v2.1.19 CHANGELOG follow-up flag at the unit level. `apply_block_pass2` call site + gate predicate unchanged.
+
+### Added (#271 — bug #1d diagnostic pass 1)
+
+- **`SentrixRequest::variant_name() -> &'static str`** tag for all 10 request variants.
+- **`pending_variants: HashMap<OutboundRequestId, &'static str>`** tracked at all 5 outbound `send_request` sites in the libp2p swarm task, released on both successful `Response` and `OutboundFailure`.
+- **`RrEvent::OutboundFailure` log now includes the variant**: `libp2p: outbound failure to {peer} ({variant}): {error}`. Lets the next testnet bake finally distinguish BFT-proposal timeouts from background-traffic noise. Pure observability — call paths, timeouts, retry logic all untouched.
+
+### Added + fixed (#273 — issue #268 diagnostic)
+
+- **`Blockchain::backfill_txid_index` fast path**: on a warm chain (latest block's last tx already indexed), skip the whole-chain scan. Previously every startup did `height + 1` redundant MDBX reads with zero writes — on a 500K-block chain that's a silent several-minute CPU phase between MDBX open and the validator loop's first log, matching the "process alive, journal empty" shape operators saw on the first Voyager activation attempt.
+- **Cold-path progress log every 50K blocks scanned** so operators see activity rather than a silent freeze during first-ever backfill on a large chain.
+- **`load_blockchain` startup banner** emitted after the window is populated, reporting `height {n} ({window_len} blocks in window)`. Gives a clean marker between MDBX open and the first validator-loop tick.
+
+### Diagnostic findings from this session
+
+Local repro of #268 against a clean 1 GB mainnet `chain.db` snapshot rsynced from VPS1 (via 28 s halt window):
+
+- v2.1.20 release binary + no fork envs → clean startup, height 506078 loaded, 4 validators detected, idle.
+- v2.1.20 release binary + fork envs (`VOYAGER_FORK_HEIGHT=502000` / `VOYAGER_REWARD_V2_HEIGHT=502100`, both below current) → same clean startup.
+
+Conclusion: the v2.1.20 binary itself is not the regression source. #268 remains OPEN and the most likely remaining cause is 4-validator peer-gossip interaction on shared mainnet state — not reproducible in a single-process test harness. Mainnet activation runbook stays flagged BLOCKED.
+
+### Mainnet / testnet impact
+
+No runtime behaviour change on Pioneer chains. `VOYAGER_*_HEIGHT` env vars default `u64::MAX`; without explicit opt-in this release runs identically to v2.1.20 on a pre-fork chain.
+
 ## [2.1.20] — 2026-04-25 — Full StakingOp dispatch (Delegate / Undelegate / Redelegate / Unjail / RegisterValidator / SubmitEvidence)
 
 v2.1.19 wired only ClaimRewards. This release closes the last code-side Voyager launch blocker by wiring every remaining `StakingOp` variant into the `block_executor` dispatch, all escrowed through `PROTOCOL_TREASURY` so the supply invariant holds across the full delegate → reward → unbond cycle.
