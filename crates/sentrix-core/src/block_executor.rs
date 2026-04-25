@@ -1041,6 +1041,49 @@ impl Blockchain {
                         // State root mismatch is fatal — reject the block to prevent accepting a diverged chain state
                         if received_root != computed_root {
                             let block_index = last.index;
+
+                            // Phase 1 mainnet activation legacy-compat (#268 RCA 2026-04-25):
+                            // mainnet's pre-cutoff chain.db carries historical state_root
+                            // artifacts from past repair operations (BACKLOG #16 7K-block gap
+                            // patches, 2026-04-21 mainnet 3-way fork recovery, etc.) that
+                            // v2.1.16+ binaries correctly cannot reproduce. To unblock
+                            // mainnet upgrade without rebuilding chain.db, allow per-validator
+                            // opt-in tolerance for the legacy region via env var.
+                            //
+                            // SENTRIX_LEGACY_VALIDATION_HEIGHT: blocks with index strictly
+                            // less than this height are tolerated on mismatch (warn-only,
+                            // received_root retained as-is so block hash chain stays
+                            // intact). Blocks at or above the cutoff get strict rejection
+                            // as today. Default unset = strict everywhere (current behaviour).
+                            //
+                            // See founder-private/architecture/PHASE_1_LEGACY_COMPAT_DESIGN.md
+                            let legacy_cutoff = std::env::var("SENTRIX_LEGACY_VALIDATION_HEIGHT")
+                                .ok()
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .unwrap_or(0);
+
+                            if legacy_cutoff > 0 && block_index < legacy_cutoff {
+                                tracing::warn!(
+                                    "LEGACY #1e tolerated at block {} (cutoff={}): received {} \
+                                     vs computed {}. Pre-cutoff blocks carry historical \
+                                     state_root artifacts; chain history preserved as-is.",
+                                    block_index,
+                                    legacy_cutoff,
+                                    hex::encode(received_root),
+                                    hex::encode(computed_root),
+                                );
+                                // Track in divergence tracker so legacy-region rate is visible
+                                // in metrics, but don't fire the LOUD alarm since these are
+                                // expected historical mismatches not active divergence.
+                                self.divergence_tracker.record_rejection(block_index);
+                                // Retain stamped (received) state_root so block hash chain
+                                // stays intact. Caller's expectation of `block.state_root`
+                                // continuity is preserved.
+                                last.state_root = Some(received_root);
+                                self.maybe_prune_trie();
+                                return Ok(());
+                            }
+
                             tracing::error!(
                                 "CRITICAL #1e: state_root mismatch at block {} — received {} \
                                  vs computed {}. Local trie and peer's trie disagree on the \

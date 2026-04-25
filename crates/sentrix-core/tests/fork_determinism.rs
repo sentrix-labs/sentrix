@@ -793,6 +793,123 @@ fn test_voyager_active_stale_snapshot_peer_sync() {
     );
 }
 
+/// SENTRIX_LEGACY_VALIDATION_HEIGHT (#268 RCA 2026-04-25 — Phase 1 mainnet
+/// activation legacy-compat). Verifies all three behavioural branches:
+///
+/// - Default (env unset) → strict #1e rejection (today's behaviour)
+/// - Env set, block.index < cutoff → tolerated (warn-only, return Ok)
+/// - Env set, block.index >= cutoff → strict reject as if env unset
+///
+/// **Note on STATE_ROOT_FORK_HEIGHT**: the strict #1e mismatch check at
+/// `block_executor.rs` only fires for blocks at height ≥ 100,000. This
+/// test is `#[ignore]`'d because producing 100,000+ blocks in a unit
+/// test is impractical. Operator-driven manual verification via the
+/// `apply_canonical_block_to_forensic` harness in `rca_vps3_env_repro.rs`
+/// is the recommended integration-level test:
+///
+///   1. With env unset: confirm forensic+507499 produces APPLY_RESULT=Err
+///      (already shown — see #268 RCA notes)
+///   2. With env set to 600000: confirm forensic+507499 produces
+///      APPLY_RESULT=Ok with computed state_root retained, warn line in
+///      stderr — block.index 507499 < cutoff 600000 → tolerated
+///   3. With env set to 100000: confirm forensic+507499 produces
+///      APPLY_RESULT=Err — block.index 507499 ≥ cutoff 100000 → strict
+#[test]
+#[ignore = "requires real chain.db at h≥100K — see fn header for operator-driven manual run"]
+fn test_legacy_validation_height_branches() {
+    use sentrix_primitives::block::Block;
+
+    fn fresh_chain() -> (TempDir, TempDir, Blockchain, Blockchain) {
+        let (d1, m1) = temp_mdbx();
+        let (d2, m2) = temp_mdbx();
+        let mut producer = setup_chain();
+        let mut peer = setup_chain();
+        producer.init_trie(Arc::clone(&m1)).unwrap();
+        peer.init_trie(Arc::clone(&m2)).unwrap();
+        (d1, d2, producer, peer)
+    }
+
+    fn produce_block_with_bad_state_root(
+        producer: &mut Blockchain,
+        bad_root: [u8; 32],
+    ) -> Block {
+        let mut block = producer.create_block(VALIDATOR).unwrap();
+        // Apply on producer normally (stamps real state_root)
+        producer.add_block(block.clone()).unwrap();
+        // Now overwrite the state_root with a hand-crafted bogus one so
+        // peer-side apply will compute the real root and disagree.
+        block.state_root = Some(bad_root);
+        block
+    }
+
+    let bogus_root: [u8; 32] = [0xab; 32];
+
+    // ── Branch 1: env unset → strict reject (current behaviour) ──
+    unsafe { std::env::remove_var("SENTRIX_LEGACY_VALIDATION_HEIGHT") };
+    {
+        let (_d1, _d2, mut producer, mut peer) = fresh_chain();
+        let block = produce_block_with_bad_state_root(&mut producer, bogus_root);
+        let h = block.index;
+        let r = peer.add_block_from_peer(block);
+        assert!(
+            r.is_err(),
+            "default (env unset): peer-applied block with bogus state_root MUST be rejected at h={h}"
+        );
+        let msg = format!("{}", r.err().unwrap());
+        assert!(
+            msg.contains("state_root mismatch"),
+            "rejection message must name the state_root mismatch, got: {msg}"
+        );
+    }
+
+    // ── Branch 2: env set with cutoff > block.index → tolerate ──
+    unsafe { std::env::set_var("SENTRIX_LEGACY_VALIDATION_HEIGHT", "10000") };
+    {
+        let (_d1, _d2, mut producer, mut peer) = fresh_chain();
+        let block = produce_block_with_bad_state_root(&mut producer, bogus_root);
+        let h = block.index;
+        assert!(
+            h < 10000,
+            "test setup: block height {h} must be below cutoff 10000"
+        );
+        let r = peer.add_block_from_peer(block);
+        assert!(
+            r.is_ok(),
+            "legacy region (h={h} < cutoff=10000): peer-applied bogus-state_root block MUST be tolerated, got {:?}",
+            r.err()
+        );
+        // Block hash chain integrity: stamped state_root retained, latest
+        // block has the bogus value (so subsequent peers' previous_hash
+        // checks see the same chain).
+        let latest = peer.latest_block().unwrap();
+        assert_eq!(
+            latest.state_root.map(hex::encode),
+            Some(hex::encode(bogus_root)),
+            "tolerated block must retain its received state_root"
+        );
+    }
+
+    // ── Branch 3: env set with cutoff <= block.index → strict reject ──
+    unsafe { std::env::set_var("SENTRIX_LEGACY_VALIDATION_HEIGHT", "1") };
+    {
+        let (_d1, _d2, mut producer, mut peer) = fresh_chain();
+        let block = produce_block_with_bad_state_root(&mut producer, bogus_root);
+        let h = block.index;
+        assert!(
+            h >= 1,
+            "test setup: block height {h} must be at or above cutoff 1"
+        );
+        let r = peer.add_block_from_peer(block);
+        assert!(
+            r.is_err(),
+            "post-cutoff (h={h} >= cutoff=1): peer-applied bogus-state_root block MUST be rejected"
+        );
+    }
+
+    // Clean up so other tests in same binary aren't perturbed
+    unsafe { std::env::remove_var("SENTRIX_LEGACY_VALIDATION_HEIGHT") };
+}
+
 /// Recursively copy directory contents — used for the rsync simulation in
 /// `test_stale_snapshot_peer_sync`. Keeps file modes intact for MDBX's
 /// open semantics.
