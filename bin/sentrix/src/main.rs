@@ -1289,6 +1289,21 @@ async fn cmd_start(
                 let bc = shared_clone.read().await;
                 (bc.voyager_activated, bc.evm_activated)
             };
+            // Emergency rollback: SENTRIX_FORCE_PIONEER_MODE=1 forces the local
+            // mode flag to Pioneer regardless of persistent voyager_activated
+            // flag in chain.db. Used when Voyager activation hits a known issue
+            // (e.g. V2 locked-block-repropose wiring gap) and operator needs to
+            // resume Pioneer block production. The persistent flag stays set on
+            // chain.db; clearing requires a separate chain.db edit operation.
+            if std::env::var("SENTRIX_FORCE_PIONEER_MODE").is_ok() {
+                tracing::warn!(
+                    "SENTRIX_FORCE_PIONEER_MODE set — forcing Pioneer mode regardless of \
+                     persistent voyager_activated flag. Block production will use round-robin \
+                     PoA until env is unset and validator restarted."
+                );
+                voyager_activated = false;
+                evm_activated = false;
+            }
             // Persistent BFT state for Voyager mode
             let mut bft_engine: Option<BftEngine> = None;
             let mut voyager_tick_count: u64 = 0;
