@@ -104,6 +104,16 @@ fn env_bool(key: &str, default: bool) -> bool {
 /// Build the gossipsub config used by both `new` and `new_with_keypair`.
 /// Reads all tunables via env vars; see the module-level comment above for
 /// the full parameter list + recommended values per mesh size.
+/// Build the connection-limits behaviour. Caps established connections
+/// per peer at 1 — defence-in-depth alongside the L1 dial-tick connected-
+/// peers pre-check (#319 + #321). Other limits left at defaults
+/// (unbounded) so we don't accidentally cap total connections below the
+/// active-set + peer-discovery floor.
+fn build_connection_limits_behaviour() -> libp2p::connection_limits::Behaviour {
+    use libp2p::connection_limits::{Behaviour, ConnectionLimits};
+    Behaviour::new(ConnectionLimits::default().with_max_established_per_peer(Some(1)))
+}
+
 fn gossipsub_config() -> gossipsub::Config {
     let heartbeat_ms: u64 = env_or("SENTRIX_GOSSIP_HEARTBEAT_MS", 300);
     let flood_publish = env_bool("SENTRIX_GOSSIP_FLOOD_PUBLISH", true);
@@ -264,6 +274,17 @@ pub struct SentrixBehaviour {
     pub gossipsub: gossipsub::Behaviour,
     /// Request-response: block sync, handshake, height queries.
     pub rr: request_response::Behaviour<SentrixCodec>,
+    /// Connection-limits enforcement (libp2p 0.56 native). Caps
+    /// established connections per peer at 1 — the load-bearing
+    /// counterpart to the L1 dial-tick connected-peers pre-check
+    /// (sentrix-labs/sentrix#319 + #321). Even if both sides converge
+    /// a duplicate (e.g. simultaneous bidirectional dials crossing on
+    /// the wire), the swarm rejects the late connection. Without this
+    /// the bidirectional-dial-then-prune-duplicates path could leave a
+    /// duplicate pending while gossipsub heartbeat re-grafts the peer
+    /// — the connection-accumulation pattern behind the 2026-04-25
+    /// mainnet stalls.
+    pub connection_limits: libp2p::connection_limits::Behaviour,
 }
 
 impl SentrixBehaviour {
@@ -317,11 +338,14 @@ impl SentrixBehaviour {
             rr_config,
         );
 
+        let connection_limits = build_connection_limits_behaviour();
+
         Self {
             identify,
             kademlia,
             gossipsub,
             rr,
+            connection_limits,
         }
     }
 
@@ -370,11 +394,14 @@ impl SentrixBehaviour {
             rr_config,
         );
 
+        let connection_limits = build_connection_limits_behaviour();
+
         Self {
             identify,
             kademlia,
             gossipsub,
             rr,
+            connection_limits,
         }
     }
 }
