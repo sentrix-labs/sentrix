@@ -1394,10 +1394,116 @@ async fn cmd_start(
             let mut pioneer_last_block =
                 tokio::time::Instant::now() - tokio::time::Duration::from_secs(BLOCK_TIME_SECS);
 
+            // L1 peer auto-discovery state. Every L1_TICK_INTERVAL the
+            // loop checks whether our own advertisement needs
+            // re-broadcasting (every ADVERT_BROADCAST_INTERVAL) and
+            // whether we should dial any active-set members we have
+            // cached but no live connection to. Per the impl plan at
+            // founder-private/audits/peer-auto-discovery-implementation
+            // -plan.md (L1 + L4 baked in).
+            let mut last_advert_broadcast_at: Option<tokio::time::Instant> = None;
+            let mut last_l1_tick_at = tokio::time::Instant::now()
+                - tokio::time::Duration::from_secs(31); // fire on first iter
+            let mut advert_sequence: u64 = 0;
+            const L1_TICK_INTERVAL: tokio::time::Duration =
+                tokio::time::Duration::from_secs(30);
+            const ADVERT_BROADCAST_INTERVAL: tokio::time::Duration =
+                tokio::time::Duration::from_secs(600); // 10 minutes
+
             loop {
                 if shutdown_flag_clone.load(Ordering::Acquire) {
                     tracing::info!("Validator loop: shutdown flag set — exiting");
                     break;
+                }
+
+                // ── L1 peer auto-discovery tick ──
+                if last_l1_tick_at.elapsed() >= L1_TICK_INTERVAL {
+                    last_l1_tick_at = tokio::time::Instant::now();
+
+                    // Broadcast our advert if due (first run + every
+                    // ADVERT_BROADCAST_INTERVAL). Skipped silently when
+                    // we have no public listen addresses (loopback-only
+                    // testnets, paused listeners).
+                    let need_broadcast = match last_advert_broadcast_at {
+                        None => true,
+                        Some(t) => t.elapsed() >= ADVERT_BROADCAST_INTERVAL,
+                    };
+                    if need_broadcast {
+                        let listen_addrs = lp2p_clone.listen_addrs().await;
+                        let chain_id = {
+                            let bc = shared_clone.read().await;
+                            bc.chain_id
+                        };
+                        // Filter out loopback-only addresses — peers
+                        // can't reach those. Cap at MAX_MULTIADDRS to
+                        // stay within DoS budget on the receiver side.
+                        let multiaddrs: Vec<String> = listen_addrs
+                            .iter()
+                            .map(|m| m.to_string())
+                            .filter(|s| !s.starts_with("/ip4/127.") && !s.starts_with("/ip6/::1/"))
+                            .take(sentrix_wire::MultiaddrAdvertisement::MAX_MULTIADDRS)
+                            .collect();
+                        if !multiaddrs.is_empty() {
+                            advert_sequence = advert_sequence.saturating_add(1);
+                            let timestamp = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            let mut advert = sentrix_wire::MultiaddrAdvertisement {
+                                validator: wallet.address.clone(),
+                                multiaddrs,
+                                sequence: advert_sequence,
+                                timestamp,
+                                chain_id,
+                                signature: Vec::new(),
+                            };
+                            advert.sign(&validator_secret_key);
+                            tracing::info!(
+                                "L1: broadcasting multiaddr advertisement seq={} ({} addrs)",
+                                advert.sequence,
+                                advert.multiaddrs.len()
+                            );
+                            lp2p_clone.broadcast_validator_advert(advert).await;
+                            last_advert_broadcast_at = Some(tokio::time::Instant::now());
+                        } else {
+                            tracing::debug!(
+                                "L1: skipping advertisement — no non-loopback listen addrs"
+                            );
+                        }
+                    }
+
+                    // Dial any active-set members we have cached but
+                    // aren't currently peered with. Caller (libp2p) is
+                    // idempotent — duplicate dials to an already-
+                    // connected peer are no-ops at the swarm level.
+                    let active_set: Vec<String> = {
+                        let bc = shared_clone.read().await;
+                        bc.stake_registry.active_set.clone()
+                    };
+                    if !active_set.is_empty() {
+                        let cached = lp2p_clone.list_cached_adverts().await;
+                        for advert in &cached {
+                            if advert.validator == wallet.address {
+                                continue;
+                            }
+                            if !active_set.contains(&advert.validator) {
+                                continue;
+                            }
+                            // Try the first listed multiaddr — preference
+                            // order is the advertising validator's.
+                            if let Some(ma_str) = advert.multiaddrs.first()
+                                && let Ok(ma) = ma_str.parse::<libp2p::Multiaddr>()
+                            {
+                                tracing::debug!(
+                                    "L1: dialing {} at {} (cached advert seq={})",
+                                    &advert.validator[..12.min(advert.validator.len())],
+                                    ma_str,
+                                    advert.sequence
+                                );
+                                let _ = lp2p_clone.connect_peer(ma).await;
+                            }
+                        }
+                    }
                 }
 
                 // ── Voyager fork activation (read lock first, write only if needed) ──
