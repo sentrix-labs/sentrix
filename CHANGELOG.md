@@ -7,6 +7,30 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.24] — 2026-04-25 — Phase 1 mainnet legacy-compat (#268 closed via Path B)
+
+> **🟢 v2.1.24 UNFREEZES MAINNET DEPLOYMENT** with `SENTRIX_LEGACY_VALIDATION_HEIGHT` set per validator. The actual root cause of #268 was identified today: mainnet's chain.db carries historical state_root artifacts (BACKLOG #16 patches at h=32688/89, h=507499 anomaly, possibly more) from past repair operations. v2.1.16+ binaries enforce strict `#1e` validation that correctly rejects these. v2.1.15 has weaker validation that tolerates them. v2.1.24 adds env-gated tolerance: blocks below the cutoff are warn-only, blocks at/above are strictly validated. Operator-opt-in per validator. Default unset = strict (today's behaviour). Mainnet upgrade flow: set cutoff = current_tip + 1000, rolling restart with v2.1.24 binary.
+
+### Added (#288)
+
+- **`SENTRIX_LEGACY_VALIDATION_HEIGHT` env var.** When set on a validator, the strict `CRITICAL #1e: state_root mismatch` check in `apply_block_pass2` is downgraded to warn-only for blocks with `index < cutoff`. The block's stamped state_root is retained (so block hash chain stays intact), the `divergence_tracker` still records the mismatch (visible in metrics, just doesn't fire the rate-alarm), and apply continues normally. Above the cutoff, strict reject behaviour is unchanged.
+- **Test harness `test_legacy_validation_height_branches`** in `crates/sentrix-core/tests/fork_determinism.rs` documents the three behavioural branches (env unset = strict; env set & block.index < cutoff = tolerate; env set & block.index ≥ cutoff = strict). Marked `#[ignore]` because reproducing strict #1e in unit tests requires blocks past `STATE_ROOT_FORK_HEIGHT` (100,000); operator-driven manual verification via `apply_canonical_block_to_forensic` against the VPS5 forensic backup is the integration-level test (verified empirically: env=600000 → tolerate, env=100000 → strict, env unset → strict).
+
+### Closed by Path B vs the alternative
+
+The other path considered was a chain.db rebuild via genesis-replay — produce a clean canonical chain.db with v2.1.23-correct state_roots, halt all 4 mainnet validators, replace chain.db, restart on v2.1.24, then activate Voyager. The chain.db rebuild path was rejected because it changes block hashes for affected heights → all subsequent blocks' `previous_hash` chain breaks → effectively a chain reorganisation/restart from the first patched height, breaking external services that cache block hashes (block explorer, RPC clients). Multi-day operation. Path B preserves block hashes and unblocks Phase 1 within days.
+
+Full design + trade-off analysis at `founder-private/architecture/PHASE_1_LEGACY_COMPAT_DESIGN.md`. RCA evidence trail at `founder-private/incidents/2026-04-25-268-root-cause-pinned.md`.
+
+### Operational rollout this release enables
+
+1. Choose `legacy_height = mainnet_tip + 1000` at deploy moment.
+2. Update each validator's env file in lockstep (md5sum parity check), rolling restart with v2.1.24 binary (~30s halt per validator, mainnet round-robin tolerates).
+3. Verify chain producing post-deploy with all 4 vals.
+4. Voyager activation env flips (`VOYAGER_FORK_HEIGHT`, `VOYAGER_REWARD_V2_HEIGHT`) at heights ABOVE the legacy cutoff so post-cutoff blocks are fully strictly validated.
+
+---
+
 ## [2.1.23] — 2026-04-25 — init_trie empty-hash false-positive fix (partial #268 close)
 
 > **🚨 v2.1.21–v2.1.23 DEPLOYMENT FROZEN ON MAINNET** — v2.1.23 closes ONE disk-roundtrip divergence class identified by yesterday's repro harness, but mainnet's specific v2.1.21 canary symptom (non-empty roots, immediate mismatch against v2.1.15 peers) is **not** explained by this fix. Mainnet stays on v2.1.15 until further #268 investigation lands. v2.1.23 deployed to testnet docker for soak.
