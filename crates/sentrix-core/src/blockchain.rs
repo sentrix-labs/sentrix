@@ -993,6 +993,7 @@ impl Blockchain {
         if self.state_trie.is_none() {
             return Ok(None);
         }
+        let trace = std::env::var("SENTRIX_TRIE_TRACE").is_ok();
 
         // Phase 1: extract addresses + block index from the last block
         let (touched_addrs, block_index) = {
@@ -1036,26 +1037,55 @@ impl Blockchain {
             .collect();
         // Borrow of `accounts` ends after collect().
 
+        if trace {
+            eprintln!("[trie-trace] update_trie_for_block at h={block_index}");
+            eprintln!("[trie-trace] touched (sorted): {} addresses", updates.len());
+            for (addr, balance, nonce) in &updates {
+                let key = address_to_key(addr);
+                let value = account_value_bytes(*balance, *nonce);
+                eprintln!(
+                    "[trie-trace]   addr={addr} balance={balance} nonce={nonce} key={} value={}",
+                    hex::encode(key),
+                    hex::encode(&value)
+                );
+            }
+        }
+
         // Phase 2: mutable borrow of `state_trie`
         let trie = match self.state_trie.as_mut() {
             Some(t) => t,
             None => return Ok(None),
         };
+        if trace {
+            eprintln!("[trie-trace] root pre-update: {}", hex::encode(trie.root_hash()));
+        }
         for (addr, balance, nonce) in updates {
             let key = address_to_key(&addr);
+            // Trace the existing leaf BEFORE we mutate
+            if trace {
+                let existing = trie.get(&key)?;
+                eprintln!(
+                    "[trie-trace]   existing leaf for {addr}: {}",
+                    existing.as_ref().map(hex::encode).unwrap_or_else(|| "<none>".into())
+                );
+            }
             if balance == 0 {
-                // Remove zero-balance accounts from the trie.
-                // delete() is a no-op if the key was never inserted.
-                // Propagate delete errors — zero-balance removal must not silently fail
                 trie.delete(&key)?;
             } else {
                 let value = account_value_bytes(balance, nonce);
-                // Propagate insert errors — trie divergence must be surfaced immediately
                 trie.insert(&key, &value)?;
             }
+            if trace {
+                eprintln!(
+                    "[trie-trace]   root after {addr}: {}",
+                    hex::encode(trie.root_hash())
+                );
+            }
         }
-        // Propagate commit errors — a failed commit leaves the block root uncommitted
         let root = trie.commit(block_index)?;
+        if trace {
+            eprintln!("[trie-trace] commit at h={block_index} → root={}", hex::encode(root));
+        }
         Ok(Some(root))
     }
 
