@@ -32,7 +32,7 @@
 
 Testnet tokens have no real value. Use the faucet to get test SRX.
 
-Testnet runs in Docker on VPS4 (`/opt/sentrix-testnet-docker/`) since
+Testnet runs in Docker on build host (`/opt/sentrix-testnet-docker/`) since
 the 2026-04-23 migration; fresh genesis at chain_id 7120, current
 height ~200K, binary v2.1.24 (`md5 a25f9d771648f6c851a6ee11867fe958`).
 

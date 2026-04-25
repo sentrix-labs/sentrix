@@ -11,7 +11,7 @@ Backup, restore, and migrate Sentrix chain state.
 > nodes halted; see
 > [EMERGENCY_ROLLBACK.md § 3](EMERGENCY_ROLLBACK.md#3-state-recovery-chaindb-restore)
 > and the internal
-> `founder-private/runbooks/state-divergence-recovery.md`.
+> `internal operator runbook`.
 >
 > Export remains useful for read-only inspection, archival snapshots,
 > and bootstrapping a **fresh** chain (genesis import). The commands

@@ -17,15 +17,15 @@ Sentrix follows [Semantic Versioning](https://semver.org/):
 6. **Tag release** — `git tag -a vX.Y.Z -m "vX.Y.Z"` then `git push origin vX.Y.Z`
 7. **GitHub Release** — create release from tag with changelog excerpt
 8. **Deploy** — CI/CD `deploy` job is **disabled**. Run
-   `./scripts/fast-deploy.sh mainnet` from VPS4 (or `testnet` for
+   `./scripts/fast-deploy.sh mainnet` from build host (or `testnet` for
    testnet) to ship the binary; CI runs tests only. Then check health
    on all 3 VPS.
 
 ## Deployment
 
-Primary path: **`scripts/fast-deploy.sh`** (runs from VPS4). Builds
+Primary path: **`scripts/fast-deploy.sh`** (runs from build host). Builds
 inside a `rust:1.95-bullseye` container (glibc 2.31, compatible with
-both 22.04 and 24.04 targets), uploads the binary to VPS1/VPS2/VPS3
+both 22.04 and 24.04 targets), uploads the binary to Foundation node/Treasury node/Core node
 via wg1 SCP, and does a rolling restart with a bounded health check.
 ~3–5 minutes end-to-end.
 
@@ -51,4 +51,4 @@ bypass of the normal regression gate.
 1. Branch from `main`
 2. Fix + test
 3. PR with `fix(scope):` commit message — auto-merge on green CI
-4. Run `./scripts/fast-deploy.sh mainnet` from VPS4 after merge
+4. Run `./scripts/fast-deploy.sh mainnet` from build host after merge

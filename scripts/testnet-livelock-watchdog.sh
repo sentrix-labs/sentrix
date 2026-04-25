@@ -8,7 +8,7 @@
 # keeps a short local state file under /run so the script is
 # stateless across reboots.
 #
-# Install on VPS3 (the only host running the testnet validator cluster)
+# Install on Core node (the only host running the testnet validator cluster)
 # as a systemd timer; see scripts/install-testnet-watchdog.sh for the
 # one-shot installer.
 

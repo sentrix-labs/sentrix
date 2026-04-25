@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # install-testnet-watchdog.sh — One-shot installer for the testnet
-# livelock watchdog on VPS3.
+# livelock watchdog on Core node.
 #
-# Run locally on VPS4 (or whoever has satya_master SSH). Copies the
-# watchdog script to VPS3, writes a systemd oneshot service + timer
+# Run locally on build host (or whoever has satya_master SSH). Copies the
+# watchdog script to Core node, writes a systemd oneshot service + timer
 # pair, enables the timer. Idempotent — safe to re-run.
 
 set -euo pipefail
@@ -20,7 +20,7 @@ SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=accept-new $VPS3_HOST"
 
 [[ -f "$WATCHDOG_SCRIPT" ]] || { echo "missing $WATCHDOG_SCRIPT"; exit 1; }
 
-echo "==> Uploading watchdog script to VPS3"
+echo "==> Uploading watchdog script to Core node"
 scp -i "$SSH_KEY" "$WATCHDOG_SCRIPT" "$VPS3_HOST:/tmp/testnet-livelock-watchdog.sh"
 
 echo "==> Installing watchdog to /usr/local/bin"

@@ -13,7 +13,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added — peer auto-discovery (L1 + L2)
 
-- **L2 pre-flight peer-mesh gate (#298).** Validator loop refuses to flip into Voyager BFT mode unless `peer_count >= active_set.len() - 1`. The 2026-04-25 livelock would have been caught at every VPS — VPS5 had only 1 libp2p peer (VPS1) at activation, gate would have held the flip until L1 self-healing converged the mesh. Strict `SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=="1"` env override (rejects empty string + non-1 values to close the misconfiguration footgun).
+- **L2 pre-flight peer-mesh gate (#298).** Validator loop refuses to flip into Voyager BFT mode unless `peer_count >= active_set.len() - 1`. The 2026-04-25 livelock would have been caught at every VPS — Beacon node had only 1 libp2p peer (Foundation node) at activation, gate would have held the flip until L1 self-healing converged the mesh. Strict `SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=="1"` env override (rejects empty string + non-1 values to close the misconfiguration footgun).
 - **L1 multiaddr advertisement (#300, #301, #302).** New gossipsub topic `sentrix/validator-adverts/1`. Each validator broadcasts a signed `MultiaddrAdvertisement` on startup + every 10 minutes (sequence persisted to `<data_dir>/.advert-sequence` so restart doesn't reset). Receivers verify against on-chain stake registry pubkey, store latest-by-sequence in a 4096-entry LRU cache (lowest-sequence eviction). Periodic dial-tick (every 30s) reads `active_set` and dials any cached members not currently peered. Self-healing mesh from a single bootstrap peer; manual `--peers` lists no longer required at scale.
 
 ### Fixed
@@ -62,7 +62,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Voyager state on chain.db (stake_registry, epoch_manager, voyager_activated=true) intact but unused while Pioneer runs
 - Next Voyager activation attempt blocked on V2 main.rs Steps 4-5 implementation + testnet activation rehearsal
 
-Full incident analysis at `founder-private/incidents/2026-04-25-voyager-activation-bft-livelock.md`.
+Full incident analysis at `internal operator runbook`.
 
 ---
 
@@ -73,13 +73,13 @@ Full incident analysis at `founder-private/incidents/2026-04-25-voyager-activati
 ### Added (#288)
 
 - **`SENTRIX_LEGACY_VALIDATION_HEIGHT` env var.** When set on a validator, the strict `CRITICAL #1e: state_root mismatch` check in `apply_block_pass2` is downgraded to warn-only for blocks with `index < cutoff`. The block's stamped state_root is retained (so block hash chain stays intact), the `divergence_tracker` still records the mismatch (visible in metrics, just doesn't fire the rate-alarm), and apply continues normally. Above the cutoff, strict reject behaviour is unchanged.
-- **Test harness `test_legacy_validation_height_branches`** in `crates/sentrix-core/tests/fork_determinism.rs` documents the three behavioural branches (env unset = strict; env set & block.index < cutoff = tolerate; env set & block.index ≥ cutoff = strict). Marked `#[ignore]` because reproducing strict #1e in unit tests requires blocks past `STATE_ROOT_FORK_HEIGHT` (100,000); operator-driven manual verification via `apply_canonical_block_to_forensic` against the VPS5 forensic backup is the integration-level test (verified empirically: env=600000 → tolerate, env=100000 → strict, env unset → strict).
+- **Test harness `test_legacy_validation_height_branches`** in `crates/sentrix-core/tests/fork_determinism.rs` documents the three behavioural branches (env unset = strict; env set & block.index < cutoff = tolerate; env set & block.index ≥ cutoff = strict). Marked `#[ignore]` because reproducing strict #1e in unit tests requires blocks past `STATE_ROOT_FORK_HEIGHT` (100,000); operator-driven manual verification via `apply_canonical_block_to_forensic` against the Beacon node forensic backup is the integration-level test (verified empirically: env=600000 → tolerate, env=100000 → strict, env unset → strict).
 
 ### Closed by Path B vs the alternative
 
 The other path considered was a chain.db rebuild via genesis-replay — produce a clean canonical chain.db with v2.1.23-correct state_roots, halt all 4 mainnet validators, replace chain.db, restart on v2.1.24, then activate Voyager. The chain.db rebuild path was rejected because it changes block hashes for affected heights → all subsequent blocks' `previous_hash` chain breaks → effectively a chain reorganisation/restart from the first patched height, breaking external services that cache block hashes (block explorer, RPC clients). Multi-day operation. Path B preserves block hashes and unblocks Phase 1 within days.
 
-Full design + trade-off analysis at `founder-private/architecture/PHASE_1_LEGACY_COMPAT_DESIGN.md`. RCA evidence trail at `founder-private/incidents/2026-04-25-268-root-cause-pinned.md`.
+Full design + trade-off analysis at `internal operator runbook`. RCA evidence trail at `internal operator runbook`.
 
 ### Operational rollout this release enables
 
@@ -105,7 +105,7 @@ Full design + trade-off analysis at `founder-private/architecture/PHASE_1_LEGACY
 
 ### Honest framing
 
-This release closes **one** disk-roundtrip divergence class. Mainnet's specific `#268` symptom (v2.1.21 canary on VPS5 with non-empty rsync'd chain.db, immediate `#1e` mismatch against v2.1.15 peers) is **not** explained by this fix and remains under investigation. v2.1.23 ships the protection where it applies + locks the regression test.
+This release closes **one** disk-roundtrip divergence class. Mainnet's specific `#268` symptom (v2.1.21 canary on Beacon node with non-empty rsync'd chain.db, immediate `#1e` mismatch against v2.1.15 peers) is **not** explained by this fix and remains under investigation. v2.1.23 ships the protection where it applies + locks the regression test.
 
 ### Follow-up tracked
 
@@ -130,13 +130,13 @@ This release closes **one** disk-roundtrip divergence class. Mainnet's specific 
 
 ### Designed against
 
-- `founder-private/architecture/FORK_SEQUENCE_PREIMPL_SCAN_2026-04-24.md` — Q1 (#268 hypothesis re-rank), Q2 point 1 (Phase 1 hard-gate). The scan ranks PR #273's `txid_index` as a top suspect for #268 but rules it out via the commit-message disclaimer; the actual top hypothesis is `init_trie` backfill firing on reload because committed root nodes are GC'd by subsequent inserts. The ignored test in this release validates that hypothesis at unit-test scale.
+- `internal operator runbook` — Q1 (#268 hypothesis re-rank), Q2 point 1 (Phase 1 hard-gate). The scan ranks PR #273's `txid_index` as a top suspect for #268 but rules it out via the commit-message disclaimer; the actual top hypothesis is `init_trie` backfill firing on reload because committed root nodes are GC'd by subsequent inserts. The ignored test in this release validates that hypothesis at unit-test scale.
 
 ---
 
 ## [2.1.21] — 2026-04-24 — Observability + startup perf (no consensus change)
 
-> **🚨 DEPLOYMENT FROZEN** — 2026-04-24 Beacon canary (VPS5) triggered immediate `CRITICAL #1e: state_root mismatch` against v2.1.15 peers even with fork envs unset. Rolled back to v2.1.15; divergence persisted through 3 rsync recovery attempts. Root cause remains unresolved — see GitHub issue #268. Do NOT deploy v2.1.21 to any mainnet VPS until the issue closes.
+> **🚨 DEPLOYMENT FROZEN** — 2026-04-24 Beacon canary (Beacon node) triggered immediate `CRITICAL #1e: state_root mismatch` against v2.1.15 peers even with fork envs unset. Rolled back to v2.1.15; divergence persisted through 3 rsync recovery attempts. Root cause remains unresolved — see GitHub issue #268. Do NOT deploy v2.1.21 to any mainnet VPS until the issue closes.
 
 Maintenance patch collecting three bite-sized improvements merged over the 2026-04-24 session. No consensus, wire, or storage format change; `VOYAGER_*_HEIGHT` env vars remain the sole activation gates for Voyager behaviour.
 
@@ -158,7 +158,7 @@ Maintenance patch collecting three bite-sized improvements merged over the 2026-
 
 ### Diagnostic findings from this session
 
-Local repro of #268 against a clean 1 GB mainnet `chain.db` snapshot rsynced from VPS1 (via 28 s halt window):
+Local repro of #268 against a clean 1 GB mainnet `chain.db` snapshot rsynced from Foundation node (via 28 s halt window):
 
 - v2.1.20 release binary + no fork envs → clean startup, height 506078 loaded, 4 validators detected, idle.
 - v2.1.20 release binary + fork envs (`VOYAGER_FORK_HEIGHT=502000` / `VOYAGER_REWARD_V2_HEIGHT=502100`, both below current) → same clean startup.
@@ -402,7 +402,7 @@ Patch release bundling three network-layer improvements. Zero consensus impact �
 
 ## [2.1.9] — 2026-04-23 — Divergence rate-alarm for silent state_root drift
 
-Patch release over v2.1.8. Single change: adds a rate-limited LOUD alarm when a validator rejects peer blocks at a sustained rate — motivated by the 2026-04-23 mainnet fork investigation, where VPS3 had been silently rejecting peer blocks for ≥4 hours (~4000 state_root mismatches per hour) without any operator signal. The existing per-event `CRITICAL #1e` log line was accurate but emitted at ~1/s during real divergence, filling journald rotation so the earliest mismatches were evicted before the operator checked.
+Patch release over v2.1.8. Single change: adds a rate-limited LOUD alarm when a validator rejects peer blocks at a sustained rate — motivated by the 2026-04-23 mainnet fork investigation, where Core node had been silently rejecting peer blocks for ≥4 hours (~4000 state_root mismatches per hour) without any operator signal. The existing per-event `CRITICAL #1e` log line was accurate but emitted at ~1/s during real divergence, filling journald rotation so the earliest mismatches were evicted before the operator checked.
 
 ### Added
 
@@ -428,11 +428,11 @@ Patch release over v2.1.7. Adds exactly one change: retuned the validator livene
 
 ## [2.1.7] — 2026-04-22 — Post-fork hardening (3-way state_root fork follow-up)
 
-Post-mortem release after the 2026-04-21 mainnet 3-way state_root fork. The fork itself was recovered ops-side via frozen-rsync of VPS1 canonical chain.db to VPS2 + VPS3 (see `founder-private/incidents/2026-04-21-mainnet-3way-fork.md`). This release closes the code-level gaps that let the incident develop silently on the v2.1.6 binary after a pre-v2.1.5 `state_import` had already damaged VPS3's trie.
+Post-mortem release after the 2026-04-21 mainnet 3-way state_root fork. The fork itself was recovered ops-side via frozen-rsync of Foundation node canonical chain.db to Treasury node + Core node (see `internal operator runbook`). This release closes the code-level gaps that let the incident develop silently on the v2.1.6 binary after a pre-v2.1.5 `state_import` had already damaged Core node's trie.
 
 ### Fork follow-ups
 
-- **fix(trie): boot-time integrity check — refuse to start on orphan trie references** (`crates/sentrix-trie/src/tree.rs`, `crates/sentrix-core/src/blockchain.rs`). New `SentrixTrie::verify_integrity()` walks the current root and fails fast if any referenced node or leaf-value is missing from `trie_nodes` / `trie_values`. Wired into `Blockchain::init_trie`: hard-fail past `STATE_ROOT_FORK_HEIGHT`, warn-only below. In the 2026-04-21 incident, VPS3's chain.db had a top-level root that existed but referenced an orphaned subtree, so the existing backfill-mismatch and missing-root-node guards didn't fire — it just produced `state_root=None` blocks that strict peers then rejected. PR #206.
+- **fix(trie): boot-time integrity check — refuse to start on orphan trie references** (`crates/sentrix-trie/src/tree.rs`, `crates/sentrix-core/src/blockchain.rs`). New `SentrixTrie::verify_integrity()` walks the current root and fails fast if any referenced node or leaf-value is missing from `trie_nodes` / `trie_values`. Wired into `Blockchain::init_trie`: hard-fail past `STATE_ROOT_FORK_HEIGHT`, warn-only below. In the 2026-04-21 incident, Core node's chain.db had a top-level root that existed but referenced an orphaned subtree, so the existing backfill-mismatch and missing-root-node guards didn't fire — it just produced `state_root=None` blocks that strict peers then rejected. PR #206.
 - **fix(cli): guard `sentrix state import` and `sentrix chain reset-trie` against non-genesis chain** (`bin/sentrix/src/main.rs`). Both commands now refuse on `height > 0` with an error pointing at rsync-from-peer as the correct recovery. Env-var escape hatch for devnet (`SENTRIX_ALLOW_STATE_IMPORT_ON_NONZERO_HEIGHT=1` / `SENTRIX_ALLOW_RESET_TRIE_ON_NONZERO_HEIGHT=1`), intentionally ugly names. PR #207.
 - **fix(network): boundary-reject state_root=None blocks past fork height** (`crates/sentrix-network/src/libp2p_node.rs`). New `block_boundary_reject_reason()` helper rejects obvious-bad blocks at network ingest (both RequestResponse and Gossipsub paths) before spawning an apply task. Moves the existing v2.1.5 execution-time state_root guard earlier in the pipeline — same blocks rejected, just without contending for the chain write lock and without the flood of CRITICAL logs that previously filled the journald cap within hours during an incident. PR #208.
 
@@ -487,7 +487,7 @@ Post-mortem release after the 2026-04-21 mainnet 3-way state_root fork. The fork
   `sentrix state import` + PR #187's auto-reset therefore rebuilt a
   trie whose state_root silently disagreed with peers, and every block
   it produced tripped the #1e strict-reject guard. This was the exact
-  shape of the 2026-04-21 mainnet freeze (VPS2 drifted ~45 SRX/min
+  shape of the 2026-04-21 mainnet freeze (Treasury node drifted ~45 SRX/min
   from canonical after state-import; chain halted).
 
   We cannot align the two paths without changing consensus history
@@ -550,10 +550,10 @@ Post-mortem release after the 2026-04-21 mainnet 3-way state_root fork. The fork
   `state_root = None` while peers with working tries produced
   `state_root = Some(...)` — the hashes diverge and the chain forks.
   Mainnet stalled at block 100,004 on 2026-04-20 via exactly this path:
-  VPS3's trie had a missing node (`24afba5f…`) so block 100,004 got
-  saved with `state_root = null`, VPS1 had a functional trie and block
-  100,004 with `state_root = Some(…)` → different block hashes → VPS1
-  rejected VPS3's block 100,005 as "invalid previous hash". Post-fix,
+  Core node's trie had a missing node (`24afba5f…`) so block 100,004 got
+  saved with `state_root = null`, Foundation node had a functional trie and block
+  100,004 with `state_root = Some(…)` → different block hashes → Foundation node
+  rejected Core node's block 100,005 as "invalid previous hash". Post-fix,
   any node whose trie cannot init past fork height refuses to start —
   a silently diverging validator is worse for the network than an
   offline one. Below fork height the old hash format ignores
@@ -742,7 +742,7 @@ one mainnet performance improvement, and one additive RPC endpoint.
 fast-deploy workflow.** ~60 PRs since v2.0.0. Most of this release is
 C-/H-/M-level security fixes from the Sprint 1 audit; on top of that,
 Sprint 2 RPC adds event log / fee RPC so MetaMask and dApp indexers
-work natively, and deploy moves from CI to `fast-deploy.sh` on VPS4.
+work natively, and deploy moves from CI to `fast-deploy.sh` on build host.
 
 ### Added
 - **Ethereum event log + fee RPC (Sprint 2)** (PR #144) — `eth_getLogs`,
@@ -767,7 +767,7 @@ work natively, and deploy moves from CI to `fast-deploy.sh` on VPS4.
 - **Genesis externalization** (PR #104, #105) — `--genesis <path>` CLI
   flag + embedded mainnet default; `Blockchain::new` now driven from
   Genesis TOML. Testnets no longer need a custom binary.
-- **fast-deploy.sh primary deploy path** (PR #139) — builds on VPS4,
+- **fast-deploy.sh primary deploy path** (PR #139) — builds on build host,
   uploads binary via wg1 SCP, rolling restart with bounded health
   check. ~3–5 min vs ~10–12 min for CI cold cargo cache. CI `deploy`
   job disabled (`if: false`); CI still runs tests for audit trail.
@@ -783,8 +783,8 @@ work natively, and deploy moves from CI to `fast-deploy.sh` on VPS4.
   `native_token` ("SRX") so wallets can discover chain semantics.
 - **fast-deploy builds in bullseye container** (PR #141) — runs inside
   `rust:1.95-bullseye` (glibc 2.31) so binaries work on every target
-  regardless of VPS4 host OS. Fixes crash-loop on commit e49e01d where
-  a VPS4 24.04 native build (glibc 2.39) failed to load on VPS1/VPS2.
+  regardless of build host host OS. Fixes crash-loop on commit e49e01d where
+  a build host 24.04 native build (glibc 2.39) failed to load on Foundation node/Treasury node.
 - **chain_id consolidation** (PR #104) — removed hardcoded `CHAIN_ID`
   fallback in EVM; all call sites must pass `chain_id`. `MAX_SUPPLY`
   constants deduped and imported from `blockchain` module.
@@ -991,14 +991,14 @@ Voyager EVM (Phase 2b). Full Ethereum compatibility.
 - **`activate_evm()`** wired in main validator loop at fork height
 - **BFT round catch-up protocol** — `RoundStatus` gossip lets returning validators learn current (height, round)
 - **BFT propose-after-advance-round** — validator that becomes proposer after timeout/skip immediately proposes block
-- **Multi-validator BFT testnet** (4 validators on VPS3) with 3/4 fault tolerance
+- **Multi-validator BFT testnet** (4 validators on Core node) with 3/4 fault tolerance
 - **Wallet encryption CLI** — `wallet encrypt`/`decrypt`, `--validator-keystore`, password from env or prompt
 - **CI/CD rolling restart** — validators restarted one at a time during deploys; chain never stops producing blocks
 - **CI/CD covers testnet validators** — `sentrix-testnet-val1..4` services auto-updated
 - **Robust health check** — 5 retries × 60s windows with cluster-max delta tolerance
 - **testnet-scan / testnet-explorer** subdomains added to nginx
 - **Single nginx server block** consolidates all 4 testnet subdomains; fixes MetaMask `/rpc` path bug
-- **Per-IP rate limiter** bumped to 20 connections (handles VPS2 hosting 5 validators on one IP)
+- **Per-IP rate limiter** bumped to 20 connections (handles Treasury node hosting 5 validators on one IP)
 - **SRC-20 token standard** verified with deployed test contract
 - **TPS benchmark scripts** (Python) for testnet load testing
 - 519 tests, clippy clean, cargo fmt applied repo-wide
@@ -1048,7 +1048,7 @@ Voyager DPoS + BFT. The consensus upgrade.
 - BFT consensus: Tendermint-style propose/prevote/precommit with 2/3+1 stake-weighted finality
 - BFT message types in P2P layer (proposal, prevote, precommit broadcast)
 - Fork transition: VOYAGER_FORK_HEIGHT env var (default u64::MAX, mainnet safe)
-- Testnet live: chain_id 7120, port 9545, VPS3
+- Testnet live: chain_id 7120, port 9545, Core node
 - REST endpoints: /staking/validators, /staking/delegations, /staking/unbonding, /epoch/current, /epoch/history
 - Staking tx types: RegisterValidator, Delegate, Undelegate, Redelegate, Unjail, SubmitEvidence
 - Block fields: round + justification (serde default, backward compat with Pioneer blocks)
@@ -1069,7 +1069,7 @@ Pioneer release. PoA chain live with 7 validators across 3 VPS, 141K+ blocks, 11
 - 7 validators running across 3 geographically separate VPS (full mesh peering)
 - CI/CD pipeline deploying to all 3 VPS with ordered stop/start and health checks
 - P0 security hardening: libp2p peer limits, per-IP rate limiting, legacy TCP deprecated
-- VPS3 (Sentrix Core) added as 7th validator
+- Core node (Sentrix Core) added as 7th validator
 - Chain height 141,000+, zero downtime incidents since stabilization
 - 11 security audit rounds completed (94 findings, 78 fixed, score 8.3/10)
 - Full documentation suite (20 files across architecture, security, operations, tokenomics, roadmap)

@@ -2,12 +2,12 @@
 # fast-deploy.sh — Primary deploy path for Sentrix chain.
 #
 # Flow:
-#   1. Preflight gates (cargo test + clippy + build) on VPS4
+#   1. Preflight gates (cargo test + clippy + build) on build host
 #   2. Push current branch to GitHub for audit trail (CI will
 #      re-run tests as a second check, but will NOT re-deploy —
 #      the `deploy` job in ci.yml is disabled when fast-deploy is
 #      the primary path)
-#   3. Upload binary to VPS1/2/3 via wg1 SCP, archive previous,
+#   3. Upload binary to Foundation node/2/3 via wg1 SCP, archive previous,
 #      rolling restart with health check
 #   4. Post-deploy: verify chain height advances
 #
@@ -86,7 +86,7 @@ if [[ "$TARGET" == "mainnet" ]]; then
 else
     declare -n HOSTS=TESTNET_HOSTS
     # Testnet lives under its own tree so a testnet deploy never touches
-    # the mainnet binary on the same host (VPS3 runs both).
+    # the mainnet binary on the same host (Core node runs both).
     BIN_DIR="/opt/sentrix-testnet"
 fi
 
@@ -128,9 +128,9 @@ fi
 
 # ── Build ───────────────────────────────────────────────────
 # Build in a Debian bullseye container (glibc 2.31) so the resulting
-# binary runs on every target — VPS1/VPS2 ship Ubuntu 22.04 (glibc 2.35)
-# and VPS3 ships 24.04 (glibc 2.39). A native VPS4 build would pin to
-# glibc 2.39 and crash on VPS1/VPS2 (happened on commit e49e01d).
+# binary runs on every target — Foundation node/Treasury node ship Ubuntu 22.04 (glibc 2.35)
+# and Core node ships 24.04 (glibc 2.39). A native build host build would pin to
+# glibc 2.39 and crash on Foundation node/Treasury node (happened on commit e49e01d).
 # Cargo cache is mounted so only the first build is cold.
 DOCKER_BUILD_IMAGE="${SENTRIX_BUILD_IMAGE:-rust:1.95-bullseye}"
 DOCKER_CACHE="${SENTRIX_DOCKER_CACHE:-$HOME/.cache/sentrix-docker-build}"
@@ -138,7 +138,7 @@ if [[ -n "${SENTRIX_ROLLBACK:-}" ]]; then
     BINARY="$SENTRIX_ROLLBACK"
     echo "  $(blue '=>') Using rollback binary: $BINARY"
 else
-    echo "  $(blue '=>') Building release binary on VPS4 (docker: $DOCKER_BUILD_IMAGE) ..."
+    echo "  $(blue '=>') Building release binary on build host (docker: $DOCKER_BUILD_IMAGE) ..."
     mkdir -p "$DOCKER_CACHE/cargo-registry" "$DOCKER_CACHE/cargo-git" "$DOCKER_CACHE/target"
     docker run --rm \
         -v "$REPO_ROOT":/work \

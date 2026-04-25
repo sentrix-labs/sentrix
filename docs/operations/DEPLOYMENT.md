@@ -103,10 +103,10 @@ sudo systemctl daemon-reload && sudo systemctl enable --now sentrix-node
 ## Canonical Deploy Path
 
 Production binary deploys go through **`scripts/fast-deploy.sh` from
-VPS4** (see [CI_CD.md](CI_CD.md) and [RELEASE.md](../../RELEASE.md)).
+build host** (see [CI_CD.md](CI_CD.md) and [RELEASE.md](../../RELEASE.md)).
 The CI/CD `deploy` job is disabled; CI runs tests only. The script
 builds once in a `rust:1.95-bullseye` container, ships the same byte-
-identical binary to VPS1/VPS2/VPS3 over wg1, and does a rolling
+identical binary to Foundation node/Treasury node/Core node over wg1, and does a rolling
 restart with a bounded health check.
 
 For an independent operator running a single validator outside the

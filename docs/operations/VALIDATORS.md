@@ -1,15 +1,15 @@
 # Validators
 
-4 validators across 3 VPS, round-robin PoA (v2.1.25).
+4 active validators in DPoS+BFT consensus (Voyager, v2.1.30+).
 
 ## Current Set
 
-| Slot | Name | Address prefix | VPS | Service |
-|------|------|---------------|-----|---------|
-| 0 | Sentrix Treasury   | `0x0804...` | VPS2 | sentrix-val5    |
-| 1 | Sentrix Foundation | `0x753f...` | VPS1 | sentrix-node    |
-| 2 | Sentrix Core       | `0x87c9...` | VPS3 | sentrix-core    |
-| 3 | Sentrix Beacon     | `0x...`     | VPS2 | sentrix-beacon  |
+| Slot | Name | Address prefix | Role |
+|------|------|---------------|------|
+| 0 | Sentrix Treasury   | `0x0804...` | Treasury validator |
+| 1 | Sentrix Foundation | `0x753f...` | Foundation validator |
+| 2 | Sentrix Core       | `0x87c9...` | Core validator |
+| 3 | Sentrix Beacon     | `0x4cad...` | Beacon validator |
 
 Sorted by address. Block producer = `height % 4`.
 
