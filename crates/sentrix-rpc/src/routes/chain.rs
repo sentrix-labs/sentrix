@@ -80,7 +80,7 @@ pub(super) async fn get_finalized_height(
         "finalized_hash": finalized_hash,
         "latest_height": latest.index,
         "blocks_behind_finality": latest.index.saturating_sub(finalized_height),
-        "consensus": if bft_active { "BFT" } else { "PoA" },
+        "consensus": if bft_active { "DPoS+BFT" } else { "PoA" },
     }))
 }
 

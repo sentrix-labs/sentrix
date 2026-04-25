@@ -29,7 +29,7 @@ pub(super) async fn root(State(state): State<SharedState>) -> Json<serde_json::V
     // explorers, wallets) need accurate consensus mode.
     let bc = state.read().await;
     let chain_id = bc.chain_id;
-    let consensus = if bc.voyager_activated { "BFT" } else { "PoA" };
+    let consensus = if bc.voyager_activated { "DPoS+BFT" } else { "PoA" };
     drop(bc);
     Json(serde_json::json!({
         "name": "Sentrix",
@@ -87,7 +87,7 @@ pub async fn sentrix_status(State(state): State<SharedState>) -> Json<serde_json
     let bc = state.read().await;
     let chain_id = bc.chain_id;
     // Same fix as root() — runtime flag, not chain_id heuristic.
-    let consensus = if bc.voyager_activated { "BFT" } else { "PoA" };
+    let consensus = if bc.voyager_activated { "DPoS+BFT" } else { "PoA" };
     let latest = bc.latest_block().ok().cloned();
     let (latest_height, latest_hash, latest_timestamp) = latest
         .as_ref()

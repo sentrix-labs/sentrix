@@ -184,7 +184,7 @@ async fn sentrix_get_validator_set(state: &SharedState) -> DispatchResult {
             .collect();
 
         Ok(json!({
-            "consensus": if bc.voyager_activated { "BFT" } else { "PoA" },
+            "consensus": if bc.voyager_activated { "DPoS+BFT" } else { "PoA" },
             "active_count": active_count,
             "total_count": bc.authority.validators.len(),
             "total_active_stake": "0x0",
@@ -342,7 +342,7 @@ async fn sentrix_get_bft_status(state: &SharedState) -> DispatchResult {
     // while VOYAGER_FORK_HEIGHT stayed at u64::MAX as operational safety
     // — the fork-height check would wrongly report PoA. (next_height is
     // still used downstream for proposer selection, kept in scope.)
-    let consensus = if bc.voyager_activated { "BFT" } else { "PoA" };
+    let consensus = if bc.voyager_activated { "DPoS+BFT" } else { "PoA" };
     // Live BFT round/phase state is owned by the validator loop's
     // BftEngine and not yet published into Blockchain. For now we expose
     // the chain-level finality view (last block carrying a BFT
@@ -372,7 +372,7 @@ async fn sentrix_get_bft_status(state: &SharedState) -> DispatchResult {
             .weighted_proposer(next_height, 0)
             .unwrap_or_default()
     };
-    let rounds_since_last_block = if consensus == "BFT" {
+    let rounds_since_last_block = if consensus != "PoA" {
         latest.round as u64
     } else {
         0
