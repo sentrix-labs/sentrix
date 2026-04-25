@@ -45,8 +45,15 @@ pub(super) async fn get_finalized_height(
             }));
         }
     };
-    let next_height = latest.index.saturating_add(1);
-    let bft_active = sentrix_core::blockchain::Blockchain::is_voyager_height(next_height);
+    // BFT activity follows the runtime `voyager_activated` flag, NOT the
+    // `is_voyager_height` fork-height check. `is_voyager_height` only
+    // returns true when `next_height >= VOYAGER_FORK_HEIGHT` env var,
+    // but mainnet activated Voyager via the chain.db `voyager_activated`
+    // flag (set by activate_voyager()) while VOYAGER_FORK_HEIGHT remained
+    // at u64::MAX as an operational safety. The fork-height check would
+    // wrongly report `consensus=PoA` while runtime is actually BFT.
+    let bft_active = bc.voyager_activated;
+    let _ = latest.index.saturating_add(1); // formerly used for is_voyager_height
 
     // Fallback to latest when BFT is active but no justified block sits
     // in the sliding window yet. Mirrors `sentrix_getFinalizedHeight`
@@ -73,7 +80,7 @@ pub(super) async fn get_finalized_height(
         "finalized_hash": finalized_hash,
         "latest_height": latest.index,
         "blocks_behind_finality": latest.index.saturating_sub(finalized_height),
-        "consensus": if bft_active { "BFT" } else { "PoA" },
+        "consensus": if bft_active { "DPoS+BFT" } else { "PoA" },
     }))
 }
 
