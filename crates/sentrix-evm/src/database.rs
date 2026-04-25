@@ -87,6 +87,33 @@ impl SentrixEvmDb {
                 db.accounts.insert(addr, info);
             }
         }
+        // Pre-load every contract's bytecode into `db.code`. block_executor
+        // already pre-loads the direct CALL target's code at the per-tx
+        // entry point, but a contract that DELEGATECALLs / CALLs / STATIC
+        // CALLs another contract triggers `code_by_hash` for the SECOND
+        // contract's hash — which would fail with "code hash X not found"
+        // because only the entry-point target was loaded. Bulk-loading
+        // every contract's bytecode here fixes cross-contract calls.
+        //
+        // Cost: O(N_contracts × bytecode_size) memory per EVM tx. At
+        // realistic chain sizes (thousands of contracts × ~10KB each)
+        // this is bounded; if a chain grows large enough that bulk-load
+        // becomes a problem, the right fix is a lazy `code_by_hash`
+        // callback that fetches from the live AccountDB on demand —
+        // schema below already supports that pattern.
+        for (addr_str, account) in &account_db.accounts {
+            if account.code_hash == EMPTY_CODE_HASH {
+                continue; // EOA, no bytecode
+            }
+            let code_hash_hex = hex::encode(account.code_hash);
+            if let Some(bytecode) = account_db.get_contract_code(&code_hash_hex) {
+                let _ = addr_str; // address not needed for the code map
+                db.code.insert(
+                    B256::from(account.code_hash),
+                    Bytecode::new_raw(alloy_primitives::Bytes::from(bytecode.clone())),
+                );
+            }
+        }
         db
     }
 
