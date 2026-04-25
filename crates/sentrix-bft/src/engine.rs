@@ -468,16 +468,17 @@ impl BftEngine {
         //     in the current round, `on_prevote_weighted` updates
         //     `locked_hash` to the new value — the implicit PoLC.
         //
-        // Known gap (tracked as M-15 follow-up):
+        // M-15 status:
         //
-        //   1. We do not re-propose the locked block when WE become
-        //      proposer of a new round while locked — Tendermint says
-        //      we must. Current behaviour: build a fresh block, which
-        //      peers prevote-nil on because they observe a lock
-        //      conflict, and the round times out. Ultimately not
-        //      unsafe (eventually someone else proposes the locked
-        //      value or the lock shifts via fresh PoLC) but reduces
-        //      liveness.
+        //   1. Locked-block re-propose IS implemented (PR #258 engine
+        //      cache + PR #259 main.rs wiring). When a validator is
+        //      locked on hash H and rotates into proposer slot at a
+        //      later round, `build_or_reuse_proposal` in main.rs
+        //      consults `locked_proposal_bytes()` and re-broadcasts
+        //      cached B(H) instead of building a fresh block. The
+        //      "prevote nil on lock conflict" guard below remains
+        //      load-bearing — it's how locked validators reject a
+        //      fresh-proposal attempt from a peer that lost its cache.
         //
         //   2. We do not persist per-round prevote history, so an
         //      explicit PoLC object carrying the 2/3 signatures is
@@ -491,10 +492,19 @@ impl BftEngine {
         //      (collector keys on validator address + stake from
         //      StakeRegistry — no self-inflation path).
         //
-        // The guard below implements the "prevote nil on lock
-        // conflict" part correctly; a proper fix for (1) above
-        // belongs in block_producer.rs (cache the proposed block and
-        // re-use when locked).
+        //   3. Open liveness gap: a validator whose libp2p dropped
+        //      the round-N Propose message will lock via peer
+        //      prevotes but never stash the bytes, so
+        //      `locked_proposal_bytes()` returns None for them. If
+        //      that validator becomes round-(N+1) proposer they fall
+        //      through to `create_block_voyager` and build a
+        //      fresh-hash block, which peers reject by lock — round
+        //      times out via skip-round. Pinned by
+        //      `tests/m15_repropose.rs::test_m15_locked_without_bytes_returns_none_from_accessor`.
+        //      Fix candidate: when locked + no cached bytes + we are
+        //      proposer, gossip a `RoundStatus` "I need bytes for H"
+        //      and prevote nil rather than proposing fresh. Belongs
+        //      in main.rs / network layer, not the engine.
         self.state.proposed_hash = Some(block_hash.to_string());
         self.state.phase = BftPhase::Prevote;
         self.phase_start = Instant::now();
@@ -583,6 +593,18 @@ impl BftEngine {
             self.phase_start = Instant::now();
 
             if let Some(ref h) = hash {
+                // Invariant for `locked_proposal_bytes`: when
+                // `locked_block` is Some, its bytes MUST hash to
+                // `locked_hash`. PoLC moves the lock to a new hash —
+                // any cached bytes from the previous lock are now
+                // stale and must be cleared before the new hash is
+                // pinned. Without this, a PoLC where staging mismatches
+                // the new winner returns Some((new_hash, old_bytes))
+                // from `locked_proposal_bytes`, which would corrupt
+                // the re-propose path.
+                if self.state.locked_hash.as_deref() != Some(h.as_str()) {
+                    self.state.locked_block = None;
+                }
                 self.state.locked_hash = Some(h.clone());
                 self.state.locked_round = Some(self.state.round);
                 // V2 M-15 Step 3: promote staging → locked if its hash
@@ -1317,6 +1339,137 @@ mod tests {
     fn test_v2_locked_proposal_bytes_none_when_unlocked() {
         let (engine, _reg) = setup();
         assert!(engine.locked_proposal_bytes().is_none());
+    }
+
+    /// V2 PoLC happy path: lock on A in round 0, PoLC to B in round 1
+    /// with matching staging → `locked_block` is REPLACED with bytes_B,
+    /// not preserved as bytes_A. This is the symmetric case to
+    /// `test_v2_polc_clears_locked_block_when_staging_mismatch` —
+    /// together they pin the rule "locked_block always tracks the
+    /// currently-locked hash, never an earlier one."
+    #[test]
+    fn test_v2_polc_replaces_locked_block_when_staging_matches() {
+        let (mut engine, _reg) = setup();
+        let total = engine.state.total_active_stake;
+        let per_val = total / 21;
+        let threshold = supermajority_threshold(total);
+        let needed = ((threshold / per_val) + 1) as usize;
+
+        // Round 0: lock on hash_A with bytes_A.
+        engine.state.phase = BftPhase::Prevote;
+        engine.stash_proposal_bytes("hash_A", b"bytes_A".to_vec());
+        for i in 0..needed {
+            let pv = Prevote {
+                height: 100,
+                round: 0,
+                block_hash: Some("hash_A".into()),
+                validator: format!("0xval{:03}", i),
+                signature: vec![],
+            };
+            let _ = engine.on_prevote_weighted(&pv, per_val);
+        }
+        assert_eq!(
+            engine.locked_proposal_bytes(),
+            Some(("hash_A".into(), b"bytes_A".to_vec()))
+        );
+
+        // Round 1: PoLC to hash_B, staging matches.
+        engine.advance_round();
+        engine.state.phase = BftPhase::Prevote;
+        engine.stash_proposal_bytes("hash_B", b"bytes_B".to_vec());
+        for i in 0..needed {
+            let pv = Prevote {
+                height: 100,
+                round: 1,
+                block_hash: Some("hash_B".into()),
+                validator: format!("0xval{:03}", i),
+                signature: vec![],
+            };
+            let _ = engine.on_prevote_weighted(&pv, per_val);
+        }
+
+        // PoLC fired: lock + cache both moved to hash_B.
+        assert_eq!(engine.state.locked_hash.as_deref(), Some("hash_B"));
+        assert_eq!(
+            engine.locked_proposal_bytes(),
+            Some(("hash_B".into(), b"bytes_B".to_vec())),
+            "PoLC with matching staging must replace locked_block with new bytes"
+        );
+    }
+
+    /// V2 PoLC regression: when a 2/3+ supermajority forms on a hash
+    /// DIFFERENT from the currently-locked hash (proof-of-lock-change),
+    /// `locked_block` must be replaced with the new winner's bytes —
+    /// or cleared if the new winner's bytes weren't staged.
+    ///
+    /// This test pins the failure mode where staging.hash != quorum.hash
+    /// AND we were already locked on a third (or first) hash: the old
+    /// `locked_block` must NOT survive into a state where `locked_hash`
+    /// has moved on. If it does, `locked_proposal_bytes()` returns
+    /// stale bytes whose hash doesn't match the lock — corrupting the
+    /// re-propose path.
+    #[test]
+    fn test_v2_polc_clears_locked_block_when_staging_mismatch() {
+        let (mut engine, _reg) = setup();
+        let total = engine.state.total_active_stake;
+        let per_val = total / 21;
+        let threshold = supermajority_threshold(total);
+        let needed = ((threshold / per_val) + 1) as usize;
+
+        // Round 0: lock on hash_A with bytes_A.
+        engine.state.phase = BftPhase::Prevote;
+        engine.stash_proposal_bytes("hash_A", b"bytes_A".to_vec());
+        for i in 0..needed {
+            let pv = Prevote {
+                height: 100,
+                round: 0,
+                block_hash: Some("hash_A".into()),
+                validator: format!("0xval{:03}", i),
+                signature: vec![],
+            };
+            let _ = engine.on_prevote_weighted(&pv, per_val);
+        }
+        assert_eq!(engine.state.locked_hash.as_deref(), Some("hash_A"));
+        assert_eq!(
+            engine.state.locked_block.as_deref(),
+            Some(&b"bytes_A"[..])
+        );
+
+        // Round 1: simulate the validator stashing bytes for hash_C
+        // (decoy — the wrong hash) but the network forming PoLC quorum
+        // on hash_B. Could happen if our peers proposed B but our local
+        // gossip delivered C first into the staging slot.
+        engine.advance_round();
+        engine.state.phase = BftPhase::Prevote;
+        engine.stash_proposal_bytes("hash_C", b"bytes_C".to_vec());
+        for i in 0..needed {
+            let pv = Prevote {
+                height: 100,
+                round: 1,
+                block_hash: Some("hash_B".into()),
+                validator: format!("0xval{:03}", i),
+                signature: vec![],
+            };
+            let _ = engine.on_prevote_weighted(&pv, per_val);
+        }
+
+        // PoLC fired: lock has moved to hash_B.
+        assert_eq!(engine.state.locked_hash.as_deref(), Some("hash_B"));
+        // Staging was for hash_C, didn't match — bytes can't be promoted.
+        // locked_block must NOT keep the round-0 bytes_A: they hash to A,
+        // but the lock now claims B. Either clear locked_block (None)
+        // or the bug surfaces via locked_proposal_bytes returning a
+        // hash/bytes mismatch — which corrupts re-propose.
+        assert!(
+            engine.state.locked_block.is_none(),
+            "PoLC to a non-staged hash must clear locked_block, not retain stale bytes from \
+             a previous lock — got {:?}",
+            engine.state.locked_block.as_ref().map(|b| String::from_utf8_lossy(b).into_owned())
+        );
+        assert!(
+            engine.locked_proposal_bytes().is_none(),
+            "locked_proposal_bytes must be None when we cannot honour the lock with cached bytes"
+        );
     }
 
     /// V2 regression: staging for a different hash than the quorum winner
