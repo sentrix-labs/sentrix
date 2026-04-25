@@ -642,8 +642,22 @@ impl Blockchain {
         } else {
             coinbase_validator.as_str()
         };
+        if std::env::var("SENTRIX_TRIE_TRACE").is_ok() {
+            let pre = self.accounts.get_balance(coinbase_recipient);
+            eprintln!(
+                "[apply-trace] block {} coinbase: recipient={} amount={} pre_balance={}",
+                block.index, coinbase_recipient, coinbase_amount, pre
+            );
+        }
         self.accounts.credit(coinbase_recipient, coinbase_amount)?;
         self.total_minted += coinbase_amount;
+        if std::env::var("SENTRIX_TRIE_TRACE").is_ok() {
+            let post = self.accounts.get_balance(coinbase_recipient);
+            eprintln!(
+                "[apply-trace] block {} post-coinbase balance={}",
+                block.index, post
+            );
+        }
 
         // Apply all transactions
         let mut total_fee: u64 = 0;
