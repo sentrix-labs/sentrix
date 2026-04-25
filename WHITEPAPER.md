@@ -1,13 +1,13 @@
 # Sentrix — Technical Whitepaper
 
-**Version 3.1 — 2026-04-25**
+**Version 3.2 — 2026-04-25 (post-Voyager mainnet activation)**
 **Author: SentrisCloud**
 
 ---
 
 ## Abstract
 
-Sentrix is a Layer-1 blockchain engineered for fast, deterministic settlement. Built from scratch in Rust as a 14-crate workspace, it delivers 1-second blocks, Ethereum-compatible addressing, an MDBX-backed state layer, and a native fungible token standard (SRC-20). The chain runs a two-phase consensus design: **Pioneer** (Proof of Authority round-robin) on mainnet today, with **Voyager** (Delegated Proof of Stake + BFT finality + EVM execution) already live on testnet and pending mainnet activation.
+Sentrix is a Layer-1 blockchain engineered for fast, deterministic settlement. Built from scratch in Rust as a 14-crate workspace, it delivers 1-second blocks, Ethereum-compatible addressing, an MDBX-backed state layer, and a native fungible token standard (SRC-20). The chain transitioned through a two-phase consensus design: **Pioneer** (Proof of Authority round-robin) bootstrapped the network from genesis, and **Voyager** (Delegated Proof of Stake + BFT finality + EVM execution) is now active on both mainnet (since 2026-04-25, h=579047) and testnet.
 
 ---
 
@@ -37,13 +37,15 @@ This mirrors the path taken by successful chains like BNB Chain (PoA → DPoS) a
 
 ---
 
-## 2. Consensus: Proof of Authority
+## 2. Consensus
 
-### 2.1 Validator Selection
+> **Mainnet status (2026-04-25 onward):** mainnet runs Voyager (DPoS + BFT finality). The Pioneer PoA design described in §2.1–§2.4 below is retained for historical reference — it is the consensus engine that produced blocks 0…579046 before the Voyager fork. Voyager's DPoS proposer rotation + 3-phase BFT (Propose → Prevote → Precommit) is the active engine; see §2.5 for the live design.
+
+### 2.1 Validator Selection (Pioneer, historical)
 
 Validators are authorized by the chain administrator. Each validator is identified by an Ethereum-compatible address derived from an ECDSA secp256k1 keypair.
 
-### 2.2 Round-Robin Scheduling
+### 2.2 Round-Robin Scheduling (Pioneer, historical)
 
 Block production follows a deterministic round-robin schedule:
 
@@ -57,9 +59,31 @@ Validators are sorted by address (ascending) to ensure all nodes agree on the sc
 
 Block time is **1 second** (`BLOCK_TIME_SECS = 1`). Each validator produces one block per round. Mainnet runs **4 active validators** in round-robin (`expected_producer = sorted_validators[height % 4]`), so each validator produces a block every 4 seconds. `MIN_ACTIVE_VALIDATORS = 1` keeps the chain advancing even when 3 of 4 validators are offline; `MIN_BFT_VALIDATORS = 4` is the BFT-quorum threshold under Voyager.
 
-### 2.4 Finality
+### 2.4 Pioneer Finality (historical)
 
-Blocks achieve **instant finality** upon production. There is no fork choice rule, no uncle blocks, and no reorganization. A block produced by the authorized validator is final.
+Under Pioneer, blocks achieved **instant finality** upon production. There was no fork choice rule, no uncle blocks, and no reorganization. A block produced by the authorized validator was final by construction.
+
+### 2.5 Voyager — DPoS + BFT (active mainnet engine)
+
+Voyager replaces Pioneer's authority-based round-robin with a stake-weighted active set + 3-phase BFT vote protocol:
+
+- **Validator set selection.** Open registration with a 15,000 SRX self-stake floor. Top 100 validators by stake score (self-stake + delegations × commission factor) form the `active_set`. Epoch rotation evicts non-performers.
+- **Proposer rotation.** Same `active_set[height % len()]` deterministic rule as Pioneer, applied over the live stake-ranked set instead of the admin-curated set.
+- **3-phase BFT round.** Propose → Prevote → Precommit. A block is committed when ≥ 2/3+1 of stake-weighted precommits are gathered. Locked-block-repropose handles partial-supermajority cases without forking.
+- **Justifications.** Each committed block carries a `justification` field with the precommit signatures that finalised it. `sentrix_getFinalizedHeight` returns the height of the newest justified block; light clients verify finality by checking justifications against the on-chain stake registry.
+- **Slashing.** Double-sign and prolonged offline trigger automatic stake slashing under `crates/sentrix-staking/`. Slash evidence is submitted on-chain via the `SubmitEvidence` staking op.
+- **EVM gating.** Voyager activation also flips `evm_activated=true`, enabling `eth_sendRawTransaction` and Solidity contract deployment via revm 37.
+
+Voyager activated on mainnet at h=579047 on 2026-04-25 after Pioneer ran from genesis through h=579046.
+
+### 2.6 Peer Mesh (L1 + L2 self-healing)
+
+DPoS+BFT consensus assumes the validator mesh is well-connected. Sentrix ships two layers of self-healing peer discovery:
+
+- **L1 multiaddr advertisements.** Validators broadcast signed `MultiaddrAdvertisement` messages on the `sentrix/validator-adverts/1` gossipsub topic at startup + every 10 minutes. Receivers verify against on-chain stake registry pubkeys and store latest-by-sequence in a 4096-entry LRU cache. A periodic dial-tick (every 30s) reads `active_set` and dials any cached members not currently peered. Sequence numbers are persisted to `<data_dir>/.advert-sequence` so restarts don't reset the newer-wins ordering.
+- **L2 cold-start gate.** The validator loop refuses to enter BFT mode unless `peer_count ≥ active_set.len() − 1`. The gate fires every loop iteration when `voyager_activated=true` (not only on activation transitions), closing the cold-start race where a validator restarting with `voyager_activated=true` already in chain.db could enter BFT before the L1 mesh re-converges. Strict `SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=="1"` env override exists for emergency recovery.
+
+Together these guarantee a fresh validator joining from a single bootstrap peer converges to the full mesh within ~30s without manual `--peers` configuration.
 
 ---
 
@@ -331,27 +355,28 @@ Chain ID `7119` (`0x1bcf`) is registered for Sentrix mainnet; `7120` is the test
 
 | Phase | Status | Key Features |
 |---|---|---|
-| **Pioneer (PoA)** | LIVE | PoA round-robin engine, MDBX state, SentrixTrie, libp2p networking, SRC-20, JSON-RPC, security audits V1–V11 |
-| **Voyager (DPoS+BFT+EVM)** | TESTNET LIVE / MAINNET PENDING | DPoS staking, BFT finality, EVM execution. Active on testnet since 2026-04-23. Mainnet activation pending V2 main.rs wiring (GitHub #292). |
-| **Frontier** | FUTURE | dApp ecosystem expansion, real-user scaling, validator decentralization |
+| **Pioneer (PoA)** | COMPLETED (h=0…579046) | PoA round-robin engine, MDBX state, SentrixTrie, libp2p networking, SRC-20, JSON-RPC, security audits V1–V11. Succeeded by Voyager 2026-04-25. |
+| **Voyager (DPoS+BFT+EVM)** | **LIVE — mainnet & testnet** | DPoS staking, BFT finality, EVM execution. Active on testnet since 2026-04-23. Mainnet active since 2026-04-25 at h=579047 with `voyager_activated=true` and `evm_activated=true`. L1 peer auto-discovery + L2 cold-start gate self-heal the validator mesh. |
+| **Frontier** | SCAFFOLDED (Phase F-1 in main); F-2…F-10 planned | Mainnet hard fork to introduce parallel transaction execution, sub-1s block time, ecosystem expansion. Implementation tracked in `audits/frontier-mainnet-phase-implementation-plan.md`. |
 | **Odyssey** | FUTURE | Cross-chain bridges, mature ecosystem, full public chain |
 
 ---
 
-## 13. Current State (2026-04-25)
+## 13. Current State (2026-04-25, post-Voyager mainnet activation)
 
 | Item | Value |
 |---|---|
-| Mainnet binary | v2.1.25 |
-| Testnet binary | v2.1.24 |
-| Mainnet height | ~558,000+ |
+| Mainnet binary | v2.1.30 |
+| Testnet binary | v2.1.30 |
+| Mainnet height | ~580,000+ |
 | Mainnet block time | 1 second |
-| Mainnet validators | 4 active (Foundation, Treasury, Core, Beacon) on Pioneer round-robin |
-| Mainnet mode | Pioneer with `SENTRIX_FORCE_PIONEER_MODE=1` emergency override (Voyager activation rolled back same-day; tracked in GitHub #292) |
-| Testnet | 4 validators, Voyager DPoS+BFT+EVM ACTIVE since 2026-04-23 docker migration, fresh genesis, h~200K |
+| Mainnet validators | 4 active (Foundation, Treasury, Core, Beacon) — DPoS proposer rotation under BFT finality |
+| Mainnet consensus | **Voyager** (`consensus_mode="voyager"`, `voyager_activated=true`, `evm_activated=true`). Activated 2026-04-25 at h=579047 after the second activation attempt converged successfully. |
+| Mainnet RPC | Reports `consensus: "DPoS+BFT"` on `/sentrix_status` and `/chain/finalized-height`; `chain_stats()` exposes `consensus_mode`, `voyager_activated`, `evm_activated` flags. |
+| Testnet | 4 validators, Voyager DPoS+BFT+EVM active since 2026-04-23 docker migration, fresh genesis, h ~200K. |
 | Workspace | 14 Rust crates (`crates/sentrix-*`) + binary at `bin/sentrix/src/main.rs` |
 | Storage backend | MDBX (libmdbx) |
-| Tests | 500+ unit + 16 integration |
+| Tests | 551+ unit + 16+ integration |
 
 ---
 

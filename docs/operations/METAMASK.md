@@ -1,6 +1,6 @@
 # MetaMask Setup
 
-Sentrix Testnet is fully MetaMask-compatible (chain ID 7120). Mainnet (chain ID 7119) currently runs Pioneer PoA without EVM — MetaMask will read balances but contracts won't deploy until the Voyager hard fork activates EVM.
+Sentrix is fully MetaMask-compatible on both networks. Mainnet (chain ID 7119) and Testnet (chain ID 7120) both run Voyager DPoS+BFT consensus with EVM enabled — MetaMask reads balances, signs transactions, and deploys Solidity contracts on either network.
 
 ## Add Sentrix Testnet to MetaMask
 
@@ -17,7 +17,7 @@ Sentrix Testnet is fully MetaMask-compatible (chain ID 7120). Mainnet (chain ID 
 
 3. Save. Switch to "Sentrix Testnet" in the network dropdown.
 
-## Add Sentrix Mainnet (read-only for now)
+## Add Sentrix Mainnet
 
    | Field | Value |
    |-------|-------|
@@ -26,6 +26,8 @@ Sentrix Testnet is fully MetaMask-compatible (chain ID 7120). Mainnet (chain ID 
    | **Chain ID** | `7119` |
    | **Currency Symbol** | `SRX` |
    | **Block Explorer URL** | `https://sentrixscan.sentriscloud.com` |
+
+Mainnet supports `eth_sendRawTransaction` and Solidity contract deployment since the 2026-04-25 Voyager activation. Use mainnet for production deployments and testnet for development.
 
 ## Get Test SRX
 
