@@ -12,6 +12,7 @@ pub mod blockchain;
 pub mod chain_queries;
 pub mod genesis;
 pub mod mempool;
+pub mod parallel;
 pub mod state_export;
 pub mod storage;
 pub mod token_ops;
