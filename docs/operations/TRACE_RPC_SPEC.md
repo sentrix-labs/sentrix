@@ -227,7 +227,7 @@ for native ops.
     "0xbb...": "1000000000000000000"
   },
   "token": {
-    "symbol": "SNTX",
+    "symbol": "MTK",
     "decimals": 18,
     "total_supply_before": "10000000000000000000000",
     "total_supply_after":  "10000000000000000000000"
@@ -251,8 +251,8 @@ that differ (mint grows supply; burn shrinks it).
   "contract": "SRC20_abc123...",
   "deployer": "0xaa...",
   "token": {
-    "name": "Sentrix Utility Token",
-    "symbol": "SNTX",
+    "name": "My Token",
+    "symbol": "MTK",
     "decimals": 18,
     "initial_supply": "10000000000000000000000",
     "max_supply": "10000000000000000000000"
@@ -282,7 +282,7 @@ commission).
    (balances before/after, events emitted, fee split), not just raw
    payload.
 2. **Wallet confirmation UX** — show the user "you are about to send
-   1000 SNTX, reducing your balance from X to Y" before they sign,
+   1000 MTK, reducing your balance from X to Y" before they sign,
    cuts down on phishing / approval mistakes.
 3. **Integration tests** — assert on state diffs in Rust / JS tests
    without a separate balance-fetch step.

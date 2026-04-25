@@ -28,7 +28,7 @@
 
 - [SRX](tokenomics/SRX.md) — supply, halving, fees
 - [Staking](tokenomics/STAKING.md) — DPoS design (Voyager, planned)
-- [Token Standards](tokenomics/TOKEN_STANDARDS.md) — SRC-20 (native) + SRC-20 (EVM), SNTX + SRTX planned
+- [Token Standards](tokenomics/TOKEN_STANDARDS.md) — SRC-20 (native) + SRC-20 (EVM); single protocol token (SRX only)
 
 ## Roadmap
 

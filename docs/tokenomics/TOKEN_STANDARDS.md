@@ -47,23 +47,12 @@ Explorer: `/explorer/tokens` and `/explorer/token/{contract}`.
 | Max supply | Optional | Built-in, enforced in mint() |
 | VM | EVM | Native engine (Pioneer), revm (Voyager) |
 
-## SNTX
+## Protocol Token
 
-First **native** SRC-20 token on Sentrix (deployed via the Pioneer-era
-native SRC-20 engine, not the EVM). Sentrix Utility.
-
-| | |
-|-|-|
-| Supply | 10,000,000,000 |
-| Ecosystem | 5B |
-| Founder | 2B |
-| Early Validator | 1.5B |
-| Reserve | 1.5B |
-
-Planned uses: governance, fee discounts, staking boosts.
+Sentrix is **single-token at the protocol layer** — only SRX. SRC-20 contracts are an application-level capability for third-party deployers. There is no protocol-issued utility, governance, or stablecoin token. See [SRX.md](SRX.md).
 
 ## Planned
 
-**SRC-20 (Voyager):** EVM-compatible via revm. Solidity ABI, gas metering, events.
+**SRC-20 (Voyager):** EVM-compatible via revm. Solidity ABI, gas metering, events. Deploy ERC-20 bytecode directly through `eth_sendRawTransaction`.
 
-**SRTX (Future):** USD-pegged stablecoin. SRX-collateralized.
+**SRC-721 (NFT):** Native NFT standard, spec at `docs/operations/SRC721_SPEC.md`. ERC-721 also deployable via EVM today.

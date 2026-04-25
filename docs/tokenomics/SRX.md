@@ -1,6 +1,6 @@
 # SRX
 
-Native coin. Used for fees, validator rewards, and staking (Voyager).
+The single protocol token of Sentrix Chain. Used for **gas fees, validator rewards, delegator rewards, staking, governance, and base currency** — every protocol-level operation is denominated in SRX. There is no separate utility, governance, or stablecoin token at the protocol layer; application-level tokens are deployed by third parties as SRC-20 / SRC-721 contracts and pay gas in SRX.
 
 ## Units
 

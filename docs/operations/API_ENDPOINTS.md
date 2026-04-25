@@ -403,8 +403,8 @@ curl -s -X POST https://sentrix-rpc.sentriscloud.com/rpc \
 ### Deploy SRC-20 token (wallet side)
 1. Build `TokenOp` payload:
 ```json
-{ "Deploy": { "name": "Sentrix Utility Token", "symbol": "SNTX",
-              "decimals": 18, "supply": 10000000000, "max_supply": 0 } }
+{ "Deploy": { "name": "My Token", "symbol": "MTK",
+              "decimals": 18, "supply": 1000000, "max_supply": 0 } }
 ```
 2. Put that JSON string into `tx.data`, set `tx.to_address = "0x0000000000000000000000000000000000000000"`, sign.
 3. Fetch nonce via JSON-RPC `eth_getTransactionCount`.
@@ -418,7 +418,7 @@ curl -s -X POST https://testnet-rpc.sentriscloud.com/tokens/deploy \
       "from_address": "0x682126...",
       "to_address": "0x0000000000000000000000000000000000000000",
       "amount": 0, "fee": 100000, "nonce": 0,
-      "data": "{\"Deploy\":{\"name\":\"Sentrix Utility Token\",\"symbol\":\"SNTX\",\"decimals\":18,\"supply\":10000000000,\"max_supply\":0}}",
+      "data": "{\"Deploy\":{\"name\":\"My Token\",\"symbol\":\"MTK\",\"decimals\":18,\"supply\":1000000,\"max_supply\":0}}",
       "timestamp": 1776625635, "chain_id": 7120,
       "signature": "<128 hex compact>", "public_key": "<130 hex uncompressed>"
     }
@@ -426,8 +426,8 @@ curl -s -X POST https://testnet-rpc.sentriscloud.com/tokens/deploy \
 # {
 #   "success": true, "txid": "1379d177...",
 #   "deployer": "0x682126...",
-#   "name": "Sentrix Utility Token", "symbol": "SNTX",
-#   "total_supply": 10000000000, "max_supply": 0,
+#   "name": "My Token", "symbol": "MTK",
+#   "total_supply": 1000000, "max_supply": 0,
 #   "status": "pending_in_mempool"
 # }
 ```

@@ -265,17 +265,15 @@ Any token holder can burn their tokens, permanently removing them from circulati
 - Reduces total supply by the burned amount
 - Requires SRX gas fee (50/50 split)
 
-### 7.5 Three-Token Economy
+### 7.5 Single-Token Model
 
-Sentrix operates a three-token model:
+Sentrix operates a **single-token model**: **SRX** is the only protocol-level token. Gas fees, validator and delegator rewards, governance, and base currency are all denominated in SRX. There is no separate utility, governance, or stablecoin token at the protocol layer.
 
 | Token | Type | Supply | Role |
 |---|---|---|---|
-| **SRX** | Native coin | 210,000,000 (fixed) | Gas fees, validator rewards, base currency, store of value |
-| **SNTX** | SRC-20 | 10,000,000,000 | Utility — ecosystem rewards, governance voting, staking incentives |
-| **SRTX** | SRC-20 | TBD | Payment — stablecoin for daily transactions |
+| **SRX** | Native coin | 210,000,000 (fixed) | Gas fees, validator/delegator rewards, governance, base currency, store of value |
 
-**Flywheel effect:** Every SNTX and SRTX transaction requires SRX for gas. As token usage grows, more SRX is burned, increasing scarcity and value of SRX. This creates a positive feedback loop where ecosystem growth directly benefits the native coin holders.
+Application-level tokens (ecosystem stablecoins, project tokens, NFTs) are deployed as SRC-20 / SRC-721 contracts by third parties. Every such operation pays gas in SRX, so ecosystem growth feeds directly into SRX burn and value capture — without fragmenting the protocol's tokenomics.
 
 ---
 
