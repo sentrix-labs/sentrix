@@ -20,7 +20,7 @@
 // libp2p, signature handling, BFT signer-set composition post-DPoS
 // migration — all out of scope for this harness).
 //
-// Reference: founder-private/audits/v2-locked-block-repropose-implementation-plan.md §9
+// Reference: internal design doc §9
 
 use sentrix_bft::{BftAction, BftEngine, BftPhase, Precommit, Prevote};
 use sentrix_staking::StakeRegistry;

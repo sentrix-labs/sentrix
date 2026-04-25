@@ -2,7 +2,7 @@
 //! address validation helpers.
 //!
 //! Extracted from `crates/sentrix-rpc/src/jsonrpc/helpers.rs` during the
-//! 45-crate split (see `founder-private/architecture/CRATE_SPLIT_PLAN.md`).
+//! 45-crate split (see `internal design doc`).
 //! Lives outside `sentrix-rpc` so a future `sentrix-sdk` (JSON-RPC client)
 //! can depend on the type conversions without pulling the axum/tokio
 //! server stack.

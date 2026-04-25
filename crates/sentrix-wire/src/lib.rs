@@ -21,7 +21,7 @@
 //! # History
 //!
 //! Extracted from `sentrix-network::behaviour` 2026-04-23 as Tier 1 crate
-//! split #5 per `founder-private/architecture/CRATE_SPLIT_PLAN.md`. The
+//! split #5 per `internal design doc`. The
 //! enum definitions + constants were moved verbatim; the framing codec
 //! `SentrixCodec` stays in `sentrix-network` because it pulls libp2p traits.
 
@@ -45,7 +45,7 @@ pub const BLOCKS_TOPIC: &str = "sentrix/blocks/1";
 /// Topic for transaction propagation via gossipsub.
 pub const TXS_TOPIC: &str = "sentrix/txs/1";
 /// Topic for validator-multiaddr advertisements (L1 peer auto-discovery,
-/// per `founder-private/audits/peer-auto-discovery-implementation-plan.md`).
+/// per `internal design doc`).
 /// Each validator gossips a signed [`MultiaddrAdvertisement`] on this
 /// topic so other validators can dial them without needing a static
 /// `--peers` bootstrap list.

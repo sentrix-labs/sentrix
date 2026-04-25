@@ -1063,7 +1063,7 @@ impl Blockchain {
                             // intact). Blocks at or above the cutoff get strict rejection
                             // as today. Default unset = strict everywhere (current behaviour).
                             //
-                            // See founder-private/architecture/PHASE_1_LEGACY_COMPAT_DESIGN.md
+                            // See internal design doc
                             let legacy_cutoff = std::env::var("SENTRIX_LEGACY_VALIDATION_HEIGHT")
                                 .ok()
                                 .and_then(|s| s.parse::<u64>().ok())

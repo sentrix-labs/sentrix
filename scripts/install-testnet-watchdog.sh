@@ -10,18 +10,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHDOG_SCRIPT="$SCRIPT_DIR/testnet-livelock-watchdog.sh"
-VPS3_HOST="${VPS3_HOST:-}"
-if [[ -z "$VPS3_HOST" ]]; then
-    echo "VPS3_HOST not set — export VPS3_HOST=<user>@<ip> before running" >&2
+CORE_HOST="${CORE_HOST:-}"
+if [[ -z "$CORE_HOST" ]]; then
+    echo "CORE_HOST not set — export CORE_HOST=<user>@<ip> before running" >&2
     exit 2
 fi
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/satya_master}"
-SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=accept-new $VPS3_HOST"
+SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=accept-new $CORE_HOST"
 
 [[ -f "$WATCHDOG_SCRIPT" ]] || { echo "missing $WATCHDOG_SCRIPT"; exit 1; }
 
 echo "==> Uploading watchdog script to Core node"
-scp -i "$SSH_KEY" "$WATCHDOG_SCRIPT" "$VPS3_HOST:/tmp/testnet-livelock-watchdog.sh"
+scp -i "$SSH_KEY" "$WATCHDOG_SCRIPT" "$CORE_HOST:/tmp/testnet-livelock-watchdog.sh"
 
 echo "==> Installing watchdog to /usr/local/bin"
 $SSH 'sudo install -m 0755 /tmp/testnet-livelock-watchdog.sh /usr/local/bin/sentrix-testnet-livelock-watchdog && rm /tmp/testnet-livelock-watchdog.sh'
@@ -65,4 +65,4 @@ echo "==> Verification"
 $SSH 'sudo systemctl status sentrix-testnet-watchdog.timer --no-pager | head -10'
 echo
 echo "==> Tail logs with:"
-echo "    ssh $VPS3_HOST 'journalctl -t sentrix-livelock-watchdog -f'"
+echo "    ssh $CORE_HOST 'journalctl -t sentrix-livelock-watchdog -f'"

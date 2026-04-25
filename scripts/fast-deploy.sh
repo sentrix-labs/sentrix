@@ -69,15 +69,15 @@ fi
 source "$FLEET_ENV"
 
 declare -A MAINNET_HOSTS=(
-    [VPS1_Foundation]="${VPS1_USER}@${VPS1_WG}:${VPS1_SERVICE}:${VPS1_PORT}"
-    [VPS2_Treasury]="${VPS2_USER}@${VPS2_WG}:${VPS2_SERVICE}:${VPS2_PORT}"
-    [VPS3_Core]="${VPS3_USER}@${VPS3_WG}:${VPS3_SERVICE}:${VPS3_PORT}"
+    [foundation]="${FOUNDATION_USER}@${FOUNDATION_WG}:${FOUNDATION_SERVICE}:${FOUNDATION_PORT}"
+    [treasury]="${TREASURY_USER}@${TREASURY_WG}:${TREASURY_SERVICE}:${TREASURY_PORT}"
+    [core]="${CORE_USER}@${CORE_WG}:${CORE_SERVICE}:${CORE_PORT}"
 )
 declare -A TESTNET_HOSTS=(
-    [VPS3_tval1]="${VPS3_TUSER}@${VPS3_TWG}:sentrix-testnet-val1:${VPS3_TVAL1_PORT}"
-    [VPS3_tval2]="${VPS3_TUSER}@${VPS3_TWG}:sentrix-testnet-val2:${VPS3_TVAL2_PORT}"
-    [VPS3_tval3]="${VPS3_TUSER}@${VPS3_TWG}:sentrix-testnet-val3:${VPS3_TVAL3_PORT}"
-    [VPS3_tval4]="${VPS3_TUSER}@${VPS3_TWG}:sentrix-testnet-val4:${VPS3_TVAL4_PORT}"
+    [testnet_val1]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val1:${TESTNET_VAL1_PORT}"
+    [testnet_val2]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val2:${TESTNET_VAL2_PORT}"
+    [testnet_val3]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val3:${TESTNET_VAL3_PORT}"
+    [testnet_val4]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val4:${TESTNET_VAL4_PORT}"
 )
 
 if [[ "$TARGET" == "mainnet" ]]; then

@@ -4,9 +4,9 @@
 //! reproducer is "v2.1.x peer received a block from a stale-rsync'd
 //! chain.db and computed a different `state_root` than the canonical
 //! peer that produced the block." The full prod-symptom is at
-//! `founder-private/incidents/2026-04-23-vps3-recurring-divergence-rca.md`
+//! `internal design doc`
 //! and the architecture pre-impl scan at
-//! `founder-private/architecture/FORK_SEQUENCE_PREIMPL_SCAN_2026-04-24.md`.
+//! `internal design doc`.
 //!
 //! What this file proves (positively):
 //!   1. The in-memory self-produce path and the in-memory peer-apply path
@@ -418,7 +418,7 @@ fn test_mdbx_roundtrip_with_active_state() {
 /// Stale-snapshot peer-sync — the most literal mimic of mainnet's #268
 /// canary scenario:
 ///
-/// - VPS5 had a chain.db rsync'd from canonical at height H
+/// - Beacon node had a chain.db rsync'd from canonical at height H
 /// - Canary boot, peer broadcast contains blocks at H+1, H+2, ...
 /// - Canary applies via `add_block_from_peer`, computes own state_root
 /// - Mismatch against canonical's state_root → #1e
@@ -536,7 +536,7 @@ fn test_stale_snapshot_peer_sync() {
     // Phase 3: rsync simulation. Copy producer's chain.db dir to a fresh
     // location. This is the literal "operator copies chain.db from canonical
     // peer" step. We then open the copy as a separate Storage instance, the
-    // way a freshly-rsync'd VPS5 would.
+    // way a freshly-rsync'd Beacon node would.
     let peer_dir = TempDir::new().expect("peer tempdir");
     copy_dir_contents(producer_dir.path(), peer_dir.path()).expect("rsync sim");
 

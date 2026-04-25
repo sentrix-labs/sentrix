@@ -181,7 +181,7 @@ pub struct Blockchain {
 
     /// Rolling tracker for state_root divergences from peers.
     ///
-    /// Added 2026-04-23 after the second mainnet fork where VPS3 was
+    /// Added 2026-04-23 after the second mainnet fork where Core node was
     /// silently rejecting peer blocks for 4+ hours (4000+ state_root
     /// mismatches per hour) without any operator alert. The existing
     /// per-event ERROR log was lost in log noise. This tracker emits
@@ -204,7 +204,7 @@ pub struct Blockchain {
     /// safe today) but trips noisy "validator already registered" warns
     /// and is fragile against any future non-deterministic mutation in
     /// that path. Phase 1 hard-gate per
-    /// `founder-private/architecture/FORK_SEQUENCE_PREIMPL_SCAN_2026-04-24.md`.
+    /// `internal design doc`.
     #[serde(default)]
     pub voyager_activated: bool,
 
@@ -280,7 +280,7 @@ impl DivergenceTracker {
                      This strongly suggests the local chain.db has diverged from the network. \
                      RECOVERY: stop this validator, rsync /opt/sentrix/data/chain.db from a \
                      healthy peer with all validators briefly stopped, then restart. See \
-                     `founder-private/incidents/2026-04-21-mainnet-3way-fork.md` for the full \
+                     `internal design doc` for the full \
                      playbook. If ≥2 validators are flagging this, the OTHER validator(s) may \
                      be canonical — investigate before rsync'ing the wrong direction.",
                     self.recent_rejections.len(),

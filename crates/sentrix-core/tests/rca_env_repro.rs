@@ -1,8 +1,8 @@
-//! VPS3 RCA harness — environment-dependent state_root reproduction.
+//! Core node RCA harness — environment-dependent state_root reproduction.
 //!
-//! Filed 2026-04-23 after the VPS3 recurring-divergence RCA narrowed to
-//! "VPS3's own-block `apply_block_pass2` produces different state_root
-//! than VPS1+VPS2 compute on the same block payload." Static audits
+//! Filed 2026-04-23 after the Core node recurring-divergence RCA narrowed to
+//! "Core node's own-block `apply_block_pass2` produces different state_root
+//! than Foundation node+Treasury node compute on the same block payload." Static audits
 //! (HashMap iter + bincode serialisation across consensus crates) turned
 //! up no smoking gun, so the remaining hypotheses are environmental:
 //! kernel 6.8 vs 5.15, glibc 2.39 vs 2.35, AMD EPYC vs KVM-Common CPU.
@@ -15,9 +15,9 @@
 //!
 //! ## Operator workflow
 //!
-//! 1. Copy a canonical chain.db snapshot to VPS1 (22.04) and VPS4 (24.04,
-//!    matches VPS3's env exactly). The VPS2 forensic backup
-//!    `chain.db.bak-v218fork-20260423T050300Z` works; so does a VPS3
+//! 1. Copy a canonical chain.db snapshot to Foundation node (22.04) and build host (24.04,
+//!    matches Core node's env exactly). The Treasury node forensic backup
+//!    `chain.db.bak-v218fork-20260423T050300Z` works; so does a Core node
 //!    forensic backup (for the specifically-divergent case).
 //! 2. Run on each host:
 //!    ```
@@ -33,7 +33,7 @@
 //!
 //! ## Prereq: GetBlocks sliding-window fix (BACKLOG #14)
 //!
-//! A LIVE node on VPS4 can't catch up via gossipsub because the
+//! A LIVE node on build host can't catch up via gossipsub because the
 //! `GetBlocks` handler only serves blocks in `CHAIN_WINDOW_SIZE`.
 //! This OFFLINE harness sidesteps that by reading blocks directly from
 //! MDBX storage. BACKLOG #14 fixes the live-sync path independently.
@@ -159,10 +159,10 @@ fn read_committed_trie_root() {
 /// healthy peer's REST API) to a forensic chain.db and compare the
 /// computed state_root to what the canonical block declares.
 ///
-/// Workflow on VPS4:
-///   1. SCP forensic chain.db (e.g. VPS5's canary backup) into a local dir
-///   2. Fetch the next-after-tip block from VPS1 mainnet:
-///      `curl -s http://127.0.0.1:8545/blocks/<tip+1>` from VPS1 → save JSON
+/// Workflow on build host:
+///   1. SCP forensic chain.db (e.g. Beacon node's canary backup) into a local dir
+///   2. Fetch the next-after-tip block from Foundation node mainnet:
+///      `curl -s http://127.0.0.1:8545/blocks/<tip+1>` from Foundation node → save JSON
 ///   3. Run:
 ///      ```
 ///      SENTRIX_ALLOW_UNENCRYPTED_DISK=true \
@@ -267,7 +267,7 @@ fn load_block_by_height(
 
 /// Walk every height from 1 to `tip` and count the ones whose
 /// `TABLE_META` key `block:{N}` is missing from MDBX. Surfaces silent
-/// write-failure gaps — discovered during the VPS3 env-repro run at
+/// write-failure gaps — discovered during the Core node env-repro run at
 /// h=32,690 (RCA addendum #4). Prints the first 200 missing heights,
 /// the last 200, total counts, and cluster shape (longest contiguous
 /// run of missing) so the operator can tell at a glance whether gaps
@@ -370,8 +370,8 @@ fn sweep_mdbx_block_gaps() {
 ///
 /// A divergence in step 4 means: "this host's apply_block_pass2 computes
 /// a different state_root for this block than was stamped at proposal
-/// time" — the exact signal we want. Running this on VPS1 (22.04) and
-/// VPS4 (24.04, matches VPS3) against the same snapshot tells us whether
+/// time" — the exact signal we want. Running this on Foundation node (22.04) and
+/// build host (24.04, matches Core node) against the same snapshot tells us whether
 /// the divergence is env-bound.
 ///
 /// Cost note: replay speed is ~1-5ms per block on warm MDBX + EPYC.
@@ -547,32 +547,32 @@ fn replay_and_compare() {
 ///
 /// Design:
 ///   - `TEST_STATE_DB` is a chain.db whose `load_blockchain()` returns a
-///     trusted state snapshot at some height H (e.g. the VPS2 forensic
+///     trusted state snapshot at some height H (e.g. the Treasury node forensic
 ///     backup at h=378,003 that was canonical-at-halt).
 ///   - `TEST_BLOCK_SOURCE_DB` is a chain.db that contains blocks
-///     `H+1 .. TIP` (e.g. VPS1 live at ~h=420K). Blocks are read via
+///     `H+1 .. TIP` (e.g. Foundation node live at ~h=420K). Blocks are read via
 ///     `Storage::load_block(h)` so they bypass the in-memory sliding
 ///     window and come directly from `TABLE_META`.
 ///   - For each height in `TEST_HEIGHT_FROM..=TEST_HEIGHT_TO`, admit the
 ///     source block via `add_block_from_peer` and compare
 ///     `bc.trie_root_at(h)` against `block.state_root`.
 ///
-/// Running on VPS1 (Ubuntu 22.04 / kernel 5.15 / KVM) vs VPS4 (Ubuntu
-/// 24.04 / kernel 6.8 / glibc 2.39 / AMD EPYC — exact VPS3 env match)
+/// Running on Foundation node (Ubuntu 22.04 / kernel 5.15 / KVM) vs build host (Ubuntu
+/// 24.04 / kernel 6.8 / glibc 2.39 / AMD EPYC — exact Core node env match)
 /// against the SAME two chain.db snapshots produces the decisive env
-/// signal for the VPS3 RCA:
-///   - VPS4 outputs match VPS1 → userspace env is NOT the divergence
-///     source; narrow to VPS3-hardware (memory ECC, SSD firmware) or
+/// signal for the Core node RCA:
+///   - build host outputs match Foundation node → userspace env is NOT the divergence
+///     source; narrow to Core node-hardware (memory ECC, SSD firmware) or
 ///     deeper-than-userspace (kernel MDBX interaction).
-///   - VPS4 outputs differ from VPS1 → env IS a source; narrow by
+///   - build host outputs differ from Foundation node → env IS a source; narrow by
 ///     swapping one variable at a time (kernel vs glibc vs CPU).
 ///
 /// Operator workflow:
-///   1. Halt all 3 mainnet validators briefly, rsync VPS1's current
-///      chain.db to VPS4 staging, restart. (Required because MDBX
+///   1. Halt all 3 mainnet validators briefly, rsync Foundation node's current
+///      chain.db to build host staging, restart. (Required because MDBX
 ///      doesn't guarantee consistent online copies.)
-///   2. Stage VPS2 forensic backup OR a halt-time VPS1 snapshot to both
-///      VPS1 and VPS4 at `/path/to/state.db`.
+///   2. Stage Treasury node forensic backup OR a halt-time Foundation node snapshot to both
+///      Foundation node and build host at `/path/to/state.db`.
 ///   3. Pick a block range `FROM..TO` that's (a) past
 ///      STATE_ROOT_FORK_HEIGHT=100_000, (b) FULLY inside the 7K-gap
 ///      free window, (c) includes at least one Core-produced block

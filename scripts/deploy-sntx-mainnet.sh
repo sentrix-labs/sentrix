@@ -22,7 +22,7 @@
 #   * docs/tokenomics/TOKEN_STANDARDS.md
 #   * sentrix-wallet-web env config
 #   * sentrix-scan env config
-#   * founder-private/BIBLE.md (canonical list of deployed contracts)
+#   * internal design doc (canonical list of deployed contracts)
 #
 # The chain code that actually performs the deploy has no foot-guns: a
 # duplicate (name, symbol, deployer+nonce) on this chain will fail at
@@ -157,4 +157,4 @@ echo "    [ ] GET ${RPC}/tokens/<SRC20_…> confirms metadata"
 echo "    [ ] Record address in docs/tokenomics/TOKEN_STANDARDS.md"
 echo "    [ ] Record address in sentrix-wallet-web env config"
 echo "    [ ] Record address in sentrix-scan env config"
-echo "    [ ] Record address in founder-private/BIBLE.md"
+echo "    [ ] Record address in internal design doc"

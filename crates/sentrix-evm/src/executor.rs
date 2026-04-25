@@ -69,7 +69,7 @@ pub fn execute_call(
 /// accounts with balance/nonce/storage/code changes) is what the block
 /// executor needs to persist back to AccountDB. Prior to this variant the
 /// diff was being dropped on the floor — see
-/// `founder-private/audits/evm-fix-analysis-2026-04-22.md`.
+/// `internal design doc`.
 ///
 /// Generic over any `D: Database` so callers can pass either `InMemoryDB`
 /// (the original path, kept for the #[cfg(test)] unit tests) or

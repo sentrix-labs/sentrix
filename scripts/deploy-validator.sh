@@ -2,13 +2,13 @@
 # deploy-validator.sh — generic single-validator deploy tool.
 #
 # Works for ANY operator running ANY number of Sentrix validators on
-# ANY mix of hosts. Unlike `fast-deploy.sh` (which is the Satya-fleet
+# ANY mix of hosts. Unlike `fast-deploy.sh` (which is the maintainer-fleet
 # orchestrator — hardcoded to the 3-mainnet + 4-testnet Foundation node/2/3/4
 # topology that ships the reference mainnet) this script is a reusable
 # primitive: it takes one target validator, uploads a binary, rolls
 # the service, and reports health.
 #
-# Typical use by a third-party validator operator (not Satya):
+# Typical use by a third-party validator operator (not the maintainer):
 #
 #   ./scripts/deploy-validator.sh \
 #     --ssh-key  ~/.ssh/my_operator_key \
@@ -31,11 +31,11 @@
 #   - No mainnet/testnet split (operator picks bin-dir + service name)
 #   - No fleet env file — every parameter is explicit
 #   - No cross-host assumptions (no "health-gate testnet before mainnet"
-#     logic that only makes sense in Satya's mixed topology)
+#     logic that only makes sense in the maintainer's mixed topology)
 #
 # For health-gating, rolling restart across a fleet, and preflight
 # cargo test / clippy, see `fast-deploy.sh` — it wraps this script
-# for Satya's specific fleet layout.
+# for the maintainer's specific fleet layout.
 
 set -euo pipefail
 

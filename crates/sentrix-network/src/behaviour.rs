@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 // ── Protocol identifier + topic names + size cap ─────────
 //
 // These were moved to the `sentrix-wire` crate 2026-04-23 (Tier 1 split #5
-// per `founder-private/architecture/CRATE_SPLIT_PLAN.md`). Re-exported here
+// per `internal design doc`). Re-exported here
 // so existing call sites (`use sentrix_network::behaviour::BLOCKS_TOPIC`)
 // keep working during the migration window. Follow-up PR will switch all
 // imports to the canonical `sentrix_wire::*` path and drop these shims.

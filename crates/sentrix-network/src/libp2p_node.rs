@@ -44,7 +44,7 @@ use sentrix_primitives::transaction::Transaction;
 /// Maximum number of verified (handshaked) peers.
 const MAX_LIBP2P_PEERS: usize = 50;
 /// Maximum new connections per IP within the rate window.
-/// Bumped to 20 to accommodate VPS2 hosting 5 validators on one IP plus
+/// Bumped to 20 to accommodate Treasury node hosting 5 validators on one IP plus
 /// reconnect overhead during deploys (each restart triggers ~3 reconnects).
 const MAX_CONN_PER_IP: u32 = 20;
 /// Rate limit window (seconds).
@@ -1395,7 +1395,7 @@ async fn on_inbound_response(
     // ── Step 3d: handle BlocksResponse from GetBlocks sync ──
     // Block processing is spawned to a background task so the swarm loop
     // stays responsive. Without this, the write lock blocks all event processing,
-    // causing cascade peer disconnects (root cause of VPS1 isolation 2026-04-14).
+    // causing cascade peer disconnects (root cause of Foundation node isolation 2026-04-14).
     if let SentrixResponse::BlocksResponse { blocks } = &response
         && let Some(sync_peer) = pending_syncs.remove(&request_id)
     {
@@ -1735,7 +1735,7 @@ mod tests {
         assert_eq!(MAX_LIBP2P_PEERS, 50, "max peers should be 50");
         assert_eq!(
             MAX_CONN_PER_IP, 20,
-            "max connections per IP should be 20 (VPS2 has 5 vals + reconnect overhead)"
+            "max connections per IP should be 20 (Treasury node has 5 vals + reconnect overhead)"
         );
         assert_eq!(BAN_DURATION_SECS, 300, "ban duration should be 5 minutes");
     }
