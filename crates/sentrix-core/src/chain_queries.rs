@@ -197,6 +197,20 @@ impl Blockchain {
     pub fn chain_stats(&self) -> serde_json::Value {
         // circulating_supply = total_minted − total_burned (in sentri units)
         let circulating_sentri = self.total_minted.saturating_sub(self.accounts.total_burned);
+        // Surface the consensus mode the runtime is actually using.
+        // `voyager_activated` is the persistent on-chain flag set when
+        // activate_voyager() runs; `evm_activated` mirrors for EVM. RPC
+        // consumers (block explorers, wallets, indexers) need this to
+        // know whether to expect BFT justifications on blocks + DPoS
+        // proposer rotation. Pre-2026-04-25-evening, /chain/info had
+        // no consensus-mode field — clients had to infer mode from
+        // block-level justification presence, which was awkward and
+        // wrong for the Pioneer→Voyager transition window.
+        let consensus_mode = if self.voyager_activated {
+            "voyager"
+        } else {
+            "pioneer"
+        };
         serde_json::json!({
             "height": self.height(),
             "total_blocks": self.height() + 1, // true height from block index, not window length
@@ -212,6 +226,10 @@ impl Blockchain {
             // Expose window metadata so callers know whether the result covers the full chain history
             "window_start_block": self.chain_window_start(),
             "window_is_partial": self.chain_window_start() > 0,
+            // Consensus + EVM mode flags (added v2.1.28 post-Voyager activation)
+            "consensus_mode": consensus_mode,
+            "voyager_activated": self.voyager_activated,
+            "evm_activated": self.evm_activated,
         })
     }
 }
