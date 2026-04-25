@@ -120,7 +120,13 @@ impl Blockchain {
 
         block.validate_structure(expected_index, &expected_prev)?;
 
-        if !Blockchain::is_voyager_height(expected_index)
+        // 2026-04-26 fix: use the runtime-aware voyager_mode_for() check
+        // (ORs env-var fork-height with chain.db `voyager_activated` flag)
+        // instead of the static is_voyager_height(). Prevents the 2026-04-26
+        // mainnet stall where env var defaulted to u64::MAX, the static
+        // check returned false, and Pioneer auth rejected legit skip-round
+        // Voyager blocks. See `incidents/2026-04-26-voyager-fork-height-env-bug.md`.
+        if !self.voyager_mode_for(expected_index)
             && !self
                 .authority
                 .is_authorized(&block.validator, expected_index)?
@@ -361,8 +367,10 @@ impl Blockchain {
         // produce blocks at any height — only safe when chain.db is offline
         // and we're rederiving state from authoritative block history).
         let bypass_authz = std::env::var("SENTRIX_REPLAY_BYPASS_AUTHZ").is_ok();
+        // Same 2026-04-26 fix as the read-only `validate_block` path —
+        // use voyager_mode_for() runtime-aware check.
         if !bypass_authz
-            && !Blockchain::is_voyager_height(expected_index)
+            && !self.voyager_mode_for(expected_index)
             && !self
                 .authority
                 .is_authorized(&block.validator, expected_index)?

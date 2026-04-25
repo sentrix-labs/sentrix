@@ -580,14 +580,49 @@ impl Blockchain {
     }
 
     /// Is the given height at or after the Voyager DPoS fork?
+    ///
+    /// **Static / env-var only.** Returns true iff the operator set
+    /// `VOYAGER_FORK_HEIGHT` to a real value AND the height is past it.
+    /// Default `u64::MAX` makes this return false for all heights —
+    /// the mainnet-safe-default-pre-activation pattern.
+    ///
+    /// **Use [`voyager_mode_for`] in consensus paths** — it ORs this
+    /// check with the runtime persisted `voyager_activated` flag, so
+    /// post-activation chains don't depend on the env var being set
+    /// correctly. The 2026-04-26 mainnet stall (incident report at
+    /// `founder-private/incidents/2026-04-26-voyager-fork-height-env-bug.md`)
+    /// happened because `validate_block` called this static function:
+    /// env var was at default `u64::MAX`, function returned false,
+    /// validate_block fell through to Pioneer auth check, which
+    /// rejected legitimate Voyager skip-round blocks.
     pub fn is_voyager_height(height: u64) -> bool {
         let fork = get_voyager_fork_height();
         fork != u64::MAX && height >= fork
     }
 
     /// Is the current chain past the Voyager fork?
+    /// Static-only env-var check; see [`is_voyager_height`] caveats.
     pub fn is_voyager_active(&self) -> bool {
         Self::is_voyager_height(self.height())
+    }
+
+    /// Voyager-mode check for a specific block height that respects
+    /// BOTH the env-var fork height AND the runtime persisted
+    /// `voyager_activated` flag from chain.db.
+    ///
+    /// Returns true if EITHER:
+    /// - `voyager_activated == true` (chain has actually activated
+    ///   Voyager via `Blockchain::activate_voyager()`), OR
+    /// - `is_voyager_height(height) == true` (env var pinned a fork
+    ///   height + we're past it)
+    ///
+    /// This is the consensus-safe check — call this in `validate_block`
+    /// and any other path where rejecting valid Voyager blocks would
+    /// fork the chain. The OR semantics mean a chain that activated
+    /// Voyager via the runtime path (with env var unset / wrong)
+    /// continues to apply blocks correctly.
+    pub fn voyager_mode_for(&self, height: u64) -> bool {
+        self.voyager_activated || Self::is_voyager_height(height)
     }
 
     /// V4 Step 3: is the given height at or after the reward-v2 fork?
