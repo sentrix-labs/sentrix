@@ -31,44 +31,38 @@ cargo build --release
 
 ### Project Structure
 
+Sentrix is a Cargo workspace with 14 crates under `crates/` plus the
+binary at `bin/sentrix/`:
+
 ```
-src/
-├── core/
-│   ├── blockchain.rs      # Blockchain struct, genesis, constants
-│   ├── mempool.rs         # Mempool management (add, prune, limits)
-│   ├── block_producer.rs  # Block creation (create_block)
-│   ├── block_executor.rs  # Block validation + commit (add_block)
-│   ├── token_ops.rs       # SRC-20 operations
-│   ├── chain_queries.rs   # Read-only chain queries
-│   ├── block.rs           # Block struct + hash
-│   ├── transaction.rs     # TX struct + ECDSA sign/verify
-│   ├── account.rs         # Balance + nonce state
-│   ├── authority.rs       # PoA validator management
-│   ├── merkle.rs          # SHA-256 Merkle tree
-│   └── vm.rs              # SRC-20 token engine
-├── network/
-│   ├── node.rs            # Legacy TCP P2P
-│   ├── sync.rs            # Chain sync protocol
-│   ├── transport.rs       # libp2p TCP + Noise + Yamux
-│   ├── behaviour.rs       # libp2p SentrixBehaviour
-│   └── libp2p_node.rs     # libp2p node runner
-├── wallet/                # Key generation, Argon2id keystore
-├── storage/               # MDBX per-block persistence
-├── api/                   # REST API, JSON-RPC, block explorer
-├── types/                 # Shared error types
-├── lib.rs                 # Library root
-└── main.rs                # CLI entry point (17 commands)
-tests/
-├── common/mod.rs          # Shared test helpers
-├── integration_restart.rs
-├── integration_sync.rs
-├── integration_tx.rs
-├── integration_token.rs
-├── integration_mempool.rs
-├── integration_supply.rs
-├── integration_chain_validation.rs
-└── integration_sliding_window.rs
+crates/
+├── sentrix-primitives/    # Block, Transaction, Account, Error types
+├── sentrix-codec/         # Wire-format encoding helpers
+├── sentrix-wire/          # Wire-protocol message types
+├── sentrix-wallet/        # Argon2id keystore, ECDSA keypair ops
+├── sentrix-trie/          # Binary Sparse Merkle Tree (MDBX backend)
+├── sentrix-staking/       # DPoS, epoch, slashing
+├── sentrix-evm/           # revm 37 adapter
+├── sentrix-precompiles/   # EVM precompiles
+├── sentrix-bft/           # BFT consensus (timeout-only round advance)
+├── sentrix-core/          # Blockchain, authority, executor, mempool
+├── sentrix-network/       # libp2p P2P, gossipsub, kademlia, sync
+├── sentrix-rpc/           # REST API, JSON-RPC, block explorer
+├── sentrix-rpc-types/     # Shared RPC request/response types
+└── sentrix-storage/       # MDBX wrapper + ChainStorage API
+
+bin/sentrix/
+└── src/main.rs            # CLI entry point (sentrix start, validator,
+                           #   wallet, token, chain, state, mempool, ...)
+
+tests/                     # Workspace-level integration tests live in
+                           # crate-local `tests/` directories under each
+                           # crate above.
 ```
+
+The legacy single-crate `src/` layout was retired in v2.1.x; any
+reference to `src/core/...` in older docs predates the workspace
+migration.
 
 ---
 
@@ -150,7 +144,7 @@ Before submitting, make sure:
 
 ## Testing
 
-We take testing seriously. The project has **479+ tests** across 12 suites.
+We take testing seriously. The project has **551+ tests** across 14 crates.
 
 ### Running tests
 
@@ -158,10 +152,10 @@ We take testing seriously. The project has **479+ tests** across 12 suites.
 # All tests
 cargo test
 
-# Specific module
-cargo test core::blockchain
-cargo test wallet::keystore
-cargo test storage::db
+# Specific crate
+cargo test -p sentrix-core
+cargo test -p sentrix-wallet
+cargo test -p sentrix-storage
 
 # With output
 cargo test -- --nocapture

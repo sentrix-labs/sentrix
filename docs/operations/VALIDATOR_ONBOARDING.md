@@ -19,8 +19,9 @@ Satya's private fleet" is required.
 
 ### Consensus responsibility
 
-Sentrix runs **Pioneer PoA** today (3-validator round-robin, expanding
-to more as operators join) and will upgrade to **Voyager DPoS + BFT**
+Sentrix runs **Pioneer PoA** today (4-validator round-robin —
+Foundation, Treasury, Core, Beacon — expanding as operators join)
+and will upgrade to **Voyager DPoS + BFT**
 (stake-weighted, unbounded validator set) at a fork height TBD. As a
 validator:
 
@@ -241,9 +242,10 @@ operator uses in their multi-host fleet — there's no "special" tool
 for us vs you.
 
 For a rolling restart across many validators, loop over the above for
-each host. Respect `MIN_ACTIVE_VALIDATORS` (currently 3 on Pioneer
-PoA) — stopping too many at once halts the chain until quorum
-recovers.
+each host. `MIN_ACTIVE_VALIDATORS = 1` since PR #234 (v2.1.11) — the
+chain technically tolerates a single active validator, but in practice
+keep 3+ up during a rolling deploy so block production never depends on
+one host.
 
 ---
 

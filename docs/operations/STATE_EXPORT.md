@@ -2,6 +2,22 @@
 
 Backup, restore, and migrate Sentrix chain state.
 
+> **Critical limitation (v2.1.5+):** `sentrix state import` is
+> **effectively deprecated for non-genesis use**. Since v2.1.5 the
+> binary refuses to start on a keystore built from `state import` on a
+> post-genesis chain — the import path skips trie/admin_log artefacts
+> the boot validator now requires. The canonical state-recovery path
+> is **frozen-rsync of `chain.db`** from a healthy validator with all
+> nodes halted; see
+> [EMERGENCY_ROLLBACK.md § 3](EMERGENCY_ROLLBACK.md#3-state-recovery-chaindb-restore)
+> and the internal
+> `founder-private/runbooks/state-divergence-recovery.md`.
+>
+> Export remains useful for read-only inspection, archival snapshots,
+> and bootstrapping a **fresh** chain (genesis import). The commands
+> below are still the right tool for those use cases — just not for
+> recovering a live mainnet validator.
+
 ## Export
 
 ```bash

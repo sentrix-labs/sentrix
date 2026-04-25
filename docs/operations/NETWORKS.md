@@ -10,8 +10,9 @@
 | P2P port | 30303 |
 | API port | 8545 |
 | Block time | 1s |
-| Validators | 3 (PoA round-robin: Foundation, Treasury, Core) |
+| Validators | 4 (PoA round-robin: Foundation, Treasury, Core, Beacon) |
 | Native coin | SRX |
+| Mode | Pioneer (forced via `SENTRIX_FORCE_PIONEER_MODE=1`; see ops note below) |
 
 ## Testnet
 
@@ -30,6 +31,19 @@
 | EVM fork height | 752 |
 
 Testnet tokens have no real value. Use the faucet to get test SRX.
+
+Testnet runs in Docker on VPS4 (`/opt/sentrix-testnet-docker/`) since
+the 2026-04-23 migration; fresh genesis at chain_id 7120, current
+height ~200K, binary v2.1.24 (`md5 a25f9d771648f6c851a6ee11867fe958`).
+
+> **Mainnet operational note (2026-04-25):** mainnet currently runs
+> forced Pioneer (`SENTRIX_FORCE_PIONEER_MODE=1` env override on every
+> validator) after a Voyager activation attempt at h=557244 livelocked
+> on V2 BFT wiring. Voyager mainnet activation is **blocked by issue
+> [#292](https://github.com/sentrix-labs/sentrix/issues/292)**. Until
+> #292 lands, `VOYAGER_FORK_HEIGHT=18446744073709551615` (u64::MAX)
+> keeps the Voyager fork inert. Mainnet binary: v2.1.25
+> (`md5 5ad7804c0d7e68f8cab47872f7dbc7ac`).
 
 ## Connecting
 

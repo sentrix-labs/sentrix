@@ -12,7 +12,14 @@ sorted_validators[block_height % validator_count]
 
 Deterministic — every node computes the same result independently. No communication needed.
 
-With 3 validators and 1s blocks, each one produces a block every 3 seconds (1s × 3 slots).
+With 4 validators and 1s blocks, each one produces a block every 4 seconds (1s × 4 slots).
+
+> **Operational note (2026-04-25):** mainnet currently runs forced
+> Pioneer (`SENTRIX_FORCE_PIONEER_MODE=1` env override on every
+> validator) after a Voyager DPoS+BFT activation attempt at
+> h=557244 livelocked. The Voyager fork height is parked at
+> `u64::MAX` until V2 BFT wiring (issue #292) lands. See
+> [EMERGENCY_ROLLBACK](../operations/EMERGENCY_ROLLBACK.md).
 
 ## Block Production
 
@@ -42,7 +49,10 @@ Adding a validator needs:
 - Valid secp256k1 pubkey that derives to the claimed address
 - `Wallet::derive_address(pubkey) == address` checked
 
-Min 3 active validators enforced — can't go below that.
+`MIN_ACTIVE_VALIDATORS = 1` (since v2.1.11, PR #234) — chain can
+proceed with a single active validator if the rest are jailed or
+inactive. `MIN_BFT_VALIDATORS = 4` is the BFT-quorum floor for
+Voyager activation.
 
 Every add/remove/toggle/rename gets logged in the admin audit trail.
 
@@ -67,7 +77,7 @@ block.timestamp <= now + 15s             (not too far ahead)
 
 ## Known Limitations
 
-- No fork choice. First block at a height wins. Network partitions can cause permanent splits. Fine for 3 controlled validators, needs fixing before scaling.
+- No fork choice. First block at a height wins. Network partitions can cause permanent splits. Fine for 4 controlled validators, needs fixing before scaling.
 - No block skip. If expected validator is offline, chain waits. No timeout.
 - No block signatures. Block has validator address but isn't signed. Auth is via round-robin schedule check. Signing needed for Voyager.
 
