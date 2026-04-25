@@ -56,6 +56,51 @@ pub(crate) struct BlockchainSnapshot {
     trie_root: Option<[u8; 32]>,
 }
 
+/// Frontier Phase F-2 shadow observer. Calls into the F-1 scaffold's
+/// `build_batches` and logs the resulting batch shape for the given
+/// block. Read-only — does NOT mutate any state.
+///
+/// Gated by `SENTRIX_FRONTIER_F2_SHADOW=1` env var (handled at the
+/// call site in `apply_block_pass2`). Default OFF — shadow mode is
+/// opt-in observation only, useful for validating that the parallel
+/// scheduler's output makes sense on real chain traffic before
+/// committing to F-3 (real parallel apply).
+///
+/// The function intentionally short-circuits on empty blocks (only the
+/// coinbase tx) to keep log volume sane on quiet chains.
+fn shadow_observe_parallel_batching(block: &Block) {
+    // Skip coinbase-only blocks — no useful batching signal from a
+    // single-tx block.
+    if block.tx_count() <= 1 {
+        return;
+    }
+
+    // Encode each non-coinbase tx as a byte slice for build_batches.
+    // The F-1 stub treats each tx as opaque bytes — it doesn't decode
+    // sender/receiver, so we don't need the full tx structure. Real
+    // F-3 implementation will need the actual sender/receiver/data.
+    let tx_bytes: Vec<Vec<u8>> = block
+        .transactions
+        .iter()
+        .skip(1) // skip coinbase
+        .map(|tx| tx.txid.as_bytes().to_vec())
+        .collect();
+
+    let batches = crate::parallel::scheduler::build_batches(&tx_bytes, &block.validator);
+    let batch_count = batches.len();
+    let parallel_tx_count: usize = batches.iter().map(|b| b.tx_indices.len()).sum();
+
+    tracing::info!(
+        target: "frontier::f2_shadow",
+        block_height = block.index,
+        validator = %&block.validator[..12.min(block.validator.len())],
+        tx_count = block.tx_count(),
+        batch_count = batch_count,
+        parallel_tx_count = parallel_tx_count,
+        "F-2 shadow: build_batches output for block"
+    );
+}
+
 impl Blockchain {
     /// P1 (write-lock scope split): pure read-only validation of a block
     /// against the current chain state. Safe to call under a shared
@@ -609,6 +654,25 @@ impl Blockchain {
     /// from `add_block` after Pass 1 has validated the block and the
     /// caller has taken a `BlockchainSnapshot` for rollback.
     fn apply_block_pass2(&mut self, block: Block) -> SentrixResult<()> {
+        // Frontier Phase F-2 (shadow-mode wiring): when
+        // SENTRIX_FRONTIER_F2_SHADOW=1, run the parallel-batching
+        // scheduler over the block's transactions and log the result.
+        // The scheduler does NOT mutate state — sequential apply below
+        // still drives the actual block execution. This shadow path lets
+        // operators observe the batching output on real chain traffic
+        // without committing to parallel execution. When the
+        // batches-vs-sequential equivalence has been validated for long
+        // enough, F-3 (real parallel apply) replaces this stub with a
+        // production code path.
+        //
+        // Default OFF: env var unset → zero-cost (the env-var read is
+        // gated by a `var_os` check that doesn't allocate when missing).
+        if std::env::var_os("SENTRIX_FRONTIER_F2_SHADOW")
+            .is_some_and(|v| v == "1")
+        {
+            shadow_observe_parallel_batching(&block);
+        }
+
         // Coinbase was validated in Pass 1; re-extract for mutation.
         let (coinbase_amount, coinbase_validator) = {
             let coinbase = block
