@@ -463,6 +463,102 @@ impl SentrixTrie {
         self.walk_verify(root, 0)
     }
 
+    /// Strict cryptographic-relationship verification — beyond `verify_integrity()`'s
+    /// presence check, this asserts that every loaded internal node's `hash` actually
+    /// equals `hash_internal(left, right)` and every leaf's `value_hash` equals
+    /// `hash_leaf(key, value)`. Catches the post-#268 RCA failure mode where a chain.db
+    /// rsync-while-live captured trie nodes from mixed MDBX commit snapshots: nodes
+    /// load cleanly (presence check passes) but parent-hash relationships are broken.
+    /// Walking such a trie produces deterministic-but-divergent state_roots.
+    ///
+    /// Cost: O(N internal nodes + N leaves) MDBX reads, with one rehash per node.
+    /// Genesis-scale chain (~63M premine accounts → ~16K trie nodes if dense) is
+    /// sub-second; full mainnet at h=553K with sparse activity is bounded by the
+    /// number of touched accounts, also well under one second on tested hardware.
+    pub fn verify_integrity_strict(&self) -> SentrixResult<()> {
+        use crate::node::{empty_hash, hash_internal, hash_leaf};
+        let root = self.root;
+        if root == empty_hash(0) {
+            return Ok(());
+        }
+        self.walk_verify_strict(root, 0, hash_internal, hash_leaf)
+    }
+
+    fn walk_verify_strict(
+        &self,
+        hash: NodeHash,
+        depth: usize,
+        hash_internal_fn: fn(&NodeHash, &NodeHash) -> NodeHash,
+        hash_leaf_fn: fn(&[u8; 32], &[u8]) -> NodeHash,
+    ) -> SentrixResult<()> {
+        use crate::node::empty_hash;
+        if hash == empty_hash(depth.min(256)) {
+            return Ok(());
+        }
+        let node = self.cache.storage.load_node(&hash)?.ok_or_else(|| {
+            SentrixError::Internal(format!(
+                "trie strict integrity: missing node {} at depth {}",
+                hex::encode(hash),
+                depth
+            ))
+        })?;
+        match node {
+            TrieNode::Leaf { key, value_hash } => {
+                let value = self.cache.storage.load_value(&value_hash)?.ok_or_else(|| {
+                    SentrixError::Internal(format!(
+                        "trie strict integrity: missing value {} at leaf {}",
+                        hex::encode(value_hash),
+                        hex::encode(hash)
+                    ))
+                })?;
+                let computed = hash_leaf_fn(&key, &value);
+                if computed != value_hash {
+                    return Err(SentrixError::Internal(format!(
+                        "trie strict integrity: leaf at {} declares value_hash {} but \
+                         hash_leaf(key, value) computes {} — MDBX trie node table \
+                         contents do not match their content-addressing. Likely cause: \
+                         chain.db was rsync'd while the source validator was actively \
+                         writing. Recovery: rsync from a HALTED source.",
+                        hex::encode(hash),
+                        hex::encode(value_hash),
+                        hex::encode(computed)
+                    )));
+                }
+                Ok(())
+            }
+            TrieNode::Internal { left, right, hash: stored_hash } => {
+                if stored_hash != hash {
+                    return Err(SentrixError::Internal(format!(
+                        "trie strict integrity: internal node loaded by hash {} declares \
+                         self-hash {} — node was stored under the wrong key (MDBX corruption)",
+                        hex::encode(hash),
+                        hex::encode(stored_hash)
+                    )));
+                }
+                let computed = hash_internal_fn(&left, &right);
+                if computed != stored_hash {
+                    return Err(SentrixError::Internal(format!(
+                        "trie strict integrity: internal node at {} declares self-hash {} \
+                         but hash_internal(left={}, right={}) computes {} — children \
+                         relationship broken. Likely cause: chain.db rsync-while-live, \
+                         where some MDBX pages were copied at a different commit snapshot \
+                         than this internal node's parent expected. The trie loads cleanly \
+                         (presence check passes) but produces wrong state_roots on insert. \
+                         Recovery: rsync chain.db from a HALTED source validator.",
+                        hex::encode(hash),
+                        hex::encode(stored_hash),
+                        hex::encode(left),
+                        hex::encode(right),
+                        hex::encode(computed)
+                    )));
+                }
+                self.walk_verify_strict(left, depth + 1, hash_internal_fn, hash_leaf_fn)?;
+                self.walk_verify_strict(right, depth + 1, hash_internal_fn, hash_leaf_fn)?;
+                Ok(())
+            }
+        }
+    }
+
     /// Recursive helper for verify_integrity. Visits every reachable node
     /// exactly once along a unique path (binary SMT has no shared subtrees
     /// across paths) and confirms each is present in `trie_nodes` and each
