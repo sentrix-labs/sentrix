@@ -81,6 +81,49 @@ fn load_existing_chain(path: &str) -> Blockchain {
 fn read_committed_trie_root() {
     let path = std::env::var("TEST_CHAIN_DB")
         .expect("set TEST_CHAIN_DB=/path/to/chain.db");
+
+    // If TEST_HEIGHT is unset, dump tip + recent roots and return.
+    if std::env::var("TEST_HEIGHT").is_err() {
+        let bc = load_existing_chain(&path);
+        let tip = bc.height();
+        println!("CHAIN_DB={}", path);
+        println!("TIP_HEIGHT={}", tip);
+        println!("TOTAL_MINTED={}", bc.total_minted);
+        println!("VOYAGER_ACTIVATED={}", bc.voyager_activated);
+        println!("EVM_ACTIVATED={}", bc.evm_activated);
+        println!("STAKE_REGISTRY_VALIDATORS={}", bc.stake_registry.validators.len());
+        println!("ACTIVE_VALIDATORS={}", bc.authority.active_validators().len());
+        println!("--- last 5 trie roots ---");
+        for h in tip.saturating_sub(4)..=tip {
+            let r = bc.trie_root_at(h).map(hex::encode).unwrap_or_else(|| "<none>".to_string());
+            println!("  h={} root={}", h, r);
+        }
+        if let Some(trie) = bc.state_trie.as_ref() {
+            print!("TRIE_INTEGRITY=");
+            match trie.verify_integrity() {
+                Ok(()) => println!("OK"),
+                Err(e) => println!("FAIL: {}", e),
+            }
+        }
+        if let Ok(latest) = bc.latest_block() {
+            println!("--- latest block at h={} ---", latest.index);
+            println!("  hash={}", latest.hash);
+            println!("  prev_hash={}", latest.previous_hash);
+            println!("  state_root={:?}", latest.state_root.map(hex::encode));
+            println!("  validator={}", latest.validator);
+            println!("  tx_count={}", latest.transactions.len());
+        }
+        // If TEST_ADDRESSES is set (comma-separated list), dump balances + nonces.
+        if let Ok(list) = std::env::var("TEST_ADDRESSES") {
+            println!("--- account state ---");
+            for addr in list.split(',').map(|s| s.trim()) {
+                let bal = bc.accounts.get_balance(addr);
+                println!("  {} balance={}", addr, bal);
+            }
+        }
+        return;
+    }
+
     let height: u64 = std::env::var("TEST_HEIGHT")
         .expect("set TEST_HEIGHT=<block index>")
         .parse()
@@ -94,6 +137,104 @@ fn read_committed_trie_root() {
     println!("CHAIN_DB={}", path);
     println!("HEIGHT={}", height);
     println!("COMPUTED_ROOT={}", hex::encode(root));
+}
+
+/// #268 forensic harness: apply a canonical block (fetched as JSON from a
+/// healthy peer's REST API) to a forensic chain.db and compare the
+/// computed state_root to what the canonical block declares.
+///
+/// Workflow on VPS4:
+///   1. SCP forensic chain.db (e.g. VPS5's canary backup) into a local dir
+///   2. Fetch the next-after-tip block from VPS1 mainnet:
+///      `curl -s http://127.0.0.1:8545/blocks/<tip+1>` from VPS1 → save JSON
+///   3. Run:
+///      ```
+///      SENTRIX_ALLOW_UNENCRYPTED_DISK=true \
+///      TEST_CHAIN_DB=/path/to/forensic/chain.db \
+///      TEST_BLOCK_FILE=/path/to/canonical-block-N.json \
+///      cargo test -p sentrix-core --test rca_vps3_env_repro \
+///        apply_canonical_block_to_forensic -- --ignored --nocapture
+///      ```
+///   4. Output reports:
+///      - block index + declared state_root from the JSON
+///      - chain.db tip pre-apply
+///      - apply result (Ok/Err) — if Err with `#1e` in message, that's #268
+///        reproducing on the actual canary input
+///      - computed state_root post-apply (if Ok)
+///      - parity verdict: declared == computed?
+#[test]
+#[ignore = "requires forensic chain.db + canonical block JSON — run manually per fn header"]
+fn apply_canonical_block_to_forensic() {
+    use sentrix_primitives::block::Block;
+
+    let path = std::env::var("TEST_CHAIN_DB").expect("set TEST_CHAIN_DB=/path/to/chain.db");
+    let block_file = std::env::var("TEST_BLOCK_FILE")
+        .expect("set TEST_BLOCK_FILE=/path/to/canonical-block-N.json");
+
+    let block_json = std::fs::read_to_string(&block_file).expect("read block file");
+    let block: Block = serde_json::from_str(&block_json).expect("parse block JSON");
+
+    let declared_state_root = block
+        .state_root
+        .map(hex::encode)
+        .unwrap_or_else(|| "<none>".to_string());
+    let block_height = block.index;
+    let block_hash = block.hash.clone();
+    let block_prev = block.previous_hash.clone();
+
+    let mut bc = load_existing_chain(&path);
+    let pre_tip = bc.height();
+
+    println!("CHAIN_DB={}", path);
+    println!("PRE_APPLY_TIP={}", pre_tip);
+    println!("BLOCK_INDEX={}", block_height);
+    println!("BLOCK_HASH={}", block_hash);
+    println!("BLOCK_PREV_HASH={}", block_prev);
+    println!("BLOCK_DECLARED_STATE_ROOT={}", declared_state_root);
+
+    if let Ok(latest) = bc.latest_block() {
+        println!(
+            "PRE_APPLY_TIP_HASH={} (must equal BLOCK_PREV_HASH for chain continuity)",
+            latest.hash
+        );
+        if latest.hash != block_prev {
+            println!("WARN: tip hash != block.previous_hash — chain not contiguous, peer-apply will reject");
+        }
+    }
+
+    // Apply via the peer path — that's what the canary did.
+    match bc.add_block_from_peer(block) {
+        Ok(()) => {
+            let post_root = bc.trie_root_at(block_height).map(hex::encode);
+            println!("APPLY_RESULT=Ok");
+            println!("COMPUTED_STATE_ROOT={:?}", post_root);
+            match post_root {
+                Some(computed) if computed == declared_state_root => {
+                    println!("VERDICT=MATCH — v2.1.23 binary reproduces canonical state_root for h={block_height}");
+                    println!("CONCLUSION=#268 NOT reproduced on this binary on this input — \
+                              either the empty-hash fix closed it OR canary's bug was \
+                              transient (e.g. live-rsync MDBX inconsistency, not code).");
+                }
+                Some(computed) => {
+                    println!("VERDICT=MISMATCH — #268 reproducing on v2.1.23!");
+                    println!("  declared:  {}", declared_state_root);
+                    println!("  computed:  {}", computed);
+                    panic!("#268 STATE_ROOT MISMATCH — root cause repro pinned, ready to bisect");
+                }
+                None => println!("VERDICT=COMPUTED_ROOT_MISSING — apply returned Ok but trie has no root at this height (unexpected)"),
+            }
+        }
+        Err(e) => {
+            println!("APPLY_RESULT=Err: {}", e);
+            if format!("{}", e).contains("#1e") || format!("{}", e).contains("state_root mismatch")
+            {
+                println!("VERDICT=#1e_REPRODUCED — this is the canary failure exactly.");
+                panic!("#1e state_root mismatch reproduced on v2.1.23 — root cause pinned");
+            } else {
+                println!("VERDICT=NON_1E_ERROR — different failure mode, not the canary symptom");
+            }
+        }
+    }
 }
 
 /// Helper: load a block at a specific height from a Storage instance.
