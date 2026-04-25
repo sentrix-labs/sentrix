@@ -289,3 +289,325 @@ fn test_mdbx_roundtrip_then_peer_block() {
         "reference peer-apply produced different trie root than producer at h={h}"
     );
 }
+
+/// MDBX roundtrip with **non-empty trie state** — the variant of
+/// `test_mdbx_roundtrip_then_peer_block` that mainnet's #268 canary actually
+/// exercises. The previous test had every committed root = `empty_hash(0)`
+/// because coinbase blocks against a validator that has no AccountDB entry
+/// don't mutate any trie leaf. Mainnet's chain.db has 553K blocks of real
+/// account activity → every committed root is a real, non-empty hash. The
+/// `empty_hash(0)` short-circuit fix doesn't apply on that path.
+///
+/// This test reproduces the disk-roundtrip surface against a chain that
+/// has real tx activity (multiple senders, balance mutations) so the trie
+/// has real leaves, real internal nodes, real depth. If the bug is on this
+/// path, it should show up here as `producer.trie_root_at(N) !=
+/// reloaded.trie_root_at(N)`.
+///
+/// Test passing on main = the v2.1.21 canary mainnet failure is **not**
+/// caused by something on the in-process disk-roundtrip path; the bug
+/// surface is somewhere else (peer-block validation delta, BFT state
+/// serialisation, V4 dispatch path running unconditionally, etc.).
+///
+/// Test failing on main = bisect across v2.1.16-v2.1.21 commits using
+/// `git checkout <sha> && cargo test -p sentrix-core --test fork_determinism
+///  test_mdbx_roundtrip_with_active_state`. First commit that fails =
+/// regression introduction point.
+#[test]
+fn test_mdbx_roundtrip_with_active_state() {
+    let dir = TempDir::new().expect("tempdir");
+    let storage = sentrix_core::storage::Storage::open(dir.path().to_str().unwrap())
+        .expect("storage open");
+    let mdbx = storage.mdbx_arc();
+
+    let mut producer = setup_chain();
+    producer.init_trie(Arc::clone(&mdbx)).unwrap();
+    producer.init_storage_handle(Arc::clone(&mdbx)).unwrap();
+
+    // Five distinct senders, each pre-funded. Multiple senders + multiple
+    // recipients exercise more leaves + more trie depth than a single-sender
+    // chain. Funding done before the chain starts so we don't need a fork
+    // for it.
+    let mut keypairs: Vec<(secp256k1::SecretKey, secp256k1::PublicKey, String)> = Vec::new();
+    for i in 1u8..=5 {
+        let (sk, pk) = deterministic_keypair(i);
+        let addr = Wallet::derive_address(&pk);
+        producer.accounts.credit(&addr, 100_000_000).unwrap();
+        keypairs.push((sk, pk, addr));
+    }
+
+    let recv = recv_addr();
+    let chain_id = producer.chain_id;
+
+    // Build 30 blocks where every block has at least one tx mutating account
+    // state. Rotate sender each block so multiple addresses move balance.
+    const WARMUP_HEIGHT: u64 = 30;
+    let mut nonces = [0u64; 5];
+    for i in 0..WARMUP_HEIGHT {
+        let s = (i as usize) % keypairs.len();
+        let (ref sk, ref pk, ref sender) = keypairs[s];
+        let tx = Transaction::new(
+            sender.clone(),
+            recv.clone(),
+            500_000,
+            MIN_TX_FEE,
+            nonces[s],
+            String::new(),
+            chain_id,
+            sk,
+            pk,
+        )
+        .expect("tx build");
+        nonces[s] += 1;
+        producer.add_to_mempool(tx).unwrap();
+
+        let block = producer.create_block(VALIDATOR).unwrap();
+        mdbx.put(
+            sentrix_storage::tables::TABLE_META,
+            format!("block:{}", block.index).as_bytes(),
+            &serde_json::to_vec(&block).unwrap(),
+        )
+        .unwrap();
+        producer.add_block(block).unwrap();
+    }
+    let producer_root = producer.trie_root_at(WARMUP_HEIGHT).map(hex::encode);
+    assert_ne!(
+        producer_root,
+        Some(hex::encode(sentrix_trie::node::empty_hash(0))),
+        "test setup error: trie root at h={WARMUP_HEIGHT} is still the empty sentinel \
+         — txs didn't mutate the account trie. The mainnet-relevant code path \
+         requires a non-empty trie."
+    );
+
+    storage.save_blockchain(&producer).unwrap();
+
+    let mut reloaded: Blockchain = storage
+        .load_blockchain()
+        .expect("load_blockchain")
+        .expect("blockchain state must exist");
+    reloaded.init_trie(Arc::clone(&mdbx)).unwrap();
+    reloaded.init_storage_handle(Arc::clone(&mdbx)).unwrap();
+
+    let reloaded_root = reloaded.trie_root_at(WARMUP_HEIGHT).map(hex::encode);
+    assert_eq!(
+        producer_root, reloaded_root,
+        "[#268 active-state path] producer ↔ reloaded trie root mismatch at h={WARMUP_HEIGHT} \
+         — disk roundtrip perturbed non-empty trie state. This is the path mainnet's \
+         v2.1.21 canary fails on. Bisect across v2.1.16-v2.1.21 to find the regression."
+    );
+
+    // Now apply one more peer block on the reloaded chain and verify it
+    // converges with the producer's continuation. This is the literal
+    // "received next block from peer post-rsync" surface.
+    let next = producer.create_block(VALIDATOR).unwrap();
+    let h = next.index;
+    producer.add_block(next.clone()).unwrap();
+    reloaded
+        .add_block_from_peer(next)
+        .unwrap_or_else(|e| panic!("reloaded peer-apply rejected at h={h}: {e}"));
+
+    assert_eq!(
+        producer.trie_root_at(h).map(hex::encode),
+        reloaded.trie_root_at(h).map(hex::encode),
+        "[#268 active-state path] post-roundtrip peer-apply diverged at h={h} — \
+         reloaded chain's apply_block_pass2 produced different state_root than \
+         producer's. This is the mainnet canary symptom in unit-test form."
+    );
+}
+
+/// Stale-snapshot peer-sync — the most literal mimic of mainnet's #268
+/// canary scenario:
+///
+/// - VPS5 had a chain.db rsync'd from canonical at height H
+/// - Canary boot, peer broadcast contains blocks at H+1, H+2, ...
+/// - Canary applies via `add_block_from_peer`, computes own state_root
+/// - Mismatch against canonical's state_root → #1e
+///
+/// This test:
+/// 1. Producer builds chain to h=H with real tx activity
+/// 2. Save MDBX state to a "snapshot" path (separate dir, simulating rsync target)
+/// 3. Producer continues to h=H+10 (more peer-broadcast-ready blocks)
+/// 4. Open a fresh Blockchain from the snapshot dir
+/// 5. Apply blocks H+1..H+10 via add_block_from_peer
+/// 6. Verify state_root at every applied height matches producer's
+///
+/// If this test fails on main, the regression is on the
+/// `peer-block-validation + add_block_from_peer` path, not on plain disk
+/// roundtrip.
+#[test]
+fn test_stale_snapshot_peer_sync() {
+    // Producer side
+    let producer_dir = TempDir::new().expect("producer tempdir");
+    let producer_storage =
+        sentrix_core::storage::Storage::open(producer_dir.path().to_str().unwrap())
+            .expect("producer storage open");
+    let producer_mdbx = producer_storage.mdbx_arc();
+
+    let mut producer = setup_chain();
+    producer.init_trie(Arc::clone(&producer_mdbx)).unwrap();
+    producer.init_storage_handle(Arc::clone(&producer_mdbx)).unwrap();
+
+    // Pre-fund 3 senders
+    let mut keypairs = Vec::new();
+    for i in 1u8..=3 {
+        let (sk, pk) = deterministic_keypair(i + 50);
+        let addr = Wallet::derive_address(&pk);
+        producer.accounts.credit(&addr, 100_000_000).unwrap();
+        keypairs.push((sk, pk, addr));
+    }
+    let recv = recv_addr();
+    let chain_id = producer.chain_id;
+
+    // Phase 1: producer builds chain to h=SNAPSHOT_AT with tx activity.
+    const SNAPSHOT_AT: u64 = 20;
+    let mut nonces = [0u64; 3];
+    for i in 0..SNAPSHOT_AT {
+        let s = (i as usize) % keypairs.len();
+        let (ref sk, ref pk, ref sender) = keypairs[s];
+        let tx = Transaction::new(
+            sender.clone(),
+            recv.clone(),
+            500_000,
+            MIN_TX_FEE,
+            nonces[s],
+            String::new(),
+            chain_id,
+            sk,
+            pk,
+        )
+        .expect("tx build");
+        nonces[s] += 1;
+        producer.add_to_mempool(tx).unwrap();
+
+        let block = producer.create_block(VALIDATOR).unwrap();
+        producer_mdbx
+            .put(
+                sentrix_storage::tables::TABLE_META,
+                format!("block:{}", block.index).as_bytes(),
+                &serde_json::to_vec(&block).unwrap(),
+            )
+            .unwrap();
+        producer.add_block(block).unwrap();
+    }
+    producer_storage.save_blockchain(&producer).unwrap();
+
+    // Capture snapshot expectations — what state_root SHOULD the rsync'd
+    // peer compute as it catches up?
+    let mut expected_roots = Vec::new();
+    for h in 1..=SNAPSHOT_AT {
+        expected_roots.push((h, producer.trie_root_at(h).map(hex::encode)));
+    }
+
+    // Phase 2: producer continues to SNAPSHOT_AT + N more blocks. The peer
+    // (next phase) will receive these via gossip and apply via add_block_from_peer.
+    const PEER_SYNC_BLOCKS: u64 = 10;
+    for i in 0..PEER_SYNC_BLOCKS {
+        let s = ((SNAPSHOT_AT + i) as usize) % keypairs.len();
+        let (ref sk, ref pk, ref sender) = keypairs[s];
+        let tx = Transaction::new(
+            sender.clone(),
+            recv.clone(),
+            500_000,
+            MIN_TX_FEE,
+            nonces[s],
+            String::new(),
+            chain_id,
+            sk,
+            pk,
+        )
+        .expect("tx build");
+        nonces[s] += 1;
+        producer.add_to_mempool(tx).unwrap();
+
+        let block = producer.create_block(VALIDATOR).unwrap();
+        producer_mdbx
+            .put(
+                sentrix_storage::tables::TABLE_META,
+                format!("block:{}", block.index).as_bytes(),
+                &serde_json::to_vec(&block).unwrap(),
+            )
+            .unwrap();
+        producer.add_block(block).unwrap();
+    }
+    let producer_post_sync_root = producer
+        .trie_root_at(SNAPSHOT_AT + PEER_SYNC_BLOCKS)
+        .map(hex::encode);
+
+    // Phase 3: rsync simulation. Copy producer's chain.db dir to a fresh
+    // location. This is the literal "operator copies chain.db from canonical
+    // peer" step. We then open the copy as a separate Storage instance, the
+    // way a freshly-rsync'd VPS5 would.
+    let peer_dir = TempDir::new().expect("peer tempdir");
+    copy_dir_contents(producer_dir.path(), peer_dir.path()).expect("rsync sim");
+
+    let peer_storage = sentrix_core::storage::Storage::open(peer_dir.path().to_str().unwrap())
+        .expect("peer storage open");
+    let peer_mdbx = peer_storage.mdbx_arc();
+    let mut peer: Blockchain = peer_storage
+        .load_blockchain()
+        .expect("peer load_blockchain")
+        .expect("peer state");
+    peer.init_trie(Arc::clone(&peer_mdbx)).unwrap();
+    peer.init_storage_handle(Arc::clone(&peer_mdbx)).unwrap();
+
+    // Verify the rsync'd peer agrees on snapshot state.
+    for (h, expected) in &expected_roots {
+        let actual = peer.trie_root_at(*h).map(hex::encode);
+        assert_eq!(
+            *expected, actual,
+            "[#268 stale-snapshot] rsync'd peer disagrees with producer at h={h} \
+             before any peer-block application. Disk roundtrip alone broke determinism."
+        );
+    }
+
+    // Phase 4: apply blocks SNAPSHOT_AT+1..SNAPSHOT_AT+PEER_SYNC_BLOCKS via
+    // add_block_from_peer. This is the literal canary failure path.
+    for h in (SNAPSHOT_AT + 1)..=(SNAPSHOT_AT + PEER_SYNC_BLOCKS) {
+        let block = producer
+            .get_block_any(h)
+            .unwrap_or_else(|| panic!("producer missing block at h={h}"));
+        peer.add_block_from_peer(block).unwrap_or_else(|e| {
+            panic!(
+                "[#268 stale-snapshot] peer rejected block at h={h}: {e}. \
+                 add_block_from_peer enforces #1e strict-reject — this is the \
+                 mainnet canary failure exactly."
+            )
+        });
+
+        let producer_at_h = producer.trie_root_at(h).map(hex::encode);
+        let peer_at_h = peer.trie_root_at(h).map(hex::encode);
+        assert_eq!(
+            producer_at_h, peer_at_h,
+            "[#268 stale-snapshot] peer's trie_root at h={h} diverged from producer \
+             after add_block_from_peer. Even though Pass-2 didn't return Err, the trie \
+             state is silently divergent — this would surface as #1e on the next block."
+        );
+    }
+
+    let peer_final_root = peer
+        .trie_root_at(SNAPSHOT_AT + PEER_SYNC_BLOCKS)
+        .map(hex::encode);
+    assert_eq!(
+        producer_post_sync_root, peer_final_root,
+        "[#268 stale-snapshot] final divergence after {} peer-sync blocks",
+        PEER_SYNC_BLOCKS
+    );
+}
+
+/// Recursively copy directory contents — used for the rsync simulation in
+/// `test_stale_snapshot_peer_sync`. Keeps file modes intact for MDBX's
+/// open semantics.
+fn copy_dir_contents(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ft.is_dir() {
+            std::fs::create_dir_all(&dst_path)?;
+            copy_dir_contents(&entry.path(), &dst_path)?;
+        } else if ft.is_file() {
+            std::fs::copy(entry.path(), &dst_path)?;
+        }
+    }
+    Ok(())
+}
