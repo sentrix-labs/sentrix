@@ -21,9 +21,16 @@ pub(super) static START_TIME: std::sync::OnceLock<std::time::Instant> = std::syn
 pub static PEER_BLOCK_SAVE_FAILS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-pub(super) async fn root() -> Json<serde_json::Value> {
-    let chain_id = sentrix_core::blockchain::get_chain_id();
-    let consensus = if chain_id == 7119 { "PoA" } else { "BFT" };
+pub(super) async fn root(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    // Read the runtime consensus state from chain.db's persistent
+    // voyager_activated flag rather than the chain_id heuristic. The
+    // old `chain_id == 7119 ? PoA : BFT` mapping was wrong post-2026-04-25
+    // when mainnet (7119) activated Voyager. RPC consumers (block
+    // explorers, wallets) need accurate consensus mode.
+    let bc = state.read().await;
+    let chain_id = bc.chain_id;
+    let consensus = if bc.voyager_activated { "BFT" } else { "PoA" };
+    drop(bc);
     Json(serde_json::json!({
         "name": "Sentrix",
         "version": env!("CARGO_PKG_VERSION"),
@@ -79,7 +86,8 @@ pub async fn sentrix_status(State(state): State<SharedState>) -> Json<serde_json
         .as_secs();
     let bc = state.read().await;
     let chain_id = bc.chain_id;
-    let consensus = if chain_id == 7119 { "PoA" } else { "BFT" };
+    // Same fix as root() — runtime flag, not chain_id heuristic.
+    let consensus = if bc.voyager_activated { "BFT" } else { "PoA" };
     let latest = bc.latest_block().ok().cloned();
     let (latest_height, latest_hash, latest_timestamp) = latest
         .as_ref()
