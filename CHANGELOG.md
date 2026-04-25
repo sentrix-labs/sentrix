@@ -7,6 +7,47 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.31] — 2026-04-25 — Late-night ship: BFT signing v2 foundation + Frontier F-2 shadow + libp2p connection-leak fix + V4 reward v2 fork activated
+
+> **🟢 Three substantial improvements landed late on 2026-04-25, plus the V4 reward v2 mainnet fork activated at h=590100.** The libp2p connection leak fix is the most operationally important — it closes the root cause of two production stalls earlier in the day.
+
+### Fixed (#319)
+
+- **L1 dial-tick connection leak** — `bin/sentrix/src/main.rs:1550-1581`. The dial-tick comment claimed `connect_peer` was idempotent ("duplicate dials to an already-connected peer are no-ops at the swarm level") — that's FALSE in libp2p 0.56 / libp2p-swarm 0.47. Every `swarm.dial()` enqueues a fresh pending connection regardless of existing connection state. Every 30s tick × 3 active peers × N hours = unbounded accumulation. After a few hours each validator reached 568-918 active TCP connections (vs expected ~6-12 for a 4-validator mesh), gossipsub heartbeat thrashed mesh on the oversized pool, BFT request_response messages dropped mid-round, and consensus deadlocked. **Fix**: new `LibP2pNode::connected_peers() -> HashSet<PeerId>` query (uses libp2p's native `swarm.connected_peers()`) + dial-tick now snapshots connected set once per tick + skips active-set members whose multiaddr's `/p2p/<peer_id>` suffix is already in the connected set. Falls back to dialing if multiaddr lacks `/p2p/` suffix (legacy advert format compatibility). Two production stalls (h=583002, h=585217) directly attributable to this bug; recovery procedure was "parallel restart of all 4 validators" which clears the pool.
+- **`max_established_per_peer(1)` defence-in-depth** deferred — libp2p-swarm 0.47 `Config` doesn't expose it directly; needs the `connection_limits::Behaviour` wired into `SentrixBehaviour`. Tracked as follow-up. The dial-tick fix above is sufficient on its own to stop accumulation.
+
+### Added (#317 — BFT signing v2 foundation)
+
+- **`BFT_SIGNING_V2_FORK_HEIGHT = u64::MAX`** constant (inert; v2 path never fires until operators flip it in a coordinated fork ceremony).
+- **`BFT_V2_MAGIC = 0x20`** magic byte (distinct from existing 0x01-0x04 message domain separators + 0x10 for MultiaddrAdvertisement).
+- **`signing_payload_v2(..., chain_id)`** variants on `Proposal`, `Prevote`, `Precommit`, `RoundStatus`. Each prepends `[0x20][chain_id BE u64]` to the v1 payload layout.
+- **`signing_payload_for_height(...)`** dispatch helper that picks v1 or v2 based on the height parameter.
+- 7 new tests pinning v2 wire-format invariants + cross-chain replay protection + dispatch inertness with default `u64::MAX` fork height.
+
+This closes Bug A from `audits/bft-signing-fork-design.md`: cross-chain BFT vote replay where a mainnet (7119) signature can verify on testnet (7120) at the same height/round/hash. The specific exploit (nil-vote replay where `block_hash="NIL"` is byte-identical across chains) is fixed under v2 — chain_id in the signed payload makes mainnet-NIL ≠ testnet-NIL. **Phase 2 (call-site refactor) deferred** to a dedicated session per consensus discipline. Phase 5 (operator activation flip) is operator ceremony, separate.
+
+### Added (#318 — Frontier F-2 shadow-mode wiring)
+
+- **`SENTRIX_FRONTIER_F2_SHADOW=1`** env var gate in `apply_block_pass2`. When set, the F-1 scaffold's `build_batches` is called over each block's non-coinbase transactions and the result is logged via `tracing::info!` under target `frontier::f2_shadow`. Read-only — does NOT mutate state. Sequential apply still drives block execution.
+- Default OFF — env-var read uses `std::env::var_os().is_some_and(...)` which short-circuits without allocation when missing.
+- Calibration step before F-3 (real parallel apply). Lets operators observe scheduler determinism on real chain traffic without committing to parallel execution.
+
+### Operational change (no code in this release for the V4 fork)
+
+- **V4 reward v2 mainnet fork ACTIVATED at h=590100.** `VOYAGER_REWARD_V2_HEIGHT=590100` set on all 4 mainnet validators, rolling restart, fork crossed at 04:27:04 local. Behaviour from h=590100 onwards:
+  - Coinbase 1 SRX/block routes to `PROTOCOL_TREASURY` (`0x0000000000000000000000000000000000000002`) instead of validator address
+  - `reset_reward_accumulators_for_fork_activation` fired once at h=590100 (cleared pre-fork pending_rewards + delegator_rewards to maintain the supply invariant `accounts[TREASURY] == sum(pending_rewards) + sum(delegator_rewards)`)
+  - Validators + delegators must now use the `ClaimRewards` staking op to transfer earned share from treasury to their balance
+  - Treasury accumulating ~1 SRX/block as designed (verified post-fork: 458 SRX at h=590562, 462 blocks past fork; ~4-block sample-timing lag)
+
+### Migration
+
+- Drop-in chain.db compatible with v2.1.30.
+- Pre-deploy: ensure `VOYAGER_REWARD_V2_HEIGHT` is consistent across all 4 validator env files (already set during fork ceremony — kept).
+- Per-validator deploy: rolling restart picks up new binary. The libp2p connection-leak fix takes effect immediately on the validator that restarts; full fleet benefit when all 4 are upgraded.
+
+---
+
 ## [2.1.30] — 2026-04-25 — Voyager mainnet active, RPC consensus reporting fixed
 
 > **🟢 Mainnet now reports `consensus: "DPoS+BFT"` correctly across every endpoint.** v2.1.30 is the canonical release on mainnet and testnet after the Voyager activation sequence completed. Source tree depersonalized of internal infrastructure references in the same window.
