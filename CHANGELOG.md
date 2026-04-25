@@ -7,6 +7,30 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.23] — 2026-04-25 — init_trie empty-hash false-positive fix (partial #268 close)
+
+> **🚨 v2.1.21–v2.1.23 DEPLOYMENT FROZEN ON MAINNET** — v2.1.23 closes ONE disk-roundtrip divergence class identified by yesterday's repro harness, but mainnet's specific v2.1.21 canary symptom (non-empty roots, immediate mismatch against v2.1.15 peers) is **not** explained by this fix. Mainnet stays on v2.1.15 until further #268 investigation lands. v2.1.23 deployed to testnet docker for soak.
+
+### Fixed (#279 — partial #268 close)
+
+- **`Blockchain::init_trie` `node_exists` false-positive on `empty_hash(0)`**. The empty-trie sentinel is never materialised in `TABLE_TRIE_NODES` because the binary SMT short-circuits empty subtrees, so `node_exists(empty_hash(0))` always returns false. The init_trie node-missing check at `blockchain.rs:847` mistook that for "node missing from storage" and triggered a spurious backfill from AccountDB on chains where every committed root equalled the empty hash (coinbase-only test, genuinely-quiet recovery windows). Three things compounded:
+  1. Backfill rebuilt a non-empty root from genesis premine.
+  2. `trie.commit(height)` wrote that backfilled root to MDBX BEFORE the divergence safeguard fired.
+  3. The safeguard correctly returned `Err`, but `Storage::load_blockchain` swallows that Err below `STATE_ROOT_FORK_HEIGHT` (warn-only) — silent permanent corruption of the chain.db.
+- Fix short-circuits `node_exists` for `empty_hash(0)`. The empty subtree is trivially valid without any storage entry, so it's safe to treat as "node exists" and skip backfill. Trigger conditions for the bug are narrow (chains with empty trie state) so mainnet at h=553K is not affected — but the destructive-backfill path is closed for any future operator scenario that hits this regime.
+- Drops `#[ignore]` on `test_mdbx_roundtrip_then_peer_block` in `crates/sentrix-core/tests/fork_determinism.rs` — now a permanent CI regression guard.
+
+### Honest framing
+
+This release closes **one** disk-roundtrip divergence class. Mainnet's specific `#268` symptom (v2.1.21 canary on VPS5 with non-empty rsync'd chain.db, immediate `#1e` mismatch against v2.1.15 peers) is **not** explained by this fix and remains under investigation. v2.1.23 ships the protection where it applies + locks the regression test.
+
+### Follow-up tracked
+
+- **Destructive-backfill-before-safeguard**: even with this fix, any future `needs_backfill = true` path writes the recomputed root to MDBX BEFORE the safeguard runs. If safeguard fires, on-disk state is left inconsistent. Hardening: compute backfill root in a scratch space, compare, persist only on agreement.
+- **`Storage::load_blockchain` swallows init_trie Err below 100K**: warn-only path was justified for P2P-recoverable failures, but the interaction with the destructive backfill means a silently-warned init_trie Err can leave corrupted state. Worth revisiting.
+
+---
+
 ## [2.1.22] — 2026-04-25 — Phase 1 prep: voyager activation idempotency + #268 repro harness
 
 > **🚨 v2.1.21 + v2.1.22 DEPLOYMENT FROZEN** — issue #268 disk-roundtrip trie divergence remains unresolved. v2.1.22 ships a fast unit-test reproducer + the Phase 1 idempotency hard-gate identified during the pre-implementation scan, but does NOT close #268. Mainnet stays on v2.1.15 until #268 is fixed and a v2.1.23 ships clean against the new repro harness.
