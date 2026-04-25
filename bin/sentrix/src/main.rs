@@ -1581,6 +1581,50 @@ async fn cmd_start(
                     }
                 }
 
+                // ── L2 cold-start gate (2026-04-25 second-incident fix) ──
+                //
+                // The original L2 gate (post-this-block) only fires on
+                // ACTIVATION TRANSITION, when voyager_activated is loaded
+                // as false. On cold-start with chain.db's persistent
+                // voyager_activated=true (e.g. after a previous activation),
+                // validators enter BFT IMMEDIATELY — before the L1 mesh
+                // has had time to converge. BFT proposal/precommit
+                // messages travel via libp2p request_response (1-to-1),
+                // not gossipsub, so they only reach peers connected at
+                // the exact moment of broadcast. Activation #2 on
+                // 2026-04-25 split-brained at h=578006 because not all
+                // 4 validators had a fully-formed mesh at the moment
+                // VPS1 broadcast its precommit.
+                //
+                // This second gate fires at EVERY loop iteration when
+                // BFT mode is active. If peer count is insufficient,
+                // sleep 5s and retry — by then L1 self-discovery has
+                // had a chance to converge the mesh. Once mesh is
+                // healthy the gate passes and BFT proceeds normally.
+                //
+                // Steady-state cost: one read-lock + one async peer_count
+                // query per iteration = negligible (microseconds).
+                if voyager_activated {
+                    let active_set_len = {
+                        let bc = shared_clone.read().await;
+                        bc.stake_registry.active_set.len()
+                    };
+                    let peer_count = lp2p_clone.peer_count().await;
+                    let force_override = force_bft_insufficient_peers_set();
+                    if let Err(reason) = check_bft_peer_mesh_eligible(
+                        peer_count,
+                        active_set_len,
+                        force_override,
+                    ) {
+                        tracing::warn!(
+                            "L2 cold-start gate: {} — sleeping 5s, will retry once L1 mesh converges",
+                            reason
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                        continue;
+                    }
+                }
+
                 // ── Voyager fork activation (read lock first, write only if needed) ──
                 //
                 // L2 pre-flight gate (2026-04-25 incident response): refuse to
