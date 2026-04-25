@@ -1699,7 +1699,11 @@ async fn cmd_start(
                 // activation proceeds automatically.
                 if !voyager_activated {
                     let bc = shared_clone.read().await;
-                    if Blockchain::is_voyager_height(bc.height().saturating_add(1)) {
+                    // 2026-04-26: voyager_mode_for() runtime-aware check.
+                    // For activation transition (voyager_activated == false),
+                    // env-var fork-height drives activation. After activation
+                    // the runtime flag takes over via voyager_mode_for's OR.
+                    if bc.voyager_mode_for(bc.height().saturating_add(1)) {
                         let active_set_len = bc.stake_registry.active_set.len();
                         drop(bc);
 
