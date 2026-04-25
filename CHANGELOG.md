@@ -7,6 +7,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.32] — 2026-04-26 — libp2p Tier 4 fix: /p2p/<peer_id> in advert multiaddrs
+
+> **🟢 Closes the gap from v2.1.31's partial libp2p fix.** With this release, the dial-tick connected-peers pre-check actually fires (was falling back to "dial anyway" because cached advert multiaddrs lacked `/p2p/<peer_id>` suffix). Connection accumulation should now plateau at the steady-state mesh size (~6-12 per validator for the 4-validator mainnet) instead of climbing toward gossipsub-thrashing thresholds.
+
+### Fixed (#321)
+
+- **Advert builder appends `/p2p/<own_peer_id>` to each broadcast multiaddr** — `bin/sentrix/src/main.rs` advert construction site. `LibP2pNode.local_peer_id` (already public Copy field) is read at advert build time + suffixed onto each filtered listen_addr. Defensive: skip the suffix if the address already contains "/p2p/" (listen_addrs() shouldn't return such, but tolerate it).
+- **Net effect when paired with v2.1.31's #319 fix**: peer_id extraction in the dial-tick connected-peers pre-check actually returns `Some(peer_id)` instead of always `None`. Validators stop re-dialing peers they're already connected to. Connection pool stops accumulating. The 2026-04-25 mainnet stall pattern (h=583002, h=585217, h=590000-area, h=592192) should not recur once all 4 validators run v2.1.32.
+
+### Empirical signal
+
+| Build | Connection growth pattern (4-validator mainnet) |
+|---|---|
+| v2.1.30 (pre-fix) | 7 → 800+ over hours, periodic stall |
+| v2.1.31 (#319 only, partial) | 6-7 → 27 over 90 seconds, slower stall |
+| v2.1.32 (this PR) | Expected: plateau at ~6-12 indefinitely |
+
+Operator validation: monitor `ss -tn state established '( sport = :30303 or dport = :30303 )' \| wc -l` across 24 hours. Pre-fix this counter climbed monotonically; post-fix should sit in a tight band.
+
+### Migration
+
+- Drop-in chain.db compatible with v2.1.31.
+- Per-validator deploy: rolling restart picks up new binary. Within ~10 min, advert broadcasts will carry the new /p2p suffix; within ~30 min, full mesh-stable steady state (allowing for advert gossip propagation + peers picking up new cached entries).
+
+---
+
 ## [2.1.31] — 2026-04-25 — Late-night ship: BFT signing v2 foundation + Frontier F-2 shadow + libp2p connection-leak fix + V4 reward v2 fork activated
 
 > **🟢 Three substantial improvements landed late on 2026-04-25, plus the V4 reward v2 mainnet fork activated at h=590100.** The libp2p connection leak fix is the most operationally important — it closes the root cause of two production stalls earlier in the day.
