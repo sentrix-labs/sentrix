@@ -1499,6 +1499,17 @@ async fn cmd_start(
                         // production default), so the filter must catch
                         // both classes. Cap at MAX_MULTIADDRS to stay
                         // within DoS budget on the receiver side.
+                        //
+                        // 2026-04-26: append `/p2p/<own_peer_id>` to each
+                        // address so receivers can extract our peer_id
+                        // for the dial-tick connected-peers pre-check
+                        // (sentrix-labs/sentrix#319). Without the suffix,
+                        // the dial-tick can't tell which peer_id a cached
+                        // multiaddr resolves to and falls back to "dial
+                        // anyway", which reintroduces the connection-
+                        // accumulation pattern that was the root cause of
+                        // the 2026-04-25 mainnet stalls.
+                        let our_peer_id = lp2p_clone.local_peer_id;
                         let multiaddrs: Vec<String> = listen_addrs
                             .iter()
                             .map(|m| m.to_string())
@@ -1507,6 +1518,16 @@ async fn cmd_start(
                                     && !s.starts_with("/ip6/::1/")
                                     && !s.starts_with("/ip4/0.0.0.0/")
                                     && !s.starts_with("/ip6/::/")
+                            })
+                            .map(|s| {
+                                // Skip if already has /p2p (defensive —
+                                // listen_addrs() shouldn't include them
+                                // but tolerate it).
+                                if s.contains("/p2p/") {
+                                    s
+                                } else {
+                                    format!("{}/p2p/{}", s, our_peer_id)
+                                }
                             })
                             .take(sentrix_wire::MultiaddrAdvertisement::MAX_MULTIADDRS)
                             .collect();
