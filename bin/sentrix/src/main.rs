@@ -67,6 +67,73 @@ fn get_wallets_dir() -> String {
         .to_string()
 }
 
+/// L2 pre-flight peer-mesh gate for Voyager activation.
+///
+/// Returns `Ok(())` when this validator has enough libp2p peers to
+/// participate in BFT consensus — i.e. at least `active_set_len - 1`
+/// peers, since we don't dial ourselves. Returns `Err` with a human
+/// description otherwise; the caller should NOT flip into Voyager mode
+/// and should re-check on the next loop tick.
+///
+/// The `force_override` arg comes from the
+/// `SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=1` env var and is read at the
+/// call site. It exists as an emergency operator escape hatch but
+/// SHOULD NOT be set during normal operations — it re-creates the
+/// 2026-04-25 mainnet livelock condition where validators activated
+/// BFT without a fully-formed mesh and got stuck in nil-supermajority
+/// loops.
+///
+/// Active set of size 1 is treated as a degenerate single-validator
+/// chain (testnet bootstrap, recovery scenarios) where peer count is
+/// trivially satisfied.
+fn check_bft_peer_mesh_eligible(
+    peer_count: usize,
+    active_set_len: usize,
+    force_override: bool,
+) -> Result<(), String> {
+    if force_override {
+        return Ok(());
+    }
+    // Single-validator chain: peer count is moot. We use `== 1` rather
+    // than `<= 1` so an active_set_len == 0 produces an explicit error
+    // instead of silently passing — a chain with zero active validators
+    // should never be reaching the BFT activation path in the first
+    // place, and silently approving it would mask a separate bug.
+    if active_set_len == 1 {
+        return Ok(());
+    }
+    if active_set_len == 0 {
+        return Err(
+            "BFT activation blocked: active_set is empty — no validators registered. \
+             This indicates a separate bug in DPoS migration; check stake_registry."
+                .to_string(),
+        );
+    }
+    let required = active_set_len - 1;
+    if peer_count < required {
+        return Err(format!(
+            "BFT activation blocked: need ≥{required} libp2p peers \
+             (active_set={active_set_len}), have {peer_count}. \
+             Verify --peers / wait for L1 multiaddr gossip / set \
+             SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=1 to override."
+        ));
+    }
+    Ok(())
+}
+
+/// Strict env-var check for the BFT peer-mesh gate override. Only the
+/// literal string `"1"` enables the override; any other value (typoed
+/// `"true"`, accidentally-empty `""` from shell `VAR=$missing`,
+/// whitespace) is rejected and the gate stays active. This avoids the
+/// "empty-string-is-truthy" footgun where a misconfigured env file
+/// silently disables the safety net during exactly the operational
+/// scenarios it exists to protect.
+fn force_bft_insufficient_peers_set() -> bool {
+    std::env::var("SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
 #[derive(Parser)]
 #[command(name = "sentrix")]
 #[command(about = "Sentrix (SRX) — Layer-1 Blockchain")]
@@ -1334,19 +1401,53 @@ async fn cmd_start(
                 }
 
                 // ── Voyager fork activation (read lock first, write only if needed) ──
+                //
+                // L2 pre-flight gate (2026-04-25 incident response): refuse to
+                // flip into Voyager BFT mode if our libp2p peer count is below
+                // `active_set.len() - 1`. The mainnet livelock at h=557244 was
+                // caused by VPS5 having only 1 peer (VPS1) at activation
+                // moment — its proposals never reached VPS2/VPS3 and the
+                // chain ground out 30+ skip rounds in 16 minutes before the
+                // emergency rollback. With this gate, a partitioned validator
+                // stays in Pioneer instead and re-checks every loop tick;
+                // once L1 multiaddr gossip ships, the mesh self-heals and
+                // activation proceeds automatically.
                 if !voyager_activated {
                     let bc = shared_clone.read().await;
                     if Blockchain::is_voyager_height(bc.height().saturating_add(1)) {
+                        let active_set_len = bc.stake_registry.active_set.len();
                         drop(bc);
-                        let mut bc = shared_clone.write().await;
-                        tracing::info!(
-                            "Voyager fork reached at height {} — activating DPoS",
-                            bc.height()
-                        );
-                        if let Err(e) = bc.activate_voyager() {
-                            tracing::warn!("activate_voyager failed: {}", e);
+
+                        let peer_count = lp2p_clone.peer_count().await;
+                        let force_override = force_bft_insufficient_peers_set();
+
+                        match check_bft_peer_mesh_eligible(
+                            peer_count,
+                            active_set_len,
+                            force_override,
+                        ) {
+                            Ok(()) => {
+                                let mut bc = shared_clone.write().await;
+                                tracing::info!(
+                                    "Voyager fork reached at height {} — activating DPoS \
+                                     (peers={} active_set={})",
+                                    bc.height(),
+                                    peer_count,
+                                    active_set_len
+                                );
+                                if let Err(e) = bc.activate_voyager() {
+                                    tracing::warn!("activate_voyager failed: {}", e);
+                                }
+                                voyager_activated = true;
+                            }
+                            Err(reason) => {
+                                tracing::error!("{}", reason);
+                                // Stay in Pioneer; loop re-checks next tick.
+                                // Do NOT call activate_voyager() — chain.db
+                                // persistent flag must not get set when the
+                                // local node can't safely join BFT.
+                            }
                         }
-                        voyager_activated = true;
                     }
                 }
 
@@ -3342,4 +3443,129 @@ fn cmd_token_list() -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// L2 gate: 4-validator mesh requires 3 peers (active_set.len() - 1).
+    /// 2026-04-25 incident reproduction — VPS5 had 1 peer, would have
+    /// been blocked by this check.
+    #[test]
+    fn peer_mesh_gate_blocks_partitioned_validator() {
+        let result = check_bft_peer_mesh_eligible(1, 4, false);
+        assert!(result.is_err(), "1 peer in 4-val mesh must be rejected");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("need ≥3"), "error must state requirement: {msg}");
+        assert!(msg.contains("have 1"), "error must state actual count: {msg}");
+    }
+
+    /// Healthy fully-meshed 4-validator chain: 3 peers passes.
+    #[test]
+    fn peer_mesh_gate_allows_fully_meshed_validator() {
+        assert!(check_bft_peer_mesh_eligible(3, 4, false).is_ok());
+    }
+
+    /// Above-threshold (more peers than active set members - 1) is also fine
+    /// — non-validator peers count toward the libp2p peer count too.
+    #[test]
+    fn peer_mesh_gate_allows_extra_peers() {
+        assert!(check_bft_peer_mesh_eligible(10, 4, false).is_ok());
+    }
+
+    /// Operator emergency override (`SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=1`)
+    /// must bypass the gate even with zero peers. Re-creates the
+    /// 2026-04-25 livelock condition deliberately — used only when an
+    /// operator decides the partition risk is acceptable.
+    #[test]
+    fn peer_mesh_gate_force_override_allows_zero_peers() {
+        assert!(check_bft_peer_mesh_eligible(0, 4, true).is_ok());
+    }
+
+    /// Single-validator chain (testnet bootstrap, recovery scenario):
+    /// peer count is trivially satisfied because `active_set - 1 == 0`.
+    #[test]
+    fn peer_mesh_gate_single_validator_chain_always_passes() {
+        assert!(check_bft_peer_mesh_eligible(0, 1, false).is_ok());
+    }
+
+    // Note: a previous test asserted `check_bft_peer_mesh_eligible(0, 0, false).is_ok()`
+    // — that test was based on the original `<= 1` short-circuit, which masked
+    // the real bug of an empty active_set reaching activation. Replaced by
+    // `peer_mesh_gate_empty_active_set_errors_explicitly` below.
+
+    /// 2-validator chain edge case: `active_set - 1 == 1` peer required.
+    #[test]
+    fn peer_mesh_gate_two_validator_chain() {
+        assert!(check_bft_peer_mesh_eligible(0, 2, false).is_err());
+        assert!(check_bft_peer_mesh_eligible(1, 2, false).is_ok());
+    }
+
+    /// Boundary: peer_count exactly equal to threshold passes.
+    #[test]
+    fn peer_mesh_gate_boundary_equal_passes() {
+        assert!(check_bft_peer_mesh_eligible(3, 4, false).is_ok());
+    }
+
+    /// Boundary: one below threshold fails.
+    #[test]
+    fn peer_mesh_gate_boundary_below_fails() {
+        assert!(check_bft_peer_mesh_eligible(2, 4, false).is_err());
+    }
+
+    /// Empty active_set produces explicit error (post-self-review fix).
+    /// The `<= 1` shortcut was previously silently passing this case,
+    /// masking a potential DPoS-migration bug where stake_registry ends
+    /// up empty post-migration.
+    #[test]
+    fn peer_mesh_gate_empty_active_set_errors_explicitly() {
+        let result = check_bft_peer_mesh_eligible(0, 0, false);
+        assert!(result.is_err(), "empty active_set must return error");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("active_set is empty"),
+            "error must point at empty-active-set bug: {msg}"
+        );
+    }
+
+    /// Strict env-var check: only literal `"1"` enables override.
+    /// Empty string (`SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=` from a
+    /// shell `VAR=$missing` typo) must NOT silently disable the gate.
+    /// This is the post-self-review fix — `.is_ok()` was accepting any
+    /// set value including empty, defeating the safety net during
+    /// exactly the operational scenarios it exists to protect.
+    #[test]
+    fn force_override_strict_check_rejects_empty_string() {
+        // Sandbox the env var so this test doesn't pollute the global
+        // state — set it to empty, run the check, then unset.
+        // SAFETY: tests run sequentially in this module by default
+        // (Cargo's per-binary test harness uses a single thread per
+        // test by default; #[test] without #[tokio::test(flavor)]
+        // means single-threaded). If any future test parallelism is
+        // introduced, this needs a mutex.
+        unsafe { std::env::set_var("SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS", "") };
+        assert!(
+            !force_bft_insufficient_peers_set(),
+            "empty string must NOT enable override"
+        );
+
+        unsafe { std::env::set_var("SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS", "true") };
+        assert!(
+            !force_bft_insufficient_peers_set(),
+            "non-1 value must NOT enable override"
+        );
+
+        unsafe { std::env::set_var("SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS", "1") };
+        assert!(
+            force_bft_insufficient_peers_set(),
+            "literal '1' must enable override"
+        );
+
+        unsafe { std::env::remove_var("SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS") };
+        assert!(
+            !force_bft_insufficient_peers_set(),
+            "unset env var must NOT enable override"
+        );
+    }
 }
