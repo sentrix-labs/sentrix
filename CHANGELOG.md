@@ -7,6 +7,36 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.35] — 2026-04-26 — voyager_mode_for migration sweep + claim-rewards tool
+
+> **Maintenance release.** Bundles defensive migrations of remaining `is_voyager_height` callsites (#327) plus the new `tools/claim-rewards` standalone binary (#328). No consensus or chain-state changes.
+
+### Changed (#327)
+
+- **All production callsites of static `Blockchain::is_voyager_height(h)` migrated to runtime-aware `voyager_mode_for(&self, h)`** (introduced in #324). Defensive sweep — same env-var-default-`u64::MAX` foot-gun could affect any path using the static check.
+- Sites: `sentrix-rpc/jsonrpc/sentrix.rs:{79,409}`, `sentrix-core/block_executor.rs:988`, `bin/sentrix/main.rs:1702`.
+
+### Added (#328)
+
+- **`tools/claim-rewards`** — standalone binary; takes validator privkey on stdin, submits `StakingOp::ClaimRewards` tx to drain `pending_rewards` from `PROTOCOL_TREASURY` into validator balance. Sibling to existing `tools/transfer-amount` and `tools/drain-once`.
+
+### Migration
+
+- Drop-in chain.db compatible with v2.1.34.
+- Per-validator rolling restart picks up new binary.
+
+---
+
+## [2.1.34] — 2026-04-26 — Connection-limits hotfix (max_established_per_peer 1→2)
+
+> **Hotfix on top of v2.1.33.** v2.1.33's `max_established_per_peer(Some(1))` proved too restrictive for the 4-validator mainnet mesh — gossipsub propagation became too sparse, BFT block rate dropped from ~1/s to ~3/min with skip-rounds. Loosened to `Some(2)`. Restores normal block rate while keeping accumulation cap.
+
+### Fixed (#326)
+
+- **`max_established_per_peer` raised 1 → 2** in `connection_limits::Behaviour`. Allows ONE simultaneous-bidirectional-dial duplicate to settle without rejection while still preventing unbounded accumulation. New `SENTRIX_MAX_CONN_PER_PEER` env override for future tuning.
+
+---
+
 ## [2.1.33] — 2026-04-26 — Voyager auth runtime-aware fix + connection_limits hardening
 
 > **🟢 Closes the 2026-04-26 mainnet stall root cause** (env-var-defaulted `VOYAGER_FORK_HEIGHT=u64::MAX` + `validate_block` static check ⇒ Pioneer-auth rejection of valid Voyager skip-round blocks). Plus bundles the connection_limits Behaviour for max-1-established-per-peer enforcement.
