@@ -32,8 +32,9 @@ use tokio::sync::mpsc;
 
 use crate::behaviour::{
     BLOCKS_TOPIC, GossipBlock, GossipTransaction, SentrixBehaviour, SentrixBehaviourEvent,
-    SentrixRequest, SentrixResponse, TXS_TOPIC,
+    SentrixRequest, SentrixResponse, TXS_TOPIC, VALIDATOR_ADVERTS_TOPIC,
 };
+use sentrix_wire::MultiaddrAdvertisement;
 use crate::node::{NodeEvent, SharedBlockchain};
 use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
 use sentrix_primitives::error::{SentrixError, SentrixResult};
@@ -79,6 +80,19 @@ enum SwarmCommand {
     /// fires *immediately* so the chain doesn't wait up to 30s to
     /// discover it's behind.
     TriggerSync,
+    /// L1 peer auto-discovery: gossip a signed validator multiaddr
+    /// advertisement on `VALIDATOR_ADVERTS_TOPIC`. Fired by the
+    /// validator loop on startup + periodically.
+    GossipValidatorAdvert(Box<MultiaddrAdvertisement>),
+    /// L1: read the cached advertisement for a specific validator.
+    /// Returns `Some` with the latest-by-sequence advertisement seen
+    /// for that address, or `None` if no advertisement has been
+    /// observed yet.
+    GetCachedAdvert(String, tokio::sync::oneshot::Sender<Option<MultiaddrAdvertisement>>),
+    /// L1: snapshot of every cached advertisement. Used by the
+    /// periodic dial-tick in the validator loop to decide which
+    /// active-set members it can reach.
+    ListCachedAdverts(tokio::sync::oneshot::Sender<Vec<MultiaddrAdvertisement>>),
 }
 
 // ── Public handle ────────────────────────────────────────
@@ -177,6 +191,48 @@ impl LibP2pNode {
 
     /// Broadcast our current BFT round status so peers can sync rounds.
     /// Called periodically (~5s) by the validator loop.
+    /// L1 peer auto-discovery: gossip a signed [`MultiaddrAdvertisement`]
+    /// on `VALIDATOR_ADVERTS_TOPIC`. Other validators verify the signature
+    /// against the on-chain stake registry and dial the advertised
+    /// multiaddrs on their next discovery tick.
+    pub async fn broadcast_validator_advert(&self, advert: MultiaddrAdvertisement) {
+        let _ = self
+            .cmd_tx
+            .send(SwarmCommand::GossipValidatorAdvert(Box::new(advert)))
+            .await;
+    }
+
+    /// L1: read the cached advertisement for a specific validator
+    /// address. Returns `None` if we haven't seen one yet.
+    pub async fn cached_advert(&self, validator: &str) -> Option<MultiaddrAdvertisement> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self
+            .cmd_tx
+            .send(SwarmCommand::GetCachedAdvert(validator.to_string(), tx))
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        rx.await.ok().flatten()
+    }
+
+    /// L1: snapshot every cached advertisement. Used by the validator
+    /// loop's periodic dial-tick to decide which active-set members
+    /// it can reach.
+    pub async fn list_cached_adverts(&self) -> Vec<MultiaddrAdvertisement> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self
+            .cmd_tx
+            .send(SwarmCommand::ListCachedAdverts(tx))
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
     pub async fn broadcast_bft_round_status(&self, status: &sentrix_bft::messages::RoundStatus) {
         let req = SentrixRequest::BftRoundStatus {
             status: status.clone(),
@@ -381,6 +437,20 @@ async fn run_swarm(
     // Without this we cannot tell whether BFT proposals are the ones
     // timing out or unrelated background traffic.
     let mut pending_variants: HashMap<OutboundRequestId, &'static str> = HashMap::new();
+    // L1 peer auto-discovery cache: latest-by-sequence advertisement
+    // per validator address. Keyed by validator address string,
+    // not PeerId, because the address is the on-chain identity that
+    // signs the advertisement (we recover the signer's address from
+    // the sig and compare to the claimed validator field).
+    //
+    // DoS bound: cap at MAX_CACHED_ADVERTS entries. Eviction strategy
+    // when full = drop the lowest-sequence entry, since that's the
+    // freshest signal of "this peer is stale". Byzantine validators
+    // can flood with advertisements only up to the cap; legitimate
+    // validators with a single signing key can only have one entry
+    // anyway (overwritten on sequence bump).
+    const MAX_CACHED_ADVERTS: usize = 4096;
+    let mut multiaddr_cache: HashMap<String, MultiaddrAdvertisement> = HashMap::new();
 
     // Per-IP rate limiter for connection flood protection.
     let mut ip_limiter = IpRateLimiter::new();
@@ -439,6 +509,31 @@ async fn run_swarm(
                             }
                             Err(e) => tracing::warn!("gossip tx serialize failed: {}", e),
                         }
+                    }
+                    Some(SwarmCommand::GossipValidatorAdvert(advert)) => {
+                        // L1 outbound: publish a signed advertisement
+                        // on VALIDATOR_ADVERTS_TOPIC. Caller (validator
+                        // loop) is responsible for sign() before send;
+                        // we don't re-verify our own outgoing message
+                        // (gossipsub::ValidationMode::Strict catches
+                        // any encoding-level corruption at publish).
+                        let topic = gossipsub::IdentTopic::new(VALIDATOR_ADVERTS_TOPIC);
+                        match bincode::serialize(&*advert) {
+                            Ok(data) => {
+                                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                                    tracing::debug!("gossipsub publish advert failed: {}", e);
+                                }
+                            }
+                            Err(e) => tracing::warn!("gossip advert serialize failed: {}", e),
+                        }
+                    }
+                    Some(SwarmCommand::GetCachedAdvert(validator, reply)) => {
+                        let _ = reply.send(multiaddr_cache.get(&validator).cloned());
+                    }
+                    Some(SwarmCommand::ListCachedAdverts(reply)) => {
+                        let snapshot: Vec<MultiaddrAdvertisement> =
+                            multiaddr_cache.values().cloned().collect();
+                        let _ = reply.send(snapshot);
                     }
                     Some(SwarmCommand::AddKadPeer(peer_id, addr)) => {
                         swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
@@ -508,6 +603,8 @@ async fn run_swarm(
                     &mut pending_variants,
                     our_chain_id,
                     &mut ip_limiter,
+                    &mut multiaddr_cache,
+                    MAX_CACHED_ADVERTS,
                 )
                 .await;
             }
@@ -554,6 +651,8 @@ async fn on_swarm_event(
     pending_variants: &mut HashMap<OutboundRequestId, &'static str>,
     our_chain_id: u64,
     ip_limiter: &mut IpRateLimiter,
+    multiaddr_cache: &mut HashMap<String, MultiaddrAdvertisement>,
+    max_cached_adverts: usize,
 ) {
     match event {
         SwarmEvent::NewListenAddr { address, .. } => {
@@ -722,6 +821,75 @@ async fn on_swarm_event(
                         });
                     }
                     Err(e) => tracing::warn!("gossip: bad tx message: {}", e),
+                }
+            } else if topic == VALIDATOR_ADVERTS_TOPIC {
+                // L1 peer auto-discovery — verify + cache.
+                //
+                // Order of checks (cheap → expensive):
+                // 1. Bincode decode (rejects malformed bytes immediately).
+                // 2. Structural shape (multiaddr count, length, format
+                //    — pre-empts byzantine validators announcing 1000s
+                //    of garbage addresses).
+                // 3. Chain_id match (cross-chain replay protection —
+                //    a mainnet sig should not be accepted by a
+                //    testnet node and vice versa).
+                // 4. Sequence freshness (dedup against already-cached
+                //    entry — newer wins, equal-or-older silently
+                //    dropped to avoid unnecessary signature work).
+                // 5. Signature verification (most expensive — only
+                //    runs when previous gates passed).
+                // 6. Insert into cache, evicting lowest-sequence
+                //    entry if at capacity.
+                match bincode::deserialize::<MultiaddrAdvertisement>(&message.data) {
+                    Ok(advert) => {
+                        if let Err(reason) = advert.validate_shape() {
+                            tracing::debug!(
+                                "gossip advert: malformed from {}: {}",
+                                propagation_source,
+                                reason
+                            );
+                            return;
+                        }
+                        if advert.chain_id != our_chain_id {
+                            tracing::debug!(
+                                "gossip advert: wrong chain_id {} (expected {})",
+                                advert.chain_id,
+                                our_chain_id
+                            );
+                            return;
+                        }
+                        if let Some(cached) = multiaddr_cache.get(&advert.validator)
+                            && cached.sequence >= advert.sequence
+                        {
+                            // Already have an equal-or-newer entry; skip.
+                            return;
+                        }
+                        if !advert.verify() {
+                            tracing::warn!(
+                                "gossip advert: bad signature from claimed validator {}",
+                                &advert.validator[..12.min(advert.validator.len())]
+                            );
+                            return;
+                        }
+                        // DoS bound: evict lowest-sequence entry if full.
+                        if multiaddr_cache.len() >= max_cached_adverts
+                            && !multiaddr_cache.contains_key(&advert.validator)
+                            && let Some(victim) = multiaddr_cache
+                                .iter()
+                                .min_by_key(|(_, a)| a.sequence)
+                                .map(|(k, _)| k.clone())
+                        {
+                            multiaddr_cache.remove(&victim);
+                        }
+                        tracing::debug!(
+                            "gossip advert: cached {} multiaddrs for {} (seq={})",
+                            advert.multiaddrs.len(),
+                            &advert.validator[..12.min(advert.validator.len())],
+                            advert.sequence
+                        );
+                        multiaddr_cache.insert(advert.validator.clone(), advert);
+                    }
+                    Err(e) => tracing::debug!("gossip advert: bad bincode: {}", e),
                 }
             }
         }

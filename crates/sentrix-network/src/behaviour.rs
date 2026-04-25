@@ -33,7 +33,9 @@ use serde::{Deserialize, Serialize};
 // so existing call sites (`use sentrix_network::behaviour::BLOCKS_TOPIC`)
 // keep working during the migration window. Follow-up PR will switch all
 // imports to the canonical `sentrix_wire::*` path and drop these shims.
-pub use sentrix_wire::{BLOCKS_TOPIC, MAX_MESSAGE_BYTES, SENTRIX_PROTOCOL, TXS_TOPIC};
+pub use sentrix_wire::{
+    BLOCKS_TOPIC, MAX_MESSAGE_BYTES, SENTRIX_PROTOCOL, TXS_TOPIC, VALIDATOR_ADVERTS_TOPIC,
+};
 
 // ── Tunable gossipsub + RR parameters ─────────────────────────
 //
@@ -295,10 +297,17 @@ impl SentrixBehaviour {
         // Subscribe to block and transaction topics
         let blocks_topic = gossipsub::IdentTopic::new(BLOCKS_TOPIC);
         let txs_topic = gossipsub::IdentTopic::new(TXS_TOPIC);
+        let adverts_topic = gossipsub::IdentTopic::new(VALIDATOR_ADVERTS_TOPIC);
         gossipsub
             .subscribe(&blocks_topic)
             .expect("subscribe blocks");
         gossipsub.subscribe(&txs_topic).expect("subscribe txs");
+        // L1 peer auto-discovery: every node subscribes (validators
+        // publish, non-validators just listen + cache so their next
+        // GetBlocks / RPC discovery has fresher addresses).
+        gossipsub
+            .subscribe(&adverts_topic)
+            .expect("subscribe validator-adverts");
 
         // Request-response for sync + handshake
         let rr_config = request_response::Config::default()
@@ -344,10 +353,14 @@ impl SentrixBehaviour {
 
         let blocks_topic = gossipsub::IdentTopic::new(BLOCKS_TOPIC);
         let txs_topic = gossipsub::IdentTopic::new(TXS_TOPIC);
+        let adverts_topic = gossipsub::IdentTopic::new(VALIDATOR_ADVERTS_TOPIC);
         gossipsub
             .subscribe(&blocks_topic)
             .expect("subscribe blocks");
         gossipsub.subscribe(&txs_topic).expect("subscribe txs");
+        gossipsub
+            .subscribe(&adverts_topic)
+            .expect("subscribe validator-adverts");
 
         // Request-response
         let rr_config = request_response::Config::default()
