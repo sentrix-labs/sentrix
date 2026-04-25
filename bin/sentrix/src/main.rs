@@ -370,6 +370,12 @@ enum ChainCommands {
     /// rebuilds the trie from scratch via V7-I-02 backfill.  Run this command while
     /// the node is STOPPED, then restart normally.
     ResetTrie,
+    /// Deep cross-table consistency check: walk every AccountDB entry and verify
+    /// the trie leaf at that address encodes matching (balance, nonce). Detects
+    /// mixed-timestamp chain.db that arises from rsync-while-live (the #268
+    /// 2026-04-25 incident root cause). Run with the node STOPPED. Exits 0 if
+    /// consistent, non-zero with a per-address report if any mismatches found.
+    VerifyDeep,
 }
 
 #[derive(Subcommand)]
@@ -576,6 +582,7 @@ async fn main() -> anyhow::Result<()> {
             ChainCommands::Validate => cmd_chain_validate()?,
             ChainCommands::Block { index } => cmd_chain_block(index)?,
             ChainCommands::ResetTrie => cmd_chain_reset_trie()?,
+            ChainCommands::VerifyDeep => cmd_chain_verify_deep()?,
         },
 
         Commands::Token { action } => match action {
@@ -2807,6 +2814,107 @@ fn cmd_chain_reset_trie() -> anyhow::Result<()> {
         "Trie state cleared. Start the node normally — it will rebuild the trie from AccountDB."
     );
     Ok(())
+}
+
+/// Deep cross-table consistency check (issue #268 2026-04-25 RCA).
+///
+/// Walks every AccountDB entry with balance > 0, computes the expected trie
+/// value via `account_value_bytes(balance, nonce)`, and compares to the
+/// actual leaf the trie returns for `address_to_key(address)`. Catches
+/// mixed-timestamp chain.db produced by rsync-while-live: trie tables and
+/// AccountDB at different MDBX commit snapshots, internally inconsistent,
+/// boots silently, diverges on first block apply.
+///
+/// Run with node STOPPED (MDBX is single-writer). Returns exit code 0 on
+/// match, 1 on mismatch with a per-address summary on stdout.
+fn cmd_chain_verify_deep() -> anyhow::Result<()> {
+    use sentrix::core::trie::{account_value_bytes, address_to_key};
+    use std::sync::Arc;
+
+    let storage = Storage::open(&get_db_path())?;
+    let mut bc = storage
+        .load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+
+    let mdbx = storage.mdbx_arc();
+    bc.init_trie(Arc::clone(&mdbx))?;
+
+    let height = bc.height();
+    let stored_root = bc.trie_root_at(height).map(hex::encode);
+    println!("chain height: {height}");
+    println!("stored trie root @ height: {:?}", stored_root);
+
+    let trie = bc
+        .state_trie
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("trie not initialised"))?;
+
+    let total_accounts = bc.accounts.accounts.len();
+    let mut checked = 0usize;
+    let mut zero_balance_skipped = 0usize;
+    let mut mismatches: Vec<(String, u64, u64, Option<Vec<u8>>)> = Vec::new();
+
+    // Sort for deterministic output.
+    let mut entries: Vec<&sentrix::core::account::Account> =
+        bc.accounts.accounts.values().collect();
+    entries.sort_by(|a, b| a.address.cmp(&b.address));
+
+    for account in entries {
+        if account.balance == 0 {
+            zero_balance_skipped += 1;
+            continue;
+        }
+        let key = address_to_key(&account.address);
+        let expected = account_value_bytes(account.balance, account.nonce);
+        let actual = trie.get(&key)?;
+        match &actual {
+            Some(bytes) if *bytes == expected => {}
+            _ => {
+                mismatches.push((
+                    account.address.clone(),
+                    account.balance,
+                    account.nonce,
+                    actual.clone(),
+                ));
+            }
+        }
+        checked += 1;
+    }
+
+    println!(
+        "scanned {} accounts ({} checked with balance > 0, {} skipped with balance = 0)",
+        total_accounts, checked, zero_balance_skipped
+    );
+
+    if mismatches.is_empty() {
+        println!("VERDICT: trie ↔ AccountDB CONSISTENT");
+        Ok(())
+    } else {
+        println!(
+            "VERDICT: {} MISMATCHES — chain.db is internally inconsistent (likely rsync-while-live origin)",
+            mismatches.len()
+        );
+        for (addr, balance, nonce, trie_leaf) in mismatches.iter().take(20) {
+            println!(
+                "  {} accountdb=(balance={}, nonce={}) trie_leaf={}",
+                addr,
+                balance,
+                nonce,
+                trie_leaf
+                    .as_ref()
+                    .map(hex::encode)
+                    .unwrap_or_else(|| "<missing>".to_string())
+            );
+        }
+        if mismatches.len() > 20 {
+            println!("  ... and {} more", mismatches.len() - 20);
+        }
+        println!();
+        println!("Recovery: this chain.db is unsafe to start. Halt all peer validators,");
+        println!("rsync from a confirmed-halted canonical peer (NOT a live one), then re-run");
+        println!("`sentrix chain verify-deep` to confirm clean before starting the validator.");
+        anyhow::bail!("trie ↔ AccountDB inconsistency detected");
+    }
 }
 
 fn cmd_state_export(output: Option<String>) -> anyhow::Result<()> {
