@@ -16,39 +16,53 @@ Sentrix follows [Semantic Versioning](https://semver.org/):
 5. **Create PR** — merge to `main` via PR with CI passing
 6. **Tag release** — `git tag -a vX.Y.Z -m "vX.Y.Z"` then `git push origin vX.Y.Z`
 7. **GitHub Release** — create release from tag with changelog excerpt
-8. **Deploy** — CI/CD `deploy` job is **disabled**. Run
-   `./scripts/fast-deploy.sh mainnet` from build host (or `testnet` for
-   testnet) to ship the binary; CI runs tests only. Then check health
-   on all 3 VPS.
+8. **Deploy** — CI/CD `deploy` job is **disabled**. Operators run their
+   own deploy orchestrator from a build host (binary built once, pushed
+   to all validators, rolling restart, health-check). Then verify chain
+   advance on every validator.
 
 ## Deployment
 
-Primary path: **`scripts/fast-deploy.sh`** (runs from build host). Builds
-inside a `rust:1.95-bullseye` container (glibc 2.31, compatible with
-both 22.04 and 24.04 targets), uploads the binary to Foundation node/Treasury node/Core node
-via wg1 SCP, and does a rolling restart with a bounded health check.
-~3–5 minutes end-to-end.
+CI runs tests on every PR for audit trail but does **not** ship binaries
+to validators. This avoids the race where both CI and an operator deploy
+would redeploy the same commit.
+
+**For third-party validators:** use `scripts/deploy-validator.sh` (the
+generic single-validator primitive — takes SSH key, host, service,
+bin_dir, RPC URL, binary path). It uploads the binary, archives the
+previous version, restarts the service, and verifies health.
 
 ```bash
-./scripts/fast-deploy.sh mainnet          # asks for confirmation
-./scripts/fast-deploy.sh testnet          # silent
-SENTRIX_ROLLBACK=/opt/sentrix/releases/<prev> \
-  ./scripts/fast-deploy.sh mainnet        # instant rollback
+./scripts/deploy-validator.sh \
+  --ssh-key  ~/.ssh/my_operator_key \
+  --host     operator@validator.example.com \
+  --service  sentrix-node \
+  --bin-dir  /opt/sentrix \
+  --rpc-url  http://127.0.0.1:8545 \
+  --binary   ./target/release/sentrix
 ```
 
-CI still runs tests on every PR (for audit trail) but the GitHub
-Actions `deploy` job is disabled — `fast-deploy.sh` is the only path
-that ships a binary to prod. This avoids the race where both CI and
-`fast-deploy` would redeploy the same commit.
+Wrap it in your own loop / Ansible play / k8s rollout for multi-validator
+fleets.
 
-Break-glass: **`scripts/emergency-deploy.sh`** skips the preflight
-test gate and requires a strict confirmation phrase. Use only when
-GitHub Actions is down, chain has halted, or an exploit needs a
-bypass of the normal regression gate.
+**For maintainer mainnet operations:** orchestration lives in the
+maintainer's private operations repo; it builds once in a
+`rust:1.95-bullseye` container (glibc 2.31, compatible with all current
+target distros), uploads binaries to all maintainer-fleet validators
+over a private wireguard network, and does a rolling restart with
+bounded health checks. The script is private because it bakes in
+operator-specific infrastructure (wg1 IPs, role mapping, SSH key paths)
+that aren't useful to anyone running their own validator.
+
+## Rollback
+
+Each validator keeps the last 3 binaries archived under
+`<bin_dir>/releases/`. Roll back by re-running your deploy with the
+prior archived binary instead of a fresh build.
 
 ## Hotfix Process
 
 1. Branch from `main`
 2. Fix + test
 3. PR with `fix(scope):` commit message — auto-merge on green CI
-4. Run `./scripts/fast-deploy.sh mainnet` from build host after merge
+4. Operator runs deploy after merge to ship the patched binary

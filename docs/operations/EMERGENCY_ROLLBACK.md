@@ -1,96 +1,78 @@
 # Emergency Rollback Procedure
 
-Three rollback layers exist, in increasing cost / decreasing speed:
+Two rollback layers exist for post-Voyager mainnet, in increasing cost /
+decreasing speed:
 
-1. **Env-var override** (`SENTRIX_FORCE_PIONEER_MODE=1`) — fastest;
-   used 2026-04-25 to roll back the Voyager activation livelock.
-2. **Binary rollback** (`fast-deploy.sh` with prior tag) — for a bad
+1. **Binary rollback** (re-deploy a prior archived binary) — for a bad
    binary that hasn't corrupted state.
-3. **chain.db restore** (frozen-rsync from a healthy validator) — for
+2. **chain.db restore** (frozen-rsync from a healthy validator) — for
    state divergence; canonical recovery, but slowest.
 
 Always escalate from the cheapest layer first.
 
----
-
-## 1. Fast Rollback: `SENTRIX_FORCE_PIONEER_MODE=1`
-
-When a Voyager DPoS+BFT activation goes wrong (e.g. BFT livelock at
-the activation height), the **fastest** rollback is the env-var
-override that forces the binary back into Pioneer PoA without a
-re-deploy:
-
-```bash
-# On every validator host (Foundation node/Treasury node/Core node), via the systemd
-# EnvironmentFile (mode 600, sentrix:sentrix):
-sudo bash -c 'echo "SENTRIX_FORCE_PIONEER_MODE=1" \
-  >> /etc/sentrix/sentrix-<unit>.env'
-
-sudo systemctl restart sentrix-<unit>
-```
-
-The binary checks `SENTRIX_FORCE_PIONEER_MODE` at every block-mode
-decision and short-circuits the Voyager path if the override is set.
-Effective on next block.
-
-This is what was used on 2026-04-25 when the Voyager activation
-attempted at h=557244 livelocked on V2 BFT wiring (issue
-[#292](https://github.com/sentrix-labs/sentrix/issues/292)). Total
-recovery time: ~1 min per validator vs ~30+ min for a full chain.db
-restore.
-
-While the override is in place, also park the Voyager fork height:
-
-```bash
-# In the same env file
-VOYAGER_FORK_HEIGHT=18446744073709551615   # u64::MAX
-```
-
-This makes the activation inert for any future block until #292 ships
-and the height is re-set.
+> **Historical note:** earlier rollback layers included a
+> `SENTRIX_FORCE_PIONEER_MODE=1` env-var override that forced the
+> binary back to Pioneer PoA, used during the 2026-04-25 Voyager
+> activation #1 livelock. Now obsolete — the L1 multiaddr advertisements
+> + L2 cold-start gate (v2.1.26 / v2.1.27) make the activation-time
+> livelock failure mode unreachable, and the override has been removed
+> from all production env files. If a future BFT-class livelock occurs
+> on a steady-state chain, prefer chain.db rsync from a healthy peer
+> over forcing back to Pioneer.
 
 ---
 
-## 2. Binary Rollback (no state corruption)
+## 1. Binary Rollback (no state corruption)
 
-Every `fast-deploy.sh` run archives the previous binary in
-`/opt/sentrix/releases/`. To roll back the binary only:
+Each validator's deploy archives the previous binary under
+`<bin_dir>/releases/` (last 3 retained). To roll back, re-run your
+deploy with a prior archive instead of building a fresh binary.
+
+For the maintainer fleet, use the private orchestrator with the
+`SENTRIX_ROLLBACK` env var pointing at the archived binary path:
 
 ```bash
-# Roll all 3 mainnet VPS back to a prior release with one command:
-SENTRIX_ROLLBACK=/opt/sentrix/releases/sentrix-v2.1.24-<timestamp> \
-  ./scripts/fast-deploy.sh mainnet
+SENTRIX_ROLLBACK=/opt/sentrix/releases/sentrix-vX.Y.Z-<timestamp> \
+  <orchestrator> mainnet
 ```
 
-`fast-deploy.sh` honours `SENTRIX_ROLLBACK` and skips the build step,
-shipping the named binary instead. Same rolling stop/start order, same
-health check. ~2 min end-to-end.
+The orchestrator skips the build step, ships the named binary, does
+the same rolling stop/start order with health check, ~2 min end-to-end.
 
-If you must do it by hand on a single host:
+For third-party validators (single host), use
+`scripts/deploy-validator.sh` with `--binary` pointing at the archive:
+
+```bash
+./scripts/deploy-validator.sh \
+  --host operator@validator.example.com --service sentrix-node \
+  --bin-dir /opt/sentrix --rpc-url http://127.0.0.1:8545 \
+  --binary /opt/sentrix/releases/sentrix-vX.Y.Z-<timestamp>
+```
+
+Manual single-host fallback (any operator):
 
 ```bash
 # 1. Stop the unit
-sudo systemctl stop sentrix-<unit>
+sudo systemctl stop <validator-service>
 
 # 2. List archived versions
-ls -lt /opt/sentrix/releases/
+ls -lt <bin_dir>/releases/
 
-# 3. Restore
-sudo cp /opt/sentrix/releases/sentrix-v2.1.24-<timestamp> /opt/sentrix/sentrix
-sudo chmod +x /opt/sentrix/sentrix
+# 3. Restore (use install/mv-rename, NOT cp — running binaries trip ETXTBSY)
+sudo install -m 755 <bin_dir>/releases/sentrix-vX.Y.Z-<timestamp> <bin_dir>/sentrix
 
 # 4. Restart
-sudo systemctl start sentrix-<unit>
+sudo systemctl start <validator-service>
 ```
 
 Current production binary at the time of writing: **v2.1.30** (mainnet
 & testnet, post-Voyager activation). Prior production releases archived
-under `/opt/sentrix/releases/` per validator: v2.1.29, v2.1.28, v2.1.27,
-v2.1.26, v2.1.25 (Pioneer-mode emergency hotfix).
+under each validator's `<bin_dir>/releases/`: v2.1.29, v2.1.28, v2.1.27,
+v2.1.26, v2.1.25 (historical Pioneer-mode emergency hotfix).
 
 ---
 
-## 3. State Recovery (chain.db restore)
+## 2. State Recovery (chain.db restore)
 
 When state has diverged (different block hash at the same height,
 state_root mismatch, etc.), the canonical recovery is a **frozen
@@ -121,15 +103,15 @@ and the divergence is gone.
 ## NEVER Do This
 
 - **Never `git push --force` to roll back.** The CI/CD deploy job is
-  disabled — a force-push to main does **not** redeploy. Use
-  `fast-deploy.sh` with a `SENTRIX_ROLLBACK=...` arg instead. Force-push
-  also rewrites public history; CI test artifacts and PR-comment links
-  start pointing at vanished commits.
+  disabled — a force-push to main does **not** redeploy. Re-run your
+  deploy with `SENTRIX_ROLLBACK=<archived-binary-path>` instead.
+  Force-push also rewrites public history; CI test artifacts and
+  PR-comment links start pointing at vanished commits.
 
-- **Never build on Windows and SCP to Linux VPS.** Windows produces PE
-  executables, Linux needs ELF. The binary will fail with "Exec format
-  error". `fast-deploy.sh` uses a Linux container precisely so this
-  can't happen.
+- **Never build on Windows and SCP to Linux validators.** Windows
+  produces PE executables, Linux needs ELF. The binary will fail with
+  "Exec format error". Always build inside a Linux container (e.g.
+  `rust:1.95-bullseye` for glibc 2.31 compat across modern Ubuntu/Debian).
 
 - **Never run admin CLI separately per-VPS during recovery.** Run the
   validator add/remove/toggle on a single chain.db, then rsync to the

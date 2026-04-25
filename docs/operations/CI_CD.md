@@ -1,15 +1,15 @@
 # CI/CD
 
 GitHub Actions runs the **test** job on every push and PR. The
-**deploy** job is **disabled** — production binaries ship via
-`scripts/fast-deploy.sh` from build host, not from CI.
+**deploy** job is **disabled** — production binaries ship via an
+operator-run deploy from a build host, not from CI.
 
 ## Pipeline
 
 ```
 Push / PR  →  TEST  →  (deploy disabled)
                        ↓
-                  fast-deploy.sh from build host (manual)
+                  Operator deploy from build host (manual)
 ```
 
 ### Test Job (every push + PR)
@@ -23,56 +23,48 @@ Push / PR  →  TEST  →  (deploy disabled)
 The artifact is **not** auto-deployed; it exists so reviewers can pull
 the exact CI binary if they need to reproduce a test result.
 
-## Deploy: `scripts/fast-deploy.sh` (from build host)
+## Deploy
 
-build host (the dev/edge host) is the canonical deploy origin. The script
-builds inside a `rust:1.95-bullseye` container (glibc 2.31, compatible
-with both Ubuntu 22.04 and 24.04 production targets), uploads the
-binary to Foundation node/Treasury node/Core node over the wg1 WireGuard mesh, and does a
-rolling restart with a bounded health check.
+A build host (a dedicated dev/edge host with the cargo cache and SSH
+keys) is the canonical deploy origin. The build runs inside a
+`rust:1.95-bullseye` container (glibc 2.31, compatible with all current
+target distros), the binary is uploaded to validators over a private
+network (e.g. WireGuard mesh), and services are restarted in a rolling
+pattern with a bounded health check.
+
+**Third-party validators** can use the generic primitive at
+`scripts/deploy-validator.sh`:
 
 ```bash
-# From build host
-./scripts/fast-deploy.sh mainnet          # asks for confirmation
-./scripts/fast-deploy.sh testnet          # silent (testnet docker)
-
-# Rollback to a prior release on disk
-SENTRIX_ROLLBACK=/opt/sentrix/releases/<prev> \
-  ./scripts/fast-deploy.sh mainnet
+./scripts/deploy-validator.sh \
+  --ssh-key  ~/.ssh/my_operator_key \
+  --host     operator@validator.example.com \
+  --service  sentrix-node \
+  --bin-dir  /opt/sentrix \
+  --rpc-url  http://127.0.0.1:8545 \
+  --binary   ./target/release/sentrix
 ```
 
-End-to-end ~3–5 minutes. Builds once, copies the same byte-identical
-binary to every host (no per-host recompile, no glibc skew).
+Wrap it in a per-fleet loop / Ansible play / k8s rollout for multi-validator
+operations.
 
-### Stop / start order (rolling)
+**Maintainer fleet** orchestration lives in the maintainer's private
+operations repository. It bakes in maintainer-specific infrastructure
+(WireGuard IPs, role-to-host mapping, SSH key paths) and is not
+generally useful to operators running their own fleet.
 
-The script stops validators in reverse order and starts them in forward
-order:
+### Rolling-restart guidance
 
-```
-stop:  Core node → Treasury node → Foundation node
-start: Foundation node → Treasury node → Core node
-```
-
-Primary (Foundation node, Foundation) finishes processing in-flight blocks last and
-is back up first so peers reconnect quickly. Wrong order can produce
-orphan blocks — learned the hard way.
+The standard pattern: stop validators in reverse priority order, start
+them in forward priority order. Primary validator finishes processing
+in-flight blocks last and comes back up first so peers reconnect
+quickly. Wrong order can produce orphan blocks.
 
 ### Health check
 
-After 35 s stabilization the script polls `/chain/info` on each VPS
-and verifies height is advancing.
-
-## Break-Glass: `scripts/emergency-deploy.sh`
-
-Same primitive as `fast-deploy.sh` but **skips the preflight test gate**
-and requires a strict confirmation phrase. Use only when:
-
-- GitHub Actions is down and you need to ship a fix.
-- The chain has halted and a regression must be bypassed.
-- An exploit is in flight and the patch ships ahead of normal CI.
-
-This is rare — `fast-deploy.sh` is the default path.
+After ~35s stabilisation, poll `/chain/info` on each validator and
+verify height is advancing. `scripts/deploy-validator.sh` does this
+automatically.
 
 ## Branch Protection
 
@@ -81,10 +73,10 @@ This is rare — `fast-deploy.sh` is the default path.
 ## Design Choices
 
 - **Binary artifacts, not Docker** for mainnet. All nodes get the exact
-  same compiled binary from the build host build. No registry dependency.
-  (Testnet runs in docker on build host since 2026-04-23.)
+  same compiled binary from one build. No registry dependency.
+  (Testnet runs in Docker on the build host since 2026-04-23 for fast iteration.)
 - **CI test, not CI deploy.** Auto-deploy + manual hot-deploy creates a
   race where the same commit ships twice. Disabled in favour of a
-  single canonical path.
+  single canonical operator-driven path.
 - **No auto-rollback.** If a deploy fails health check, investigate
   manually. Auto-rollback hides root causes.
