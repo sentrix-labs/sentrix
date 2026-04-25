@@ -991,6 +991,24 @@ impl Blockchain {
     ///   Phase 2 — mutable borrow of `state_trie` → insert + commit.
     pub fn update_trie_for_block(&mut self) -> SentrixResult<Option<[u8; 32]>> {
         if self.state_trie.is_none() {
+            // Pre-STATE_ROOT_FORK_HEIGHT, missing trie is acceptable —
+            // state_root isn't part of the block hash. Past the fork
+            // height, a None state_root would diverge silently from
+            // peers who computed a real one, so refuse to participate.
+            // load_blockchain warned on the init failure that got us
+            // here; this guard turns the warn into a hard refusal at
+            // the consensus boundary so the validator stops producing
+            // ghost blocks rather than forking the network.
+            let next_height = self.height().saturating_add(1);
+            if next_height >= sentrix_primitives::block::STATE_ROOT_FORK_HEIGHT {
+                return Err(SentrixError::Internal(format!(
+                    "trie unavailable but next block height {next_height} requires \
+                     state_root (>= STATE_ROOT_FORK_HEIGHT). Recovery: wipe data dir \
+                     and resync from a healthy peer. Validator should stop producing \
+                     blocks until trie is rebuilt — running here would silently fork \
+                     the chain."
+                )));
+            }
             return Ok(None);
         }
         let trace = std::env::var("SENTRIX_TRIE_TRACE").is_ok();
