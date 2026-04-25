@@ -7,8 +7,9 @@
 #      re-run tests as a second check, but will NOT re-deploy —
 #      the `deploy` job in ci.yml is disabled when fast-deploy is
 #      the primary path)
-#   3. Upload binary to Foundation node/2/3 via wg1 SCP, archive previous,
-#      rolling restart with health check
+#   3. Upload binary to all 4 mainnet validators (Foundation, Treasury,
+#      Core, Beacon) via wg1 SCP, archive previous, rolling restart
+#      with health check
 #   4. Post-deploy: verify chain height advances
 #
 # Takes ~3–5 minutes vs ~10–12 for the old CI-deploys-everything
@@ -23,6 +24,12 @@
 #                                loses the pre-deploy regression gate)
 #   SENTRIX_ROLLBACK=<path>      reuse an archived binary instead of
 #                                building (instant rollback)
+#
+# Per-host bin_dir is loaded from fleet.env via FOUNDATION_BIN_DIR /
+# TREASURY_BIN_DIR / CORE_BIN_DIR / BEACON_BIN_DIR. Defaults match the
+# 2026-04-25 mainnet layout: Foundation+Treasury at /opt/sentrix, Core
+# at /opt/core, Beacon at /opt/beacon. Override only if the layout
+# changes (e.g. multi-host consolidation).
 #
 # Differences vs emergency-deploy.sh:
 #   fast-deploy             | emergency-deploy
@@ -68,26 +75,30 @@ fi
 # shellcheck source=/dev/null
 source "$FLEET_ENV"
 
+# Per-host entry format: "user@host:service:port:bin_dir"
+# bin_dir defaults to /opt/sentrix for hosts that don't override it.
+# Sentrix mainnet is co-tenant-free per validator-isolation policy:
+# Foundation (VPS1) + Treasury (VPS2) live at /opt/sentrix; Core (VPS3)
+# at /opt/core; Beacon (VPS5) at /opt/beacon. Each role's bin_dir is
+# loaded from fleet.env (FOUNDATION_BIN_DIR, etc.) with a /opt/sentrix
+# fallback for backward compatibility with legacy fleet.env files.
 declare -A MAINNET_HOSTS=(
-    [foundation]="${FOUNDATION_USER}@${FOUNDATION_WG}:${FOUNDATION_SERVICE}:${FOUNDATION_PORT}"
-    [treasury]="${TREASURY_USER}@${TREASURY_WG}:${TREASURY_SERVICE}:${TREASURY_PORT}"
-    [core]="${CORE_USER}@${CORE_WG}:${CORE_SERVICE}:${CORE_PORT}"
+    [foundation]="${FOUNDATION_USER}@${FOUNDATION_WG}:${FOUNDATION_SERVICE}:${FOUNDATION_PORT}:${FOUNDATION_BIN_DIR:-/opt/sentrix}"
+    [treasury]="${TREASURY_USER}@${TREASURY_WG}:${TREASURY_SERVICE}:${TREASURY_PORT}:${TREASURY_BIN_DIR:-/opt/sentrix}"
+    [core]="${CORE_USER}@${CORE_WG}:${CORE_SERVICE}:${CORE_PORT}:${CORE_BIN_DIR:-/opt/core}"
+    [beacon]="${BEACON_USER}@${BEACON_WG}:${BEACON_SERVICE}:${BEACON_PORT}:${BEACON_BIN_DIR:-/opt/beacon}"
 )
 declare -A TESTNET_HOSTS=(
-    [testnet_val1]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val1:${TESTNET_VAL1_PORT}"
-    [testnet_val2]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val2:${TESTNET_VAL2_PORT}"
-    [testnet_val3]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val3:${TESTNET_VAL3_PORT}"
-    [testnet_val4]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val4:${TESTNET_VAL4_PORT}"
+    [testnet_val1]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val1:${TESTNET_VAL1_PORT}:/opt/sentrix-testnet"
+    [testnet_val2]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val2:${TESTNET_VAL2_PORT}:/opt/sentrix-testnet"
+    [testnet_val3]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val3:${TESTNET_VAL3_PORT}:/opt/sentrix-testnet"
+    [testnet_val4]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val4:${TESTNET_VAL4_PORT}:/opt/sentrix-testnet"
 )
 
 if [[ "$TARGET" == "mainnet" ]]; then
     declare -n HOSTS=MAINNET_HOSTS
-    BIN_DIR="/opt/sentrix"
 else
     declare -n HOSTS=TESTNET_HOSTS
-    # Testnet lives under its own tree so a testnet deploy never touches
-    # the mainnet binary on the same host (Core node runs both).
-    BIN_DIR="/opt/sentrix-testnet"
 fi
 
 # ── Banner ──────────────────────────────────────────────────
@@ -166,14 +177,26 @@ if [[ -z "$SKIP_PUSH" ]] && [[ -z "${SENTRIX_ROLLBACK:-}" ]]; then
 fi
 
 # ── Deploy ─────────────────────────────────────────────────
-declare -A UNIQUE_USERHOSTS=()
+# Build a map of userhost -> bin_dir. Foundation + Treasury share a
+# wg1 IP/user but live at the same bin_dir. Core + Beacon each have
+# their own bin_dir. Co-tenant Foundation+Treasury on the same host
+# would collide on /tmp/sentrix_new; the Phase 1 upload-then-Phase 2
+# install split tolerates that because Phase 2 mv'es to a host-specific
+# bin_dir. Validator-isolation policy means this collision can't happen
+# on real mainnet, but the script must be correct for testnet docker
+# layouts too.
+declare -A USERHOST_BINDIRS=()
 for h in "${!HOSTS[@]}"; do
-    IFS=':' read -r userhost _ _ <<< "${HOSTS[$h]}"
-    UNIQUE_USERHOSTS["$userhost"]=1
+    IFS=':' read -r userhost _ _ bin_dir <<< "${HOSTS[$h]}"
+    USERHOST_BINDIRS["$userhost|$bin_dir"]=1
 done
 
 echo "  $(blue '=>') Phase 1: upload binary to unique hosts ..."
-for userhost in "${!UNIQUE_USERHOSTS[@]}"; do
+declare -A UPLOADED=()
+for key in "${!USERHOST_BINDIRS[@]}"; do
+    userhost="${key%%|*}"
+    [[ -n "${UPLOADED[$userhost]:-}" ]] && continue
+    UPLOADED["$userhost"]=1
     printf "    %-32s " "$userhost"
     if scp $SSH_OPTS "$BINARY" "$userhost:/tmp/sentrix_new" >/dev/null 2>&1; then
         echo "$(green 'OK')"
@@ -184,24 +207,33 @@ for userhost in "${!UNIQUE_USERHOSTS[@]}"; do
 done
 echo
 
-echo "  $(blue '=>') Phase 2: archive + replace binary on each host ($BIN_DIR) ..."
-for userhost in "${!UNIQUE_USERHOSTS[@]}"; do
-    printf "    %-32s " "$userhost"
+echo "  $(blue '=>') Phase 2: archive + replace binary on each (host, bin_dir) pair ..."
+declare -A INSTALLED=()
+for key in "${!USERHOST_BINDIRS[@]}"; do
+    [[ -n "${INSTALLED[$key]:-}" ]] && continue
+    INSTALLED["$key"]=1
+    userhost="${key%%|*}"
+    bin_dir="${key##*|}"
+    printf "    %-32s " "$userhost ($bin_dir)"
     ssh $SSH_OPTS "$userhost" "
         set -e
-        sudo mkdir -p $BIN_DIR/releases
-        PREV_VER=\$($BIN_DIR/sentrix --version 2>/dev/null | awk '{print \$2}' || echo unknown)
-        sudo cp $BIN_DIR/sentrix $BIN_DIR/releases/sentrix-v\${PREV_VER}-\$(date +%Y%m%d%H%M%S) 2>/dev/null || true
-        cd $BIN_DIR/releases && ls -t | tail -n +4 | xargs -r sudo rm -f
-        sudo mv /tmp/sentrix_new $BIN_DIR/sentrix
-        sudo chmod +x $BIN_DIR/sentrix
+        sudo mkdir -p $bin_dir/releases
+        PREV_VER=\$($bin_dir/sentrix --version 2>/dev/null | awk '{print \$2}' || echo unknown)
+        sudo cp $bin_dir/sentrix $bin_dir/releases/sentrix-v\${PREV_VER}-\$(date +%Y%m%d%H%M%S) 2>/dev/null || true
+        cd $bin_dir/releases && ls -t | tail -n +4 | xargs -r sudo rm -f
+        sudo cp /tmp/sentrix_new $bin_dir/sentrix
+        sudo chmod +x $bin_dir/sentrix
     " >/dev/null 2>&1
     echo "$(green 'OK')"
+done
+# Final: clean up the staged /tmp/sentrix_new on each host
+for userhost in "${!UPLOADED[@]}"; do
+    ssh $SSH_OPTS "$userhost" "rm -f /tmp/sentrix_new" >/dev/null 2>&1 || true
 done
 echo
 
 FIRST_HOST=$(echo "${!HOSTS[@]}" | awk '{print $1}')
-IFS=':' read -r first_userhost _ first_port <<< "${HOSTS[$FIRST_HOST]}"
+IFS=':' read -r first_userhost _ first_port _ <<< "${HOSTS[$FIRST_HOST]}"
 PRE_HEIGHT=$(ssh $SSH_OPTS "$first_userhost" "curl -sf --max-time 5 http://localhost:$first_port/chain/info 2>/dev/null" \
     | python3 -c "import sys,json;print(json.load(sys.stdin)['height'])" 2>/dev/null || echo "?")
 echo "  $(blue 'Pre-restart chain height:') $PRE_HEIGHT"
@@ -222,14 +254,14 @@ wait_healthy() {
 
 echo "  $(blue '=>') Phase 3: rolling restart (health check loop) ..."
 for h in "${!HOSTS[@]}"; do
-    IFS=':' read -r userhost service port <<< "${HOSTS[$h]}"
+    IFS=':' read -r userhost service port bin_dir <<< "${HOSTS[$h]}"
     echo "    $(yellow 'Restarting') $h → $service"
     ssh $SSH_OPTS "$userhost" "sudo systemctl restart $service" >/dev/null 2>&1
     if wait_healthy "$userhost" "$port" 120; then
         echo "    $(green 'health OK')"
     else
         echo "    $(red 'HEALTH CHECK FAILED after 120 s — aborting further rollout')"
-        echo "    $(red "Rollback: SENTRIX_ROLLBACK=$BIN_DIR/releases/<prev> ./scripts/fast-deploy.sh $TARGET")"
+        echo "    $(red "Rollback: SENTRIX_ROLLBACK=$bin_dir/releases/<prev> ./scripts/fast-deploy.sh $TARGET")"
         exit 6
     fi
 done
