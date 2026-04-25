@@ -7,6 +7,30 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.25] — 2026-04-25 — SENTRIX_FORCE_PIONEER_MODE emergency override (Voyager activation rollback)
+
+> **🚨 v2.1.25 hotfix released after the 2026-04-25 mainnet Voyager activation incident.** v2.1.24 was deployed cleanly to mainnet to close #268, then `VOYAGER_FORK_HEIGHT` was flipped to activate Voyager DPoS+BFT at h=557244. Activation succeeded (validators migrated, `voyager_activated=true` set persistently per PR #277), but BFT livelocked immediately due to V2 locked-block-repropose wiring gap (Steps 4-5 main.rs never shipped — see `audits/v2-locked-block-repropose-implementation-plan.md`). Rolled back to Pioneer via this hotfix's emergency override env. Mainnet stable on Pioneer with `SENTRIX_FORCE_PIONEER_MODE=1` set per validator. **Voyager activation re-attempt blocked on V2 Steps 4-5 implementation.**
+
+### Added (#290)
+
+- **`SENTRIX_FORCE_PIONEER_MODE` env var.** When set, the validator-loop's local `voyager_activated` and `evm_activated` booleans are forced to `false` at startup regardless of the persistent flags on `Blockchain` (PR #277). Used as emergency rollback path when Voyager BFT cannot finalise. The persistent flags stay set on chain.db; clearing them requires a separate operation. Once V2 main.rs wiring lands and BFT is verified live on testnet, the flag can be unset and the validator resumes Voyager mode based on its persistent state.
+
+### Default behaviour unchanged
+
+- Without `SENTRIX_FORCE_PIONEER_MODE`, the validator loads `voyager_activated` / `evm_activated` from chain.db as before. v2.1.25 is fully backward compatible with v2.1.24 chain.db.
+
+### Operational status post-incident
+
+- Mainnet at h=557415+, all 4 vals lockstep on emergency v2.1.25 binary in Pioneer mode
+- `SENTRIX_FORCE_PIONEER_MODE=1` set in each validator's env file
+- `VOYAGER_FORK_HEIGHT` reset to `u64::MAX` (redundant given FORCE_PIONEER, but defense-in-depth)
+- Voyager state on chain.db (stake_registry, epoch_manager, voyager_activated=true) intact but unused while Pioneer runs
+- Next Voyager activation attempt blocked on V2 main.rs Steps 4-5 implementation + testnet activation rehearsal
+
+Full incident analysis at `founder-private/incidents/2026-04-25-voyager-activation-bft-livelock.md`.
+
+---
+
 ## [2.1.24] — 2026-04-25 — Phase 1 mainnet legacy-compat (#268 closed via Path B)
 
 > **🟢 v2.1.24 UNFREEZES MAINNET DEPLOYMENT** with `SENTRIX_LEGACY_VALIDATION_HEIGHT` set per validator. The actual root cause of #268 was identified today: mainnet's chain.db carries historical state_root artifacts (BACKLOG #16 patches at h=32688/89, h=507499 anomaly, possibly more) from past repair operations. v2.1.16+ binaries enforce strict `#1e` validation that correctly rejects these. v2.1.15 has weaker validation that tolerates them. v2.1.24 adds env-gated tolerance: blocks below the cutoff are warn-only, blocks at/above are strictly validated. Operator-opt-in per validator. Default unset = strict (today's behaviour). Mainnet upgrade flow: set cutoff = current_tip + 1000, rolling restart with v2.1.24 binary.
