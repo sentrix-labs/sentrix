@@ -1548,14 +1548,36 @@ async fn cmd_start(
                     }
 
                     // Dial any active-set members we have cached but
-                    // aren't currently peered with. Caller (libp2p) is
-                    // idempotent — duplicate dials to an already-
-                    // connected peer are no-ops at the swarm level.
+                    // aren't currently peered with.
+                    //
+                    // CONNECTION-LEAK FIX (2026-04-25 incident): the
+                    // previous comment claimed `connect_peer` was idempotent
+                    // ("duplicate dials to an already-connected peer are
+                    // no-ops"). That turned out to be FALSE in libp2p
+                    // 0.56 / libp2p-swarm 0.47 — every `swarm.dial()`
+                    // enqueues a fresh pending connection regardless of
+                    // existing connection state. Without a connected-peers
+                    // pre-check, this loop accumulated 568-918 pending +
+                    // established connections per validator over a few
+                    // hours, gossipsub mesh thrashed on the oversized pool,
+                    // and BFT request_response messages dropped mid-round
+                    // → consensus deadlock (h=583002, h=585217 stalls).
+                    //
+                    // Snapshot connected peers ONCE per tick, then skip any
+                    // active-set member whose libp2p peer_id is already in
+                    // the set. The peer_id is extracted from the cached
+                    // multiaddr's `/p2p/<peer_id>` suffix (which validators
+                    // include when broadcasting their advertisement).
+                    // Multiaddrs without a peer_id suffix fall back to
+                    // dialing (rare; only happens for legacy adverts from
+                    // pre-PR #300 binaries that no longer exist on the
+                    // production fleet).
                     let active_set: Vec<String> = {
                         let bc = shared_clone.read().await;
                         bc.stake_registry.active_set.clone()
                     };
                     if !active_set.is_empty() {
+                        let connected = lp2p_clone.connected_peers().await;
                         let cached = lp2p_clone.list_cached_adverts().await;
                         for advert in &cached {
                             if advert.validator == wallet.address {
@@ -1569,6 +1591,23 @@ async fn cmd_start(
                             if let Some(ma_str) = advert.multiaddrs.first()
                                 && let Ok(ma) = ma_str.parse::<libp2p::Multiaddr>()
                             {
+                                // Skip if we already have an established
+                                // connection to this peer (the leak fix).
+                                let already_connected = ma.iter().any(|proto| {
+                                    if let libp2p::multiaddr::Protocol::P2p(peer_id) = proto {
+                                        connected.contains(&peer_id)
+                                    } else {
+                                        false
+                                    }
+                                });
+                                if already_connected {
+                                    tracing::trace!(
+                                        "L1: skip dial — {} already connected (advert seq={})",
+                                        &advert.validator[..12.min(advert.validator.len())],
+                                        advert.sequence
+                                    );
+                                    continue;
+                                }
                                 tracing::debug!(
                                     "L1: dialing {} at {} (cached advert seq={})",
                                     &advert.validator[..12.min(advert.validator.len())],
