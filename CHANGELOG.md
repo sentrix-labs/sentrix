@@ -7,6 +7,26 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.22] — 2026-04-25 — Phase 1 prep: voyager activation idempotency + #268 repro harness
+
+> **🚨 v2.1.21 + v2.1.22 DEPLOYMENT FROZEN** — issue #268 disk-roundtrip trie divergence remains unresolved. v2.1.22 ships a fast unit-test reproducer + the Phase 1 idempotency hard-gate identified during the pre-implementation scan, but does NOT close #268. Mainnet stays on v2.1.15 until #268 is fixed and a v2.1.23 ships clean against the new repro harness.
+
+### Added (#276)
+
+- **`crates/sentrix-core/tests/fork_determinism.rs`** — 4-test harness for state-root determinism. 3 active in-memory parity tests (self-produced ↔ peer-applied path convergence on short coinbase chains, 200-block coinbase chains, and tx-bearing chains) become permanent regression guards. The 4th test (`#[ignore]`'d) reproduces the actual #268-class disk-roundtrip divergence at unit-test scale: producer commits a trie root, freshly loaded `Blockchain` reading the same MDBX gets a different root for the same height. Reference in-memory peer-replay matches the producer, isolating the bug to the disk roundtrip path. Currently smells like bug #3 class — committed root garbage-collected by a subsequent insert that PR #184's `is_committed_root()` doesn't fully cover. Fast feedback loop (~3s) replaces the docker canary cycle for the next #268 bisect attempt.
+
+### Fixed (#277 — Phase 1 prep, hard-gate)
+
+- **Persistent `voyager_activated` + `evm_activated` flags on `Blockchain`** (`#[serde(default)]` for chain.db forward-compat). The validator-loop activation guard at `bin/sentrix/src/main.rs` was previously a local boolean that reset on every restart — past a Voyager fork height, that meant `activate_voyager` re-fired on every boot, re-registering validators (warning-spammed but consensus-safe today) and re-running `update_active_set` + `epoch_manager.initialize` redundantly. The Phase 1 pre-implementation scan flagged this as a non-negotiable pre-fork fix because any future non-deterministic mutation in the activation path would propagate into state_root divergence.
+- Each `activate_*` early-returns if the flag is already set; the validator loop reads the flags on entry to seed its local fast-path booleans, skipping the read-then-write-lock sequence after the first tick post-restart.
+- Behaviour on existing chains: testnet docker (post-Voyager-fork) experiences a one-time idempotent re-run on first restart with v2.1.22 (chain.db deserialises with `voyager_activated = false`), then sets the flag and skips cleanly on subsequent restarts. Mainnet (`VOYAGER_FORK_HEIGHT = u64::MAX`) sees no behavioural change — `activate_voyager` has never fired on prod.
+
+### Designed against
+
+- `founder-private/architecture/FORK_SEQUENCE_PREIMPL_SCAN_2026-04-24.md` — Q1 (#268 hypothesis re-rank), Q2 point 1 (Phase 1 hard-gate). The scan ranks PR #273's `txid_index` as a top suspect for #268 but rules it out via the commit-message disclaimer; the actual top hypothesis is `init_trie` backfill firing on reload because committed root nodes are GC'd by subsequent inserts. The ignored test in this release validates that hypothesis at unit-test scale.
+
+---
+
 ## [2.1.21] — 2026-04-24 — Observability + startup perf (no consensus change)
 
 > **🚨 DEPLOYMENT FROZEN** — 2026-04-24 Beacon canary (VPS5) triggered immediate `CRITICAL #1e: state_root mismatch` against v2.1.15 peers even with fork envs unset. Rolled back to v2.1.15; divergence persisted through 3 rsync recovery attempts. Root cause remains unresolved — see GitHub issue #268. Do NOT deploy v2.1.21 to any mainnet VPS until the issue closes.
