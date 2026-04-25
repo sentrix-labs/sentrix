@@ -50,4 +50,4 @@ Check ONE:
 
 ## Related
 
-<!-- Issue numbers, prior PRs, design docs in founder-private/, etc. -->
+<!-- Issue numbers, prior PRs, design docs in internal operator docs, etc. -->

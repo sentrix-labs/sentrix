@@ -11,7 +11,7 @@ blocks when it's your turn.
 This doc assumes you can read a Linux manpage, can use systemd, and
 have shell access to a server under your control. No specific cloud
 provider is required, no specific OS version is required, no "join
-Satya's private fleet" is required.
+the operator's private fleet" is required.
 
 ---
 
@@ -63,7 +63,7 @@ Minimum (reference mainnet today):
 Any mainstream 64-bit Linux works. **We have deployed on Ubuntu 22.04
 and 24.04 in production; the consensus binary is OS-deterministic
 across kernel, glibc, and CPU family** — see the
-2026-04-23 VPS3 RCA addendum #9 in the project's incident archive for
+2026-04-23 Core node RCA addendum #9 in the project's incident archive for
 the cross-host determinism test result.
 
 Open inbound ports:
@@ -278,7 +278,7 @@ snapshot.
 ### Your state diverges
 
 Described in `docs/operations/DEPLOYMENT.md` and the incident archive
-at `founder-private/runbooks/state-divergence-recovery.md`. The short
+at `internal operator runbook`. The short
 version: **frozen-rsync** your chain.db from a peer you trust, with
 ALL validators halted. Do not use `sentrix state export/import` on
 a post-genesis chain — v2.1.5 + later refuse to start on a keystore
@@ -299,7 +299,7 @@ on Voyager you may be jailed and need an unjail op.
 - Operator chat: see the pinned link in the repo README.
 
 **This doc describes a chain that supports many independent operators
-on diverse hosts and OS versions. If any step above assumes Satya's
-infrastructure or invokes a VPS1/VPS2/VPS3 label in a way that isn't
+on diverse hosts and OS versions. If any step above assumes the operator's
+infrastructure or invokes a Foundation node/Treasury node/Core node label in a way that isn't
 marked as a historical reference, that's a bug in the doc — please
 file a PR.**

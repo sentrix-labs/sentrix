@@ -1,6 +1,6 @@
 #!/bin/bash
 # reset_testnet.sh — Full testnet reset with 4 validators properly registered.
-# Run on the testnet host (e.g. VPS3 as the service user).
+# Run on the testnet host (e.g. Core node as the service user).
 #
 # Configuration via env vars (NEVER hardcode in this file):
 #   SENTRIX_ADMIN_KEY  — admin private key (raw hex, no 0x prefix)

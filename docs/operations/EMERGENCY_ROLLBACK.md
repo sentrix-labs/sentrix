@@ -21,7 +21,7 @@ override that forces the binary back into Pioneer PoA without a
 re-deploy:
 
 ```bash
-# On every validator host (VPS1/VPS2/VPS3), via the systemd
+# On every validator host (Foundation node/Treasury node/Core node), via the systemd
 # EnvironmentFile (mode 600, sentrix:sentrix):
 sudo bash -c 'echo "SENTRIX_FORCE_PIONEER_MODE=1" \
   >> /etc/sentrix/sentrix-<unit>.env'
@@ -99,7 +99,7 @@ halted. See [STATE_EXPORT.md](STATE_EXPORT.md) for why
 `sentrix state export/import` is **not** the right path for a
 post-genesis chain.
 
-The full procedure lives in `founder-private/runbooks/state-divergence-recovery.md`
+The full procedure lives in `internal operator runbook`
 (internal). Outline:
 
 1. Pick the canonical validator (matches the most peers; longest valid

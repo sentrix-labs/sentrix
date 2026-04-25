@@ -3,7 +3,7 @@
 #
 # Works for ANY operator running ANY number of Sentrix validators on
 # ANY mix of hosts. Unlike `fast-deploy.sh` (which is the Satya-fleet
-# orchestrator — hardcoded to the 3-mainnet + 4-testnet VPS1/2/3/4
+# orchestrator — hardcoded to the 3-mainnet + 4-testnet Foundation node/2/3/4
 # topology that ships the reference mainnet) this script is a reusable
 # primitive: it takes one target validator, uploads a binary, rolls
 # the service, and reports health.
@@ -27,7 +27,7 @@
 #   done
 #
 # The script is intentionally ops-topology-agnostic:
-#   - No VPS1/VPS2/VPS3 labels
+#   - No Foundation node/Treasury node/Core node labels
 #   - No mainnet/testnet split (operator picks bin-dir + service name)
 #   - No fleet env file — every parameter is explicit
 #   - No cross-host assumptions (no "health-gate testnet before mainnet"

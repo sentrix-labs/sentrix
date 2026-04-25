@@ -50,8 +50,8 @@ case "$TARGET" in
     *)
         echo "Usage: $0 <mainnet|testnet>"
         echo ""
-        echo "  mainnet — deploys to VPS1 (Foundation) + VPS2 (Treasury) + VPS3 (Core)"
-        echo "  testnet — deploys to VPS3 (4 validators: sentrix-testnet-val{1..4})"
+        echo "  mainnet — deploys to Foundation node (Foundation) + Treasury node (Treasury) + Core node (Core)"
+        echo "  testnet — deploys to Core node (4 validators: sentrix-testnet-val{1..4})"
         exit 2
         ;;
 esac
@@ -67,7 +67,7 @@ SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 # rejects literal user@addr strings). Typical values live in
 # `~/.config/sentrix/fleet.env` (git-ignored) sourced below.
 #
-# Expected env vars (VPS4 operator):
+# Expected env vars (build host operator):
 #   VPS1_USER, VPS1_WG, VPS1_SERVICE, VPS1_PORT
 #   VPS2_USER, VPS2_WG, VPS2_SERVICE, VPS2_PORT
 #   VPS3_USER, VPS3_WG, VPS3_SERVICE, VPS3_PORT          (mainnet core)
@@ -148,7 +148,7 @@ else
     else
         yellow "  !! cargo check skipped (SENTRIX_SKIP_TESTS=1)"; echo
     fi
-    echo "  $(blue '=>') Building release binary on VPS4..."
+    echo "  $(blue '=>') Building release binary on build host..."
     cargo build --workspace --release --quiet 2>&1 | tail -3
     if [[ ! -x "$BINARY" ]]; then
         echo "  $(red "Build produced no binary at $BINARY")"

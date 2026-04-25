@@ -2,14 +2,14 @@
 
 GitHub Actions runs the **test** job on every push and PR. The
 **deploy** job is **disabled** — production binaries ship via
-`scripts/fast-deploy.sh` from VPS4, not from CI.
+`scripts/fast-deploy.sh` from build host, not from CI.
 
 ## Pipeline
 
 ```
 Push / PR  →  TEST  →  (deploy disabled)
                        ↓
-                  fast-deploy.sh from VPS4 (manual)
+                  fast-deploy.sh from build host (manual)
 ```
 
 ### Test Job (every push + PR)
@@ -23,16 +23,16 @@ Push / PR  →  TEST  →  (deploy disabled)
 The artifact is **not** auto-deployed; it exists so reviewers can pull
 the exact CI binary if they need to reproduce a test result.
 
-## Deploy: `scripts/fast-deploy.sh` (from VPS4)
+## Deploy: `scripts/fast-deploy.sh` (from build host)
 
-VPS4 (the dev/edge host) is the canonical deploy origin. The script
+build host (the dev/edge host) is the canonical deploy origin. The script
 builds inside a `rust:1.95-bullseye` container (glibc 2.31, compatible
 with both Ubuntu 22.04 and 24.04 production targets), uploads the
-binary to VPS1/VPS2/VPS3 over the wg1 WireGuard mesh, and does a
+binary to Foundation node/Treasury node/Core node over the wg1 WireGuard mesh, and does a
 rolling restart with a bounded health check.
 
 ```bash
-# From VPS4
+# From build host
 ./scripts/fast-deploy.sh mainnet          # asks for confirmation
 ./scripts/fast-deploy.sh testnet          # silent (testnet docker)
 
@@ -50,11 +50,11 @@ The script stops validators in reverse order and starts them in forward
 order:
 
 ```
-stop:  VPS3 → VPS2 → VPS1
-start: VPS1 → VPS2 → VPS3
+stop:  Core node → Treasury node → Foundation node
+start: Foundation node → Treasury node → Core node
 ```
 
-Primary (VPS1, Foundation) finishes processing in-flight blocks last and
+Primary (Foundation node, Foundation) finishes processing in-flight blocks last and
 is back up first so peers reconnect quickly. Wrong order can produce
 orphan blocks — learned the hard way.
 
@@ -81,8 +81,8 @@ This is rare — `fast-deploy.sh` is the default path.
 ## Design Choices
 
 - **Binary artifacts, not Docker** for mainnet. All nodes get the exact
-  same compiled binary from the VPS4 build. No registry dependency.
-  (Testnet runs in docker on VPS4 since 2026-04-23.)
+  same compiled binary from the build host build. No registry dependency.
+  (Testnet runs in docker on build host since 2026-04-23.)
 - **CI test, not CI deploy.** Auto-deploy + manual hot-deploy creates a
   race where the same commit ships twice. Disabled in favour of a
   single canonical path.

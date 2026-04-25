@@ -61,5 +61,5 @@ Security: 11 audit rounds (94 findings, 78 fixed). Zero `unsafe`. No-panic CI en
 | #74 | Public repo cleanup |
 | #79 | H1/H2 fork fix |
 | #80 | CI/CD deploy order fix |
-| #81 | VPS3 + 3-VPS pipeline |
+| #81 | Core node + 3-VPS pipeline |
 | #82 | P0 security hardening |
