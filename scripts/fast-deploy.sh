@@ -76,12 +76,11 @@ fi
 source "$FLEET_ENV"
 
 # Per-host entry format: "user@host:service:port:bin_dir"
-# bin_dir defaults to /opt/sentrix for hosts that don't override it.
-# Sentrix mainnet is co-tenant-free per validator-isolation policy:
-# Foundation (VPS1) + Treasury (VPS2) live at /opt/sentrix; Core (VPS3)
-# at /opt/core; Beacon (VPS5) at /opt/beacon. Each role's bin_dir is
-# loaded from fleet.env (FOUNDATION_BIN_DIR, etc.) with a /opt/sentrix
-# fallback for backward compatibility with legacy fleet.env files.
+# Each mainnet role's bin_dir is loaded from fleet.env (FOUNDATION_BIN_DIR,
+# TREASURY_BIN_DIR, CORE_BIN_DIR, BEACON_BIN_DIR) with role-appropriate
+# defaults below. Defaults reflect the current mainnet layout: Foundation
+# and Treasury live at /opt/sentrix, Core at /opt/core, Beacon at
+# /opt/beacon. Override per role only if the on-disk layout changes.
 declare -A MAINNET_HOSTS=(
     [foundation]="${FOUNDATION_USER}@${FOUNDATION_WG}:${FOUNDATION_SERVICE}:${FOUNDATION_PORT}:${FOUNDATION_BIN_DIR:-/opt/sentrix}"
     [treasury]="${TREASURY_USER}@${TREASURY_WG}:${TREASURY_SERVICE}:${TREASURY_PORT}:${TREASURY_BIN_DIR:-/opt/sentrix}"
