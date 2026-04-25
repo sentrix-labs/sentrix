@@ -192,6 +192,27 @@ pub struct Blockchain {
     /// but is clean now shouldn't keep alarming).
     #[serde(skip, default)]
     pub(crate) divergence_tracker: DivergenceTracker,
+
+    /// Persistent one-shot guard for `activate_voyager`. Set to `true`
+    /// inside `activate_voyager` after the migration commits successfully;
+    /// any subsequent call to `activate_voyager` (e.g. on validator
+    /// restart, when the local `voyager_activated` boolean in the
+    /// validator loop has reset) is a no-op. Without this guard the
+    /// loop re-registers the same 4 mainnet validators on every boot
+    /// post-fork, which double-runs `update_active_set` /
+    /// `epoch_manager.initialize` deterministically (so consensus stays
+    /// safe today) but trips noisy "validator already registered" warns
+    /// and is fragile against any future non-deterministic mutation in
+    /// that path. Phase 1 hard-gate per
+    /// `founder-private/architecture/FORK_SEQUENCE_PREIMPL_SCAN_2026-04-24.md`.
+    #[serde(default)]
+    pub voyager_activated: bool,
+
+    /// Persistent one-shot guard for `activate_evm`. Same rationale as
+    /// `voyager_activated`: prevents redundant `migrate_to_evm` runs at
+    /// every restart post-fork.
+    #[serde(default)]
+    pub evm_activated: bool,
 }
 
 /// Rate-threshold detector for "this validator has diverged from peers".
@@ -323,6 +344,8 @@ impl Blockchain {
             slashing: sentrix_staking::slashing::SlashingEngine::new(),
             source_for_current_add: crate::block_executor::BlockSource::SelfProduced,
             divergence_tracker: DivergenceTracker::default(),
+            voyager_activated: false,
+            evm_activated: false,
         };
         bc.initialize_genesis(genesis);
         bc
@@ -593,9 +616,15 @@ impl Blockchain {
     /// Initialize EVM state at fork activation.
     /// Called once when chain reaches VOYAGER_EVM_HEIGHT.
     /// Migrates all account code_hash fields and initializes gas tracking.
+    /// Idempotent — guarded by the persistent `evm_activated` flag.
     pub fn activate_evm(&mut self) {
+        if self.evm_activated {
+            tracing::debug!("activate_evm: already activated, skipping");
+            return;
+        }
         tracing::info!("Activating EVM at height {}", self.height());
         let migrated = self.accounts.migrate_to_evm();
+        self.evm_activated = true;
         tracing::info!(
             "EVM activated: {} accounts migrated, gas metering enabled",
             migrated
@@ -604,9 +633,17 @@ impl Blockchain {
 
     /// Initialize Voyager state at fork activation.
     /// Called once when chain reaches VOYAGER_DPOS_HEIGHT.
-    /// Migrates existing 7 Pioneer validators to DPoS with equal stake.
+    /// Migrates existing Pioneer validators to DPoS with equal stake.
+    /// Idempotent — guarded by the persistent `voyager_activated` flag so
+    /// validator restarts post-fork don't re-register validators or
+    /// re-snapshot the epoch.
     pub fn activate_voyager(&mut self) -> SentrixResult<()> {
         use sentrix_staking::MIN_SELF_STAKE;
+
+        if self.voyager_activated {
+            tracing::debug!("activate_voyager: already activated, skipping");
+            return Ok(());
+        }
 
         // Migrate Pioneer validators → DPoS validators
         let validators: Vec<String> = self
@@ -630,6 +667,8 @@ impl Blockchain {
         self.stake_registry.update_active_set();
         self.epoch_manager
             .initialize(&self.stake_registry, self.height());
+
+        self.voyager_activated = true;
 
         tracing::info!(
             "Voyager DPoS activated at height {}. {} validators migrated.",

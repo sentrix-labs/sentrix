@@ -1272,8 +1272,16 @@ async fn cmd_start(
                 }
             }
 
-            let mut voyager_activated = false;
-            let mut evm_activated = false;
+            // Sync local fast-path booleans from persistent on-chain flags so
+            // a validator restarting post-fork skips the activation re-entry
+            // entirely (no warn-spam, no redundant update_active_set call).
+            // The Blockchain methods themselves are also idempotent via the
+            // same flags — local boolean here just avoids taking the write
+            // lock on every loop tick once the chain has crossed the fork.
+            let (mut voyager_activated, mut evm_activated) = {
+                let bc = shared_clone.read().await;
+                (bc.voyager_activated, bc.evm_activated)
+            };
             // Persistent BFT state for Voyager mode
             let mut bft_engine: Option<BftEngine> = None;
             let mut voyager_tick_count: u64 = 0;
