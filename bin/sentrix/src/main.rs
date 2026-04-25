@@ -2844,6 +2844,29 @@ fn cmd_chain_verify_deep() -> anyhow::Result<()> {
     println!("chain height: {height}");
     println!("stored trie root @ height: {:?}", stored_root);
 
+    // First gate: cryptographic relationship within the trie itself.
+    // Catches rsync-while-live MDBX corruption where nodes load cleanly but
+    // parent-hash relationships are broken — the actual #268 v2.1.21 canary
+    // failure mode that the simpler AccountDB ↔ trie consistency check
+    // (below) cannot detect.
+    if let Some(trie) = bc.state_trie.as_ref() {
+        match trie.verify_integrity_strict() {
+            Ok(()) => println!("trie strict-integrity: OK (all node hashes match content)"),
+            Err(e) => {
+                println!("trie strict-integrity: FAIL");
+                println!("  {}", e);
+                println!();
+                println!(
+                    "Recovery: this chain.db is unsafe to start. Halt all peer \
+                     validators (verify with `pgrep sentrix` returning empty), then \
+                     rsync chain.db from a confirmed-halted canonical peer. Re-run \
+                     `sentrix chain verify-deep` to confirm clean."
+                );
+                anyhow::bail!("trie strict-integrity check failed");
+            }
+        }
+    }
+
     let trie = bc
         .state_trie
         .as_mut()
