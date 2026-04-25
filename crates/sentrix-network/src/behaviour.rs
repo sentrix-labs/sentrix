@@ -104,14 +104,25 @@ fn env_bool(key: &str, default: bool) -> bool {
 /// Build the gossipsub config used by both `new` and `new_with_keypair`.
 /// Reads all tunables via env vars; see the module-level comment above for
 /// the full parameter list + recommended values per mesh size.
-/// Build the connection-limits behaviour. Caps established connections
-/// per peer at 1 — defence-in-depth alongside the L1 dial-tick connected-
-/// peers pre-check (#319 + #321). Other limits left at defaults
-/// (unbounded) so we don't accidentally cap total connections below the
-/// active-set + peer-discovery floor.
+/// Build the connection-limits behaviour.
+///
+/// `max_established_per_peer` caps redundant connections per peer_id.
+/// Set to 2 (not 1): allows ONE simultaneous-bidirectional-dial dup
+/// while still preventing unbounded accumulation. v2.1.33 first set
+/// this to 1 — production observation: too restrictive on the
+/// 4-validator mainnet mesh, gossipsub propagation became too sparse,
+/// BFT block rate dropped from ~1/s to ~1/20s with 2-3 skip rounds
+/// per validator per minute. Raising to 2 restores normal block rate
+/// while still enforcing the no-accumulation invariant (cap is at
+/// 2 per peer, not unbounded). Override via SENTRIX_MAX_CONN_PER_PEER
+/// env if a future operator wants to tune; default 2 is mainnet-safe.
 fn build_connection_limits_behaviour() -> libp2p::connection_limits::Behaviour {
     use libp2p::connection_limits::{Behaviour, ConnectionLimits};
-    Behaviour::new(ConnectionLimits::default().with_max_established_per_peer(Some(1)))
+    let max_per_peer: u32 = std::env::var("SENTRIX_MAX_CONN_PER_PEER")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+    Behaviour::new(ConnectionLimits::default().with_max_established_per_peer(Some(max_per_peer)))
 }
 
 fn gossipsub_config() -> gossipsub::Config {
