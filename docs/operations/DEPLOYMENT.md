@@ -102,16 +102,18 @@ sudo systemctl daemon-reload && sudo systemctl enable --now sentrix-node
 
 ## Canonical Deploy Path
 
-Production binary deploys go through **`scripts/fast-deploy.sh` from
-build host** (see [CI_CD.md](CI_CD.md) and [RELEASE.md](../../RELEASE.md)).
-The CI/CD `deploy` job is disabled; CI runs tests only. The script
-builds once in a `rust:1.95-bullseye` container, ships the same byte-
-identical binary to Foundation node/Treasury node/Core node over wg1, and does a rolling
-restart with a bounded health check.
+Production binary deploys go through an operator-run deploy from a
+build host (see [CI_CD.md](CI_CD.md) and [RELEASE.md](../../RELEASE.md)).
+The CI/CD `deploy` job is disabled; CI runs tests only. The build runs
+once in a `rust:1.95-bullseye` container (glibc 2.31, compatible with
+all current target distros), the same byte-identical binary is shipped
+to all validators over a private network, and services are restarted
+rolling with bounded health check.
 
-For an independent operator running a single validator outside the
-reference fleet, see [VALIDATOR_ONBOARDING.md](VALIDATOR_ONBOARDING.md)
-for the manual SCP + systemd flow.
+For independent operators running their own validators, the generic
+primitive is `scripts/deploy-validator.sh` — see
+[VALIDATOR_ONBOARDING.md](VALIDATOR_ONBOARDING.md) for usage and
+[CI_CD.md](CI_CD.md) for the deploy pattern.
 
 ## Firewall
 

@@ -17,7 +17,7 @@ Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, i
 
 - **v2.1.30** — MDBX storage, 1s blocks, 5000 tx/block capacity, EVM live on mainnet (Voyager active since 2026-04-25)
 - **551+ tests**, clippy clean, 11 security audit rounds
-- **4 validators** across 3 nodes (Foundation, Treasury, Core, Beacon), build host `fast-deploy.sh` rolling deploy
+- **4 validators** across 4 nodes (Foundation, Treasury, Core, Beacon) on the maintainer fleet
 
 ## Features
 

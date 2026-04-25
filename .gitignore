@@ -51,6 +51,15 @@
 blog.txt
 tlog.txt
 
+# ── Operator-specific deploy scripts (live in founder-private) ─
+# These bake in operator infrastructure (wg1 IPs via fleet.env, role
+# mapping, satya_master SSH key path). Keeping them out of the public
+# repo avoids leaking operational topology and recurring depersonalization
+# headaches. Third-party validators should use scripts/deploy-validator.sh
+# (the generic primitive) and write their own orchestrator.
+scripts/fast-deploy.sh
+scripts/emergency-deploy.sh
+
 # ── OS files ─────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
