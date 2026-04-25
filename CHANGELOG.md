@@ -7,6 +7,39 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.33] — 2026-04-26 — Voyager auth runtime-aware fix + connection_limits hardening
+
+> **🟢 Closes the 2026-04-26 mainnet stall root cause** (env-var-defaulted `VOYAGER_FORK_HEIGHT=u64::MAX` + `validate_block` static check ⇒ Pioneer-auth rejection of valid Voyager skip-round blocks). Plus bundles the connection_limits Behaviour for max-1-established-per-peer enforcement.
+
+### Fixed (#324)
+
+- **`Blockchain::voyager_mode_for(height)` runtime-aware check.** New instance method that ORs the env-var fork-height check with the chain.db `voyager_activated` runtime flag. `validate_block` (both Pass-1 read-only at line 117-132 and Pass-2 commit at line 364-374) migrated to use it. Result: post-Voyager-activation chains accept Voyager blocks correctly regardless of env var state.
+- **Why this matters:** the original static `is_voyager_height(height)` reads `VOYAGER_FORK_HEIGHT` env var with default `u64::MAX`. When set/defaulted to u64::MAX, returns false for any height. Pre-activation that's the correct mainnet-safe-default; post-activation it's a foot-gun. validate_block falling into Pioneer auth rejected legitimate Voyager skip-round blocks (locked-block re-propose at round N has validator field of round-N proposer, not Pioneer round-robin's round-0 proposer).
+- **Operator hot-fix on production fleet** (set `VOYAGER_FORK_HEIGHT=579047` to make the static check work) becomes belt-and-suspenders; no longer load-bearing.
+
+### Added (#323)
+
+- **`connection_limits::Behaviour` wired into SentrixBehaviour** with `max_established_per_peer(Some(1))`. Defence-in-depth for the dial-tick connected-peers pre-check (#319 + #321). Even if both sides converge a duplicate (simultaneous bidirectional dials crossing on the wire), the swarm rejects the late connection at the libp2p layer. Three layers together prevent connection accumulation:
+  1. #319: dial-tick skips dialing peers already in connected set
+  2. #321: validator adverts include `/p2p/<peer_id>` so #319's check actually works
+  3. THIS: even if #319/#321 miss a duplicate, swarm enforces 1-per-peer
+
+### Operational note
+
+After the v2.1.32 deploy attempt earlier today (rolled back due to env-var bug surfacing under load), the v2.1.33 release bundles all the cumulative work since v2.1.31:
+- v2.1.32 fix (#321 /p2p suffix)
+- v2.1.33 hardening (#323 connection_limits + #324 voyager_mode_for)
+
+Mainnet currently runs v2.1.31 + operator env hot-fix. Deploying this release per-validator rolling restart picks up the runtime-aware voyager check (bug-fix-in-perpetuity) plus the libp2p hardening (kills the connection accumulation pattern that caused the day's two earlier stalls).
+
+### Migration
+
+- Drop-in chain.db compatible with v2.1.31 / v2.1.32.
+- Per-validator rolling restart picks up new binary. `VOYAGER_FORK_HEIGHT=579047` env var on production fleet stays as belt-and-suspenders (harmless).
+- After deploy + 30 min mesh-stable convergence, expected: connection counts plateau at ~6-12 per validator, BFT round-0 finalize rate ~1/s, no skip rounds under nominal load.
+
+---
+
 ## [2.1.32] — 2026-04-26 — libp2p Tier 4 fix: /p2p/<peer_id> in advert multiaddrs
 
 > **🟢 Closes the gap from v2.1.31's partial libp2p fix.** With this release, the dial-tick connected-peers pre-check actually fires (was falling back to "dial anyway" because cached advert multiaddrs lacked `/p2p/<peer_id>` suffix). Connection accumulation should now plateau at the steady-state mesh size (~6-12 per validator for the 4-validator mainnet) instead of climbing toward gossipsub-thrashing thresholds.
