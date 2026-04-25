@@ -94,8 +94,20 @@ fn check_bft_peer_mesh_eligible(
     if force_override {
         return Ok(());
     }
-    if active_set_len <= 1 {
+    // Single-validator chain: peer count is moot. We use `== 1` rather
+    // than `<= 1` so an active_set_len == 0 produces an explicit error
+    // instead of silently passing — a chain with zero active validators
+    // should never be reaching the BFT activation path in the first
+    // place, and silently approving it would mask a separate bug.
+    if active_set_len == 1 {
         return Ok(());
+    }
+    if active_set_len == 0 {
+        return Err(
+            "BFT activation blocked: active_set is empty — no validators registered. \
+             This indicates a separate bug in DPoS migration; check stake_registry."
+                .to_string(),
+        );
     }
     let required = active_set_len - 1;
     if peer_count < required {
@@ -107,6 +119,19 @@ fn check_bft_peer_mesh_eligible(
         ));
     }
     Ok(())
+}
+
+/// Strict env-var check for the BFT peer-mesh gate override. Only the
+/// literal string `"1"` enables the override; any other value (typoed
+/// `"true"`, accidentally-empty `""` from shell `VAR=$missing`,
+/// whitespace) is rejected and the gate stays active. This avoids the
+/// "empty-string-is-truthy" footgun where a misconfigured env file
+/// silently disables the safety net during exactly the operational
+/// scenarios it exists to protect.
+fn force_bft_insufficient_peers_set() -> bool {
+    std::env::var("SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS")
+        .map(|v| v == "1")
+        .unwrap_or(false)
 }
 
 #[derive(Parser)]
@@ -1394,8 +1419,7 @@ async fn cmd_start(
                         drop(bc);
 
                         let peer_count = lp2p_clone.peer_count().await;
-                        let force_override =
-                            std::env::var("SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS").is_ok();
+                        let force_override = force_bft_insufficient_peers_set();
 
                         match check_bft_peer_mesh_eligible(
                             peer_count,
@@ -3466,12 +3490,10 @@ mod tests {
         assert!(check_bft_peer_mesh_eligible(0, 1, false).is_ok());
     }
 
-    /// Empty active set should also pass — no consensus participation
-    /// possible regardless of peer count, so the gate is moot.
-    #[test]
-    fn peer_mesh_gate_empty_active_set_passes() {
-        assert!(check_bft_peer_mesh_eligible(0, 0, false).is_ok());
-    }
+    // Note: a previous test asserted `check_bft_peer_mesh_eligible(0, 0, false).is_ok()`
+    // — that test was based on the original `<= 1` short-circuit, which masked
+    // the real bug of an empty active_set reaching activation. Replaced by
+    // `peer_mesh_gate_empty_active_set_errors_explicitly` below.
 
     /// 2-validator chain edge case: `active_set - 1 == 1` peer required.
     #[test]
@@ -3490,5 +3512,60 @@ mod tests {
     #[test]
     fn peer_mesh_gate_boundary_below_fails() {
         assert!(check_bft_peer_mesh_eligible(2, 4, false).is_err());
+    }
+
+    /// Empty active_set produces explicit error (post-self-review fix).
+    /// The `<= 1` shortcut was previously silently passing this case,
+    /// masking a potential DPoS-migration bug where stake_registry ends
+    /// up empty post-migration.
+    #[test]
+    fn peer_mesh_gate_empty_active_set_errors_explicitly() {
+        let result = check_bft_peer_mesh_eligible(0, 0, false);
+        assert!(result.is_err(), "empty active_set must return error");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("active_set is empty"),
+            "error must point at empty-active-set bug: {msg}"
+        );
+    }
+
+    /// Strict env-var check: only literal `"1"` enables override.
+    /// Empty string (`SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=` from a
+    /// shell `VAR=$missing` typo) must NOT silently disable the gate.
+    /// This is the post-self-review fix — `.is_ok()` was accepting any
+    /// set value including empty, defeating the safety net during
+    /// exactly the operational scenarios it exists to protect.
+    #[test]
+    fn force_override_strict_check_rejects_empty_string() {
+        // Sandbox the env var so this test doesn't pollute the global
+        // state — set it to empty, run the check, then unset.
+        // SAFETY: tests run sequentially in this module by default
+        // (Cargo's per-binary test harness uses a single thread per
+        // test by default; #[test] without #[tokio::test(flavor)]
+        // means single-threaded). If any future test parallelism is
+        // introduced, this needs a mutex.
+        unsafe { std::env::set_var("SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS", "") };
+        assert!(
+            !force_bft_insufficient_peers_set(),
+            "empty string must NOT enable override"
+        );
+
+        unsafe { std::env::set_var("SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS", "true") };
+        assert!(
+            !force_bft_insufficient_peers_set(),
+            "non-1 value must NOT enable override"
+        );
+
+        unsafe { std::env::set_var("SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS", "1") };
+        assert!(
+            force_bft_insufficient_peers_set(),
+            "literal '1' must enable override"
+        );
+
+        unsafe { std::env::remove_var("SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS") };
+        assert!(
+            !force_bft_insufficient_peers_set(),
+            "unset env var must NOT enable override"
+        );
     }
 }
