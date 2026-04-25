@@ -660,7 +660,14 @@ impl Blockchain {
             );
         }
         self.accounts.credit(coinbase_recipient, coinbase_amount)?;
-        self.total_minted += coinbase_amount;
+        // saturating_add hardens against overflow on inflated-reward testnets
+        // and future tunables. Production reward * MAX_HEIGHT is ~210M SRX
+        // (= 21e15 sentri = ~0.11% of u64::MAX) so overflow is unreachable
+        // at mainnet parameters, but the saturating form costs nothing and
+        // matches the rest of this module (see line 780 reward summation).
+        // If saturation ever fires, the next supply check will reject the
+        // block via the MAX_SUPPLY invariant guard rather than silently wrap.
+        self.total_minted = self.total_minted.saturating_add(coinbase_amount);
         if std::env::var("SENTRIX_TRIE_TRACE").is_ok() {
             let post = self.accounts.get_balance(coinbase_recipient);
             eprintln!(
