@@ -985,7 +985,8 @@ impl Blockchain {
 
             // Execute EVM transaction if present (data field starts with "EVM:")
             // tx_index skips coinbase at slot 0 — first real tx is index 1.
-            if tx.is_evm_tx() && Self::is_voyager_height(self.height()) {
+            // 2026-04-26: use voyager_mode_for() runtime-aware check (see #324).
+            if tx.is_evm_tx() && self.voyager_mode_for(self.height()) {
                 let tx_index = (block
                     .transactions
                     .iter()

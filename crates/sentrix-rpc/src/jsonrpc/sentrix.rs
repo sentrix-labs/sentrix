@@ -76,8 +76,12 @@ async fn sentrix_get_validator_set(state: &SharedState) -> DispatchResult {
     // blocks. "Consensus mode" detection: if the next block lands
     // post-Voyager, use the DPoS path; otherwise use PoA.
     let next_height = bc.latest_block().map(|b| b.index + 1).unwrap_or(1);
-    let is_dpos = sentrix_core::blockchain::Blockchain::is_voyager_height(next_height)
-        && !bc.stake_registry.validators.is_empty();
+    // 2026-04-26: use voyager_mode_for() runtime-aware check instead of
+    // static is_voyager_height(). Same env-var-default-u64::MAX foot-gun
+    // that bit validate_block — stale RPC reporting "is_dpos=false" when
+    // chain runtime says voyager_activated=true. See incident
+    // founder-private/incidents/2026-04-26-voyager-fork-height-env-bug.md.
+    let is_dpos = bc.voyager_mode_for(next_height) && !bc.stake_registry.validators.is_empty();
 
     if is_dpos {
         let active: std::collections::HashSet<String> =
@@ -406,7 +410,8 @@ async fn sentrix_get_finalized_height(state: &SharedState) -> DispatchResult {
         Err(_) => return Err((-32603, "chain empty".into())),
     };
     let next_height = latest.index.saturating_add(1);
-    let bft = sentrix_core::blockchain::Blockchain::is_voyager_height(next_height);
+    // 2026-04-26: voyager_mode_for() — see comment at line ~78 in this file.
+    let bft = bc.voyager_mode_for(next_height);
     let (finalized_height, finalized_hash) = if !bft {
         (latest.index, latest.hash.clone())
     } else {
