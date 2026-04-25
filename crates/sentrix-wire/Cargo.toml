@@ -24,7 +24,10 @@ repository = "https://github.com/sentrix-labs/sentrix"
 sentrix-primitives = { path = "../sentrix-primitives" }
 sentrix-bft = { path = "../sentrix-bft" }
 
+secp256k1 = { version = "0.31", features = ["recovery"] }
 serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
 bincode = "1.3"
+secp256k1 = { version = "0.31", features = ["recovery", "rand", "global-context"] }
+sentrix-wallet = { path = "../sentrix-wallet" }
