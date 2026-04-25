@@ -7,6 +7,41 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.26] — 2026-04-25 — Bug-fix sweep + L1/L2 peer auto-discovery + Frontier scaffold
+
+> **Operational rollup of 9 PRs landed after the 2026-04-25 Voyager activation incident.** Addresses the actual root cause (peer mesh partition — `--peers` config not scaling), ships defensive guards across the consensus + EVM + storage paths, lays the wire-format foundation for the Frontier-fork parallel transaction execution work. **Mainnet stays in Pioneer mode (`SENTRIX_FORCE_PIONEER_MODE=1`) for this release** — Voyager activation re-attempt remains gated on the BFT signing v2 fork (`audits/bft-signing-fork-design.md`) and a coordinated testnet rehearsal (`runbooks/voyager-mesh-rehearsal.md`).
+
+### Added — peer auto-discovery (L1 + L2)
+
+- **L2 pre-flight peer-mesh gate (#298).** Validator loop refuses to flip into Voyager BFT mode unless `peer_count >= active_set.len() - 1`. The 2026-04-25 livelock would have been caught at every VPS — VPS5 had only 1 libp2p peer (VPS1) at activation, gate would have held the flip until L1 self-healing converged the mesh. Strict `SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=="1"` env override (rejects empty string + non-1 values to close the misconfiguration footgun).
+- **L1 multiaddr advertisement (#300, #301, #302).** New gossipsub topic `sentrix/validator-adverts/1`. Each validator broadcasts a signed `MultiaddrAdvertisement` on startup + every 10 minutes (sequence persisted to `<data_dir>/.advert-sequence` so restart doesn't reset). Receivers verify against on-chain stake registry pubkey, store latest-by-sequence in a 4096-entry LRU cache (lowest-sequence eviction). Periodic dial-tick (every 30s) reads `active_set` and dials any cached members not currently peered. Self-healing mesh from a single bootstrap peer; manual `--peers` lists no longer required at scale.
+
+### Fixed
+
+- **PoLC mismatch in BFT engine (#297).** When prevote supermajority moved the lock from hash A to hash B without staging hash B's bytes, `locked_block` retained stale `bytes_A`. `locked_proposal_bytes()` then returned `(B, bytes_A)` — bytes hashing to A under a lock claiming B. Re-propose path would broadcast garbage. Now invalidates `locked_block` whenever `locked_hash` changes, before staging promotion. Pinned by 3 integration tests + 1 unit test.
+- **Storage trie-init silent failure at fork boundary (#303).** Pre-fix, `init_trie` failure below `STATE_ROOT_FORK_HEIGHT` logged a warn and continued with `state_trie=None`. At the fork-crossing boundary, that validator would produce blocks with `state_root=None` while peers compute real roots → silent ghost validator forking the network. Now refuses block production with `state_trie=None` past the fork boundary, with operator recovery instructions in the error message.
+- **EVM cold-contract bytecode pre-load (#304).** Cross-contract calls (DELEGATECALL / CALL / STATICCALL to a SECOND contract) were failing because only the per-tx CALL target's bytecode was pre-loaded into `SentrixEvmDb.code`. revm's `code_by_hash` errored on the second contract's hash. Now `from_account_db` bulk-loads every contract's bytecode at construction. O(N_contracts × bytecode_size) memory per EVM tx; bounded at realistic chain sizes.
+- **`total_minted` overflow hardening (#299).** Replaced unchecked `+=` with `saturating_add` for coinbase-amount accumulation. No semantic difference at production reward levels (mainnet is ~3 orders of magnitude below `u64::MAX`); defensive against inflated-reward testnets and future block-reward tuning. Failure mode shifts from silent wrap (catastrophic supply divergence) to controlled block rejection via the existing `MAX_SUPPLY` guard.
+
+### Added — Frontier-fork scaffold (#305)
+
+- **`crates/sentrix-core/src/parallel/` module.** Type-system contracts for the Fork H+5 parallel transaction execution per `audits/parallel-tx-execution-design.md`. `AccountKey` / `GlobalKey` / `TxAccess` / `Batch` / `derive_access` / `build_batches`. Stubs return pessimistic / sequential-equivalent values so the production code path is unchanged. 12 unit tests pin the conflict-detection, batching, and `BTreeSet`-determinism contracts. Two `#[ignore]`d property tests at `tests/parallel_determinism.rs` placeholder for the apply-equivalence + scheduler-determinism contracts that will gate the real impl. **Not called from `apply_block_pass2` — production unchanged.**
+
+### Known issues / deferred
+
+- **BFT signing v2 (chain_id + low-S enforcement) NOT shipped.** Design + 5-phase rollout in `audits/bft-signing-fork-design.md`. Cross-chain replay protection + signature malleability defence. Required before Voyager mainnet activation. Implementation deferred to dedicated session per consensus discipline.
+- **Voyager mainnet activation NOT performed.** Mainnet stays `SENTRIX_FORCE_PIONEER_MODE=1` until BFT signing v2 ships + testnet rehearsal completes (`runbooks/voyager-mesh-rehearsal.md`).
+- **Frontier parallel apply NOT implemented.** Scaffold ships per `audits/frontier-mainnet-phase-implementation-plan.md` Phase F-1; real work is Phases F-2 through F-10 (~6-8 weeks calendar including testnet bake + mainnet shadow mode).
+
+### Migration
+
+- Drop-in chain.db compatible with v2.1.24 / v2.1.25.
+- Add to validator env (optional, for L1 peer-discovery):
+  - No new required env vars.
+- `SENTRIX_FORCE_PIONEER_MODE=1` and `VOYAGER_FORK_HEIGHT=18446744073709551615` env vars from v2.1.25 stay required to prevent inadvertent Voyager re-activation.
+
+---
+
 ## [2.1.25] — 2026-04-25 — SENTRIX_FORCE_PIONEER_MODE emergency override (Voyager activation rollback)
 
 > **🚨 v2.1.25 hotfix released after the 2026-04-25 mainnet Voyager activation incident.** v2.1.24 was deployed cleanly to mainnet to close #268, then `VOYAGER_FORK_HEIGHT` was flipped to activate Voyager DPoS+BFT at h=557244. Activation succeeded (validators migrated, `voyager_activated=true` set persistently per PR #277), but BFT livelocked immediately due to V2 locked-block-repropose wiring gap (Steps 4-5 main.rs never shipped — see `audits/v2-locked-block-repropose-implementation-plan.md`). Rolled back to Pioneer via this hotfix's emergency override env. Mainnet stable on Pioneer with `SENTRIX_FORCE_PIONEER_MODE=1` set per validator. **Voyager activation re-attempt blocked on V2 Steps 4-5 implementation.**
