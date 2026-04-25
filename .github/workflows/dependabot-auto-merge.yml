@@ -1,0 +1,112 @@
+name: Dependabot auto-merge (score ≥85)
+
+# Auto-merges Dependabot PRs whose compatibility score is ≥85.
+# Score is fetched from the Dependabot badge URL embedded in the PR body.
+# Below threshold (or if score can't be parsed) → comment + leave for manual review.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for CI to settle
+        run: sleep 30
+
+      - name: Check CI status
+        id: ci
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Wait up to 10 min for CI to complete
+          for i in $(seq 1 20); do
+            STATE=$(gh pr view $PR_NUMBER --repo $REPO --json statusCheckRollup -q '.statusCheckRollup | map(.conclusion // .status) | unique | join(",")')
+            echo "attempt $i: ci=$STATE"
+            if [[ "$STATE" == *"FAILURE"* ]] || [[ "$STATE" == *"ERROR"* ]]; then
+              echo "ci_status=failed" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            if [[ "$STATE" == "SUCCESS" ]] || [[ "$STATE" == "SUCCESS,SKIPPED" ]] || [[ "$STATE" == "SKIPPED,SUCCESS" ]]; then
+              echo "ci_status=success" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "ci_status=timeout" >> $GITHUB_OUTPUT
+
+      - name: Skip if CI not green
+        if: steps.ci.outputs.ci_status != 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr comment $PR_NUMBER --repo $REPO --body "🤖 Dependabot auto-merge skipped — CI not green (status: ${{ steps.ci.outputs.ci_status }}). Manual review required."
+          exit 0
+
+      - name: Fetch compatibility score
+        id: score
+        if: steps.ci.outputs.ci_status == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          # PR body contains the Dependabot compatibility-score badge as a markdown
+          # image. The badge image URL is on dependabot-badges.githubapp.com and
+          # the SVG it returns has the score embedded as text. Fetch the SVG and
+          # parse the number.
+          BODY=$(gh pr view $PR_NUMBER --repo $REPO --json body -q .body)
+          BADGE_URL=$(echo "$BODY" | grep -oP 'https://dependabot-badges\.githubapp\.com/badges/compatibility_score\?[^)]+' | head -1)
+          if [[ -z "$BADGE_URL" ]]; then
+            echo "score=unknown" >> $GITHUB_OUTPUT
+            echo "reason=no_badge" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          SVG=$(curl -fsSL "$BADGE_URL")
+          # The SVG renders the score as a plain integer text node, e.g. ">85<"
+          SCORE=$(echo "$SVG" | grep -oP '>\K[0-9]{1,3}(?=<)' | head -1)
+          if [[ -z "$SCORE" ]]; then
+            echo "score=unknown" >> $GITHUB_OUTPUT
+            echo "reason=parse_fail" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "score=$SCORE" >> $GITHUB_OUTPUT
+          echo "Compatibility score: $SCORE"
+
+      - name: Auto-merge if score ≥85
+        if: steps.score.outputs.score != 'unknown' && steps.score.outputs.score >= 85
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr merge $PR_NUMBER --repo $REPO --squash --auto
+          gh pr comment $PR_NUMBER --repo $REPO --body "🤖 Dependabot auto-merge enabled — compatibility score ${{ steps.score.outputs.score }}% (≥85% threshold). Will merge once CI passes."
+
+      - name: Skip if score below threshold
+        if: steps.score.outputs.score != 'unknown' && steps.score.outputs.score < 85
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr comment $PR_NUMBER --repo $REPO --body "🤖 Dependabot auto-merge skipped — compatibility score ${{ steps.score.outputs.score }}% is below 85% threshold. Manual review required."
+
+      - name: Comment if score unknown
+        if: steps.score.outputs.score == 'unknown'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr comment $PR_NUMBER --repo $REPO --body "🤖 Dependabot auto-merge skipped — compatibility score unavailable (${{ steps.score.outputs.reason }}). Manual review required."
