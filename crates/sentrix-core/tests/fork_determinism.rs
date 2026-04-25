@@ -594,6 +594,205 @@ fn test_stale_snapshot_peer_sync() {
     );
 }
 
+/// Voyager-activated variant of `test_stale_snapshot_peer_sync` — the closest
+/// in-process test to mainnet's #268 canary that exercises Voyager state.
+///
+/// Difference vs the Pioneer variant: producer calls `activate_voyager()` AFTER
+/// genesis but before producing any blocks. That populates `stake_registry`
+/// with the registered validator (phantom MIN_SELF_STAKE) + initialises
+/// `epoch_manager`. Subsequent block applies serialise that state into the
+/// chain.db roundtrip path.
+///
+/// Mainnet currently has `VOYAGER_FORK_HEIGHT=u64::MAX` so activate_voyager
+/// hasn't fired on prod, but the v2.1.16+ binary code paths that reference
+/// stake_registry / epoch_manager run unconditionally on serialise/deserialise.
+/// If those produce different bytes than v2.1.15 expected (e.g. new field
+/// order, new HashMap iteration leak), that's a #268 candidate.
+///
+/// Test passing here = Voyager-activated state survives MDBX roundtrip + peer
+/// block apply. Failing here = bisect across v2.1.16+ commits touching
+/// stake_registry / epoch_manager / slashing serde.
+#[test]
+fn test_voyager_active_stale_snapshot_peer_sync() {
+    let producer_dir = TempDir::new().expect("producer tempdir");
+    let producer_storage =
+        sentrix_core::storage::Storage::open(producer_dir.path().to_str().unwrap())
+            .expect("producer storage open");
+    let producer_mdbx = producer_storage.mdbx_arc();
+
+    let mut producer = setup_chain();
+    producer.init_trie(Arc::clone(&producer_mdbx)).unwrap();
+    producer
+        .init_storage_handle(Arc::clone(&producer_mdbx))
+        .unwrap();
+
+    // Activate Voyager BEFORE producing blocks. Populates stake_registry,
+    // initialises epoch_manager. Persistent flag set.
+    producer
+        .activate_voyager()
+        .expect("activate_voyager on producer");
+    assert!(
+        producer.voyager_activated,
+        "voyager_activated flag must be set after activate_voyager"
+    );
+    assert!(
+        producer.stake_registry.active_count() >= 1,
+        "stake_registry must have at least the registered validator after activation"
+    );
+
+    // Pre-fund senders (same pattern as Pioneer variant)
+    let mut keypairs = Vec::new();
+    for i in 1u8..=3 {
+        let (sk, pk) = deterministic_keypair(i + 80);
+        let addr = Wallet::derive_address(&pk);
+        producer.accounts.credit(&addr, 100_000_000).unwrap();
+        keypairs.push((sk, pk, addr));
+    }
+    let recv = recv_addr();
+    let chain_id = producer.chain_id;
+
+    // Producer to h=20 with tx activity
+    const SNAPSHOT_AT: u64 = 20;
+    let mut nonces = [0u64; 3];
+    for i in 0..SNAPSHOT_AT {
+        let s = (i as usize) % keypairs.len();
+        let (ref sk, ref pk, ref sender) = keypairs[s];
+        let tx = Transaction::new(
+            sender.clone(),
+            recv.clone(),
+            500_000,
+            MIN_TX_FEE,
+            nonces[s],
+            String::new(),
+            chain_id,
+            sk,
+            pk,
+        )
+        .expect("tx build");
+        nonces[s] += 1;
+        producer.add_to_mempool(tx).unwrap();
+
+        let block = producer.create_block(VALIDATOR).unwrap();
+        producer_mdbx
+            .put(
+                sentrix_storage::tables::TABLE_META,
+                format!("block:{}", block.index).as_bytes(),
+                &serde_json::to_vec(&block).unwrap(),
+            )
+            .unwrap();
+        producer.add_block(block).unwrap();
+    }
+    producer_storage.save_blockchain(&producer).unwrap();
+
+    let mut expected_roots = Vec::new();
+    for h in 1..=SNAPSHOT_AT {
+        expected_roots.push((h, producer.trie_root_at(h).map(hex::encode)));
+    }
+
+    // Producer continues to SNAPSHOT_AT + PEER_SYNC_BLOCKS
+    const PEER_SYNC_BLOCKS: u64 = 10;
+    for i in 0..PEER_SYNC_BLOCKS {
+        let s = ((SNAPSHOT_AT + i) as usize) % keypairs.len();
+        let (ref sk, ref pk, ref sender) = keypairs[s];
+        let tx = Transaction::new(
+            sender.clone(),
+            recv.clone(),
+            500_000,
+            MIN_TX_FEE,
+            nonces[s],
+            String::new(),
+            chain_id,
+            sk,
+            pk,
+        )
+        .expect("tx build");
+        nonces[s] += 1;
+        producer.add_to_mempool(tx).unwrap();
+
+        let block = producer.create_block(VALIDATOR).unwrap();
+        producer_mdbx
+            .put(
+                sentrix_storage::tables::TABLE_META,
+                format!("block:{}", block.index).as_bytes(),
+                &serde_json::to_vec(&block).unwrap(),
+            )
+            .unwrap();
+        producer.add_block(block).unwrap();
+    }
+    let producer_post_sync_root = producer
+        .trie_root_at(SNAPSHOT_AT + PEER_SYNC_BLOCKS)
+        .map(hex::encode);
+
+    // Rsync simulation
+    let peer_dir = TempDir::new().expect("peer tempdir");
+    copy_dir_contents(producer_dir.path(), peer_dir.path()).expect("rsync sim");
+
+    let peer_storage =
+        sentrix_core::storage::Storage::open(peer_dir.path().to_str().unwrap())
+            .expect("peer storage open");
+    let peer_mdbx = peer_storage.mdbx_arc();
+    let mut peer: Blockchain = peer_storage
+        .load_blockchain()
+        .expect("peer load_blockchain")
+        .expect("peer state");
+    peer.init_trie(Arc::clone(&peer_mdbx)).unwrap();
+    peer.init_storage_handle(Arc::clone(&peer_mdbx)).unwrap();
+
+    // Verify peer's voyager_activated flag survives the roundtrip
+    assert!(
+        peer.voyager_activated,
+        "voyager_activated flag must survive MDBX roundtrip — \
+         missing means #[serde(default)] fired and the activate_voyager re-entry \
+         guard would re-fire on the rsync'd peer, mutating stake_registry"
+    );
+    assert!(
+        peer.stake_registry.active_count() >= 1,
+        "stake_registry must persist across roundtrip"
+    );
+
+    // Snapshot-state parity check
+    for (h, expected) in &expected_roots {
+        let actual = peer.trie_root_at(*h).map(hex::encode);
+        assert_eq!(
+            *expected, actual,
+            "[#268 voyager-active] rsync'd peer disagrees at h={h} before peer-block apply"
+        );
+    }
+
+    // Apply peer-broadcast blocks
+    for h in (SNAPSHOT_AT + 1)..=(SNAPSHOT_AT + PEER_SYNC_BLOCKS) {
+        let block = producer
+            .get_block_any(h)
+            .unwrap_or_else(|| panic!("producer missing block at h={h}"));
+        peer.add_block_from_peer(block).unwrap_or_else(|e| {
+            panic!(
+                "[#268 voyager-active] peer rejected block at h={h}: {e}. \
+                 add_block_from_peer enforced #1e on a Voyager-active rsync — \
+                 this is the v2.1.21 canary symptom in unit-test form."
+            )
+        });
+
+        let producer_at_h = producer.trie_root_at(h).map(hex::encode);
+        let peer_at_h = peer.trie_root_at(h).map(hex::encode);
+        assert_eq!(
+            producer_at_h, peer_at_h,
+            "[#268 voyager-active] peer's trie_root at h={h} diverged from producer \
+             after add_block_from_peer on a Voyager-active chain — this is the \
+             mainnet canary path."
+        );
+    }
+
+    let peer_final_root = peer
+        .trie_root_at(SNAPSHOT_AT + PEER_SYNC_BLOCKS)
+        .map(hex::encode);
+    assert_eq!(
+        producer_post_sync_root, peer_final_root,
+        "[#268 voyager-active] final divergence after {} peer-sync blocks on a \
+         Voyager-active chain",
+        PEER_SYNC_BLOCKS
+    );
+}
+
 /// Recursively copy directory contents — used for the rsync simulation in
 /// `test_stale_snapshot_peer_sync`. Keeps file modes intact for MDBX's
 /// open semantics.
