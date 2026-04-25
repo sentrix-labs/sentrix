@@ -98,6 +98,22 @@ fn read_committed_trie_root() {
             let r = bc.trie_root_at(h).map(hex::encode).unwrap_or_else(|| "<none>".to_string());
             println!("  h={} root={}", h, r);
         }
+        // If TEST_BLOCK_AT is set, dump that specific block's header instead of tip's.
+        if let Ok(h_str) = std::env::var("TEST_BLOCK_AT") {
+            let h: u64 = h_str.parse().expect("TEST_BLOCK_AT must be integer");
+            match bc.get_block_any(h) {
+                Some(block) => {
+                    println!("BLOCK_AT_HEIGHT={}", h);
+                    println!("  hash={}", block.hash);
+                    println!("  prev_hash={}", block.previous_hash);
+                    println!("  state_root={:?}", block.state_root.map(hex::encode));
+                    println!("  validator={}", block.validator);
+                    println!("  tx_count={}", block.transactions.len());
+                }
+                None => println!("BLOCK_AT_HEIGHT={}  not found", h),
+            }
+            return;
+        }
         if let Some(trie) = bc.state_trie.as_ref() {
             print!("TRIE_INTEGRITY=");
             match trie.verify_integrity() {
