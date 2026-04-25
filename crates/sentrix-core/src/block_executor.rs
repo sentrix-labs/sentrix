@@ -307,7 +307,17 @@ impl Blockchain {
 
         // Pioneer: round-robin PoA authority check.
         // Voyager: proposer selected by DPoS + BFT justification — skip Pioneer authority.
-        if !Blockchain::is_voyager_height(expected_index)
+        //
+        // Offline replay bypass (SENTRIX_REPLAY_BYPASS_AUTHZ=1): skip the
+        // round-robin slot check so genesis-to-tip replay can apply blocks
+        // without reconstructing the full historical authority state. Used
+        // by the rca_vps3_env_repro::replay_and_compare diagnostic harness.
+        // Production validators MUST NOT set this (would let any address
+        // produce blocks at any height — only safe when chain.db is offline
+        // and we're rederiving state from authoritative block history).
+        let bypass_authz = std::env::var("SENTRIX_REPLAY_BYPASS_AUTHZ").is_ok();
+        if !bypass_authz
+            && !Blockchain::is_voyager_height(expected_index)
             && !self
                 .authority
                 .is_authorized(&block.validator, expected_index)?
