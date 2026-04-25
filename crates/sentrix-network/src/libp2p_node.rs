@@ -93,6 +93,17 @@ enum SwarmCommand {
     /// periodic dial-tick in the validator loop to decide which
     /// active-set members it can reach.
     ListCachedAdverts(tokio::sync::oneshot::Sender<Vec<MultiaddrAdvertisement>>),
+    /// Snapshot of currently-connected peer IDs. Used by the L1 dial-
+    /// tick to skip peers we already have an established connection
+    /// with — without this check, every tick re-dials every active-set
+    /// member regardless of connection state, which causes pending
+    /// connections to accumulate in the swarm pool over hours and
+    /// eventually triggers gossipsub mesh thrashing → BFT livelock
+    /// (incident 2026-04-25, two stalls). The dial-tick comment used
+    /// to claim libp2p deduplicates duplicate dials at the swarm
+    /// level — that turned out to be false in libp2p 0.56; each
+    /// `swarm.dial()` enqueues a fresh pending connection.
+    GetConnectedPeers(tokio::sync::oneshot::Sender<HashSet<PeerId>>),
 }
 
 // ── Public handle ────────────────────────────────────────
@@ -282,6 +293,27 @@ impl LibP2pNode {
         }
     }
 
+    /// Returns the set of currently-connected peer IDs.
+    ///
+    /// Used by the L1 dial-tick in the validator loop to skip peers
+    /// already in an established connection — without this check, every
+    /// 30s tick re-dials every active-set member, and pending dial
+    /// attempts accumulate over hours. See incident
+    /// `founder-private/incidents/2026-04-25-libp2p-connection-thrashing.md`.
+    pub async fn connected_peers(&self) -> HashSet<PeerId> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self
+            .cmd_tx
+            .send(SwarmCommand::GetConnectedPeers(tx))
+            .await
+            .is_ok()
+        {
+            rx.await.unwrap_or_default()
+        } else {
+            HashSet::new()
+        }
+    }
+
     /// Returns the swarm's current listen addresses (after bind completes).
     ///
     /// Useful for:
@@ -418,6 +450,13 @@ async fn run_swarm(
         })
         .map_err(|e| SentrixError::NetworkError(format!("behaviour init: {e}")))?
         // Keep connections alive indefinitely — don't close idle connections.
+        // Per-peer connection limit (1 established per peer_id) is a
+        // FOLLOW-UP HARDENING — libp2p-swarm 0.47 Config doesn't expose it
+        // directly; needs the `connection_limits::Behaviour` wired into
+        // SentrixBehaviour. Tracked as a secondary fix for the 2026-04-25
+        // libp2p connection thrashing incident; the primary fix (dial-tick
+        // connected-peers pre-check below) is sufficient on its own to
+        // stop the accumulation pattern observed.
         .with_swarm_config(|cfg| {
             cfg.with_idle_connection_timeout(std::time::Duration::from_secs(u64::MAX))
         })
@@ -556,6 +595,14 @@ async fn run_swarm(
                                 tracing::warn!("libp2p reconnect dial {} failed: {}", addr, e);
                             }
                         }
+                    }
+                    Some(SwarmCommand::GetConnectedPeers(reply)) => {
+                        // Snapshot of currently-connected peer_ids.
+                        // `swarm.connected_peers()` is the post-handshake
+                        // set; matches what `verified_peers` would expose
+                        // for our SentrixBehaviour.
+                        let peers: HashSet<PeerId> = swarm.connected_peers().copied().collect();
+                        let _ = reply.send(peers);
                     }
                     Some(SwarmCommand::TriggerSync) => {
                         // Backlog #4 auto-resync: ask the first verified peer
