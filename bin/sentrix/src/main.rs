@@ -134,6 +134,53 @@ fn force_bft_insufficient_peers_set() -> bool {
         .unwrap_or(false)
 }
 
+/// Path to the persisted L1 advertisement sequence counter. Stored
+/// inside the data directory so each chain.db has its own sequence
+/// space (testnet and mainnet validators on the same host don't share
+/// state). Plain decimal-text format — easy to inspect via `cat`,
+/// easy to bump manually for ops emergencies.
+fn advert_sequence_path() -> std::path::PathBuf {
+    get_data_dir().join(".advert-sequence")
+}
+
+/// Load the persisted advertisement sequence from disk. Returns 0 on
+/// any failure (missing file on first run, parse error, IO error) —
+/// the broadcast logic uses `saturating_add(1)` so 0 simply means
+/// "start at 1 on first broadcast." Self-review found this critical:
+/// without persistence, a validator restart resets sequence to 0;
+/// peers cached `seq=N` from the previous lifetime silently drop the
+/// new `seq=1` broadcast (newer-wins semantics). The validator's
+/// updated multiaddrs would then take ~N broadcasts × 10min to
+/// propagate, breaking IP-rotation recovery.
+fn load_advert_sequence() -> u64 {
+    let path = advert_sequence_path();
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Persist the current advertisement sequence atomically. Writes to a
+/// temp file then renames over the target so a crash mid-write doesn't
+/// leave a truncated file that would parse to a smaller value (which
+/// would re-introduce the regression bug).
+fn store_advert_sequence(seq: u64) {
+    let path = advert_sequence_path();
+    let Some(parent) = path.parent() else { return };
+    if let Err(e) = std::fs::create_dir_all(parent) {
+        tracing::debug!("advert sequence: mkdir failed: {}", e);
+        return;
+    }
+    let tmp = path.with_extension("tmp");
+    if let Err(e) = std::fs::write(&tmp, seq.to_string()) {
+        tracing::debug!("advert sequence: write tmp failed: {}", e);
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        tracing::debug!("advert sequence: rename failed: {}", e);
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "sentrix")]
 #[command(about = "Sentrix (SRX) — Layer-1 Blockchain")]
@@ -1404,7 +1451,16 @@ async fn cmd_start(
             let mut last_advert_broadcast_at: Option<tokio::time::Instant> = None;
             let mut last_l1_tick_at = tokio::time::Instant::now()
                 - tokio::time::Duration::from_secs(31); // fire on first iter
-            let mut advert_sequence: u64 = 0;
+            // Sequence MUST be loaded from disk on startup, otherwise
+            // restart resets to 0 and peers (cached at the previous
+            // lifetime's high-water mark) silently drop our broadcasts
+            // until we overshoot the cached value. See self-review.
+            let mut advert_sequence: u64 = load_advert_sequence();
+            tracing::info!(
+                "L1: advert sequence resumed at {} (next broadcast will be {})",
+                advert_sequence,
+                advert_sequence.saturating_add(1)
+            );
             const L1_TICK_INTERVAL: tokio::time::Duration =
                 tokio::time::Duration::from_secs(30);
             const ADVERT_BROADCAST_INTERVAL: tokio::time::Duration =
@@ -1434,17 +1490,36 @@ async fn cmd_start(
                             let bc = shared_clone.read().await;
                             bc.chain_id
                         };
-                        // Filter out loopback-only addresses — peers
-                        // can't reach those. Cap at MAX_MULTIADDRS to
-                        // stay within DoS budget on the receiver side.
+                        // Filter out unreachable addresses — peers can't
+                        // dial these. Loopback (`127.0.0.1`, `::1`) is
+                        // self-only; `0.0.0.0` and `::` are bind-time
+                        // wildcards that mean "all interfaces" not a
+                        // routable address. libp2p often surfaces them
+                        // anyway when SENTRIX_P2P_HOST=0.0.0.0 (the
+                        // production default), so the filter must catch
+                        // both classes. Cap at MAX_MULTIADDRS to stay
+                        // within DoS budget on the receiver side.
                         let multiaddrs: Vec<String> = listen_addrs
                             .iter()
                             .map(|m| m.to_string())
-                            .filter(|s| !s.starts_with("/ip4/127.") && !s.starts_with("/ip6/::1/"))
+                            .filter(|s| {
+                                !s.starts_with("/ip4/127.")
+                                    && !s.starts_with("/ip6/::1/")
+                                    && !s.starts_with("/ip4/0.0.0.0/")
+                                    && !s.starts_with("/ip6/::/")
+                            })
                             .take(sentrix_wire::MultiaddrAdvertisement::MAX_MULTIADDRS)
                             .collect();
                         if !multiaddrs.is_empty() {
                             advert_sequence = advert_sequence.saturating_add(1);
+                            // Persist BEFORE broadcasting so a crash
+                            // between bump and broadcast doesn't leave
+                            // a sequence we never published. Worst
+                            // case the validator skips a sequence
+                            // number on next start; harmless because
+                            // peers compare by greater-than, not
+                            // sequential.
+                            store_advert_sequence(advert_sequence);
                             let timestamp = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap_or_default()
