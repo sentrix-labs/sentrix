@@ -83,10 +83,10 @@ sudo chmod +x /opt/sentrix/sentrix
 sudo systemctl start sentrix-<unit>
 ```
 
-Current production binary at the time of writing: **v2.1.25**
-(`md5 5ad7804c0d7e68f8cab47872f7dbc7ac`). Prior good release on
-mainnet: v2.1.24 (`md5 a25f9d771648f6c851a6ee11867fe958`, also the
-testnet binary).
+Current production binary at the time of writing: **v2.1.30** (mainnet
+& testnet, post-Voyager activation). Prior production releases archived
+under `/opt/sentrix/releases/` per validator: v2.1.29, v2.1.28, v2.1.27,
+v2.1.26, v2.1.25 (Pioneer-mode emergency hotfix).
 
 ---
 

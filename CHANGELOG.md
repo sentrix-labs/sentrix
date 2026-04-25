@@ -7,6 +7,85 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.30] — 2026-04-25 — Voyager mainnet active, RPC consensus reporting fixed
+
+> **🟢 Mainnet now reports `consensus: "DPoS+BFT"` correctly across every endpoint.** v2.1.30 is the canonical release on mainnet and testnet after the Voyager activation sequence completed. Source tree depersonalized of internal infrastructure references in the same window.
+
+### Fixed (#310)
+
+- **RPC consensus string `"BFT"` → `"DPoS+BFT"`** across `routes/ops.rs` (`/`, `/sentrix_status`), `routes/chain.rs` (`/chain/finalized-height`), `jsonrpc/sentrix.rs` (`sentrix_status`, `sentrix_consensus`, `sentrix_getFinalizedHeight`, `sentrix_getValidators`). The shorter `"BFT"` was technically incomplete — Sentrix runs DPoS proposer rotation on top of BFT finality, and the public string should reflect both layers. Five call sites updated; no schema break (string-typed field).
+
+### Changed (#311, #312)
+
+- **Public repo depersonalized.** Removed internal infrastructure references (host nicknames, operator handles, private path conventions) from public docs, source comments, scripts, CI workflows, and tests. No behavioural change — comment cleanup only. The depersonalization audit covered `docs/`, `crates/`, `bin/`, `scripts/`, `.github/workflows/`, and integration tests.
+
+### Operational state on this release
+
+- **Mainnet:** `consensus_mode="voyager"`, `voyager_activated=true`, `evm_activated=true`, height ~580K, 4 validators in DPoS+BFT.
+- **Testnet:** same flags, height ~200K.
+- **Source ↔ deployed parity:** workspace `Cargo.toml` reads `version = "2.1.30"`; mainnet validators run a binary built from this same tree.
+
+---
+
+## [2.1.29] — 2026-04-25 — EVM mainnet activation
+
+> **🟢 EVM activated on mainnet in the same window as the Voyager flip.** `Blockchain::activate_evm()` ran once, `evm_activated=true` persisted to chain.db, and `eth_sendRawTransaction` started accepting raw Ethereum transactions on chain ID 7119. Mainnet now mirrors the testnet EVM surface.
+
+### Operational change (no code in this release; activation triggered via admin tooling)
+
+- `evm_activated` flag flipped from `false` to `true` on every mainnet validator's chain.db.
+- All existing mainnet accounts back-filled with `code_hash = EMPTY_CODE_HASH` and `storage_root = EMPTY_STORAGE_ROOT` per `activate_evm()`.
+- `eth_call`, `eth_sendRawTransaction`, `eth_estimateGas`, `eth_getCode`, `eth_getStorageAt` accepted on mainnet RPC.
+- `chain_stats()` JSON now reports `evm_activated: true` at `/chain/info`.
+
+### Migration
+
+- No operator action required for nodes already on v2.1.28+ — flag is read from chain.db at every loop iteration.
+- Wallets / explorers / contract tooling configured for testnet now work on mainnet by changing chain ID 7120 → 7119.
+
+---
+
+## [2.1.28] — 2026-04-25 — Voyager mainnet activation (re-attempt #2 successful) + RPC consensus-mode exposure
+
+> **🟢 Voyager DPoS+BFT activated on mainnet at h=579047.** Second attempt converged after the v2.1.26 / v2.1.27 peer-mesh fixes shipped. `consensus_mode` now exposed on `/chain/info` so block explorers, wallets, and indexers can stop inferring mode from block-level justification presence.
+
+### Added
+
+- **`consensus_mode`, `voyager_activated`, `evm_activated` fields on `chain_stats()`.** Surfaces the consensus engine the runtime is actually using to RPC consumers. Pre-fix, `/chain/info` had no consensus-mode field — clients had to infer mode from justification presence on blocks, which was awkward and wrong for the Pioneer→Voyager transition window.
+- **`bc.voyager_activated` runtime flag drives RPC handlers.** Replaces the `chain_id == 7119 ? PoA : BFT` heuristic and the `is_voyager_height()` env-var fork-height check in 4 places (`routes/ops.rs`, `routes/chain.rs`, `jsonrpc/sentrix.rs` × 2). The fork-height check was returning `consensus=PoA` while runtime was actually BFT, because mainnet activated Voyager via the `voyager_activated` chain.db flag while `VOYAGER_FORK_HEIGHT` stayed at `u64::MAX` for operational safety.
+
+### Operational change
+
+- `voyager_activated=true` set on every mainnet validator's chain.db. Validator loops migrated from Pioneer PoA round-robin to DPoS proposer rotation under 3-phase BFT.
+- `SENTRIX_FORCE_PIONEER_MODE` env override removed from every mainnet validator's env file (was the v2.1.25 emergency rollback flag from the first activation attempt).
+- Mainnet height at activation: 579047. Pioneer ran from genesis through h=579046.
+
+### Recovery context
+
+- Activation #2 itself converged cleanly after the v2.1.27 cold-start gate fixed the BFT entry race that contributed to the activation #1 livelock. State divergence at h=578006 during the second attempt's brief mesh-flap was recovered via frozen-rsync from a canonical peer (chain.db only — `identity/node_keypair` and `wallets/sentrix-node.keystore` restored from forensic backup; **lesson: never rsync whole data dir, chain.db only**).
+
+### Known issues
+
+- BFT signing v2 (chain_id in signing payload + low-S enforcement) **still deferred** per `audits/bft-signing-fork-design.md`. Hard-fork gated; implementation deferred to a dedicated session. Defence-in-depth, not blocking.
+
+---
+
+## [2.1.27] — 2026-04-25 — L2 cold-start gate (close cold-start BFT entry race)
+
+> **🟢 Closes the cold-start race where a validator restarting with `voyager_activated=true` already in chain.db could enter BFT before the L1 mesh re-converged.** v2.1.26's L2 gate only fired on activation transitions; this hotfix adds a second gate at the top of the validator loop that fires every iteration when `voyager_activated=true`.
+
+### Fixed (#307)
+
+- **Cold-start BFT entry gate.** `bin/sentrix/src/main.rs` validator loop now checks `peer_count >= active_set.len() - 1` at the top of every loop iteration when `voyager_activated=true`, not only at the activation transition. A validator that crashed/restarted with `voyager_activated=true` already persisted to chain.db would otherwise enter BFT immediately on cold start, before L1 multiaddr advertisements re-converged the mesh — same livelock failure mode as the original 2026-04-25 incident, just triggered by restart instead of fork-height crossing. Gate uses the same `check_bft_peer_mesh_eligible` + `force_bft_insufficient_peers_set` helpers introduced in v2.1.26 (strict `=="1"` env override, no empty-string bypass).
+
+### Migration
+
+- Drop-in chain.db compatible with v2.1.26.
+- No new env vars required.
+- Operational note: `SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=1` remains the emergency override for both gates (activation transition and cold-start). Reject any validator setting it via env file leakage.
+
+---
+
 ## [2.1.26] — 2026-04-25 — Bug-fix sweep + L1/L2 peer auto-discovery + Frontier scaffold
 
 > **Operational rollup of 9 PRs landed after the 2026-04-25 Voyager activation incident.** Addresses the actual root cause (peer mesh partition — `--peers` config not scaling), ships defensive guards across the consensus + EVM + storage paths, lays the wire-format foundation for the Frontier-fork parallel transaction execution work. **Mainnet stays in Pioneer mode (`SENTRIX_FORCE_PIONEER_MODE=1`) for this release** — Voyager activation re-attempt remains gated on the BFT signing v2 fork (`audits/bft-signing-fork-design.md`) and a coordinated testnet rehearsal (`runbooks/voyager-mesh-rehearsal.md`).

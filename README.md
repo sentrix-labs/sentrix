@@ -15,7 +15,7 @@ Fast, secure Layer-1 blockchain built in Rust.
 
 Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, instant finality, and Ethereum-compatible tooling. MetaMask, ethers.js, and web3.js connect natively.
 
-- **v2.1.25** — MDBX storage, 1s blocks, 5000 tx/block capacity, EVM on testnet
+- **v2.1.30** — MDBX storage, 1s blocks, 5000 tx/block capacity, EVM live on mainnet (Voyager active since 2026-04-25)
 - **551+ tests**, clippy clean, 11 security audit rounds
 - **4 validators** across 3 nodes (Foundation, Treasury, Core, Beacon), build host `fast-deploy.sh` rolling deploy
 
@@ -23,10 +23,10 @@ Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, i
 
 | | |
 |---|---|
-| **Consensus** | PoA round-robin (mainnet) + DPoS/BFT (testnet) |
-| **Finality** | Instant — BFT 2/3+1 vote-based on testnet |
+| **Consensus** | DPoS + BFT (mainnet & testnet) — Voyager active |
+| **Finality** | Instant — BFT 2/3+1 vote-based |
 | **Storage** | libmdbx — memory-mapped B+ tree (used by Reth/Erigon) |
-| **EVM** | revm 37 — Solidity contracts, MetaMask compatible (testnet) |
+| **EVM** | revm 37 — Solidity contracts, MetaMask compatible (mainnet & testnet) |
 | **State** | Binary Sparse Merkle Tree (BLAKE3 + SHA-256) with proofs |
 | **Tokens** | SRC-20 native + SRC-20 (ERC-20 via EVM) |
 | **Network** | libp2p + Noise XX + Kademlia + Gossipsub |
@@ -94,9 +94,9 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 |---|---|---|
 | **Chain ID** | 7119 | 7120 |
 | **RPC** | [sentrix-rpc.sentriscloud.com](https://sentrix-rpc.sentriscloud.com) | [testnet-rpc.sentriscloud.com](https://testnet-rpc.sentriscloud.com) |
-| **Consensus** | PoA (4 validators) | DPoS + BFT (4 validators) |
+| **Consensus** | DPoS + BFT (4 validators) | DPoS + BFT (4 validators) |
 | **Block time** | 1 second | 1 second |
-| **EVM** | Disabled | Active — MetaMask compatible |
+| **EVM** | Active — MetaMask compatible | Active — MetaMask compatible |
 | **Explorer** | [sentrixscan.sentriscloud.com](https://sentrixscan.sentriscloud.com) | [sentrixscan.sentriscloud.com](https://sentrixscan.sentriscloud.com) (same unified UI, toggle Testnet) |
 
 **Wallet:** [sentrix-wallet.sentriscloud.com](https://sentrix-wallet.sentriscloud.com)
@@ -107,10 +107,10 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 
 | Phase | Status | Focus |
 |-------|--------|-------|
-| **Pioneer** | Live (mainnet v2.1.25) | PoA consensus, MDBX storage, 1s blocks, SRC-20 tokens |
-| **Voyager** | Live (testnet, chain_id 7120) | DPoS + BFT finality, EVM (revm 37), eth_sendRawTransaction |
-| **Frontier** | Planned | Mainnet hard fork, parallel execution, ecosystem |
-| **Odyssey** | Future | Cross-chain, mature ecosystem |
+| **Pioneer** | Completed (mainnet h=0…579058) | PoA round-robin, MDBX storage, 1s blocks, SRC-20 tokens — succeeded by Voyager 2026-04-25 |
+| **Voyager** | **Live on mainnet (v2.1.30)** | DPoS proposer rotation + BFT finality, EVM (revm 37), `eth_sendRawTransaction`, L1 peer auto-discovery, L2 cold-start gate |
+| **Frontier** | Phase F-1 scaffold landed; F-2…F-10 planned | Parallel transaction execution, sub-1s block time, mainnet hard fork |
+| **Odyssey** | Future | Cross-chain bridges, mature ecosystem, light clients |
 
 ## Documentation
 

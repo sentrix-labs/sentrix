@@ -1,8 +1,8 @@
 # Deploying Smart Contracts to Sentrix
 
-Sentrix testnet runs an EVM (revm 37) and accepts standard Ethereum tooling. This guide walks through deploying a Solidity contract via Remix in under 5 minutes.
+Sentrix runs an EVM (revm 37) on both mainnet and testnet, and accepts standard Ethereum tooling. This guide walks through deploying a Solidity contract via Remix in under 5 minutes.
 
-> **Mainnet:** EVM is currently disabled. Deploy on testnet for now.
+> **Network choice:** Use **testnet** (chain ID 7120) for development — get free SRX from the [faucet](https://faucet.sentriscloud.com). Use **mainnet** (chain ID 7119) for production deployments. EVM has been live on mainnet since the 2026-04-25 Voyager activation.
 
 ## Prerequisites
 

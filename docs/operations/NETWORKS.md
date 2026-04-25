@@ -10,9 +10,11 @@
 | P2P port | 30303 |
 | API port | 8545 |
 | Block time | 1s |
-| Validators | 4 (PoA round-robin: Foundation, Treasury, Core, Beacon) |
+| Validators | 4 (DPoS proposer rotation under BFT finality: Foundation, Treasury, Core, Beacon) |
 | Native coin | SRX |
-| Mode | Pioneer (forced via `SENTRIX_FORCE_PIONEER_MODE=1`; see ops note below) |
+| Consensus | **Voyager** (DPoS + BFT, `voyager_activated=true` since h=579047 / 2026-04-25) |
+| EVM | Active — `evm_activated=true` since the same height; MetaMask compatible |
+| Binary | v2.1.30 |
 
 ## Testnet
 
@@ -34,16 +36,15 @@ Testnet tokens have no real value. Use the faucet to get test SRX.
 
 Testnet runs in Docker on build host (`/opt/sentrix-testnet-docker/`) since
 the 2026-04-23 migration; fresh genesis at chain_id 7120, current
-height ~200K, binary v2.1.24 (`md5 a25f9d771648f6c851a6ee11867fe958`).
+height ~200K, binary v2.1.30.
 
-> **Mainnet operational note (2026-04-25):** mainnet currently runs
-> forced Pioneer (`SENTRIX_FORCE_PIONEER_MODE=1` env override on every
-> validator) after a Voyager activation attempt at h=557244 livelocked
-> on V2 BFT wiring. Voyager mainnet activation is **blocked by issue
-> [#292](https://github.com/sentrix-labs/sentrix/issues/292)**. Until
-> #292 lands, `VOYAGER_FORK_HEIGHT=18446744073709551615` (u64::MAX)
-> keeps the Voyager fork inert. Mainnet binary: v2.1.25
-> (`md5 5ad7804c0d7e68f8cab47872f7dbc7ac`).
+> **Mainnet operational note (2026-04-25, post-Voyager):** mainnet successfully
+> transitioned from Pioneer PoA to Voyager DPoS+BFT at h=579047. EVM was
+> activated in the same window. The first activation attempt at h=557244
+> livelocked on a peer-mesh partition; root cause was fixed in v2.1.26
+> (L1 multiaddr advertisements + L2 cold-start gate per PRs #297–#306)
+> and v2.1.27 (cold-start race PR #307). The `SENTRIX_FORCE_PIONEER_MODE`
+> emergency override is no longer set on any mainnet validator.
 
 ## Connecting
 

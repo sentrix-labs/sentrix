@@ -4,17 +4,19 @@ Sentrix runs the Ethereum Virtual Machine via [revm](https://github.com/blueallo
 
 ## Status
 
-- **Mainnet:** EVM disabled (`VOYAGER_EVM_HEIGHT=u64::MAX`)
-- **Testnet:** EVM active since block 752
+- **Mainnet:** EVM **active** since 2026-04-25 (h=579047), `evm_activated=true` set by `Blockchain::activate_evm()` during the Voyager mainnet activation. `chain_stats()` exposes the flag at `/chain/info`.
+- **Testnet:** EVM active since block 752.
 
 ## Activation
 
-EVM activates at the block height set by `VOYAGER_EVM_HEIGHT`. At that height:
+EVM activation is a one-shot operator step (or fork-height triggered) that calls `Blockchain::activate_evm()`. Once it runs:
 
-1. `Blockchain::activate_evm()` runs once
+1. `evm_activated=true` is persisted to chain.db
 2. All existing accounts get `code_hash = EMPTY_CODE_HASH` and `storage_root = EMPTY_STORAGE_ROOT`
 3. `eth_call`, `eth_sendRawTransaction`, etc. start accepting EVM transactions
 4. Block executor routes any tx with `data` field starting with `EVM:` through revm
+
+Mainnet activated at h=579047 (2026-04-25). Testnet activated at h=752 on the 2026-04-23 docker migration.
 
 ## Account Model
 
