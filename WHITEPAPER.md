@@ -1,13 +1,13 @@
 # Sentrix — Technical Whitepaper
 
-**Version 3.0 — April 2026**
+**Version 3.1 — 2026-04-25**
 **Author: SentrisCloud**
 
 ---
 
 ## Abstract
 
-Sentrix is a Layer-1 Proof-of-Authority blockchain engineered for fast, deterministic settlement. Built from scratch in Rust, it delivers 1-second block finality, Ethereum-compatible addressing, and a native fungible token standard (SRC-20). The chain is designed to evolve from a permissioned PoA network into a fully decentralized public chain through a phased transition to Delegated Proof of Stake.
+Sentrix is a Layer-1 blockchain engineered for fast, deterministic settlement. Built from scratch in Rust as a 14-crate workspace, it delivers 1-second blocks, Ethereum-compatible addressing, an MDBX-backed state layer, and a native fungible token standard (SRC-20). The chain runs a two-phase consensus design: **Pioneer** (Proof of Authority round-robin) on mainnet today, with **Voyager** (Delegated Proof of Stake + BFT finality + EVM execution) already live on testnet and pending mainnet activation.
 
 ---
 
@@ -55,7 +55,7 @@ Validators are sorted by address (ascending) to ensure all nodes agree on the sc
 
 ### 2.3 Block Time
 
-Target block time is **1 second**. Each validator produces one block per round. With N validators, each validator produces a block every N seconds.
+Block time is **1 second** (`BLOCK_TIME_SECS = 1`). Each validator produces one block per round. Mainnet runs **4 active validators** in round-robin (`expected_producer = sorted_validators[height % 4]`), so each validator produces a block every 4 seconds. `MIN_ACTIVE_VALIDATORS = 1` keeps the chain advancing even when 3 of 4 validators are offline; `MIN_BFT_VALIDATORS = 4` is the BFT-quorum threshold under Voyager.
 
 ### 2.4 Finality
 
@@ -129,7 +129,7 @@ Each transaction must satisfy:
 
 ### 4.4 Mempool
 
-Pending transactions are held in a priority queue ordered by fee (descending). Validators select the highest-fee transactions first, up to 100 per block.
+Pending transactions are held in a priority queue ordered by fee (descending). Validators select the highest-fee transactions first, up to `MAX_TX_PER_BLOCK = 5000` per block.
 
 ---
 
@@ -189,12 +189,14 @@ This guarantees no partial state corruption under any failure condition.
 
 ### 6.3 Block Rewards
 
+`HALVING_INTERVAL = 42_000_000` blocks. At 1-second block time, each era spans 42M seconds ≈ **1.33 years**.
+
 | Era | Block Range | Reward | Duration (~) |
 |---|---|---|---|
-| 0 | 0 — 41,999,999 | 1 SRX | ~4 years |
-| 1 | 42,000,000 — 83,999,999 | 0.5 SRX | ~4 years |
-| 2 | 84,000,000 — 125,999,999 | 0.25 SRX | ~4 years |
-| 3 | 126,000,000+ | 0.125 SRX | ~4 years |
+| 0 | 0 — 41,999,999 | 1 SRX | ~1.33 years |
+| 1 | 42,000,000 — 83,999,999 | 0.5 SRX | ~1.33 years |
+| 2 | 84,000,000 — 125,999,999 | 0.25 SRX | ~1.33 years |
+| 3 | 126,000,000+ | 0.125 SRX | ~1.33 years |
 | ... | ... | halves | ... |
 
 Rewards are clamped to the remaining supply headroom. Once `total_minted == MAX_SUPPLY`, block rewards become zero.
@@ -202,8 +204,8 @@ Rewards are clamped to the remaining supply headroom. Once `total_minted == MAX_
 ### 6.4 Fee Economics
 
 Every transaction fee is split:
+- **50% permanently burned** (`burn_fee_share = total_fee.div_ceil(2)`) — creates deflationary pressure
 - **50% to the block validator** — incentivizes block production
-- **50% permanently burned** — creates deflationary pressure
 
 As network activity grows, burn rate increases. Eventually, burn rate exceeds block reward rate, causing the circulating supply to **decrease over time**.
 
@@ -272,42 +274,29 @@ Sentrix operates a three-token model:
 
 ### 9.1 Protocol
 
-Nodes communicate via TCP using a length-prefixed JSON protocol:
-
-```
-[4 bytes: payload length (big-endian)] [JSON payload]
-```
-
-Maximum message size: 10 MB.
+Nodes communicate over **libp2p** with Noise XX encryption and Yamux multiplexing. Wire format is `bincode` (replaced JSON for ~3-5× smaller messages). Protocol version: `/sentrix/2.0.0`. Maximum RequestResponse payload: 10 MiB.
 
 ### 9.2 Message Types
 
 | Message | Direction | Purpose |
 |---|---|---|
-| Handshake | Bidirectional | Peer introduction, height exchange |
-| NewBlock | Broadcast | Propagate produced blocks |
-| NewTransaction | Broadcast | Propagate pending transactions |
-| GetChain / ChainResponse | Request-Response | Full chain synchronization |
-| GetHeight / HeightResponse | Request-Response | Quick height check |
-| Ping / Pong | Health check | Liveness monitoring |
+| Handshake / Identify | Bidirectional | Peer introduction, chain_id verification, height exchange |
+| NewBlock | Gossipsub broadcast | Propagate produced blocks (`sentrix/blocks/1`) |
+| NewTransaction | Gossipsub broadcast | Propagate pending transactions (`sentrix/txs/1`) |
+| GetBlocks / BlocksResponse | Request-Response | Range sync, capped at 50 blocks per batch |
+| Kademlia DHT | Background | Peer discovery |
 
 ### 9.3 Chain Synchronization
 
-New nodes sync using a **sandbox validation** protocol:
+New nodes sync using **range-based RequestResponse** (50 blocks per batch) backed by **Kademlia DHT** for peer discovery. Each batch is validated against the local state via the same two-pass atomic protocol as live block application — no separate "sandbox" path. This guarantees that a malicious peer cannot fast-forward a node into an inconsistent state.
 
-1. Request full chain from a peer
-2. Validate chain structure (hash links, block integrity)
-3. Replay all blocks in a sandbox Blockchain instance
-4. If all blocks pass validation, replace local state
-5. Persist to storage
-
-This prevents accepting invalid or malicious chains.
+Per-IP rate limiting: 5 connections / IP / 60 seconds, 5-minute ban; max 50 peers per node.
 
 ---
 
 ## 10. Storage
 
-Sentrix uses **libmdbx**, a memory-mapped B+ tree database (used by Reth/Erigon).
+Sentrix uses **libmdbx**, a memory-mapped B+ tree database (used by Reth and Erigon). MDBX replaced the original sled backend in v2.0.0 (the dedicated `sentrix-storage` crate wraps the C library with a Rust-safe `WriteBatch` and `NoWriteMap` mode).
 
 ### 10.1 Schema
 
@@ -316,8 +305,12 @@ Sentrix uses **libmdbx**, a memory-mapped B+ tree database (used by Reth/Erigon)
 | `state` | Blockchain state (accounts, authority, contracts, mempool) |
 | `block:{N}` | Individual block at height N |
 | `height` | Current chain height |
+| `trie_nodes` | SentrixTrie internal + leaf nodes |
+| `trie_values` | Account values keyed by 256-bit path |
+| `trie_roots` | Committed state root per block height |
+| `trie_committed_roots` | Reverse index NodeHash → version |
 
-Per-block storage enables efficient single-block reads without loading the entire chain.
+Per-block storage enables efficient single-block reads without loading the entire chain. Account state is committed into a **256-level Binary Sparse Merkle Tree** (BLAKE3 leaves, SHA-256 internal nodes, domain-separated). The state root is folded into the block hash from `STATE_ROOT_FORK_HEIGHT = 100_000` onwards.
 
 ---
 
@@ -330,19 +323,35 @@ Sentrix exposes an Ethereum-compatible JSON-RPC 2.0 interface supporting 20 stan
 - **Hardhat** — smart contract development and testing
 - **Block explorers** — third-party chain analysis
 
-Chain ID `7119` (`0x1bcf`) is registered for Sentrix.
+Chain ID `7119` (`0x1bcf`) is registered for Sentrix mainnet; `7120` is the testnet chain ID.
 
 ---
 
 ## 12. Roadmap
 
-| Phase | Target | Key Features |
+| Phase | Status | Key Features |
 |---|---|---|
-| **1** ✅ | 2026 Q2 | PoA engine, wallets, SRC-20, explorer, JSON-RPC |
-| **2** ✅ | 2026 Q2 | Full P2P, security audit, three-token model, block explorer |
-| **3** | 2026 Q3-Q4 | Public mainnet, multi-node deployment, wallet web UI |
-| **4** | 2027 | DPoS transition, staking, governance |
-| **5** | 2027-2028 | Smart contract VM, SDKs, cross-chain bridge, mobile wallet |
+| **Pioneer (PoA)** | LIVE | PoA round-robin engine, MDBX state, SentrixTrie, libp2p networking, SRC-20, JSON-RPC, security audits V1–V11 |
+| **Voyager (DPoS+BFT+EVM)** | TESTNET LIVE / MAINNET PENDING | DPoS staking, BFT finality, EVM execution. Active on testnet since 2026-04-23. Mainnet activation pending V2 main.rs wiring (GitHub #292). |
+| **Frontier** | FUTURE | dApp ecosystem expansion, real-user scaling, validator decentralization |
+| **Odyssey** | FUTURE | Cross-chain bridges, mature ecosystem, full public chain |
+
+---
+
+## 13. Current State (2026-04-25)
+
+| Item | Value |
+|---|---|
+| Mainnet binary | v2.1.25 |
+| Testnet binary | v2.1.24 |
+| Mainnet height | ~558,000+ |
+| Mainnet block time | 1 second |
+| Mainnet validators | 4 active (Foundation, Treasury, Core, Beacon) on Pioneer round-robin |
+| Mainnet mode | Pioneer with `SENTRIX_FORCE_PIONEER_MODE=1` emergency override (Voyager activation rolled back same-day; tracked in GitHub #292) |
+| Testnet | 4 validators, Voyager DPoS+BFT+EVM ACTIVE since 2026-04-23 docker migration, fresh genesis, h~200K |
+| Workspace | 14 Rust crates (`crates/sentrix-*`) + binary at `bin/sentrix/src/main.rs` |
+| Storage backend | MDBX (libmdbx) |
+| Tests | 500+ unit + 16 integration |
 
 ---
 
