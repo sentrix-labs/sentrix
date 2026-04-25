@@ -1,6 +1,6 @@
 //! Read/write set derivation for parallel transaction execution.
 //!
-//! Scaffold per `founder-private/audits/parallel-tx-execution-design.md` §Phase 1.
+//! Scaffold per `internal design doc` §Phase 1.
 //! Pure functions, no I/O, deterministic by construction. The actual
 //! body of `derive_access` is `unimplemented!`-free but returns a
 //! conservative `Pessimistic` access set so any caller that wires this

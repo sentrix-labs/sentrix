@@ -11,7 +11,7 @@
 //! ONE file (this one) instead of scanning the whole workspace.
 //!
 //! Extracted during the 45-crate split, Tier 1 item #2. See
-//! `founder-private/architecture/CRATE_SPLIT_PLAN.md`.
+//! `internal design doc`.
 //!
 //! # Design
 //!

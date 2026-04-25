@@ -2,8 +2,8 @@
 //!
 //! **Scaffold only.** This module exists as a type-system contract for the
 //! Frontier-fork parallel apply work documented in
-//! `founder-private/audits/parallel-tx-execution-design.md` +
-//! `founder-private/audits/frontier-mainnet-phase-implementation-plan.md`.
+//! `internal design doc` +
+//! `internal design doc`.
 //!
 //! Production code path is unchanged — `block_executor.rs` continues to
 //! apply transactions sequentially. The `derive_access` and

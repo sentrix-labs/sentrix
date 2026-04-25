@@ -63,8 +63,8 @@ fn extract_client_ip(request: &axum::http::Request<axum::body::Body>) -> String 
     // `SENTRIX_TRUST_PROXY=1`. Previously these headers were always
     // consulted first, so any client could spoof their source IP by
     // sending a fake X-Forwarded-For and bypass the per-IP rate limit
-    // wholesale. On VPS1/2/3 the RPC listener binds a local port and
-    // the Caddy LB (VPS4) is the only upstream — operators who want
+    // wholesale. On Foundation node/2/3 the RPC listener binds a local port and
+    // the Caddy LB (build host) is the only upstream — operators who want
     // the LB-set IP to be authoritative opt in via the env var; all
     // other deployments fall back to the TCP socket peer address.
     let trust_proxy = matches!(

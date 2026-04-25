@@ -68,32 +68,32 @@ SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 # `~/.config/sentrix/fleet.env` (git-ignored) sourced below.
 #
 # Expected env vars (build host operator):
-#   VPS1_USER, VPS1_WG, VPS1_SERVICE, VPS1_PORT
-#   VPS2_USER, VPS2_WG, VPS2_SERVICE, VPS2_PORT
-#   VPS3_USER, VPS3_WG, VPS3_SERVICE, VPS3_PORT          (mainnet core)
-#   VPS3_TUSER, VPS3_TWG, VPS3_TVAL{1..4}_PORT            (testnet)
+#   FOUNDATION_USER, FOUNDATION_WG, FOUNDATION_SERVICE, FOUNDATION_PORT
+#   TREASURY_USER, TREASURY_WG, TREASURY_SERVICE, TREASURY_PORT
+#   CORE_USER, CORE_WG, CORE_SERVICE, CORE_PORT          (mainnet core)
+#   TESTNET_USER, TESTNET_WG, TESTNET_VAL{1..4}_PORT            (testnet)
 FLEET_ENV="${SENTRIX_FLEET_ENV:-$HOME/.config/sentrix/fleet.env}"
 if [[ -f "$FLEET_ENV" ]]; then
     # shellcheck source=/dev/null
     source "$FLEET_ENV"
 else
     echo "  $(red "Fleet env file not found: $FLEET_ENV")"
-    echo "  Create it with VPS1_USER/VPS1_WG/VPS1_SERVICE/VPS1_PORT etc."
+    echo "  Create it with FOUNDATION_USER/FOUNDATION_WG/FOUNDATION_SERVICE/FOUNDATION_PORT etc."
     echo "  See scripts/emergency-deploy.sh header for required vars."
     exit 2
 fi
 
 # Build host maps from env. Format: "USER@HOST:SERVICE:API_PORT".
 declare -A MAINNET_HOSTS=(
-    [VPS1_Foundation]="${VPS1_USER}@${VPS1_WG}:${VPS1_SERVICE}:${VPS1_PORT}"
-    [VPS2_Treasury]="${VPS2_USER}@${VPS2_WG}:${VPS2_SERVICE}:${VPS2_PORT}"
-    [VPS3_Core]="${VPS3_USER}@${VPS3_WG}:${VPS3_SERVICE}:${VPS3_PORT}"
+    [foundation]="${FOUNDATION_USER}@${FOUNDATION_WG}:${FOUNDATION_SERVICE}:${FOUNDATION_PORT}"
+    [treasury]="${TREASURY_USER}@${TREASURY_WG}:${TREASURY_SERVICE}:${TREASURY_PORT}"
+    [core]="${CORE_USER}@${CORE_WG}:${CORE_SERVICE}:${CORE_PORT}"
 )
 declare -A TESTNET_HOSTS=(
-    [VPS3_tval1]="${VPS3_TUSER}@${VPS3_TWG}:sentrix-testnet-val1:${VPS3_TVAL1_PORT}"
-    [VPS3_tval2]="${VPS3_TUSER}@${VPS3_TWG}:sentrix-testnet-val2:${VPS3_TVAL2_PORT}"
-    [VPS3_tval3]="${VPS3_TUSER}@${VPS3_TWG}:sentrix-testnet-val3:${VPS3_TVAL3_PORT}"
-    [VPS3_tval4]="${VPS3_TUSER}@${VPS3_TWG}:sentrix-testnet-val4:${VPS3_TVAL4_PORT}"
+    [testnet_val1]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val1:${TESTNET_VAL1_PORT}"
+    [testnet_val2]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val2:${TESTNET_VAL2_PORT}"
+    [testnet_val3]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val3:${TESTNET_VAL3_PORT}"
+    [testnet_val4]="${TESTNET_USER}@${TESTNET_WG}:sentrix-testnet-val4:${TESTNET_VAL4_PORT}"
 )
 
 if [[ "$TARGET" == "mainnet" ]]; then
@@ -254,5 +254,5 @@ echo "         git push -u origin $GIT_BRANCH"
 echo "         gh pr create && gh pr merge --squash"
 echo "    2. Verify the CI/CD run that kicks off from the merge matches this"
 echo "       binary (same sha256 prefix: $BINARY_HASH)"
-echo "    3. Log this incident in founder-private/session-handoffs/"
+echo "    3. Log this incident in internal docs"
 echo

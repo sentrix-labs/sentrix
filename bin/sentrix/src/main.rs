@@ -1446,7 +1446,7 @@ async fn cmd_start(
             // re-broadcasting (every ADVERT_BROADCAST_INTERVAL) and
             // whether we should dial any active-set members we have
             // cached but no live connection to. Per the impl plan at
-            // founder-private/audits/peer-auto-discovery-implementation
+            // internal docs
             // -plan.md (L1 + L4 baked in).
             let mut last_advert_broadcast_at: Option<tokio::time::Instant> = None;
             let mut last_l1_tick_at = tokio::time::Instant::now()
@@ -1594,7 +1594,7 @@ async fn cmd_start(
                 // the exact moment of broadcast. Activation #2 on
                 // 2026-04-25 split-brained at h=578006 because not all
                 // 4 validators had a fully-formed mesh at the moment
-                // VPS1 broadcast its precommit.
+                // Foundation node broadcast its precommit.
                 //
                 // This second gate fires at EVERY loop iteration when
                 // BFT mode is active. If peer count is insufficient,
@@ -1630,8 +1630,8 @@ async fn cmd_start(
                 // L2 pre-flight gate (2026-04-25 incident response): refuse to
                 // flip into Voyager BFT mode if our libp2p peer count is below
                 // `active_set.len() - 1`. The mainnet livelock at h=557244 was
-                // caused by VPS5 having only 1 peer (VPS1) at activation
-                // moment — its proposals never reached VPS2/VPS3 and the
+                // caused by Beacon node having only 1 peer (Foundation node) at activation
+                // moment — its proposals never reached Treasury node/Core node and the
                 // chain ground out 30+ skip rounds in 16 minutes before the
                 // emergency rollback. With this gate, a partitioned validator
                 // stays in Pioneer instead and re-checks every loop tick;
@@ -3675,7 +3675,7 @@ mod tests {
     use super::*;
 
     /// L2 gate: 4-validator mesh requires 3 peers (active_set.len() - 1).
-    /// 2026-04-25 incident reproduction — VPS5 had 1 peer, would have
+    /// 2026-04-25 incident reproduction — Beacon node had 1 peer, would have
     /// been blocked by this check.
     #[test]
     fn peer_mesh_gate_blocks_partitioned_validator() {

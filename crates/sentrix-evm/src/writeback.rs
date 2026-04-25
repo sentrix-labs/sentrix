@@ -89,7 +89,7 @@ pub fn commit_state_to_account_db(
         // Post-Cancun (EIP-6780), SELFDESTRUCT only destroys the contract
         // if invoked in the same tx that CREATED it. revm already enforces
         // that; when we see is_selfdestructed() == true it IS a legitimate
-        // destroy. See founder-private/security/SECURITY_NOTES.md for
+        // destroy. See internal design doc for
         // partial-support scope (balance zero + code clear; storage slots
         // linger but are unreachable).
         if evm_account.is_selfdestructed() {

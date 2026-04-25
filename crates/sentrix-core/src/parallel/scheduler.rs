@@ -1,6 +1,6 @@
 //! Conflict-graph scheduler for parallel transaction batching.
 //!
-//! Scaffold per `founder-private/audits/parallel-tx-execution-design.md` §Phase 2.
+//! Scaffold per `internal design doc` §Phase 2.
 //! `build_batches` is currently a sequential-equivalent stub: it returns
 //! one tx per batch, preserving original block order. This is correct
 //! (every batch has zero internal conflicts) but extracts zero

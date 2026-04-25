@@ -9,7 +9,7 @@ repository = "https://github.com/sentrix-labs/sentrix"
 # Why this crate exists
 # -------------------------
 # Extracted from `sentrix-network::behaviour` during the 45-crate split (Tier 1
-# template #5 per `founder-private/architecture/CRATE_SPLIT_PLAN.md`). Lives
+# template #5 per `internal design doc`). Lives
 # separately so other crates (e.g. future `sentrix-sdk`, monitoring tools)
 # can reference the canonical wire types WITHOUT pulling the full libp2p
 # network stack as a transitive dep. The framing codec (`SentrixCodec`) and
