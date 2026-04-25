@@ -187,25 +187,23 @@ fn test_signed_tx_blocks_self_vs_peer_determinism() {
 /// from disk computes a different state-root than the producer that wrote
 /// it, that's the #268 class.
 ///
-/// **Currently fails on main.** When this test was written (2026-04-25),
-/// the producer's trie root at h=30 differs from `reloaded.trie_root_at(30)`
-/// even though both back into the same MDBX. The reference instance
-/// (replays the same blocks via peer-apply, never touches disk) matches the
-/// producer — so the divergence is purely on the disk-roundtrip path.
-/// Most likely culprit: `init_trie`'s backfill branch fires on the reload
-/// because `node_exists(&committed_root)` returns false for a root the
-/// producer just committed, and then the backfill recomputation produces
-/// a different root than the incremental path stamped (bug #3 class —
-/// supposed-to-be-fixed in PR #184 via `is_committed_root` guard).
+/// **History**: when first written (2026-04-25, this PR's predecessor) the
+/// test reproduced a real disk-roundtrip divergence — producer at h=30 had
+/// trie root `cfd6581…`, freshly loaded chain reading the same MDBX got
+/// `6310b98…`. Diagnosis traced it to `init_trie`'s `node_exists`
+/// false-positive on `empty_hash(0)`: the empty-trie sentinel is never
+/// materialised in `trie_nodes`, so any chain whose every committed root
+/// equalled the empty hash (coinbase-only test, genuinely-quiet recovery
+/// window) tripped a spurious backfill. The backfill rebuilt a non-empty
+/// root from AccountDB premine, persisted it to MDBX BEFORE the safeguard
+/// could fire, and even when the safeguard returned Err, `Storage::load_blockchain`
+/// swallowed it below STATE_ROOT_FORK_HEIGHT — leaving permanent corruption.
 ///
-/// Until #268 is closed, this test is `#[ignore]`'d so CI stays green.
-/// Run manually with:
-///   `cargo test -p sentrix-core --test fork_determinism \
-///     test_mdbx_roundtrip_then_peer_block -- --ignored --nocapture`
-/// Once #268 fixes the roundtrip divergence, drop the `#[ignore]` and the
-/// test becomes the permanent regression guard.
+/// Fixed by short-circuiting `node_exists` for `empty_hash(0)` in
+/// `Blockchain::init_trie`. This test now passes and locks that guard in
+/// place: any future change that re-introduces the false-positive will
+/// turn this test red.
 #[test]
-#[ignore = "currently reproduces #268 disk-roundtrip divergence — enable once that issue closes"]
 fn test_mdbx_roundtrip_then_peer_block() {
     let dir = TempDir::new().expect("tempdir");
     let storage = sentrix_core::storage::Storage::open(dir.path().to_str().unwrap())

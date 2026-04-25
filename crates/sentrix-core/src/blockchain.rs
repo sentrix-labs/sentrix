@@ -844,7 +844,24 @@ impl Blockchain {
                     // is, something has gone seriously wrong (manual data corruption,
                     // storage bug, regression).  Log at ERROR so ops are alerted; the
                     // backfill below may produce a state root that differs from peers.
-                    let node_missing = !trie.node_exists(&root_hash)?;
+                    //
+                    // ISSUE #268 FALSE-POSITIVE GUARD: empty_hash(0) is the sentinel
+                    // for an empty trie level — it's NEVER materialised in trie_nodes
+                    // because empty subtrees are short-circuited. So node_exists()
+                    // always returns false for it. On a chain where no block has
+                    // mutated any account (coinbase-only blocks against an empty
+                    // initial state, or genuinely-quiet recovery windows), every
+                    // committed root equals empty_hash(0) and the old check fired a
+                    // spurious backfill. The backfill from AccountDB then computed
+                    // a non-empty root (because AccountDB has the genesis premine
+                    // entries), persisted it to MDBX BEFORE the safeguard ran, and
+                    // even if the safeguard returned Err the chain.db was already
+                    // corrupted. Below STATE_ROOT_FORK_HEIGHT, Storage::load_blockchain
+                    // swallows that Err — so the corruption became permanent.
+                    // Treat the empty sentinel as "node exists" since the empty
+                    // subtree is trivially correct without storage.
+                    let node_missing = root_hash != sentrix_trie::node::empty_hash(0)
+                        && !trie.node_exists(&root_hash)?;
                     if node_missing {
                         tracing::error!(
                             "trie: CRITICAL — root {} for height {} is recorded in trie_roots \
