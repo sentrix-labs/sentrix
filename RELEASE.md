@@ -16,7 +16,10 @@ Sentrix follows [Semantic Versioning](https://semver.org/):
 5. **Create PR** — merge to `main` via PR with CI passing
 6. **Tag release** — `git tag -a vX.Y.Z -m "vX.Y.Z"` then `git push origin vX.Y.Z`
 7. **GitHub Release** — create release from tag with changelog excerpt
-8. **Verify deployment** — CI/CD deploys automatically; check health on all 3 VPS
+8. **Deploy** — CI/CD `deploy` job is **disabled**. Run
+   `./scripts/fast-deploy.sh mainnet` from VPS4 (or `testnet` for
+   testnet) to ship the binary; CI runs tests only. Then check health
+   on all 3 VPS.
 
 ## Deployment
 

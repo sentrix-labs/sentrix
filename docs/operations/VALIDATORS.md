@@ -1,16 +1,17 @@
 # Validators
 
-3 validators across 3 VPS, round-robin PoA (v2.0.0).
+4 validators across 3 VPS, round-robin PoA (v2.1.25).
 
 ## Current Set
 
 | Slot | Name | Address prefix | VPS | Service |
 |------|------|---------------|-----|---------|
-| 0 | Sentrix Treasury | `0x0804...` | VPS2 | sentrix-val5 |
-| 1 | Sentrix Foundation | `0x753f...` | VPS1 | sentrix-node |
-| 2 | Sentrix Core | `0x87c9...` | VPS3 | sentrix-core |
+| 0 | Sentrix Treasury   | `0x0804...` | VPS2 | sentrix-val5    |
+| 1 | Sentrix Foundation | `0x753f...` | VPS1 | sentrix-node    |
+| 2 | Sentrix Core       | `0x87c9...` | VPS3 | sentrix-core    |
+| 3 | Sentrix Beacon     | `0x...`     | VPS2 | sentrix-beacon  |
 
-Sorted by address. Block producer = `height % 3`.
+Sorted by address. Block producer = `height % 4`.
 
 (Nusantara, BlockForge Asia, PacificStake, Archipelago — decommissioned during v2.0.0 reset; services stopped, NOT on chain.)
 
@@ -50,7 +51,10 @@ sentrix validator rename --address 0x... --name "New Name"
 sentrix validator remove --address 0x...
 ```
 
-Min 3 active validators enforced — can't go below that.
+`MIN_ACTIVE_VALIDATORS = 1` (since PR #234, v2.1.11). The chain can
+proceed with a single active validator if the rest are jailed or
+inactive. `MIN_BFT_VALIDATORS = 4` is the BFT-quorum floor for
+Voyager activation.
 
 ## Audit Trail
 
@@ -62,7 +66,10 @@ curl -H "X-API-Key: <key>" http://[NODE_IP]:8545/admin/log
 
 ## Economics
 
-Each validator produces ~28,800 blocks/day (3 validators × 1s blocks ÷ 3 slots). That's ~28,800 SRX/day per validator from rewards alone, plus `floor(fee/2)` from each included transaction.
+Each validator produces ~21,600 blocks/day (86,400 1-second slots ÷ 4
+validators). That's ~21,600 SRX/day per validator from rewards alone,
+plus `floor(fee/2)` from each included transaction. Total chain
+throughput stays at 86,400 blocks/day (1s block time).
 
 ## Voyager
 
