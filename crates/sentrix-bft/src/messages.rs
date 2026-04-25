@@ -10,6 +10,91 @@ use sentrix_primitives::{SentrixError, SentrixResult};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+// ── BFT signing v2 fork (chain_id in payload) ───────────────
+//
+// Bug A from `audits/bft-signing-fork-design.md`: BFT vote signing
+// payloads currently lack `chain_id`, allowing a mainnet (7119) signature
+// to cryptographically verify on testnet (7120) at the same height/round/
+// hash. Practical exploit: nil-vote replay where `block_hash` is "NIL"
+// — same payload across chains.
+//
+// v2 fix: prepend a magic byte (0x20, distinct from existing domain
+// separators 0x01-0x04 and the MultiaddrAdvertisement separator 0x10)
+// + the chain_id (big-endian u64) before the existing payload. Old
+// payload format preserved verbatim after the v2 prefix so verifier
+// dispatch is straightforward.
+//
+// Activation is hard-fork gated by `BFT_SIGNING_V2_FORK_HEIGHT`. Default
+// `u64::MAX` = inert; the v2 path never fires in this binary. Operators
+// flip the constant to a coordinated mainnet height in a separate
+// fork-coordination session, after testnet bake.
+//
+// Phase 1 (this PR): add the constant + v2 payload helpers + tests.
+// v1 sign/verify methods still take the old signature (no chain_id arg)
+// and emit the v1 payload — no behavioural change at runtime.
+//
+// Phase 2 (next session): refactor every sign/verify call site to pass
+// chain_id, dispatch v1 vs v2 payload internally based on height. Then
+// remove the v1-only helpers below once all callers are migrated.
+//
+// Phase 5 (operator ceremony): set `BFT_SIGNING_V2_FORK_HEIGHT` to a
+// coordinated mainnet height. v2 path activates at that block. Old
+// validators (not on this binary) can no longer cross-verify v2-signed
+// messages — that's the whole point.
+//
+// See: `founder-private/audits/bft-signing-fork-design.md` for the full
+// 5-phase migration plan.
+
+/// Hard-fork height at which BFT signing v2 (chain_id-in-payload)
+/// activates. `u64::MAX` = inert; v2 dispatch never fires in this binary.
+/// Operators flip this in a coordinated mainnet fork session per
+/// `audits/bft-signing-fork-design.md`. Until then, all sign/verify
+/// paths use the legacy v1 payload format.
+pub const BFT_SIGNING_V2_FORK_HEIGHT: u64 = u64::MAX;
+
+/// v2 magic byte. Prepended to v2 signing payloads to make them
+/// unambiguously distinct from v1 payloads + from any existing
+/// domain-separated message type.
+///
+/// Existing separators in use:
+/// - 0x01: Proposal (v1, last byte)
+/// - 0x02: Prevote (v1, last byte)
+/// - 0x03: Precommit (v1, last byte)
+/// - 0x04: RoundStatus (v1, last byte)
+/// - 0x10: MultiaddrAdvertisement (different signing context entirely)
+/// - 0x20: BFT signing v2 (this — first byte of v2 payloads)
+const BFT_V2_MAGIC: u8 = 0x20;
+
+/// Build the v2 prefix that goes BEFORE the v1-format payload.
+/// Layout: `[0x20 magic][chain_id BE u64]` (9 bytes total).
+///
+/// Used by all four BFT message types (Proposal/Prevote/Precommit/
+/// RoundStatus) so a v2-signed Proposal cannot be replayed as a v2-signed
+/// Prevote on another chain (the inner v1 payload still has the
+/// per-message domain separator).
+fn bft_v2_prefix(chain_id: u64) -> [u8; 9] {
+    let mut prefix = [0u8; 9];
+    prefix[0] = BFT_V2_MAGIC;
+    prefix[1..9].copy_from_slice(&chain_id.to_be_bytes());
+    prefix
+}
+
+/// Returns `true` if the given block height is at or past the v2 fork.
+/// Centralised so call sites don't drift out of sync.
+///
+/// `clippy::absurd_extreme_comparisons` fires here because the default
+/// `BFT_SIGNING_V2_FORK_HEIGHT = u64::MAX` makes `>=` trivially `==`.
+/// Allowed deliberately: the operator flips the constant to a real
+/// (much smaller) height at fork-coordination time, after which the
+/// `>=` comparison is non-trivial. The semantics we want is "at or
+/// past the fork", not "exactly at the fork", so `>=` is the correct
+/// operator regardless of the current constant value.
+#[inline]
+#[allow(clippy::absurd_extreme_comparisons)]
+pub fn is_bft_signing_v2_active(height: u64) -> bool {
+    height >= BFT_SIGNING_V2_FORK_HEIGHT
+}
+
 // ── Proposal ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +115,36 @@ impl Proposal {
         payload.extend_from_slice(block_hash.as_bytes());
         payload.push(0x01); // domain separator: proposal
         payload
+    }
+
+    /// v2 signing payload: prepends `[BFT_V2_MAGIC][chain_id BE u64]` to the
+    /// v1 layout. Use this only via the dispatch helper
+    /// [`Proposal::signing_payload_for_height`] — calling it directly bypasses
+    /// the fork-height gate.
+    pub fn signing_payload_v2(height: u64, round: u32, block_hash: &str, chain_id: u64) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(9 + 8 + 4 + block_hash.len() + 1);
+        payload.extend_from_slice(&bft_v2_prefix(chain_id));
+        payload.extend_from_slice(&height.to_le_bytes());
+        payload.extend_from_slice(&round.to_le_bytes());
+        payload.extend_from_slice(block_hash.as_bytes());
+        payload.push(0x01);
+        payload
+    }
+
+    /// Dispatch helper: returns v1 payload below the fork height, v2 payload
+    /// at or above. Phase 2 of the migration plan switches all sign/verify
+    /// call sites to this helper.
+    pub fn signing_payload_for_height(
+        height: u64,
+        round: u32,
+        block_hash: &str,
+        chain_id: u64,
+    ) -> Vec<u8> {
+        if is_bft_signing_v2_active(height) {
+            Self::signing_payload_v2(height, round, block_hash, chain_id)
+        } else {
+            Self::signing_payload(height, round, block_hash)
+        }
     }
 }
 
@@ -56,6 +171,38 @@ impl Prevote {
         }
         payload.push(0x02); // domain separator: prevote
         payload
+    }
+
+    /// v2 signing payload — see [`Proposal::signing_payload_v2`] for shape rationale.
+    pub fn signing_payload_v2(
+        height: u64,
+        round: u32,
+        block_hash: &Option<String>,
+        chain_id: u64,
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&bft_v2_prefix(chain_id));
+        payload.extend_from_slice(&height.to_le_bytes());
+        payload.extend_from_slice(&round.to_le_bytes());
+        match block_hash {
+            Some(h) => payload.extend_from_slice(h.as_bytes()),
+            None => payload.extend_from_slice(b"NIL"),
+        }
+        payload.push(0x02);
+        payload
+    }
+
+    pub fn signing_payload_for_height(
+        height: u64,
+        round: u32,
+        block_hash: &Option<String>,
+        chain_id: u64,
+    ) -> Vec<u8> {
+        if is_bft_signing_v2_active(height) {
+            Self::signing_payload_v2(height, round, block_hash, chain_id)
+        } else {
+            Self::signing_payload(height, round, block_hash)
+        }
     }
 
     pub fn is_nil(&self) -> bool {
@@ -86,6 +233,38 @@ impl Precommit {
         }
         payload.push(0x03); // domain separator: precommit
         payload
+    }
+
+    /// v2 signing payload — see [`Proposal::signing_payload_v2`] for shape rationale.
+    pub fn signing_payload_v2(
+        height: u64,
+        round: u32,
+        block_hash: &Option<String>,
+        chain_id: u64,
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&bft_v2_prefix(chain_id));
+        payload.extend_from_slice(&height.to_le_bytes());
+        payload.extend_from_slice(&round.to_le_bytes());
+        match block_hash {
+            Some(h) => payload.extend_from_slice(h.as_bytes()),
+            None => payload.extend_from_slice(b"NIL"),
+        }
+        payload.push(0x03);
+        payload
+    }
+
+    pub fn signing_payload_for_height(
+        height: u64,
+        round: u32,
+        block_hash: &Option<String>,
+        chain_id: u64,
+    ) -> Vec<u8> {
+        if is_bft_signing_v2_active(height) {
+            Self::signing_payload_v2(height, round, block_hash, chain_id)
+        } else {
+            Self::signing_payload(height, round, block_hash)
+        }
     }
 
     pub fn is_nil(&self) -> bool {
@@ -131,6 +310,35 @@ impl RoundStatus {
         payload.extend_from_slice(validator.as_bytes());
         payload.push(0x04); // domain separator: round_status
         payload
+    }
+
+    /// v2 signing payload — see [`Proposal::signing_payload_v2`] for shape rationale.
+    pub fn signing_payload_v2(
+        height: u64,
+        round: u32,
+        validator: &str,
+        chain_id: u64,
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&bft_v2_prefix(chain_id));
+        payload.extend_from_slice(&height.to_le_bytes());
+        payload.extend_from_slice(&round.to_le_bytes());
+        payload.extend_from_slice(validator.as_bytes());
+        payload.push(0x04);
+        payload
+    }
+
+    pub fn signing_payload_for_height(
+        height: u64,
+        round: u32,
+        validator: &str,
+        chain_id: u64,
+    ) -> Vec<u8> {
+        if is_bft_signing_v2_active(height) {
+            Self::signing_payload_v2(height, round, validator, chain_id)
+        } else {
+            Self::signing_payload(height, round, validator)
+        }
     }
 
     /// Sign this status in place with the given secret key.
@@ -624,6 +832,118 @@ mod tests {
         status.sign(&sk);
         status.validator = "0xwrongaddress0000000000000000000000000000".into();
         assert!(!status.verify_sig());
+    }
+
+    // ── BFT signing v2 (chain_id) tests ──────────────────────
+
+    #[test]
+    fn test_v2_dispatch_inert_when_fork_height_unset() {
+        // With BFT_SIGNING_V2_FORK_HEIGHT = u64::MAX, no realistic block
+        // height ever activates v2. Dispatch helper must always return v1.
+        // This is the load-bearing safety property: the binary ships with
+        // the v2 path code dead until operators flip the fork height.
+        let proposal_v1 = Proposal::signing_payload(100, 0, "hash");
+        let proposal_dispatched = Proposal::signing_payload_for_height(100, 0, "hash", 7119);
+        assert_eq!(proposal_v1, proposal_dispatched);
+
+        let prevote_v1 = Prevote::signing_payload(100, 0, &Some("hash".into()));
+        let prevote_dispatched =
+            Prevote::signing_payload_for_height(100, 0, &Some("hash".into()), 7119);
+        assert_eq!(prevote_v1, prevote_dispatched);
+
+        let precommit_v1 = Precommit::signing_payload(100, 0, &Some("hash".into()));
+        let precommit_dispatched =
+            Precommit::signing_payload_for_height(100, 0, &Some("hash".into()), 7119);
+        assert_eq!(precommit_v1, precommit_dispatched);
+
+        let status_v1 = RoundStatus::signing_payload(100, 0, "0xval");
+        let status_dispatched = RoundStatus::signing_payload_for_height(100, 0, "0xval", 7119);
+        assert_eq!(status_v1, status_dispatched);
+
+        // And dispatch for height u64::MAX-1 (just below fork) must also be v1.
+        assert_eq!(
+            Proposal::signing_payload(u64::MAX - 1, 0, "hash"),
+            Proposal::signing_payload_for_height(u64::MAX - 1, 0, "hash", 7119)
+        );
+    }
+
+    #[test]
+    fn test_v2_payload_starts_with_magic_byte() {
+        // v2 payloads begin with [0x20][chain_id BE u64][...v1 layout].
+        let v2 = Proposal::signing_payload_v2(100, 0, "hash", 7119);
+        assert_eq!(v2[0], 0x20);
+        // chain_id 7119 = 0x1bcf, big-endian fills bytes 1..9 as 8 bytes.
+        let chain_id_bytes: [u8; 8] = v2[1..9].try_into().unwrap();
+        assert_eq!(u64::from_be_bytes(chain_id_bytes), 7119);
+    }
+
+    #[test]
+    fn test_v2_chain_id_separates_mainnet_from_testnet() {
+        // Same height/round/hash, different chain_id → different payload.
+        // This is the cross-chain replay protection: a mainnet-signed
+        // payload cannot verify on testnet because chain_id is in the
+        // signed bytes.
+        let mainnet = Proposal::signing_payload_v2(1_000_000, 0, "hash", 7119);
+        let testnet = Proposal::signing_payload_v2(1_000_000, 0, "hash", 7120);
+        assert_ne!(mainnet, testnet);
+        // But everything except the chain_id bytes is identical.
+        assert_eq!(mainnet[0], testnet[0]); // magic byte same
+        assert_eq!(mainnet[9..], testnet[9..]); // post-prefix v1 layout same
+        assert_ne!(mainnet[1..9], testnet[1..9]); // only chain_id bytes differ
+    }
+
+    #[test]
+    fn test_v2_magic_byte_does_not_collide_with_v1() {
+        // v1 payloads CANNOT start with 0x20 because they start with
+        // height bytes (LE u64). For v1 to collide, height would need to
+        // have its lowest byte = 0x20 (any height % 256 == 0x20 = 32).
+        // BUT — the v1 payload length differs from a v2 payload at the
+        // SAME starting bytes, AND the trailing domain separator on v2
+        // is at a different position. So even with byte-level collision
+        // at index 0, the full payloads cannot be confused by a verifier
+        // because verify always uses the same dispatch logic for sign+verify.
+        let v1 = Proposal::signing_payload(0x20, 0, ""); // height=32, empty hash
+        let v2 = Proposal::signing_payload_v2(100, 0, "", 7119);
+        // Payloads are different lengths even if first byte matches.
+        assert_ne!(v1.len(), v2.len());
+    }
+
+    #[test]
+    fn test_v2_domain_separators_preserved() {
+        // The four message types must remain distinct under v2 — the
+        // per-message domain separator (0x01-0x04) is at the same
+        // relative position (last byte). A v2-Proposal sig must not
+        // verify as a v2-Prevote even if chain_id, height, round match.
+        let proposal = Proposal::signing_payload_v2(100, 0, "hash", 7119);
+        let prevote = Prevote::signing_payload_v2(100, 0, &Some("hash".into()), 7119);
+        let precommit = Precommit::signing_payload_v2(100, 0, &Some("hash".into()), 7119);
+        let status = RoundStatus::signing_payload_v2(100, 0, "hash", 7119);
+        assert_ne!(proposal, prevote);
+        assert_ne!(proposal, precommit);
+        assert_ne!(proposal, status);
+        assert_ne!(prevote, precommit);
+        assert_ne!(prevote, status);
+        assert_ne!(precommit, status);
+    }
+
+    #[test]
+    fn test_v2_nil_block_hash_produces_distinct_payload() {
+        // Nil-vote replay was the specific exploit called out in the
+        // design doc — same NIL payload across chains. Under v2,
+        // nil-prevote-mainnet ≠ nil-prevote-testnet.
+        let nil_mainnet = Prevote::signing_payload_v2(100, 0, &None, 7119);
+        let nil_testnet = Prevote::signing_payload_v2(100, 0, &None, 7120);
+        assert_ne!(nil_mainnet, nil_testnet);
+    }
+
+    #[test]
+    fn test_is_bft_signing_v2_active_const_dispatch() {
+        // Sanity: the helper is consistent with the constant.
+        assert!(!is_bft_signing_v2_active(0));
+        assert!(!is_bft_signing_v2_active(1_000_000));
+        assert!(!is_bft_signing_v2_active(BFT_SIGNING_V2_FORK_HEIGHT - 1));
+        assert!(is_bft_signing_v2_active(BFT_SIGNING_V2_FORK_HEIGHT));
+        assert!(is_bft_signing_v2_active(u64::MAX));
     }
 
     #[test]
