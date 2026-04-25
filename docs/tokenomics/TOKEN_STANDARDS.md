@@ -49,7 +49,8 @@ Explorer: `/explorer/tokens` and `/explorer/token/{contract}`.
 
 ## SNTX
 
-First SRC-20 token (ERC-20 via Sentrix EVM). Sentrix Utility.
+First **native** SRC-20 token on Sentrix (deployed via the Pioneer-era
+native SRC-20 engine, not the EVM). Sentrix Utility.
 
 | | |
 |-|-|

@@ -1,11 +1,15 @@
 # CI/CD
 
-GitHub Actions pipeline. Every merge to `main` runs tests, builds a binary, and deploys to all production nodes.
+GitHub Actions runs the **test** job on every push and PR. The
+**deploy** job is **disabled** — production binaries ship via
+`scripts/fast-deploy.sh` from VPS4, not from CI.
 
 ## Pipeline
 
 ```
-Push to main → TEST → DEPLOY (only main branch)
+Push / PR  →  TEST  →  (deploy disabled)
+                       ↓
+                  fast-deploy.sh from VPS4 (manual)
 ```
 
 ### Test Job (every push + PR)
@@ -13,44 +17,74 @@ Push to main → TEST → DEPLOY (only main branch)
 1. `cargo deny check` — license + supply chain
 2. `cargo clippy --tests -- -D warnings` — zero warnings (deny unwrap/expect/panic)
 3. `cargo build --release`
-4. `cargo test` — 551 tests
-5. Upload binary as artifact (1-day retention)
+4. `cargo test` — 551+ tests across the 14-crate workspace
+5. Upload binary as artifact (1-day retention, audit-only)
 
-### Deploy Job (main only, after test passes)
+The artifact is **not** auto-deployed; it exists so reviewers can pull
+the exact CI binary if they need to reproduce a test result.
 
-Phase 1 — Upload binaries to all VPS while nodes still running (minimize downtime).
+## Deploy: `scripts/fast-deploy.sh` (from VPS4)
 
-Phase 2 — Stop in reverse order:
-```
-[NODE_3] → [NODE_2] → [NODE_1]
-```
-Secondary nodes stop first so primary can finish processing in-flight blocks. Prevents orphan blocks.
+VPS4 (the dev/edge host) is the canonical deploy origin. The script
+builds inside a `rust:1.95-bullseye` container (glibc 2.31, compatible
+with both Ubuntu 22.04 and 24.04 production targets), uploads the
+binary to VPS1/VPS2/VPS3 over the wg1 WireGuard mesh, and does a
+rolling restart with a bounded health check.
 
-Phase 3 — Replace binary on each VPS:
 ```bash
-cp /tmp/sentrix-new /opt/sentrix/sentrix && chmod +x /opt/sentrix/sentrix
+# From VPS4
+./scripts/fast-deploy.sh mainnet          # asks for confirmation
+./scripts/fast-deploy.sh testnet          # silent (testnet docker)
+
+# Rollback to a prior release on disk
+SENTRIX_ROLLBACK=/opt/sentrix/releases/<prev> \
+  ./scripts/fast-deploy.sh mainnet
 ```
 
-Phase 4 — Start in forward order:
-```
-[NODE_1] → [NODE_2] → [NODE_3]
-```
-Primary first so peers can connect immediately.
+End-to-end ~3–5 minutes. Builds once, copies the same byte-identical
+binary to every host (no per-host recompile, no glibc skew).
 
-Phase 5 — Health check after 35s stabilization:
-```bash
-curl -sf http://[NODE_IP]:8545/chain/info | jq .height
+### Stop / start order (rolling)
+
+The script stops validators in reverse order and starts them in forward
+order:
+
 ```
-Verify all nodes responding and height advancing.
+stop:  VPS3 → VPS2 → VPS1
+start: VPS1 → VPS2 → VPS3
+```
+
+Primary (VPS1, Foundation) finishes processing in-flight blocks last and
+is back up first so peers reconnect quickly. Wrong order can produce
+orphan blocks — learned the hard way.
+
+### Health check
+
+After 35 s stabilization the script polls `/chain/info` on each VPS
+and verifies height is advancing.
+
+## Break-Glass: `scripts/emergency-deploy.sh`
+
+Same primitive as `fast-deploy.sh` but **skips the preflight test gate**
+and requires a strict confirmation phrase. Use only when:
+
+- GitHub Actions is down and you need to ship a fix.
+- The chain has halted and a regression must be bypassed.
+- An exploit is in flight and the patch ships ahead of normal CI.
+
+This is rare — `fast-deploy.sh` is the default path.
 
 ## Branch Protection
 
-`main` requires PR + CI pass. Admin can bypass in emergencies.
+`main` requires PR + CI test pass. Admin can bypass in emergencies.
 
 ## Design Choices
 
-Binary artifacts, not Docker. All nodes get the exact same compiled binary. No registry dependency.
-
-Stop/start order matters. Learned from production — wrong order causes chain forks.
-
-No auto-rollback. If deploy fails health check, investigate manually. Auto-rollback masks root causes.
+- **Binary artifacts, not Docker** for mainnet. All nodes get the exact
+  same compiled binary from the VPS4 build. No registry dependency.
+  (Testnet runs in docker on VPS4 since 2026-04-23.)
+- **CI test, not CI deploy.** Auto-deploy + manual hot-deploy creates a
+  race where the same commit ships twice. Disabled in favour of a
+  single canonical path.
+- **No auto-rollback.** If a deploy fails health check, investigate
+  manually. Auto-rollback hides root causes.

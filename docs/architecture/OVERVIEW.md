@@ -22,34 +22,32 @@ Sentrix is a Layer-1 blockchain written in Rust. PoA consensus, account-based mo
 
 ## Module Map
 
+Sentrix is a Cargo workspace. Each top-level concern lives in its own
+crate under `crates/`; the binary at `bin/sentrix/` wires them together.
+
 ```
-src/core/blockchain.rs       Chain state, genesis, constants
-src/core/block_producer.rs   Block creation (coinbase + mempool txs)
-src/core/block_executor.rs   Two-pass validate-then-commit
-src/core/mempool.rs          Priority queue, per-sender caps, TTL
-src/core/authority.rs        Validators, round-robin, admin audit log
-src/core/transaction.rs      ECDSA signing, nonce, chain_id
-src/core/account.rs          Balances (u64 sentri), fee split
-src/core/trie/               State trie — 256-level Binary SMT
-src/core/vm.rs               SRC-20 token engine
-src/core/block.rs            Block struct, hashing
-src/core/merkle.rs           SHA-256 tx merkle root
-src/network/libp2p_node.rs   P2P swarm, broadcast, sync
-src/network/behaviour.rs     Identify + RequestResponse
-src/network/transport.rs     TCP → Noise XX → Yamux
-src/network/sync.rs          Incremental block sync
-src/api/routes.rs            REST (25+ endpoints), rate limiting
-src/api/jsonrpc.rs           JSON-RPC 2.0 (20 methods)
-src/api/explorer.rs          12-page block explorer
-src/wallet/                  Keygen, keystore (Argon2id)
-src/storage/db.rs            MDBX persistence, hash index
-src/types/error.rs           SentrixError (14 variants)
+crates/sentrix-primitives/      Block, Transaction, Account, Error types
+crates/sentrix-codec/           Wire-format encoding helpers
+crates/sentrix-wire/            Wire-protocol message types
+crates/sentrix-wallet/          Keygen, Argon2id keystore
+crates/sentrix-trie/            256-level Binary Sparse Merkle Tree
+crates/sentrix-staking/         DPoS, epoch rotation, slashing
+crates/sentrix-evm/             revm 37 adapter
+crates/sentrix-precompiles/     EVM precompiles
+crates/sentrix-bft/             BFT consensus (timeout-only round advance)
+crates/sentrix-core/            Blockchain, authority, executor, mempool,
+                                token engine, two-pass validator
+crates/sentrix-network/         libp2p P2P, gossipsub, kademlia, sync
+crates/sentrix-rpc/             REST (60+ endpoints) + JSON-RPC 2.0 + explorer
+crates/sentrix-rpc-types/       Shared RPC request/response types
+crates/sentrix-storage/         MDBX wrapper, ChainStorage API, hash index
+bin/sentrix/src/main.rs         CLI entry point
 ```
 
 ## How Blocks Work
 
 1. Validator checks if it's their turn: `height % validator_count`
-2. Builds coinbase (1 SRX reward) + grabs up to 100 txs from mempool
+2. Builds coinbase (1 SRX reward) + grabs up to 5,000 txs from mempool (sorted by fee, highest first)
 3. Two-pass execution:
    - **Pass 1**: Validate everything on a copy — if anything fails, reject the whole block
    - **Pass 2**: Commit — credit coinbase, execute transfers, burn fees, update trie
@@ -69,9 +67,8 @@ src/types/error.rs           SentrixError (14 variants)
 
 | | |
 |-|-|
-| Source files | ~50 |
 | Lines of code | ~22,500+ |
-| Tests | 551 |
-| Workspace crates | 12 + 1 binary |
+| Tests | 551+ |
+| Workspace crates | 14 + 1 binary |
 | `unsafe` blocks | 0 |
 | License | BUSL-1.1 |

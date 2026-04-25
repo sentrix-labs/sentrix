@@ -8,7 +8,10 @@ If you discover a security vulnerability in Sentrix, we appreciate your responsi
 
 ### How to report
 
-Send an email to: **sentriscloud@gmail.com**
+Send an email to the maintainer address listed on the Sentrix Labs
+GitHub organization profile (<https://github.com/sentrix-labs>), or
+open a private GitHub Security Advisory at
+<https://github.com/sentrix-labs/sentrix/security/advisories/new>.
 
 Please include:
 - Description of the vulnerability
@@ -45,11 +48,16 @@ We consider security research conducted in accordance with this policy to be aut
 ### Scope
 
 The following are **in scope**:
-- Core blockchain engine (`src/core/`)
-- Wallet and keystore (`src/wallet/`)
-- Network protocol (`src/network/`)
-- API endpoints (`src/api/`)
-- Cryptographic implementations
+- Core blockchain engine (`crates/sentrix-core/`)
+- BFT consensus (`crates/sentrix-bft/`)
+- DPoS staking (`crates/sentrix-staking/`)
+- State trie (`crates/sentrix-trie/`)
+- Storage layer (`crates/sentrix-storage/`)
+- EVM adapter and precompiles (`crates/sentrix-evm/`, `crates/sentrix-precompiles/`)
+- Wallet and keystore (`crates/sentrix-wallet/`)
+- Network protocol (`crates/sentrix-network/`)
+- API endpoints (`crates/sentrix-rpc/`, `crates/sentrix-rpc-types/`)
+- Cryptographic implementations across the workspace
 
 The following are **out of scope**:
 - Third-party dependencies (report to their maintainers)

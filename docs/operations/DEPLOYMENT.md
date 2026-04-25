@@ -90,7 +90,28 @@ sudo systemctl daemon-reload && sudo systemctl enable --now sentrix-node
 | `SENTRIX_API_KEY` | (none) | Auth for write endpoints. Unset = all public |
 | `SENTRIX_DATA_DIR` | `./data` | Chain data path |
 | `SENTRIX_CORS_ORIGIN` | (none) | CORS origin. Unset = restrictive |
+| `SENTRIX_CHAIN_ID` | `7119` | `7119` mainnet, `7120` testnet |
+| `SENTRIX_API_PORT` | `8545` | REST/JSON-RPC port |
+| `SENTRIX_WALLET_PASSWORD` | (none) | Keystore decrypt; sourced from systemd `EnvironmentFile` (mode 600), never inline |
+| `SENTRIX_LEGACY_VALIDATION_HEIGHT` | (none) | Cutoff height below which legacy chain.db artefacts are tolerated. Set to `557144` on every mainnet validator (closes [#268](https://github.com/sentrix-labs/sentrix/issues/268)) |
+| `SENTRIX_FORCE_PIONEER_MODE` | `0` | Emergency override: forces Pioneer PoA regardless of `VOYAGER_FORK_HEIGHT`. Currently `1` on every mainnet validator (Voyager activation rolled back 2026-04-25, see [EMERGENCY_ROLLBACK.md](EMERGENCY_ROLLBACK.md)) |
+| `VOYAGER_FORK_HEIGHT` | (built-in default) | Height at which Voyager DPoS+BFT activates. Mainnet currently parked at `18446744073709551615` (u64::MAX) until [#292](https://github.com/sentrix-labs/sentrix/issues/292) lands |
+| `SENTRIX_TRIE_TRACE` | `0` | Debug-only: per-key trie trace lines. **Never** enable in prod — fills the journal in seconds |
+| `SENTRIX_REPLAY_BYPASS_AUTHZ` | `0` | Debug-only: bypass tx authz during replay. Local debug runs only |
 | `RUST_LOG` | `info` | Log level |
+
+## Canonical Deploy Path
+
+Production binary deploys go through **`scripts/fast-deploy.sh` from
+VPS4** (see [CI_CD.md](CI_CD.md) and [RELEASE.md](../../RELEASE.md)).
+The CI/CD `deploy` job is disabled; CI runs tests only. The script
+builds once in a `rust:1.95-bullseye` container, ships the same byte-
+identical binary to VPS1/VPS2/VPS3 over wg1, and does a rolling
+restart with a bounded health check.
+
+For an independent operator running a single validator outside the
+reference fleet, see [VALIDATOR_ONBOARDING.md](VALIDATOR_ONBOARDING.md)
+for the manual SCP + systemd flow.
 
 ## Firewall
 
