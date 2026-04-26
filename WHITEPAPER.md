@@ -105,7 +105,7 @@ The activation was a non-fork operator-side env var flip (`VOYAGER_REWARD_V2_HEI
 DPoS+BFT consensus assumes the validator mesh is well-connected. Sentrix ships two layers of self-healing peer discovery:
 
 - **L1 multiaddr advertisements.** Validators broadcast signed `MultiaddrAdvertisement` messages on the `sentrix/validator-adverts/1` gossipsub topic at startup + every 10 minutes. Receivers verify against on-chain stake registry pubkeys and store latest-by-sequence in a 4096-entry LRU cache. A periodic dial-tick (every 30s) reads `active_set` and dials any cached members not currently peered. Sequence numbers are persisted to `<data_dir>/.advert-sequence` so restarts don't reset the newer-wins ordering.
-- **L2 cold-start gate.** The validator loop refuses to enter BFT mode unless `peer_count ≥ active_set.len() − 1`. The gate fires every loop iteration when `voyager_activated=true` (not only on activation transitions), closing the cold-start race where a validator restarting with `voyager_activated=true` already in chain.db could enter BFT before the L1 mesh re-converges. Strict `SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=="1"` env override exists for emergency recovery.
+- **L2 cold-start gate.** The validator loop refuses to enter BFT mode unless `peer_count ≥ active_set.len() − 1`. The gate fires every loop iteration when `voyager_activated=true` (not only on activation transitions), closing the cold-start race where a validator restarting with `voyager_activated=true` already in chain.db could enter BFT before the L1 mesh re-converges.
 
 Together these guarantee a fresh validator joining from a single bootstrap peer converges to the full mesh within ~30s without manual `--peers` configuration.
 

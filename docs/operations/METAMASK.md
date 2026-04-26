@@ -31,7 +31,7 @@ Mainnet supports `eth_sendRawTransaction` and Solidity contract deployment since
 
 ## Get Test SRX
 
-Faucet: https://faucet.sentriscloud.com (or use a funded testnet wallet directly).
+Faucet: https://faucet.sentrixchain.com (or use a funded testnet wallet directly).
 
 ## Send SRX
 

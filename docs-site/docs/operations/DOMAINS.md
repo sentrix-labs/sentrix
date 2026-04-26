@@ -14,7 +14,7 @@ All Sentrix services run under `sentriscloud.com`. DNS managed via Cloudflare.
 | sentrix-wallet.sentriscloud.com | Wallet UI |
 | sentrixlaunch.sentriscloud.com | Token launchpad |
 | coinblast.sentriscloud.com | CoinBlast |
-| faucet.sentriscloud.com | Testnet faucet |
+| faucet.sentrixchain.com | Testnet faucet |
 
 ## Mainnet Endpoints
 
@@ -23,7 +23,7 @@ RPC:      https://rpc.sentrixchain.com
 API:      https://api.sentrixchain.com
 Explorer: https://scan.sentrixchain.com
 Wallet:   https://sentrix-wallet.sentriscloud.com
-Faucet:   https://faucet.sentriscloud.com
+Faucet:   https://faucet.sentrixchain.com
 Chain ID: 7119
 ```
 
