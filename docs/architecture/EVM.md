@@ -128,10 +128,10 @@ Quick add (testnet):
 
 ```
 Network Name:     Sentrix Testnet
-RPC URL:          https://testnet-rpc.sentriscloud.com/rpc
+RPC URL:          https://testnet-rpc.sentrixchain.com/rpc
 Chain ID:         7120
 Currency Symbol:  SRX
-Block Explorer:   https://sentrixscan.sentriscloud.com
+Block Explorer:   https://scan.sentrixchain.com
 ```
 
 ## Known Limitations

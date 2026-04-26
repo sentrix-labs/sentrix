@@ -103,8 +103,8 @@ Discussion → t.me/sentrixchain_chat
 Devs building on Sentrix. Q&A, grants program, technical
 support, ecosystem coordination.
 
-Mainnet RPC: sentrix-rpc.sentriscloud.com
-Testnet RPC: testnet-rpc.sentriscloud.com
+Mainnet RPC: rpc.sentrixchain.com
+Testnet RPC: testnet-rpc.sentrixchain.com
 Chain ID: 7119 mainnet · 7120 testnet
 EVM: Solidity contracts work natively
 

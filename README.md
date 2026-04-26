@@ -61,7 +61,7 @@ curl http://localhost:8545/health
 | Field | Value |
 |---|---|
 | Network name | Sentrix Testnet |
-| RPC URL | `https://testnet-rpc.sentriscloud.com/rpc` |
+| RPC URL | `https://testnet-rpc.sentrixchain.com/rpc` |
 | Chain ID | `7120` |
 | Symbol | `SRX` |
 | Explorer | `https://scan.sentrixchain.com` (toggle to Testnet in UI) |
@@ -96,7 +96,7 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 | | Mainnet | Testnet |
 |---|---|---|
 | **Chain ID** | 7119 | 7120 |
-| **RPC** | [sentrix-rpc.sentriscloud.com](https://sentrix-rpc.sentriscloud.com) | [testnet-rpc.sentriscloud.com](https://testnet-rpc.sentriscloud.com) |
+| **RPC** | [rpc.sentrixchain.com](https://rpc.sentrixchain.com) | [testnet-rpc.sentrixchain.com](https://testnet-rpc.sentrixchain.com) |
 | **Consensus** | DPoS + BFT (4 validators) | DPoS + BFT (4 validators) |
 | **Block time** | 1 second | 1 second |
 | **EVM** | Active — MetaMask compatible | Active — MetaMask compatible |

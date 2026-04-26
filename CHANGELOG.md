@@ -1225,7 +1225,7 @@ work natively, and deploy moves from CI to `fast-deploy.sh` on build host.
 ### Added
 - sentrix-storage crate integrated into sentrix-trie + sentrix-core
 - Cloudflare Origin Certificate for *.sentriscloud.com
-- sentrixscan.sentriscloud.com explorer (nginx proxy)
+- scan.sentrixchain.com explorer (nginx proxy)
 - testnet-scan.sentriscloud.com explorer
 - MPL-2.0 added to deny.toml allow-list (libmdbx)
 - Pre-commit hook allow-paths for workspace crate paths

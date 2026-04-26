@@ -38,8 +38,8 @@ Live h=...  |  1 second    |  4 active    |  315M SRX    |  Voyager DPoS+BFT
 
 JS to populate:
 ```js
-// Pull from sentrix-rpc.sentriscloud.com/chain/info
-const stats = await fetch('https://sentrix-rpc.sentriscloud.com/chain/info').then(r => r.json());
+// Pull from rpc.sentrixchain.com/chain/info
+const stats = await fetch('https://rpc.sentrixchain.com/chain/info').then(r => r.json());
 // { height, active_validators, max_supply_srx, consensus_mode }
 ```
 
@@ -54,7 +54,7 @@ Built in Rust · EVM-compatible · MetaMask-ready · 1s blocks · Production sin
 ```
 Devs:       npm install ethers           Connect to chain 7119
             const provider = new ethers.JsonRpcProvider(
-              "https://sentrix-rpc.sentriscloud.com/rpc"
+              "https://rpc.sentrixchain.com/rpc"
             );
 
 Validators: github.com/sentrix-labs/sentrix#run-a-validator

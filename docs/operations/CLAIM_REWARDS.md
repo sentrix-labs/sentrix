@@ -37,7 +37,7 @@ Practical pattern: claim weekly or monthly, depending on accrual rate vs gas eco
 ## Query pending rewards
 
 ```bash
-curl -sf https://sentrix-rpc.sentriscloud.com/staking/validators | jq '.validators[] | {address, pending_rewards, total_stake}'
+curl -sf https://rpc.sentrixchain.com/staking/validators | jq '.validators[] | {address, pending_rewards, total_stake}'
 ```
 
 Output (per validator):
@@ -63,7 +63,7 @@ cargo build --release
 
 # Submit (interactive — privkey stays in process memory; never logged)
 echo "<64-hex-privkey>" | ./target/release/claim-rewards \
-  --rpc       https://sentrix-rpc.sentriscloud.com \
+  --rpc       https://rpc.sentrixchain.com \
   --chain-id  7119
 
 # Add --dry-run to build + sign without POSTing (for verification)
@@ -101,11 +101,11 @@ Verify post-claim:
 
 ```bash
 # Pending should be 0
-curl -sf https://sentrix-rpc.sentriscloud.com/staking/validators | \
+curl -sf https://rpc.sentrixchain.com/staking/validators | \
   jq '.validators[] | select(.address=="0x<your-addr>") | .pending_rewards'
 
 # Balance should have grown by claimed amount minus MIN_TX_FEE
-curl -sf -X POST https://sentrix-rpc.sentriscloud.com/rpc \
+curl -sf -X POST https://rpc.sentrixchain.com/rpc \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"eth_getBalance","params":["0x<your-addr>","latest"],"id":1}'
 ```

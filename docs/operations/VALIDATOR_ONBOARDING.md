@@ -210,7 +210,7 @@ peer. To become an authority:
 2. The admin runs `sentrix validator add <your-addr> "<your-name>"
    <your-pubkey> --admin-key <admin-key>`.
 3. Once added, you'll appear in `GET /chain/info → validators` and in
-   the explorer at `sentrixscan.sentriscloud.com/validators`.
+   the explorer at `scan.sentrixchain.com/validators`.
 
 Admin op is verified on-chain — your admission cannot be tampered with
 once in a block.

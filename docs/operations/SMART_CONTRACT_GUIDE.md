@@ -17,10 +17,10 @@ In MetaMask → **Networks → Add network manually**:
 | Field | Value |
 |---|---|
 | Network name | `Sentrix Testnet` |
-| New RPC URL | `https://testnet-rpc.sentriscloud.com/rpc` |
+| New RPC URL | `https://testnet-rpc.sentrixchain.com/rpc` |
 | Chain ID | `7120` |
 | Currency symbol | `SRX` |
-| Block explorer URL | `https://sentrixscan.sentriscloud.com` |
+| Block explorer URL | `https://scan.sentrixchain.com` |
 
 Save and switch to Sentrix Testnet. You should see your SRX balance.
 
@@ -82,7 +82,7 @@ Expand the deployed contract and call any function:
 You can also verify the deployment via the explorer:
 
 ```
-https://sentrixscan.sentriscloud.com/tx/<your-tx-hash>
+https://scan.sentrixchain.com/tx/<your-tx-hash>
 ```
 
 ## Hardhat / Foundry
@@ -93,7 +93,7 @@ Same network config:
 // hardhat.config.js
 networks: {
   sentrixTestnet: {
-    url: "https://testnet-rpc.sentriscloud.com/rpc",
+    url: "https://testnet-rpc.sentrixchain.com/rpc",
     chainId: 7120,
     accounts: [process.env.PRIVATE_KEY],
   },
@@ -103,7 +103,7 @@ networks: {
 ```toml
 # foundry.toml
 [rpc_endpoints]
-sentrix_testnet = "https://testnet-rpc.sentriscloud.com/rpc"
+sentrix_testnet = "https://testnet-rpc.sentrixchain.com/rpc"
 ```
 
 ## Gas Model

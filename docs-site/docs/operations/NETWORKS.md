@@ -5,8 +5,8 @@
 | | |
 |-|-|
 | Chain ID | 7119 (0x1bcf) |
-| RPC | https://sentrix-rpc.sentriscloud.com |
-| Explorer | https://sentrixscan.sentriscloud.com |
+| RPC | https://rpc.sentrixchain.com |
+| Explorer | https://scan.sentrixchain.com |
 | P2P port | 30303 |
 | API port | 8545 |
 | Block time | 1s |
@@ -22,9 +22,9 @@
 | | |
 |-|-|
 | Chain ID | 7120 (0x1bd0) |
-| RPC | https://testnet-rpc.sentriscloud.com/rpc |
-| Explorer | https://sentrixscan.sentriscloud.com (unified UI, toggle Testnet) |
-| API | https://testnet-api.sentriscloud.com |
+| RPC | https://testnet-rpc.sentrixchain.com/rpc |
+| Explorer | https://scan.sentrixchain.com (unified UI, toggle Testnet) |
+| API | https://testnet-api.sentrixchain.com |
 | P2P port | 31303–31306 |
 | API port | 9545 |
 | Block time | 1s |
@@ -56,10 +56,10 @@ Add network manually:
 | Field | Mainnet | Testnet |
 |-------|---------|---------|
 | Network Name | Sentrix | Sentrix Testnet |
-| RPC URL | https://sentrix-rpc.sentriscloud.com | https://testnet-rpc.sentriscloud.com/rpc |
+| RPC URL | https://rpc.sentrixchain.com | https://testnet-rpc.sentrixchain.com/rpc |
 | Chain ID | 7119 | 7120 |
 | Symbol | SRX | SRX |
-| Explorer | https://sentrixscan.sentriscloud.com | https://sentrixscan.sentriscloud.com (toggle Testnet) |
+| Explorer | https://scan.sentrixchain.com | https://scan.sentrixchain.com (toggle Testnet) |
 
 ### ethers.js
 
@@ -67,10 +67,10 @@ Add network manually:
 import { JsonRpcProvider } from "ethers";
 
 // Testnet (for development)
-const provider = new JsonRpcProvider("https://testnet-rpc.sentriscloud.com");
+const provider = new JsonRpcProvider("https://testnet-rpc.sentrixchain.com");
 
 // Mainnet (for production)
-// const provider = new JsonRpcProvider("https://sentrix-rpc.sentriscloud.com");
+// const provider = new JsonRpcProvider("https://rpc.sentrixchain.com");
 
 const height = await provider.getBlockNumber();
 const balance = await provider.getBalance("0x...");
@@ -80,13 +80,13 @@ const balance = await provider.getBalance("0x...");
 
 ```bash
 # Testnet (default for development)
-curl -s https://testnet-rpc.sentriscloud.com/chain/info | jq
+curl -s https://testnet-rpc.sentrixchain.com/chain/info | jq
 
 # Mainnet (production)
-curl -s https://sentrix-rpc.sentriscloud.com/chain/info | jq
+curl -s https://rpc.sentrixchain.com/chain/info | jq
 
 # JSON-RPC
-curl -X POST https://testnet-rpc.sentriscloud.com/rpc \
+curl -X POST https://testnet-rpc.sentrixchain.com/rpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}'
 ```

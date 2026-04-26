@@ -2,7 +2,7 @@
 
 Complete list of Sentrix REST + JSON-RPC endpoints.
 
-Base URL: `https://testnet-rpc.sentriscloud.com` (testnet) or `https://sentrix-rpc.sentriscloud.com` (mainnet).
+Base URL: `https://testnet-rpc.sentrixchain.com` (testnet) or `https://rpc.sentrixchain.com` (mainnet).
 
 ---
 
