@@ -1,6 +1,6 @@
 // chain_queries.rs - Sentrix — Chain query methods
 
-use crate::blockchain::{Blockchain, MAX_SUPPLY};
+use crate::blockchain::Blockchain;
 use sentrix_primitives::transaction::TokenOp;
 
 impl Blockchain {
@@ -215,7 +215,7 @@ impl Blockchain {
             "height": self.height(),
             "total_blocks": self.height() + 1, // true height from block index, not window length
             "total_minted_srx": self.total_minted as f64 / 100_000_000.0,
-            "max_supply_srx": MAX_SUPPLY as f64 / 100_000_000.0,
+            "max_supply_srx": self.max_supply_for(self.height()) as f64 / 100_000_000.0,
             "total_burned_srx": self.accounts.total_burned as f64 / 100_000_000.0,
             "circulating_supply_srx": circulating_sentri as f64 / 100_000_000.0,
             "mempool_size": self.mempool.len(),
