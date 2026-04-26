@@ -910,6 +910,63 @@ fn test_legacy_validation_height_branches() {
     unsafe { std::env::remove_var("SENTRIX_LEGACY_VALIDATION_HEIGHT") };
 }
 
+/// 2026-04-26 mainnet stall (h=604547) regression: emulates the libp2p
+/// BlocksResponse loop with the race-safe `block.index <= chain.height()`
+/// duplicate-skip filter. Without the filter the loop bails on the first
+/// already-applied block and drops the rest of the valid forward batch —
+/// block sync stalls even while peers serve correct history.
+#[test]
+fn test_libp2p_sync_loop_skips_duplicates_and_applies_remaining() {
+    let (_d, m) = temp_mdbx();
+    let mut producer = setup_chain();
+    let mut peer = setup_chain();
+    producer.init_trie(Arc::clone(&m)).unwrap();
+    let (_d2, m2) = temp_mdbx();
+    peer.init_trie(Arc::clone(&m2)).unwrap();
+
+    // Build 5 blocks at producer.
+    let mut all_blocks = Vec::new();
+    for _ in 1u64..=5 {
+        let block = producer.create_block(VALIDATOR).unwrap();
+        producer.add_block(block.clone()).unwrap();
+        all_blocks.push(block);
+    }
+
+    // Apply first 3 to peer normally.
+    for b in &all_blocks[..3] {
+        peer.add_block_from_peer(b.clone()).unwrap();
+    }
+    assert_eq!(peer.height(), 3, "peer at h=3 after first batch");
+
+    // Simulate the racing second BlocksResponse: peer receives a batch
+    // [block_2, block_3, block_4, block_5] — the first two are already
+    // applied (race overlap). The new filter must skip them and apply
+    // 4 + 5. The PRE-FIX behaviour bailed on block_2 with "expected 4,
+    // got 2" and never tried 4 or 5 — chain stalled at 3 even though
+    // forward blocks were available in the same response.
+    let racy_batch = vec![
+        all_blocks[1].clone(), // block 2 — already applied
+        all_blocks[2].clone(), // block 3 — already applied
+        all_blocks[3].clone(), // block 4 — should apply
+        all_blocks[4].clone(), // block 5 — should apply
+    ];
+    let mut synced = 0u64;
+    let mut skipped = 0u64;
+    for block in &racy_batch {
+        if block.index <= peer.height() {
+            skipped += 1;
+            continue;
+        }
+        peer.add_block_from_peer(block.clone())
+            .unwrap_or_else(|e| panic!("forward block {} should apply: {}", block.index, e));
+        synced += 1;
+    }
+
+    assert_eq!(skipped, 2, "two already-applied blocks should be skipped");
+    assert_eq!(synced, 2, "two forward blocks should be applied");
+    assert_eq!(peer.height(), 5, "peer must advance to h=5 (not stall at 3)");
+}
+
 /// Recursively copy directory contents — used for the rsync simulation in
 /// `test_stale_snapshot_peer_sync`. Keeps file modes intact for MDBX's
 /// open semantics.

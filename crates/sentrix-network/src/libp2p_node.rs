@@ -1475,7 +1475,20 @@ async fn on_inbound_response(
         tokio::spawn(async move {
             let mut chain = bc.write().await;
             let mut synced = 0u64;
+            let mut skipped = 0u64;
             for block in &blocks_owned {
+                // Concurrent GetBlocks paths (periodic sync_interval + TriggerSync
+                // + reactive chain-on-full-batch) can race: each reads our_height,
+                // sends GetBlocks{from: our_height+1}, peer replies with the block
+                // we just applied from the first response. Without this guard the
+                // loop bails on `Invalid block: expected N+1, got N` and drops the
+                // remaining VALID forward blocks in the batch — block sync stalls
+                // even while peers serve correct history. (Mainnet stall 2026-04-26
+                // h=604547 root cause.)
+                if block.index <= chain.height() {
+                    skipped += 1;
+                    continue;
+                }
                 match chain.add_block_from_peer(block.clone()) {
                     Ok(()) => {
                         // Use H2 (post-add_block state_root hash) — not the raw peer block (PR #78).
@@ -1493,8 +1506,13 @@ async fn on_inbound_response(
                     }
                 }
             }
-            if synced > 0 {
-                tracing::info!("libp2p: synced {} blocks from {}", synced, peer_str);
+            if synced > 0 || skipped > 0 {
+                tracing::info!(
+                    "libp2p: synced {} blocks from {} (skipped {} already-applied)",
+                    synced,
+                    peer_str,
+                    skipped
+                );
             }
         });
         // If we got a full batch (50 blocks), request more
