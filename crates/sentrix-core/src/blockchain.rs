@@ -17,15 +17,31 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 // ── Chain constants ──────────────────────────────────────
-pub const MAX_SUPPLY: u64 = 210_000_000 * 100_000_000; // in sentri
-pub const BLOCK_REWARD: u64 = 100_000_000; // 1 SRX in sentri
+//
+// Tokenomics v1 (genesis-active): 210M cap, 42M-block halving, 1 SRX initial.
+// Geometric series math: 1 × 42M × 2 = 84M from mining + 63M premine = 147M
+// asymptotic — caps unreachable, validator runway era 5 = year 6.66 (cliff).
+//
+// Tokenomics v2 (`TOKENOMICS_V2_HEIGHT` fork-gated): 315M cap, 126M-block
+// halving (BTC-parity 4-year), 1 SRX initial unchanged. Geometric: 1 × 126M
+// × 2 = 252M mining + 63M premine = 315M (cap reachable). Premine ratio
+// drops from 30% (intended) → 20% (mining-share dilution from 70% → 80%).
+// Validator runway era 5 = year ~20. See `feat: tokenomics v2 fork` PR.
+pub const MAX_SUPPLY: u64 = 210_000_000 * 100_000_000; // in sentri (v1)
+pub const MAX_SUPPLY_V2: u64 = 315_000_000 * 100_000_000; // in sentri (post-fork)
+pub const BLOCK_REWARD: u64 = 100_000_000; // 1 SRX in sentri (unchanged across forks)
 
 /// MAX_SUPPLY expressed in whole SRX as f64 — used by RPC/explorer display paths.
 /// Single source of truth; do NOT redefine as a local constant.
+///
+/// **Pre-tokenomics-v2 callers:** prefer `Blockchain::max_supply_for(height)`
+/// at runtime to get the fork-aware value. This helper returns the v1 number
+/// for backward compatibility with non-`&self` paths only.
 pub fn max_supply_srx() -> f64 {
     (MAX_SUPPLY / 100_000_000) as f64
 }
-pub const HALVING_INTERVAL: u64 = 42_000_000; // blocks
+pub const HALVING_INTERVAL: u64 = 42_000_000; // blocks (v1)
+pub const HALVING_INTERVAL_V2: u64 = 126_000_000; // blocks (post-fork, BTC-parity 4y at 1s blocks)
 pub const BLOCK_TIME_SECS: u64 = 1;
 pub const MAX_TX_PER_BLOCK: usize = 5000;
 pub const CHAIN_ID: u64 = 7119; // default; overridable via SENTRIX_CHAIN_ID env
@@ -47,6 +63,22 @@ const VOYAGER_EVM_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// set the same value; mismatch produces a fork. Coordinated operator
 /// rollout required.
 const VOYAGER_REWARD_V2_HEIGHT_DEFAULT: u64 = u64::MAX;
+
+/// Tokenomics v2 fork height — at/after this block, `MAX_SUPPLY` becomes
+/// `MAX_SUPPLY_V2` (315M) and `HALVING_INTERVAL` becomes `HALVING_INTERVAL_V2`
+/// (126M, BTC-parity 4-year cadence). Pre-fork blocks retain the v1 schedule
+/// (42M halving, 210M cap). u64::MAX = disabled. Override via
+/// `TOKENOMICS_V2_HEIGHT` env var.
+///
+/// This is a CONSENSUS CHANGE — emission curve diverges across the fork.
+/// Every validator must set the same value; mismatch produces a fork.
+/// Coordinated operator rollout required (testnet bake first).
+///
+/// Fork should be activated while still in v1 era 0 (height < 42M) so the
+/// halving-count transition is smooth (both schedules give 0 halvings at
+/// fork moment, no reward jump). Activating after era 0 boundary would
+/// require additional dispatch logic to preserve cumulative halvings.
+const TOKENOMICS_V2_HEIGHT_DEFAULT: u64 = u64::MAX;
 
 /// Read Voyager fork height from env, default u64::MAX (mainnet safe).
 /// Testnet sets VOYAGER_FORK_HEIGHT=<height> in systemd service.
@@ -75,6 +107,16 @@ pub fn get_reward_v2_fork_height() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(VOYAGER_REWARD_V2_HEIGHT_DEFAULT)
+}
+
+/// Tokenomics v2: read fork height from env, default u64::MAX (disabled —
+/// keeps v1 emission schedule: 42M halving + 210M cap). Post-fork:
+/// 126M halving (BTC-parity 4-year) + 315M cap.
+pub fn get_tokenomics_v2_height() -> u64 {
+    std::env::var("TOKENOMICS_V2_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(TOKENOMICS_V2_HEIGHT_DEFAULT)
 }
 
 /// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
@@ -637,6 +679,53 @@ impl Blockchain {
         Self::is_reward_v2_height(self.height())
     }
 
+    /// Tokenomics v2: is the given height at or after the fork?
+    /// Post-fork: 126M halving + 315M cap (BTC-parity 4-year emission).
+    pub fn is_tokenomics_v2_height(height: u64) -> bool {
+        let fork = get_tokenomics_v2_height();
+        fork != u64::MAX && height >= fork
+    }
+
+    /// Tokenomics v2: max supply for a given height (fork-aware).
+    /// Pre-fork: 210M (`MAX_SUPPLY`). Post-fork: 315M (`MAX_SUPPLY_V2`).
+    pub fn max_supply_for(&self, height: u64) -> u64 {
+        if Self::is_tokenomics_v2_height(height) {
+            MAX_SUPPLY_V2
+        } else {
+            MAX_SUPPLY
+        }
+    }
+
+    /// Tokenomics v2: halving interval for a given height (fork-aware).
+    /// Pre-fork: 42M blocks (1.33y). Post-fork: 126M blocks (4y BTC-parity).
+    pub fn halving_interval_for(&self, height: u64) -> u64 {
+        if Self::is_tokenomics_v2_height(height) {
+            HALVING_INTERVAL_V2
+        } else {
+            HALVING_INTERVAL
+        }
+    }
+
+    /// Halving count at a given height, fork-aware. Pre-fork blocks count
+    /// halvings against 42M intervals; post-fork blocks count against 126M
+    /// intervals **starting from the fork height** (so cumulative halvings
+    /// don't reset at fork moment, and no jump-up in reward).
+    ///
+    /// Assumes fork is activated while still within v1 era 0
+    /// (`fork_height < HALVING_INTERVAL` = 42M). At current mainnet height
+    /// ~600K, this is satisfied for any plausible fork target.
+    fn halvings_at(height: u64) -> u32 {
+        let fork = get_tokenomics_v2_height();
+        if fork == u64::MAX || height < fork {
+            (height / HALVING_INTERVAL).try_into().unwrap_or(u32::MAX)
+        } else {
+            // Post-fork: count halvings from fork height using v2 interval.
+            // Pre-fork halvings = 0 by activation invariant (fork while in era 0).
+            let post = height.saturating_sub(fork);
+            (post / HALVING_INTERVAL_V2).try_into().unwrap_or(u32::MAX)
+        }
+    }
+
     /// Is the given height at or after the EVM fork?
     pub fn is_evm_height(height: u64) -> bool {
         let fork = get_evm_fork_height();
@@ -765,21 +854,24 @@ impl Blockchain {
 
     // ── Supply & reward ──────────────────────────────────
     pub fn get_block_reward(&self) -> u64 {
-        let remaining = MAX_SUPPLY.saturating_sub(self.total_minted);
+        let h = self.height();
+        // Tokenomics-fork-aware: pre-fork uses MAX_SUPPLY (210M) +
+        // 42M halving interval; post-fork uses MAX_SUPPLY_V2 (315M) +
+        // 126M halving interval. See `is_tokenomics_v2_height` for
+        // activation semantics.
+        let max_supply = self.max_supply_for(h);
+        let remaining = max_supply.saturating_sub(self.total_minted);
         if remaining == 0 {
             return 0;
         }
 
-        // P1: halving bit-shift overflow. `u64 >> 64+` is undefined in
-        // Rust (panics in debug, implementation-defined in release) and
-        // `halvings` is `height / HALVING_INTERVAL` — after ~21×42M blocks
-        // (~28 years at 1 s blocks) `halvings` reaches 64 and the shift
-        // would crash the validator. checked_shr returns `None` at ≥64
-        // so we clamp the reward to 0 (matching the intended "reward
-        // halved to nothing" semantics).
-        let halvings: u32 = (self.height() / HALVING_INTERVAL)
-            .try_into()
-            .unwrap_or(u32::MAX);
+        // P1: halving bit-shift overflow guard. `u64 >> 64+` is undefined
+        // in Rust (panics in debug, implementation-defined in release).
+        // `halvings_at` clamps to u32::MAX so checked_shr returns None at
+        // ≥64 and the reward is zero (matching "halved to nothing"
+        // semantics). Pre-fork: ~21×42M blocks (~28 years at 1s) to reach
+        // 64 halvings. Post-fork: ~21×126M blocks (~84 years).
+        let halvings: u32 = Self::halvings_at(h);
         let reward = BLOCK_REWARD.checked_shr(halvings).unwrap_or(0);
 
         if reward == 0 {
@@ -1313,6 +1405,96 @@ mod tests {
     fn test_block_reward_era0() {
         let bc = setup_chain();
         assert_eq!(bc.get_block_reward(), BLOCK_REWARD);
+    }
+
+    /// Tokenomics v2 fork: pre-fork era 0 uses 42M halving + 210M cap;
+    /// post-fork era 0 uses 126M halving + 315M cap. At fork moment
+    /// (and any height before either era boundary), reward stays at
+    /// BLOCK_REWARD = 1 SRX in sentri — no jump.
+    #[test]
+    fn test_tokenomics_v2_fork_boundary_no_reward_jump() {
+        // SAFETY: env-var mutation in tests is explicitly serialized via
+        // a single-threaded harness in CI. `unsafe { set_var }` is the
+        // correct API for Rust 2024 edition.
+        unsafe {
+            std::env::set_var("TOKENOMICS_V2_HEIGHT", "100");
+        }
+
+        // Pre-fork (h=99): v1 schedule. h/42M = 0 halvings → reward = 1 SRX.
+        assert_eq!(Blockchain::halvings_at(99), 0);
+
+        // At fork boundary (h=100): v2 schedule activates. (h - fork) / 126M
+        // = 0 / 126M = 0 halvings. Smooth transition: reward stays 1 SRX.
+        assert_eq!(Blockchain::halvings_at(100), 0);
+
+        // Post-fork era 0: still 0 halvings until fork+126M.
+        assert_eq!(Blockchain::halvings_at(100 + 126_000_000 - 1), 0);
+
+        // Post-fork era 1: at fork+126M, halvings = 1. Reward halves to 0.5.
+        assert_eq!(Blockchain::halvings_at(100 + 126_000_000), 1);
+        assert_eq!(Blockchain::halvings_at(100 + 2 * 126_000_000), 2);
+
+        // Cap dispatch: pre-fork queries return 210M, post-fork return 315M.
+        // Need a Blockchain instance for the helper (it's &self).
+        let bc = setup_chain();
+        assert_eq!(bc.max_supply_for(99), MAX_SUPPLY);
+        assert_eq!(bc.max_supply_for(100), MAX_SUPPLY_V2);
+        assert_eq!(bc.halving_interval_for(99), HALVING_INTERVAL);
+        assert_eq!(bc.halving_interval_for(100), HALVING_INTERVAL_V2);
+
+        unsafe {
+            std::env::remove_var("TOKENOMICS_V2_HEIGHT");
+        }
+    }
+
+    /// Tokenomics v2: confirm the geometric series math reaches 315M cap.
+    /// Era 0 (1.0 SRX × 126M) = 126M minted. Era 1 (0.5 × 126M) = 63M.
+    /// Era 2 (0.25 × 126M) = 31.5M. Cumulative through era N converges
+    /// to 252M from mining + 63M premine = 315M cap (asymptote).
+    #[test]
+    fn test_tokenomics_v2_geometric_reaches_315m_cap() {
+        // Sum of 1 SRX × 126M × (1 + 1/2 + 1/4 + ...) in sentri.
+        // Discrete sum truncated at era where reward = 0 (h ≥ ~27 halvings).
+        let initial: u64 = 100_000_000; // 1 SRX
+        let interval: u64 = 126_000_000; // 126M blocks
+        let mut total_mined: u64 = 0;
+        for halvings in 0u32..27 {
+            let reward = initial.checked_shr(halvings).unwrap_or(0);
+            if reward == 0 {
+                break;
+            }
+            total_mined = total_mined.saturating_add(reward.saturating_mul(interval));
+        }
+        // Geometric asymptote: 1 × 126M × 2 = 252M SRX = 252M × 100M sentri
+        let expected_sentri: u64 = 252_000_000 * 100_000_000;
+        // Discrete sum reaches expected within 1-sentri rounding (last
+        // non-zero reward at era 26 contributes 1 sentri × 126M blocks).
+        let diff = expected_sentri.abs_diff(total_mined);
+        // Tail truncation: rewards below 1 sentri (after ~27 halvings) drop
+        // to 0 in integer arithmetic, leaving a small undershoot vs the
+        // real-valued geometric asymptote. Bound: 2 × initial × interval /
+        // 2^27 ≈ 1.9B sentri. Use 5B as comfortable tolerance.
+        assert!(
+            diff <= 5_000_000_000,
+            "geometric sum {} sentri diverges from expected {} sentri by {} (> 5B tolerance)",
+            total_mined,
+            expected_sentri,
+            diff
+        );
+        // Cap math: 63M premine + 252M mining (asymptote) = 315M = MAX_SUPPLY_V2.
+        let premine: u64 = 63_000_000 * 100_000_000;
+        let total = premine + expected_sentri;
+        assert_eq!(total, MAX_SUPPLY_V2);
+        // Sanity: discrete actual is within ~5B sentri of the cap.
+        let actual_total = premine + total_mined;
+        assert!(
+            actual_total <= MAX_SUPPLY_V2,
+            "discrete sum exceeds cap"
+        );
+        assert!(
+            MAX_SUPPLY_V2 - actual_total <= 5_000_000_000,
+            "discrete asymptote gap > 5B sentri (= 50 SRX)"
+        );
     }
 
     #[test]
