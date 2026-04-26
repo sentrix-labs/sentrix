@@ -15,7 +15,7 @@ Fast, secure Layer-1 blockchain built in Rust.
 
 Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, instant finality, and Ethereum-compatible tooling. MetaMask, ethers.js, and web3.js connect natively.
 
-- **v2.1.30** — MDBX storage, 1s blocks, 5000 tx/block capacity, EVM live on mainnet (Voyager active since 2026-04-25)
+- **v2.1.36** — MDBX storage, 1s blocks, 5000 tx/block capacity, Voyager DPoS+BFT live on mainnet, EVM (revm 37) active, V4 reward distribution v2 active (treasury escrow + ClaimRewards op)
 - **551+ tests**, clippy clean, 11 security audit rounds
 - **4 validators** across 4 nodes (Foundation, Treasury, Core, Beacon) on the maintainer fleet
 
@@ -108,7 +108,7 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 | Phase | Status | Focus |
 |-------|--------|-------|
 | **Pioneer** | Completed (mainnet h=0…579058) | PoA round-robin, MDBX storage, 1s blocks, SRC-20 tokens — succeeded by Voyager 2026-04-25 |
-| **Voyager** | **Live on mainnet (v2.1.30)** | DPoS proposer rotation + BFT finality, EVM (revm 37), `eth_sendRawTransaction`, L1 peer auto-discovery, L2 cold-start gate |
+| **Voyager** | **Live on mainnet (v2.1.36)** | DPoS proposer rotation + BFT finality, EVM (revm 37), `eth_sendRawTransaction`, L1 peer auto-discovery + connection-limits hardening, V4 reward distribution v2 (treasury escrow + ClaimRewards), runtime-aware Voyager dispatch |
 | **Frontier** | Phase F-1 scaffold landed; F-2…F-10 planned | Parallel transaction execution, sub-1s block time, mainnet hard fork |
 | **Odyssey** | Future | Cross-chain bridges, mature ecosystem, light clients |
 
@@ -116,6 +116,7 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 
 - [Architecture](docs/architecture/) — consensus, state, networking, transactions
 - [Operations](docs/operations/) — deployment, CI/CD, monitoring, validators
+- [Claim Rewards](docs/operations/CLAIM_REWARDS.md) — how validators + delegators claim escrowed rewards from `PROTOCOL_TREASURY`
 - [Security](docs/security/) — audit reports, attack vectors, pentest results
 - [Tokenomics](docs/tokenomics/) — SRX economics, staking, token standards
 - [Roadmap](docs/roadmap/) — phase details, changelog

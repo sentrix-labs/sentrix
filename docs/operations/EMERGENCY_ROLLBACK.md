@@ -65,10 +65,18 @@ sudo install -m 755 <bin_dir>/releases/sentrix-vX.Y.Z-<timestamp> <bin_dir>/sent
 sudo systemctl start <validator-service>
 ```
 
-Current production binary at the time of writing: **v2.1.30** (mainnet
-& testnet, post-Voyager activation). Prior production releases archived
-under each validator's `<bin_dir>/releases/`: v2.1.29, v2.1.28, v2.1.27,
-v2.1.26, v2.1.25 (historical Pioneer-mode emergency hotfix).
+Current production binary at the time of writing: **v2.1.36** (mainnet
+& testnet, post-V4-reward-v2-activation). Prior production releases
+archived under each validator's `<bin_dir>/releases/`: v2.1.35, v2.1.34,
+v2.1.33, v2.1.32, v2.1.31, v2.1.30, v2.1.29, v2.1.28, v2.1.27, v2.1.26.
+
+The 2026-04-25 / 2026-04-26 incident hotfix series:
+- v2.1.31: BFT signing v2 foundation + Frontier F-2 shadow + libp2p connection-leak fix
+- v2.1.32: `/p2p/<peer_id>` in advert multiaddrs (closes #319 partial-fix gap)
+- v2.1.33: voyager_mode_for runtime-aware check + connection_limits Behaviour
+- v2.1.34: connection_limits cap loosened 1→2 (production hotfix)
+- v2.1.35: Voyager-mode-for migration sweep + claim-rewards tool
+- v2.1.36: tx validate exempts staking ops from amount>0 check (ClaimRewards submission fix)
 
 ---
 
