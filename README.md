@@ -18,7 +18,7 @@ Sentrix is the financial infrastructure for the real economy — starting with I
 
 Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, instant finality, and Ethereum-compatible tooling. MetaMask, ethers.js, and web3.js connect natively. The chain serves as a settlement and tokenization layer for real-world assets — designed to bring institutional-grade financial primitives on-chain with the monetary discipline of Bitcoin and the programmability of Ethereum.
 
-- **v2.1.39** — MDBX storage, 1s blocks, 5000 tx/block capacity, Voyager DPoS+BFT live on mainnet, EVM (revm 37) active, V4 reward distribution v2 active, tokenomics v2 fork armed (BTC-parity 4-year halving + 315M cap; activates at `TOKENOMICS_V2_HEIGHT=640800` on mainnet), libp2p sync race-safe
+- **v2.1.39** — MDBX storage, 1s blocks, 5000 tx/block capacity, Voyager DPoS+BFT live on mainnet, EVM (revm 37) active, V4 reward distribution v2 active, **tokenomics v2 fork ACTIVE on mainnet since h=640800** (BTC-parity 4-year halving + 315M cap), libp2p sync race-safe
 - **551+ tests**, clippy clean, 11 security audit rounds
 - **4 validators** across 4 nodes (Foundation, Treasury, Core, Beacon) on the maintainer fleet
 

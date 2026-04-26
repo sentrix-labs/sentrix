@@ -17,7 +17,7 @@ Consensus fork. Re-targets emission curve: 4-year halving (126M blocks) + 315M c
 
 ### Activation
 - Testnet: active since h=381651 (2026-04-26 afternoon)
-- Mainnet: armed at h=640800 via env var (~2 hour buffer post-deploy)
+- Mainnet: ACTIVE since h=640800 (2026-04-26 evening). End-to-end verified: consensus dispatch + RPC display both report v2 schedule (315M cap, 126M-block halving)
 
 ### Migration
 - Drop-in chain.db compatible with v2.1.38
