@@ -30,7 +30,6 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use sentrix_core::blockchain::MAX_SUPPLY;
 use std::collections::HashMap;
 
 const SENTRI_PER_SRX: f64 = 100_000_000.0;
@@ -148,7 +147,7 @@ pub async fn accounts_top(
                 .get("window_tx_count")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
-            let pct = balance as f64 / MAX_SUPPLY as f64 * 100.0;
+            let pct = balance as f64 / bc.max_supply_for(bc.height()) as f64 * 100.0;
             serde_json::json!({
                 "address": address,
                 "balance_srx": balance as f64 / SENTRI_PER_SRX,

@@ -1054,7 +1054,7 @@ pub async fn explorer_richlist(State(state): State<SharedState>) -> Html<String>
     let mut rows = String::new();
     for (rank, (address, balance_sentri)) in holders.iter().enumerate() {
         let balance_srx = *balance_sentri as f64 / 100_000_000.0;
-        let pct = balance_srx / sentrix_core::blockchain::max_supply_srx() * 100.0;
+        let pct = balance_srx / (bc.max_supply_for(bc.height()) as f64 / 100_000_000.0) * 100.0;
         rows.push_str(&format!(
             r#"<tr>
             <td style="color:#6b7280">#{}</td>
@@ -1076,17 +1076,22 @@ pub async fn explorer_richlist(State(state): State<SharedState>) -> Html<String>
         ""
     };
 
+    let max_supply_display = format!(
+        "{:.0}",
+        bc.max_supply_for(bc.height()) as f64 / 100_000_000.0
+    );
     let body = format!(
         r#"
     {}
     <h2>Rich List — Top SRX Holders</h2>
-    <p style="color:#6b7280;font-size:13px;margin-bottom:16px">Top 50 addresses by SRX balance &nbsp;|&nbsp; Total supply: 315,000,000 SRX</p>
+    <p style="color:#6b7280;font-size:13px;margin-bottom:16px">Top 50 addresses by SRX balance &nbsp;|&nbsp; Total supply: {} SRX</p>
     {}
     <table>
     <tr><th>Rank</th><th>Address</th><th>Balance</th><th>% of Supply</th></tr>
     {}
     </table>"#,
         nav_tabs("richlist"),
+        max_supply_display,
         empty,
         rows,
     );
