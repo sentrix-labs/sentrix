@@ -43,10 +43,10 @@
 | Chain ID | 7119 |
 | Block time | 1s |
 | Coin | SRX (1 SRX = 100M sentri) |
-| Max supply | 210M SRX |
-| Reward | 1 SRX/block, halving every 42M blocks |
+| Max supply | 315M SRX (post tokenomics-v2 fork; was 210M pre-fork) |
+| Reward | 1 SRX/block, halving every 126M blocks (~4 years, BTC parity, post-fork) |
 | Fees | 50% burn / 50% validator |
-| Consensus | PoA (Pioneer) → DPoS (Voyager) |
+| Consensus | PoA (Pioneer) → DPoS+BFT (Voyager) |
 | License | BUSL-1.1 |
 
 ## Quick Start

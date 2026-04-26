@@ -53,7 +53,7 @@ Auth: most endpoints are public. Handlers tagged with `_auth: ApiKey` check the 
 | GET | `/chain/state-root/{height}` | State root at given height. |
 | GET | `/chain/performance` | `{ blocks, avg_block_time_ms, tps_1h, tps_24h, last_block_time }`. |
 
-**`GET /chain/info`** response:
+**`GET /chain/info`** response (`max_supply_srx` is fork-aware: 210M pre tokenomics-v2 fork, 315M post-fork):
 ```json
 {
   "chain_id": 7119,
@@ -61,7 +61,7 @@ Auth: most endpoints are public. Handlers tagged with `_auth: ApiKey` check the 
   "total_blocks": 80124,
   "active_validators": 3,
   "circulating_supply_srx": 63030377.988,
-  "max_supply_srx": 210000000.0,
+  "max_supply_srx": 315000000.0,
   "next_block_reward_srx": 1.0,
   "total_minted_srx": 63030978.0,
   "total_burned_srx": 600.011,
@@ -343,7 +343,7 @@ curl -s https://sentrix-rpc.sentriscloud.com/chain/info
 # {
 #   "chain_id": 7119, "height": 80123, "total_blocks": 80124,
 #   "active_validators": 3, "circulating_supply_srx": 63030377.988,
-#   "max_supply_srx": 210000000.0, "next_block_reward_srx": 1.0,
+#   "max_supply_srx": 315000000.0, "next_block_reward_srx": 1.0,
 #   "mempool_size": 0, "deployed_tokens": 0,
 #   "window_is_partial": false, "window_start_block": 79123
 # }
