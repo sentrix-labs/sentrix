@@ -7,6 +7,59 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.38] — 2026-04-26 — Legacy TCP-path deletion + cumulative skip metric
+
+> **Hardening on top of v2.1.37.** Same fix surface — the libp2p sync race-induced cascade-bail (RCA: `incidents/2026-04-26-libp2p-sync-cascade-bail-stall.md`). Bundles legacy-path deletion (eliminate parallel dead code with the same bug pattern) + observability counter (detect re-emergence).
+
+### Removed
+
+- `crates/sentrix-network/src/sync.rs` deleted entirely (158 LOC, zero production callers; legacy TCP path superseded by libp2p in PR #82).
+- `crates/sentrix-network/src/node.rs` trimmed 645 → 36 LOC. Kept only `NodeEvent`, `SharedBlockchain`, `DEFAULT_PORT` (still imported by `libp2p_node.rs` + `bin/sentrix/main.rs`). Deleted: raw-TCP `Node` struct + impl, `Message` enum, `Peer` struct, `SharedPeers` type, `MAX_MESSAGE_SIZE`, `MAX_CONNECTIONS_PER_IP`, `RATE_LIMIT_WINDOW`, `MAX_PEERS`, `ConnectionCounts`, full test module.
+
+Both deleted sites had the same `for block in batch` cascade-bail pattern that caused the v2.1.36 stall — carrying the dead code with a known bug invited future regressions.
+
+### Added
+
+- `static SYNC_SKIPPED_TOTAL: AtomicU64` in `libp2p_node.rs` accumulates duplicate-block skips across handler invocations.
+- Threshold-crossing WARN log at 10/100/1k/10k/100k cumulative skipped → surfaces re-emergence of the concurrent-GetBlocks race so operators can grep for `cumulative skipped (already-applied) crossed` and decide when to ship single-flight coalescing.
+- Existing per-batch INFO log preserved (`synced N blocks ... skipped K already-applied`).
+
+### Migration
+
+- Drop-in chain.db compatible with v2.1.37.
+
+---
+
+## [2.1.37] — 2026-04-26 — libp2p sync cascade-bail fix (mainnet stall RCA)
+
+> **P0 hotfix.** Mainnet stalled at h=604547 for ~1h 45min on 2026-04-26 morning. Root cause: `libp2p_node.rs` BlocksResponse handler bailed on the first already-applied block in a batch and dropped the rest of valid forward blocks in the same response. Concurrent GetBlocks paths (periodic `sync_interval` + `TriggerSync` + reactive chain-on-full-batch) all read `our_height` and ask `from: our_height+1`. Responses overlap. Cumulative drift over thousands of sync rounds → 4-way chain.db divergence at h=604547 across the 4 mainnet validators.
+
+### Fixed
+
+- **`crates/sentrix-network/src/libp2p_node.rs`** BlocksResponse loop: filter `block.index <= chain.height()` BEFORE `add_block_from_peer`. Skip duplicates silently, keep applying forward blocks. Loop only breaks on real validation errors (gap, bad signature, etc.).
+
+### Tests
+
+- `test_libp2p_sync_loop_skips_duplicates_and_applies_remaining` in `crates/sentrix-core/tests/fork_determinism.rs`: chain at h=3 receives racy batch `[b2, b3, b4, b5]`. Pre-fix: bails on b2 with "expected 4 got 2", chain stalls at h=3. Post-fix: skipped=2 synced=2, chain advances to h=5.
+
+### Recovery (operator-driven)
+
+State divergence at h=604547 was the cumulative effect of the bug, not directly fixed by the binary patch. Recovery procedure:
+
+1. Forensic backup divergent chain.db on each validator (`chain.db.divergent-604547-<ts>/`)
+2. Treasury picked as canonical (most progressed at h=604548, self-consistent prev-link, signer-set matched majority)
+3. Tar-pipe Treasury chain.db → Foundation, Core, Beacon (tar-over-ssh, no-same-owner)
+4. MD5 parity confirmed across all 4 (`mdbx.dat` md5 = `567c7165301fff7e95ded23d03df63cd`)
+5. v2.1.37 binary deployed (docker bullseye, glibc 2.31)
+6. Rolling restart: Treasury → Foundation → Core → Beacon
+7. Chain advanced past h=604548 within seconds; per-validator hash parity verified at h=604650
+
+### Migration
+
+- Drop-in chain.db compatible with v2.1.36, but if your validator is divergent from the canonical at any height, follow the chain.db rsync procedure documented in `docs/operations/EMERGENCY_ROLLBACK.md`.
+
+---
+
 ## [2.1.36] — 2026-04-26 — tx validate: staking-op amount=0 exemption
 
 > **Hotfix**: tx validation rejected ClaimRewards (and other no-fund-movement staking ops) because the `amount > 0` check exempted only token + EVM ops, not staking ops. Surfaced 2026-04-26 when first ClaimRewards submission was rejected with `"amount must be > 0 (unless token/EVM operation)"` even though `tx.data = {"op":"claim_rewards"}` is a valid op. Fix exempts staking ops.
