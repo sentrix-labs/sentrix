@@ -104,7 +104,7 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 
 **Website:** [sentrixchain.com](https://sentrixchain.com)
 **Faucet:** [faucet.sentrixchain.com](https://faucet.sentrixchain.com) (testnet)
-**Wallet:** [sentrix-wallet.sentriscloud.com](https://sentrix-wallet.sentriscloud.com)
+**Wallet:** [solux.sentriscloud.com](https://solux.sentriscloud.com) (Solux web)
 **Docs:** [sentrixchain.com/docs/faucet](https://sentrixchain.com/docs/faucet)
 **Telegram:** [t.me/SentrixCommunity](https://t.me/SentrixCommunity)
 
