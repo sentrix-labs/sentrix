@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.1.39] — 2026-04-26 — Tokenomics v2 fork (BTC-parity halving + 315M cap)
+
+Consensus fork. Re-targets emission curve: 4-year halving (126M blocks) + 315M cap. Closes v1 math gap (geometric asymptoted at 84M from mining; 147M effective max instead of nominal 210M).
+
+### Added
+- `MAX_SUPPLY_V2 = 315M`, `HALVING_INTERVAL_V2 = 126M blocks` (4-year BTC-parity at 1s blocks)
+- `TOKENOMICS_V2_HEIGHT` env-gated activation, default `u64::MAX` (inert)
+- `Blockchain::max_supply_for(h)`, `halving_interval_for(h)`, `halvings_at(h)`, `is_tokenomics_v2_height(h)` — runtime-aware dispatch helpers
+- `get_block_reward()` migrated to fork-aware dispatch
+- `/chain/info` `max_supply_srx` field is fork-aware (PR #337)
+
+### Tests
+- `test_tokenomics_v2_fork_boundary_no_reward_jump` — smooth halving transition (no reward jump at fork moment)
+- `test_tokenomics_v2_geometric_reaches_315m_cap` — 1 × 126M × 2 + 63M = 315M cap reachable
+
+### Activation
+- Testnet: active since h=381651 (2026-04-26 afternoon)
+- Mainnet: armed at h=640800 via env var (~2 hour buffer post-deploy)
+
+### Migration
+- Drop-in chain.db compatible with v2.1.38
+
+### PRs
+- #336 — feat(consensus): tokenomics v2 fork
+- #337 — fix(rpc): max_supply_srx fork-aware
+
+### Incident (2026-04-26 evening)
+- Rolling restart for env-var loading triggered auto-jail divergence on mainnet. Foundation+Beacon thought one validator jailed; Treasury+Core didn't. Active-set divergence tripped P1 BFT safety gate. Chain stalled at h=633599.
+- **Recovery:** halt-all + chain.db rsync from Treasury (canonical) + simultaneous start. MD5 parity confirmed.
+- **Lesson:** rolling restart on mainnet has same jail-cascade pattern as testnet. For env-var changes, halt-all + simultaneous-start is safer. Documented in EMERGENCY_ROLLBACK.md.
+
+---
+
 ## [2.1.38] — 2026-04-26 — Legacy TCP-path deletion + cumulative skip metric
 
 Hardening on top of v2.1.37 (same incident surface). PR #334 second + third commits.

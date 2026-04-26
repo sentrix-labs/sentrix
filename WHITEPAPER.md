@@ -1,6 +1,6 @@
 # Sentrix — Technical Whitepaper
 
-**Version 3.3 — 2026-04-26 (post-V4-reward-v2 activation)**
+**Version 3.4 — 2026-04-26 (post tokenomics-v2 fork; max supply 315M, BTC-parity 4-year halving)**
 **Author: SentrisCloud**
 
 ---
@@ -221,33 +221,38 @@ This guarantees no partial state corruption under any failure condition.
 
 | Parameter | Value |
 |---|---|
-| Maximum supply | 210,000,000 SRX |
+| Maximum supply | 315,000,000 SRX (post tokenomics-v2 fork) |
 | Smallest unit | 1 sentri = 10^-8 SRX |
-| Genesis premine | 63,000,000 SRX (30%) |
-| Block rewards | 147,000,000 SRX (70%) |
+| Genesis premine | 63,000,000 SRX (20%) |
+| Block rewards | 252,000,000 SRX (80%) |
+
+> **Tokenomics v2 fork (2026-04-26):** Sentrix's emission curve was re-targeted to BTC-parity 4-year halving cadence. The v1 schedule (1 SRX × 42M halving) had a math gap — geometric series asymptoted at 84M from mining + 63M premine = 147M effective max, not the 210M originally documented. The v2 fork (`TOKENOMICS_V2_HEIGHT` env-gated, `MAX_SUPPLY_V2 = 315M`, `HALVING_INTERVAL_V2 = 126M blocks`) closes that gap: 1 SRX × 126M × 2 = 252M from mining + 63M premine = 315M cap (reachable). Side benefit: validator runway extended to ~year 20, premine ratio drops 30% nominal → 20% (industry-leading optics, lower than Solana 38% / Aptos 52% / Sui 58%).
 
 ### 6.2 Premine Allocation
 
-| Recipient | Amount | Share | Purpose |
+| Recipient | Amount | Share (of 315M) | Purpose |
 |---|---|---|---|
-| Founder | 21,000,000 SRX | 10% | Operations, treasury |
-| Ecosystem Fund | 21,000,000 SRX | 10% | Development grants, partnerships |
-| Early Validators | 10,500,000 SRX | 5% | Validator incentives |
-| Reserve | 10,500,000 SRX | 5% | Emergency, unforeseen needs |
+| Founder | 21,000,000 SRX | 6.67% | Operations, treasury |
+| Ecosystem Fund | 21,000,000 SRX | 6.67% | Development grants, partnerships |
+| Early Validators | 10,500,000 SRX | 3.33% | Validator incentives |
+| Reserve | 10,500,000 SRX | 3.33% | Emergency, unforeseen needs |
+| **Total premine** | **63,000,000 SRX** | **20%** | |
 
 ### 6.3 Block Rewards
 
-`HALVING_INTERVAL = 42_000_000` blocks. At 1-second block time, each era spans 42M seconds ≈ **1.33 years**.
+Tokenomics v2 schedule (active): `HALVING_INTERVAL_V2 = 126_000_000` blocks. At 1-second block time, each era spans 126M seconds ≈ **4 years** (Bitcoin-parity halving cadence).
 
-| Era | Block Range | Reward | Duration (~) |
+| Era | Block Range (post-fork-relative) | Reward | Duration (~) |
 |---|---|---|---|
-| 0 | 0 — 41,999,999 | 1 SRX | ~1.33 years |
-| 1 | 42,000,000 — 83,999,999 | 0.5 SRX | ~1.33 years |
-| 2 | 84,000,000 — 125,999,999 | 0.25 SRX | ~1.33 years |
-| 3 | 126,000,000+ | 0.125 SRX | ~1.33 years |
+| 0 | 0 — 125,999,999 | 1 SRX | ~4 years |
+| 1 | 126,000,000 — 251,999,999 | 0.5 SRX | ~4 years |
+| 2 | 252,000,000 — 377,999,999 | 0.25 SRX | ~4 years |
+| 3 | 378,000,000+ | 0.125 SRX | ~4 years |
 | ... | ... | halves | ... |
 
-Rewards are clamped to the remaining supply headroom. Once `total_minted == MAX_SUPPLY`, block rewards become zero.
+Block ranges are computed relative to the fork height (`TOKENOMICS_V2_HEIGHT`); pre-fork blocks (history before fork activation) used the v1 42M-block schedule. At ~era 26 (year ~104), block reward integer-truncates to zero sentri — emission ends. Rewards are clamped to remaining supply headroom; once `total_minted == MAX_SUPPLY_V2` (315M), block rewards become zero.
+
+> **First halving:** 4 years post-fork-activation. With fork activated at 2026-04-26, first halving lands ~2030.
 
 ### 6.4 Fee Economics
 
@@ -295,7 +300,7 @@ Sentrix operates a three-token model:
 
 | Token | Type | Supply | Role |
 |---|---|---|---|
-| **SRX** | Native coin | 210,000,000 (fixed) | Gas fees, validator rewards, base currency, store of value |
+| **SRX** | Native coin | 315,000,000 (fixed, post tokenomics-v2 fork) | Gas fees, validator rewards, base currency, store of value |
 | **SNTX** | SRC-20 | 10,000,000,000 | Utility — ecosystem rewards, governance voting, staking incentives |
 | **SRTX** | SRC-20 | TBD | Payment — stablecoin for daily transactions |
 
