@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-storage"
-version = "2.1.37"
+version = "2.1.38"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Sentrix storage layer — libmdbx wrapper for blockchain persistence"
