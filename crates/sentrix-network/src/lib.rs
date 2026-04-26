@@ -8,7 +8,6 @@
 pub mod behaviour;
 pub mod libp2p_node;
 pub mod node;
-pub mod sync;
 pub mod transport;
 
 pub use libp2p_node::{LibP2pNode, make_multiaddr};

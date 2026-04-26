@@ -13,7 +13,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+
+/// Cumulative count of "already-applied" blocks skipped in libp2p sync
+/// BlocksResponse handler. Crosses a power-of-ten threshold → WARN log
+/// surfaces re-emergence of the concurrent-GetBlocks race that caused
+/// the 2026-04-26 mainnet stall (h=604547).
+static SYNC_SKIPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 use futures::StreamExt;
 use libp2p::{
@@ -1475,7 +1482,20 @@ async fn on_inbound_response(
         tokio::spawn(async move {
             let mut chain = bc.write().await;
             let mut synced = 0u64;
+            let mut skipped = 0u64;
             for block in &blocks_owned {
+                // Concurrent GetBlocks paths (periodic sync_interval + TriggerSync
+                // + reactive chain-on-full-batch) can race: each reads our_height,
+                // sends GetBlocks{from: our_height+1}, peer replies with the block
+                // we just applied from the first response. Without this guard the
+                // loop bails on `Invalid block: expected N+1, got N` and drops the
+                // remaining VALID forward blocks in the batch — block sync stalls
+                // even while peers serve correct history. (Mainnet stall 2026-04-26
+                // h=604547 root cause.)
+                if block.index <= chain.height() {
+                    skipped += 1;
+                    continue;
+                }
                 match chain.add_block_from_peer(block.clone()) {
                     Ok(()) => {
                         // Use H2 (post-add_block state_root hash) — not the raw peer block (PR #78).
@@ -1493,8 +1513,33 @@ async fn on_inbound_response(
                     }
                 }
             }
-            if synced > 0 {
-                tracing::info!("libp2p: synced {} blocks from {}", synced, peer_str);
+            if synced > 0 || skipped > 0 {
+                tracing::info!(
+                    "libp2p: synced {} blocks from {} (skipped {} already-applied)",
+                    synced,
+                    peer_str,
+                    skipped
+                );
+            }
+            // Re-emergence guard: cumulative skip count across handler
+            // invocations. The duplicate-skip filter masks the
+            // concurrent-GetBlocks-race symptom; if total grows quickly,
+            // request coalescing (single-flight) should be tightened.
+            // Warn at first crossing of each order-of-magnitude threshold
+            // (10, 100, 1k, 10k, 100k) to surface escalation without
+            // spamming every batch.
+            if skipped > 0 {
+                let prev = SYNC_SKIPPED_TOTAL.fetch_add(skipped, Ordering::Relaxed);
+                let total = prev + skipped;
+                for threshold in [10u64, 100, 1_000, 10_000, 100_000] {
+                    if prev < threshold && total >= threshold {
+                        tracing::warn!(
+                            "libp2p sync: cumulative skipped (already-applied) crossed {} — \
+                             concurrent-GetBlocks race firing; consider single-flight coalescing",
+                            threshold
+                        );
+                    }
+                }
             }
         });
         // If we got a full batch (50 blocks), request more
