@@ -3,8 +3,8 @@
 Reference for frontend integration. Source: `crates/sentrix-rpc/src/routes/mod.rs` (REST) and `crates/sentrix-rpc/src/jsonrpc/{eth,net,web3,sentrix}.rs` (JSON-RPC).
 
 Base URLs:
-- **Mainnet:** `https://sentrix-rpc.sentriscloud.com` (chain_id 7119, PoA)
-- **Testnet:** `https://testnet-rpc.sentriscloud.com` (chain_id 7120, BFT)
+- **Mainnet:** `https://sentrix-rpc.sentriscloud.com` (chain_id 7119, **Voyager DPoS+BFT** since 2026-04-25)
+- **Testnet:** `https://testnet-rpc.sentriscloud.com` (chain_id 7120, **Voyager DPoS+BFT** since 2026-04-23)
 
 Rate limits (per IP): **60 req/min global**, **10 req/min write endpoints** (POST to `/transactions`, `/tokens/deploy|transfer|burn`, `/rpc`).
 
@@ -28,7 +28,7 @@ Auth: most endpoints are public. Handlers tagged with `_auth: ApiKey` check the 
 {
   "version": { "version": "2.1.1", "build": "<sha|unknown>" },
   "chain_id": 7119,
-  "consensus": "PoA" | "BFT",
+  "consensus": "DPoS+BFT" | "PoA",  // current = "DPoS+BFT" post-Voyager activation; "PoA" preserved for pre-2026-04-25 historical block queries
   "native_token": "SRX",
   "sync_info": {
     "latest_block_height": 80123,
@@ -163,7 +163,7 @@ All three POSTs take `{ "transaction": <SignedTransaction> }` where `tx.data` is
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/validators` | PoA authority set (name, address, is_active, blocks_produced). |
+| GET | `/validators` | Validator set (name, address, is_active, blocks_produced). Pre-Voyager (h<579047 mainnet) this was the Pioneer PoA authority set; post-Voyager it's the DPoS active set. |
 | GET | `/validators/{address}/delegators` | Delegators to a validator (DPoS). |
 | GET | `/validators/{address}/rewards` | Reward-history summary for a validator. |
 | GET | `/validators/{address}/blocks-over-time` | Blocks produced per epoch (time series). |
@@ -269,14 +269,14 @@ Block range on `eth_getLogs` is capped at 10 000; exceeding it returns error cod
 | `sentrix_getBftStatus` | `[]` | See shape below. |
 | `sentrix_getFinalizedHeight` | `[]` | `{ finalized_height, finalized_hash, latest_height, blocks_behind_finality }` |
 
-**`sentrix_getValidatorSet`** result (PoA mainnet example):
+**`sentrix_getValidatorSet`** result (Voyager DPoS+BFT mainnet, current):
 ```json
 {
-  "consensus": "PoA",
-  "active_count": 3,
-  "total_count": 3,
-  "total_active_stake": "0x0",
-  "epoch_number": 2,
+  "consensus": "DPoS+BFT",
+  "active_count": 4,
+  "total_count": 4,
+  "total_active_stake": "0x14d1120d7b160000",
+  "epoch_number": 22,
   "validators": [
     {
       "address": "0x...",
@@ -323,8 +323,8 @@ BFT mode adds `current_round`, `current_view`, `phase`, `rounds_since_last_block
 ## Notes for integrators
 
 - **Units:** chain stores amounts in *sentri* (1 SRX = 1e8 sentri). EVM + JSON-RPC surface uses *wei* (1 SRX = 1e18 wei = 1e10 sentri). REST endpoints generally return sentri; JSON-RPC `eth_getBalance` / `sentrix_getBalance` return wei hex.
-- **Block time:** 1s (Pioneer PoA mainnet post-#148). Testnet BFT: 1s at quorum, slower during round timeouts.
-- **Finality:** PoA finalizes immediately (1-block). BFT finalizes on quorum justification.
+- **Block time:** 1s under nominal load on both mainnet + testnet (Voyager DPoS+BFT). Slower during BFT round timeouts (skip-rounds when proposer offline).
+- **Finality:** Voyager DPoS+BFT finalizes on 3/4 stake-weighted precommit supermajority — typically round-0 (within ~1s of proposal). Skip-rounds extend finality latency. Pre-Voyager (h<579047 mainnet) blocks finalized immediately under Pioneer PoA round-robin.
 - **Address format:** `0x` + 40 hex lowercase. SRC-20 contract addresses: `SRC20_` + 40 hex.
 - **chain_id:** 7119 = mainnet, 7120 = testnet.
 - **Gas accounting:** today flat 21k per tx for non-EVM ops. EIP-1559 dynamic base fee queued (#9 backlog).

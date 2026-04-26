@@ -11,7 +11,7 @@ No fund-loss vulnerabilities. No data corruption risks. Main gap is DoS resistan
 | | |
 |-|-|
 | Rust 2024, 50+ files, ~22,500+ LoC | 551 tests |
-| PoA round-robin, 1s blocks (v2.0.0) | Chain ID 7119 |
+| Voyager DPoS+BFT, 1s blocks (v2.1.39+) — succeeded Pioneer PoA round-robin 2026-04-25 | Chain ID 7119 |
 | 315M SRX max supply (post-v2 fork; 210M pre-fork) | 12 crates + 1 binary |
 
 ## Code Audit
