@@ -1,6 +1,6 @@
 # Sentrix — Technical Whitepaper
 
-**Version 3.2 — 2026-04-25 (post-Voyager mainnet activation)**
+**Version 3.3 — 2026-04-26 (post-V4-reward-v2 activation)**
 **Author: SentrisCloud**
 
 ---
@@ -75,6 +75,30 @@ Voyager replaces Pioneer's authority-based round-robin with a stake-weighted act
 - **EVM gating.** Voyager activation also flips `evm_activated=true`, enabling `eth_sendRawTransaction` and Solidity contract deployment via revm 37.
 
 Voyager activated on mainnet at h=579047 on 2026-04-25 after Pioneer ran from genesis through h=579046.
+
+### 2.7 V4 Reward Distribution (active mainnet)
+
+Pre-V4 (Pioneer + early Voyager): coinbase 1 SRX/block credited directly to the proposing validator's balance.
+
+Post-V4 (active on mainnet since h=590100, 2026-04-25): coinbase routes to `PROTOCOL_TREASURY` (`0x0000000000000000000000000000000000000002`). Validators and their delegators accumulate stake-weighted shares in `pending_rewards` accumulators. Funds are released to claimers via the `StakingOp::ClaimRewards` transaction:
+
+```
+Pre-V4:  block produced → coinbase 1 SRX → validator balance
+Post-V4: block produced → coinbase 1 SRX → PROTOCOL_TREASURY
+                                            ↓ (escrow)
+                          ClaimRewards tx ← validator/delegator
+                                            ↓
+                          PROTOCOL_TREASURY → claimer balance
+                          pending_rewards reset to 0
+```
+
+Why the change:
+- Stake-weighted delegation share — delegators earn pro-rata from validator's commission carve-out without manual accounting
+- Slashing applies to pending_rewards before claim — validator misbehavior reduces accumulated reward, not yet-paid balance
+- On-chain audit trail — `pending_rewards` per validator is queryable via `/staking/validators` JSON-RPC endpoint
+- Treasury fund growth visible — total `PROTOCOL_TREASURY` balance reflects unclaimed escrow at any height
+
+The activation was a non-fork operator-side env var flip (`VOYAGER_REWARD_V2_HEIGHT=590100`); code path was already staged in v2.1.30+ binaries. At fork height, `reset_reward_accumulators_for_fork_activation()` fired once to clear pre-V4 accumulator state, then the new path took effect for all subsequent blocks.
 
 ### 2.6 Peer Mesh (L1 + L2 self-healing)
 
