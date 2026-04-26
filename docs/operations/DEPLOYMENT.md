@@ -94,8 +94,10 @@ sudo systemctl daemon-reload && sudo systemctl enable --now sentrix-node
 | `SENTRIX_API_PORT` | `8545` | REST/JSON-RPC port |
 | `SENTRIX_WALLET_PASSWORD` | (none) | Keystore decrypt; sourced from systemd `EnvironmentFile` (mode 600), never inline |
 | `SENTRIX_LEGACY_VALIDATION_HEIGHT` | (none) | Cutoff height below which legacy chain.db artefacts are tolerated. Set to `557144` on every mainnet validator (closes [#268](https://github.com/sentrix-labs/sentrix/issues/268)) |
-| `SENTRIX_FORCE_PIONEER_MODE` | `0` | Emergency override: forces Pioneer PoA regardless of `VOYAGER_FORK_HEIGHT`. Currently `1` on every mainnet validator (Voyager activation rolled back 2026-04-25, see [EMERGENCY_ROLLBACK.md](EMERGENCY_ROLLBACK.md)) |
-| `VOYAGER_FORK_HEIGHT` | (built-in default) | Height at which Voyager DPoS+BFT activates. Mainnet currently parked at `18446744073709551615` (u64::MAX) until [#292](https://github.com/sentrix-labs/sentrix/issues/292) lands |
+| `SENTRIX_FORCE_PIONEER_MODE` | `0` | **Deprecated** — emergency override that forced Pioneer PoA regardless of `VOYAGER_FORK_HEIGHT`. Removed from all mainnet env files post-Voyager activation 2026-04-25 (h=579047). Do not re-enable. |
+| `VOYAGER_FORK_HEIGHT` | `579047` mainnet / `10` testnet | Height at which Voyager DPoS+BFT activates. **Active on mainnet since 2026-04-25.** Belt-and-suspenders post-PR #324 (`voyager_mode_for()` runtime-aware check uses chain.db `voyager_activated` flag too). |
+| `VOYAGER_REWARD_V2_HEIGHT` | `590100` mainnet / `100` testnet | Height at which V4 reward distribution v2 activates (coinbase routes to `PROTOCOL_TREASURY` escrow; ClaimRewards staking op becomes consensus-valid). **Active on mainnet since 2026-04-25.** |
+| `TOKENOMICS_V2_HEIGHT` | `640800` mainnet / `381651` testnet | Height at which tokenomics v2 fork activates (`MAX_SUPPLY` 210M → 315M, `HALVING_INTERVAL` 42M → 126M = BTC-parity 4-year cadence). **Mainnet ARMED 2026-04-26 evening; testnet ACTIVE since 2026-04-26 afternoon.** Default `u64::MAX` (inert). |
 | `SENTRIX_TRIE_TRACE` | `0` | Debug-only: per-key trie trace lines. **Never** enable in prod — fills the journal in seconds |
 | `SENTRIX_REPLAY_BYPASS_AUTHZ` | `0` | Debug-only: bypass tx authz during replay. Local debug runs only |
 | `RUST_LOG` | `info` | Log level |

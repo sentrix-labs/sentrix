@@ -3,7 +3,7 @@
 ## Architecture
 
 - [Overview](architecture/OVERVIEW.md) — components, module map, data flow
-- [Consensus](architecture/CONSENSUS.md) — PoA round-robin, block production
+- [Consensus](architecture/CONSENSUS.md) — Voyager DPoS+BFT (current); Pioneer PoA round-robin was bootstrap consensus pre-2026-04-25
 - [Networking](architecture/NETWORKING.md) — libp2p, peer management, sync
 - [State](architecture/STATE.md) — trie, MDBX, state roots, merkle proofs
 - [Transactions](architecture/TRANSACTIONS.md) — tx lifecycle, fees, nonce, mempool
@@ -32,7 +32,7 @@
 
 ## Roadmap
 
-- [Pioneer](roadmap/PHASE1.md) — PoA (done)
+- [Pioneer](roadmap/PHASE1.md) — PoA round-robin (completed h=0…579046, succeeded by Voyager 2026-04-25)
 - [Voyager](roadmap/PHASE2.md) — DPoS + BFT + EVM (planned)
 - [Changelog](roadmap/CHANGELOG.md) — PR history
 
@@ -43,10 +43,10 @@
 | Chain ID | 7119 |
 | Block time | 1s |
 | Coin | SRX (1 SRX = 100M sentri) |
-| Max supply | 210M SRX |
-| Reward | 1 SRX/block, halving every 42M blocks |
+| Max supply | 315M SRX (post tokenomics-v2 fork; was 210M pre-fork) |
+| Reward | 1 SRX/block, halving every 126M blocks (~4 years, BTC parity, post-fork) |
 | Fees | 50% burn / 50% validator |
-| Consensus | PoA (Pioneer) → DPoS (Voyager) |
+| Consensus | PoA (Pioneer) → DPoS+BFT (Voyager) |
 | License | BUSL-1.1 |
 
 ## Quick Start

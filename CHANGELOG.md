@@ -7,6 +7,58 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.39] — 2026-04-26 — Tokenomics v2 fork (BTC-parity halving + 315M cap)
+
+> **Consensus fork.** Re-targets emission curve to BTC-parity 4-year halving (126M blocks at 1s) + raises MAX_SUPPLY from 210M to 315M. Closes the v1 math gap (geometric series asymptoted at 84M from mining → 147M effective max, not the 210M originally documented). Side benefit: validator runway extended to ~year 20, premine ratio drops 30% nominal → 20% (industry-leading optics).
+
+### Added (consensus)
+
+- `MAX_SUPPLY_V2 = 315_000_000 × 100_000_000 sentri` (315M SRX)
+- `HALVING_INTERVAL_V2 = 126_000_000 blocks` (4-year cadence at 1s blocks)
+- `TOKENOMICS_V2_HEIGHT_DEFAULT = u64::MAX` — env-gated activation (set `TOKENOMICS_V2_HEIGHT` env var on each validator). Same fork-gate pattern as `VOYAGER_REWARD_V2_HEIGHT`. Default = inert.
+- `Blockchain::is_tokenomics_v2_height(h) -> bool` — static check
+- `Blockchain::max_supply_for(&self, h)` — runtime-aware dispatch (210M pre-fork, 315M post-fork)
+- `Blockchain::halving_interval_for(&self, h)` — runtime-aware dispatch (42M pre-fork, 126M post-fork)
+- `Blockchain::halvings_at(h)` — fork-aware halving count: pre-fork uses `h / 42M`, post-fork uses `(h - fork) / 126M`. Assumes activation while still in v1 era 0 (`fork_height < 42M`) so cumulative halvings don't reset at fork moment.
+- `get_block_reward()` migrated to use the dispatchers — single dispatch surface.
+
+### Added (RPC display)
+
+- `chain_queries.rs` `chain_stats()` `max_supply_srx` is fork-aware (was static `MAX_SUPPLY`). Pre-fork RPC reports 210M, post-fork reports 315M. (PR #337 follow-up.)
+
+### Fixed
+- v1 tokenomics math gap. With v1 constants (1 SRX × 42M halving), geometric series asymptoted at 84M from mining + 63M premine = 147M effective max — the 210M cap was unreachable. v2 (1 SRX × 126M × 2 = 252M from mining + 63M premine = 315M) closes the gap.
+
+### Activation procedure (operator-driven)
+
+1. Build v2.1.39 binary (docker bullseye, glibc 2.31 compat)
+2. Deploy to all 4 mainnet validators (rolling restart NOT recommended — use halt-all + simultaneous-start to avoid jail-state divergence; see "2026-04-26 evening incident" below)
+3. Set `TOKENOMICS_V2_HEIGHT=<height>` in each validator's systemd EnvironmentFile (e.g., `/etc/sentrix/sentrix-node.env`). Use future height with ~2-hour buffer
+4. Halt all + simultaneous start (do NOT roll)
+5. Wait for chain to reach fork height — consensus auto-switches at the configured block, no operator action needed at the moment of fork
+6. Verify post-fork: `/chain/info` reports `max_supply_srx: 315000000`, `next_block_reward_srx: 1.0` (era 0 of v2 schedule)
+
+### Tests
+- `test_tokenomics_v2_fork_boundary_no_reward_jump` — verifies smooth halving transition at fork moment (no reward jump up or down)
+- `test_tokenomics_v2_geometric_reaches_315m_cap` — confirms geometric series math: 1 × 126M × 2 + 63M premine = 315M (within 5B-sentri integer-truncation tolerance)
+
+### Migration
+- Drop-in chain.db compatible with v2.1.38. Pre-fork blocks unaffected. `total_minted` continues monotonically. Cap check uses fork-aware `max_supply_for(h)`.
+
+### 2026-04-26 evening incident — rolling-restart jail divergence (recovered)
+
+During the rolling restart used to load `TOKENOMICS_V2_HEIGHT` env var into validator processes, sequential per-validator restarts caused auto-jail divergence: validators that were down for their proposing slot were jailed locally on Foundation+Beacon's view but seen as active on Treasury+Core's view. Active-set divergence (3 vs 4) tripped the P1 BFT safety gate ("active set < minimum 4"), stalling the chain at h=633599.
+
+**Recovery:** halt all 4 → forensic backup divergent chain.db → tar-pipe Treasury (frozen canonical) → Foundation/Core/Beacon → MD5 parity confirmed (`975f9d67a7c3206dbea346f6b90f4826`) → simultaneous start → BFT resumed within seconds. Per-validator hash parity verified at h=633650 (`8e2166e9962da5aa...`).
+
+**Lesson:** rolling restart on mainnet has the same jail-cascade pattern previously documented for testnet (2026-04-20 incident). For env-var changes or any restart where consensus rules don't change between old/new state, prefer **halt-all + simultaneous-start** over rolling. See `EMERGENCY_ROLLBACK.md` § 2.
+
+### PRs
+- #336 — feat(consensus): tokenomics v2 fork — 126M halving + 315M cap (BTC-parity 4-year)
+- #337 — fix(rpc): /chain/info max_supply_srx is fork-aware (tokenomics v2 follow-up)
+
+---
+
 ## [2.1.38] — 2026-04-26 — Legacy TCP-path deletion + cumulative skip metric
 
 > **Hardening on top of v2.1.37.** Same fix surface — the libp2p sync race-induced cascade-bail (RCA: `incidents/2026-04-26-libp2p-sync-cascade-bail-stall.md`). Bundles legacy-path deletion (eliminate parallel dead code with the same bug pattern) + observability counter (detect re-emergence).

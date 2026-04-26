@@ -65,11 +65,11 @@ sudo install -m 755 <bin_dir>/releases/sentrix-vX.Y.Z-<timestamp> <bin_dir>/sent
 sudo systemctl start <validator-service>
 ```
 
-Current production binary at the time of writing: **v2.1.38** (mainnet
-& testnet, post-libp2p-sync-cascade-bail-fix). Prior production releases
-archived under each validator's `<bin_dir>/releases/`: v2.1.37, v2.1.36,
-v2.1.35, v2.1.34, v2.1.33, v2.1.32, v2.1.31, v2.1.30, v2.1.29, v2.1.28,
-v2.1.27, v2.1.26.
+Current production binary at the time of writing: **v2.1.39** (mainnet
+& testnet, post tokenomics-v2 fork landing). Prior production releases
+archived under each validator's `<bin_dir>/releases/`: v2.1.38, v2.1.37,
+v2.1.36, v2.1.35, v2.1.34, v2.1.33, v2.1.32, v2.1.31, v2.1.30, v2.1.29,
+v2.1.28, v2.1.27, v2.1.26.
 
 The 2026-04-25 / 2026-04-26 incident hotfix series:
 - v2.1.31: BFT signing v2 foundation + Frontier F-2 shadow + libp2p connection-leak fix
@@ -80,6 +80,7 @@ The 2026-04-25 / 2026-04-26 incident hotfix series:
 - v2.1.36: tx validate exempts staking ops from amount>0 check (ClaimRewards submission fix)
 - v2.1.37: libp2p sync cascade-bail filter (P0: 2026-04-26 mainnet stall at h=604547 root cause + fix). Recovered via Treasury-canonical chain.db rsync. See PR #334 + RCA at `incidents/2026-04-26-libp2p-sync-cascade-bail-stall.md` (founder-private).
 - v2.1.38: legacy TCP-path deletion (sync.rs + node.rs trimmed) + cumulative skip-counter observability for race re-emergence detection
+- v2.1.39: tokenomics v2 fork (consensus, env-gated). 126M-block halving (4-year BTC-parity) + 315M MAX_SUPPLY. Activated on testnet at h=381651 (2026-04-26), armed on mainnet at h=640800 via `TOKENOMICS_V2_HEIGHT` env var. Same fork-gate pattern as VOYAGER_REWARD_V2_HEIGHT (zero behavior change pre-fork-height; runtime dispatch in `get_block_reward()` + `max_supply_for(height)` + `halvings_at(height)`). PR #336 + #337 (RPC display fix).
 
 ---
 
@@ -122,7 +123,7 @@ The full procedure lives in `internal operator runbook`
 State_root is recomputed from the canonical chain.db on the next block
 and the divergence is gone.
 
-> **Worked example (2026-04-26 mainnet stall, h=604547).** All 4
+> **Worked example (2026-04-26 morning mainnet stall, h=604547).** All 4
 > validators had different block hashes at h=604547. Treasury picked as
 > canonical (most progressed at h=604548, self-consistent prev-link,
 > justification signer-set matched majority). Tar-pipe Treasury chain.db
@@ -131,6 +132,21 @@ and the divergence is gone.
 > → Foundation → Core → Beacon. Chain advanced past h=604548 within
 > seconds. Per-validator hash parity verified at h=604650. RCA in
 > `incidents/2026-04-26-libp2p-sync-cascade-bail-stall.md` (founder-private).
+
+> **Worked example #2 (2026-04-26 evening mainnet stall, h=633599).**
+> Rolling restart used to load `TOKENOMICS_V2_HEIGHT` env var into
+> validator processes triggered auto-jail divergence: Foundation+Beacon
+> view had 1 validator jailed (auto-jail counted missed proposals during
+> their down-window), Treasury+Core view had 0 jailed. Active-set
+> divergence (3 vs 4) tripped the P1 BFT safety gate ("active set ≥ minimum 4")
+> on Foundation+Beacon, refusing BFT participation. Chain stalled at
+> h=633599. Recovery: halt all 4 → forensic backup divergent chain.db →
+> tar-pipe Treasury (frozen canonical) → Foundation/Core/Beacon →
+> MD5 parity confirmed (`975f9d67a7c3206dbea346f6b90f4826`) → simultaneous
+> start. BFT resumed within seconds. Per-validator hash parity at h=633650
+> (`8e2166e9962da5aa...`). **Lesson: rolling restart on mainnet has the
+> same jail-cascade pattern as testnet — for env-var changes, prefer
+> halt-all + simultaneous-start over rolling.**
 
 ---
 
@@ -156,3 +172,12 @@ and the divergence is gone.
 - **Never use `sentrix state export/import` to recover a post-genesis
   chain.** v2.1.5+ refuses to start on a keystore built from import.
   Use frozen-rsync of chain.db (path 3 above).
+
+- **Never rolling-restart all 4 validators sequentially when consensus
+  rules don't change between old/new state.** Rolling restart triggers
+  auto-jail divergence: validators down for their proposing slot get
+  jailed locally on some peers but seen as active on others. P1 safety
+  gate trips, chain stalls. For env-var changes, binary upgrades that
+  don't change consensus rules, etc — use **halt-all + simultaneous-start**.
+  Confirmed pattern on testnet (2026-04-20) AND mainnet (2026-04-26
+  evening, see Worked Example #2 above).

@@ -1,6 +1,8 @@
 # Sentrix
 
-Fast, secure Layer-1 blockchain built in Rust.
+**Where real assets live.**
+
+Sentrix is the financial infrastructure for the real economy — starting with Indonesia. We bring real-world assets on-chain with Bitcoin's monetary discipline (fixed 315M supply, 4-year halving) and Ethereum's programmability (EVM-native, Solidity-ready) — built for Southeast Asia's 600 million people first, then the world.
 
 [![Website](https://img.shields.io/badge/website-sentrixchain.com-8A5A11)](https://sentrixchain.com)
 [![CI/CD](https://github.com/sentrix-labs/sentrix/actions/workflows/ci.yml/badge.svg)](https://github.com/sentrix-labs/sentrix/actions)
@@ -14,9 +16,9 @@ Fast, secure Layer-1 blockchain built in Rust.
 
 ## What is Sentrix?
 
-Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, instant finality, and Ethereum-compatible tooling. MetaMask, ethers.js, and web3.js connect natively.
+Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, instant finality, and Ethereum-compatible tooling. MetaMask, ethers.js, and web3.js connect natively. The chain serves as a settlement and tokenization layer for real-world assets — designed to bring institutional-grade financial primitives on-chain with the monetary discipline of Bitcoin and the programmability of Ethereum.
 
-- **v2.1.38** — MDBX storage, 1s blocks, 5000 tx/block capacity, Voyager DPoS+BFT live on mainnet, EVM (revm 37) active, V4 reward distribution v2 active (treasury escrow + ClaimRewards op), libp2p sync race-safe + cumulative skip-metric observability
+- **v2.1.39** — MDBX storage, 1s blocks, 5000 tx/block capacity, Voyager DPoS+BFT live on mainnet, EVM (revm 37) active, V4 reward distribution v2 active, tokenomics v2 fork armed (BTC-parity 4-year halving + 315M cap; activates at `TOKENOMICS_V2_HEIGHT=640800` on mainnet), libp2p sync race-safe
 - **551+ tests**, clippy clean, 11 security audit rounds
 - **4 validators** across 4 nodes (Foundation, Treasury, Core, Beacon) on the maintainer fleet
 
@@ -111,7 +113,7 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 | Phase | Status | Focus |
 |-------|--------|-------|
 | **Pioneer** | Completed (mainnet h=0…579058) | PoA round-robin, MDBX storage, 1s blocks, SRC-20 tokens — succeeded by Voyager 2026-04-25 |
-| **Voyager** | **Live on mainnet (v2.1.38)** | DPoS proposer rotation + BFT finality, EVM (revm 37), `eth_sendRawTransaction`, L1 peer auto-discovery + connection-limits hardening, V4 reward distribution v2 (treasury escrow + ClaimRewards), runtime-aware Voyager dispatch, race-safe block sync |
+| **Voyager** | **Live on mainnet (v2.1.39)** | DPoS proposer rotation + BFT finality, EVM (revm 37), `eth_sendRawTransaction`, L1 peer auto-discovery + connection-limits hardening, V4 reward distribution v2 (treasury escrow + ClaimRewards), runtime-aware Voyager dispatch, race-safe block sync, tokenomics v2 fork (315M cap + 4-year halving) |
 | **Frontier** | Phase F-1 scaffold landed; F-2…F-10 planned | Parallel transaction execution, sub-1s block time, mainnet hard fork |
 | **Odyssey** | Future | Cross-chain bridges, mature ecosystem, light clients |
 
