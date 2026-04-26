@@ -7,6 +7,27 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.36] — 2026-04-26 — tx validate: staking-op amount=0 exemption
+
+> **Hotfix**: tx validation rejected ClaimRewards (and other no-fund-movement staking ops) because the `amount > 0` check exempted only token + EVM ops, not staking ops. Surfaced 2026-04-26 when first ClaimRewards submission was rejected with `"amount must be > 0 (unless token/EVM operation)"` even though `tx.data = {"op":"claim_rewards"}` is a valid op. Fix exempts staking ops.
+
+### Fixed
+
+- **`Transaction::validate` allows `amount=0` for staking ops**. `crates/sentrix-primitives/src/transaction.rs:328`. The check now reads:
+  ```rust
+  if self.amount == 0
+      && !TokenOp::is_token_op(&self.data)
+      && !self.is_evm_tx()
+      && !StakingOp::is_staking_op(&self.data)
+  ```
+  Affects `ClaimRewards` (most common), `Unjail`, `SubmitEvidence` — the variants that don't move funds via `tx.amount` (apply-time treasury credit handles it).
+
+### Migration
+
+- Drop-in chain.db compatible with v2.1.35.
+
+---
+
 ## [2.1.35] — 2026-04-26 — voyager_mode_for migration sweep + claim-rewards tool
 
 > **Maintenance release.** Bundles defensive migrations of remaining `is_voyager_height` callsites (#327) plus the new `tools/claim-rewards` standalone binary (#328). No consensus or chain-state changes.
