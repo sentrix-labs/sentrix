@@ -2,6 +2,7 @@
 
 Fast, secure Layer-1 blockchain built in Rust.
 
+[![Website](https://img.shields.io/badge/website-sentrixchain.com-8A5A11)](https://sentrixchain.com)
 [![CI/CD](https://github.com/sentrix-labs/sentrix/actions/workflows/ci.yml/badge.svg)](https://github.com/sentrix-labs/sentrix/actions)
 [![Release](https://img.shields.io/github/v/release/sentrix-labs/sentrix)](https://github.com/sentrix-labs/sentrix/releases/latest)
 [![Tests](https://img.shields.io/badge/tests-551%2B%20passing-brightgreen)](https://github.com/sentrix-labs/sentrix/actions)
@@ -61,7 +62,7 @@ curl http://localhost:8545/health
 | RPC URL | `https://testnet-rpc.sentriscloud.com/rpc` |
 | Chain ID | `7120` |
 | Symbol | `SRX` |
-| Explorer | `https://sentrixscan.sentriscloud.com` (toggle to Testnet in UI) |
+| Explorer | `https://scan.sentrixchain.com` (toggle to Testnet in UI) |
 
 Full guide: [docs/operations/METAMASK.md](docs/operations/METAMASK.md). Deploy a smart contract via Remix: [docs/operations/SMART_CONTRACT_GUIDE.md](docs/operations/SMART_CONTRACT_GUIDE.md). EVM internals: [docs/architecture/EVM.md](docs/architecture/EVM.md).
 
@@ -97,10 +98,12 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 | **Consensus** | DPoS + BFT (4 validators) | DPoS + BFT (4 validators) |
 | **Block time** | 1 second | 1 second |
 | **EVM** | Active — MetaMask compatible | Active — MetaMask compatible |
-| **Explorer** | [sentrixscan.sentriscloud.com](https://sentrixscan.sentriscloud.com) | [sentrixscan.sentriscloud.com](https://sentrixscan.sentriscloud.com) (same unified UI, toggle Testnet) |
+| **Explorer** | [scan.sentrixchain.com](https://scan.sentrixchain.com) | [scan.sentrixchain.com](https://scan.sentrixchain.com) (same unified UI, toggle Testnet) |
 
+**Website:** [sentrixchain.com](https://sentrixchain.com)
+**Faucet:** [faucet.sentrixchain.com](https://faucet.sentrixchain.com) (testnet)
 **Wallet:** [sentrix-wallet.sentriscloud.com](https://sentrix-wallet.sentriscloud.com)
-**Faucet:** [faucet.sentriscloud.com](https://faucet.sentriscloud.com)
+**Docs:** [sentrixchain.com/docs/faucet](https://sentrixchain.com/docs/faucet)
 **Telegram:** [t.me/SentrixCommunity](https://t.me/SentrixCommunity)
 
 ## Roadmap
