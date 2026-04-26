@@ -44,7 +44,7 @@ const config: Config = {
   ],
 
   themeConfig: {
-    image: 'img/sentrix-social-card.jpg',
+    image: 'img/sentrix-social-card.png',
     colorMode: {
       respectPrefersColorScheme: true,
     },

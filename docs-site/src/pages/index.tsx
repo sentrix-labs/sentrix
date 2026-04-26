@@ -17,11 +17,19 @@ function HomepageHeader() {
           {siteConfig.title}
         </Heading>
         <p className="hero__subtitle">{siteConfig.tagline}</p>
+        <p className={styles.heroLead}>
+          Financial infrastructure for the real economy — Indonesia first, then the world.
+        </p>
         <div className={styles.buttons}>
           <Link
             className="button button--secondary button--lg"
-            to="/docs/intro">
-            Docusaurus Tutorial - 5min ⏱️
+            to="/operations/DEVELOPER_QUICKSTART">
+            Developer Quickstart →
+          </Link>
+          <Link
+            className="button button--outline button--secondary button--lg"
+            to="/operations/METAMASK">
+            Add to MetaMask
           </Link>
         </div>
       </div>
@@ -33,8 +41,8 @@ export default function Home(): ReactNode {
   const {siteConfig} = useDocusaurusContext();
   return (
     <Layout
-      title={`Hello from ${siteConfig.title}`}
-      description="Description will go into a meta tag in <head />">
+      title={`${siteConfig.title} — ${siteConfig.tagline}`}
+      description="Sentrix Chain — EVM-compatible Layer-1 with Bitcoin's monetary discipline. Financial infrastructure for the real economy. 315M fixed supply, 4-year halving, 1-second blocks.">
       <HomepageHeader />
       <main>
         <HomepageFeatures />

@@ -105,7 +105,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now sentrix-node
 ## Canonical Deploy Path
 
 Production binary deploys go through an operator-run deploy from a
-build host (see [CI_CD.md](CI_CD.md) and [RELEASE.md](../../RELEASE.md)).
+build host (see [CI_CD.md](CI_CD.md) and [RELEASE.md on GitHub](https://github.com/sentrix-labs/sentrix/blob/main/RELEASE.md)).
 The CI/CD `deploy` job is disabled; CI runs tests only. The build runs
 once in a `rust:1.95-bullseye` container (glibc 2.31, compatible with
 all current target distros), the same byte-identical binary is shipped

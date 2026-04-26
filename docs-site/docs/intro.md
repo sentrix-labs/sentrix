@@ -1,5 +1,5 @@
 ---
-slug: /
+slug: /intro
 sidebar_position: 1
 title: Welcome to Sentrix Chain
 ---

@@ -163,7 +163,7 @@ All three POSTs take `{ "transaction": <SignedTransaction> }` where `tx.data` is
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/validators` | Validator set (name, address, is_active, blocks_produced). Pre-Voyager (h<579047 mainnet) this was the Pioneer PoA authority set; post-Voyager it's the DPoS active set. |
+| GET | `/validators` | Validator set (name, address, is_active, blocks_produced). Pre-Voyager (`h<579047` mainnet) this was the Pioneer PoA authority set; post-Voyager it's the DPoS active set. |
 | GET | `/validators/{address}/delegators` | Delegators to a validator (DPoS). |
 | GET | `/validators/{address}/rewards` | Reward-history summary for a validator. |
 | GET | `/validators/{address}/blocks-over-time` | Blocks produced per epoch (time series). |
@@ -324,7 +324,7 @@ BFT mode adds `current_round`, `current_view`, `phase`, `rounds_since_last_block
 
 - **Units:** chain stores amounts in *sentri* (1 SRX = 1e8 sentri). EVM + JSON-RPC surface uses *wei* (1 SRX = 1e18 wei = 1e10 sentri). REST endpoints generally return sentri; JSON-RPC `eth_getBalance` / `sentrix_getBalance` return wei hex.
 - **Block time:** 1s under nominal load on both mainnet + testnet (Voyager DPoS+BFT). Slower during BFT round timeouts (skip-rounds when proposer offline).
-- **Finality:** Voyager DPoS+BFT finalizes on 3/4 stake-weighted precommit supermajority — typically round-0 (within ~1s of proposal). Skip-rounds extend finality latency. Pre-Voyager (h<579047 mainnet) blocks finalized immediately under Pioneer PoA round-robin.
+- **Finality:** Voyager DPoS+BFT finalizes on 3/4 stake-weighted precommit supermajority — typically round-0 (within ~1s of proposal). Skip-rounds extend finality latency. Pre-Voyager (`h<579047` mainnet) blocks finalized immediately under Pioneer PoA round-robin.
 - **Address format:** `0x` + 40 hex lowercase. SRC-20 contract addresses: `SRC20_` + 40 hex.
 - **chain_id:** 7119 = mainnet, 7120 = testnet.
 - **Gas accounting:** today flat 21k per tx for non-EVM ops. EIP-1559 dynamic base fee queued (#9 backlog).

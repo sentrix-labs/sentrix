@@ -87,4 +87,4 @@ Network abuse: abuse@sentrixchain.com
 
 ## Source positioning (do not edit here — see master)
 
-Master: [`founder-private/BRAND_POSITIONING.md`](../../../founder-private/BRAND_POSITIONING.md) (or memory `project_sentrix_positioning.md`)
+Master: `founder-private/BRAND_POSITIONING.md` (internal — not published)
