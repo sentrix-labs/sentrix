@@ -7,9 +7,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [2.1.39] — 2026-04-26 — Tokenomics v2 fork (BTC-parity halving + 315M cap)
+## [2.1.39] — 2026-04-26 — Tokenomics v2 fork (BTC-parity halving + 315M cap) — **ACTIVE on mainnet**
 
-> **Consensus fork.** Re-targets emission curve to BTC-parity 4-year halving (126M blocks at 1s) + raises MAX_SUPPLY from 210M to 315M. Closes the v1 math gap (geometric series asymptoted at 84M from mining → 147M effective max, not the 210M originally documented). Side benefit: validator runway extended to ~year 20, premine ratio drops 30% nominal → 20% (industry-leading optics).
+> **Consensus fork — ACTIVE end-to-end on mainnet since h=640800 (2026-04-26 evening).** Both consensus dispatch (cap enforcement, halving math) and RPC display (`/chain/info` `max_supply_srx`) now report v2 schedule. Re-targets emission curve to BTC-parity 4-year halving (126M blocks at 1s) + raises MAX_SUPPLY from 210M to 315M. Closes the v1 math gap (geometric series asymptoted at 84M from mining → 147M effective max, not the 210M originally documented). Side benefit: validator runway extended to ~year 20, premine ratio drops 30% nominal → 20% (industry-leading optics).
 
 ### Added (consensus)
 
@@ -29,14 +29,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 - v1 tokenomics math gap. With v1 constants (1 SRX × 42M halving), geometric series asymptoted at 84M from mining + 63M premine = 147M effective max — the 210M cap was unreachable. v2 (1 SRX × 126M × 2 = 252M from mining + 63M premine = 315M) closes the gap.
 
-### Activation procedure (operator-driven)
+### Activation procedure (operator-driven, EXECUTED 2026-04-26 evening)
 
-1. Build v2.1.39 binary (docker bullseye, glibc 2.31 compat)
-2. Deploy to all 4 mainnet validators (rolling restart NOT recommended — use halt-all + simultaneous-start to avoid jail-state divergence; see "2026-04-26 evening incident" below)
-3. Set `TOKENOMICS_V2_HEIGHT=<height>` in each validator's systemd EnvironmentFile (e.g., `/etc/sentrix/sentrix-node.env`). Use future height with ~2-hour buffer
-4. Halt all + simultaneous start (do NOT roll)
-5. Wait for chain to reach fork height — consensus auto-switches at the configured block, no operator action needed at the moment of fork
-6. Verify post-fork: `/chain/info` reports `max_supply_srx: 315000000`, `next_block_reward_srx: 1.0` (era 0 of v2 schedule)
+1. ✅ Build v2.1.39 binary (docker bullseye, glibc 2.31 compat)
+2. ✅ Deploy to all 4 mainnet validators
+3. ✅ Set `TOKENOMICS_V2_HEIGHT=640800` in each validator's systemd EnvironmentFile (`/etc/sentrix/sentrix-node.env`, etc.)
+4. ✅ Halt all + simultaneous start (per `feedback_mainnet_restart_cascade_jailing.md` rule)
+5. ✅ Chain reached fork height h=640800 — consensus auto-switched
+6. ✅ Verified post-fork: `/chain/info` reports `max_supply_srx: 315000000`, `next_block_reward_srx: 1.0`
+
+**Display-fix binary swap (~h=646200, evening):** Initial v2.1.39 binary was built before PR #337 merged (RPC display fix). Mainnet was running consensus-fork-correct binary but display layer reported stale 210M. Resolved via halt-all + simultaneous-start binary swap to v2.1.39+#337 binary. Procedure: SCP new binary → halt all 4 → cp-stage-mv replace → simultaneous start → verify display flipped. Clean recovery, ~5 min downtime, no jail divergence.
 
 ### Tests
 - `test_tokenomics_v2_fork_boundary_no_reward_jump` — verifies smooth halving transition at fork moment (no reward jump up or down)
