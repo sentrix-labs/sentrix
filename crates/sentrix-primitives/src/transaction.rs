@@ -324,10 +324,22 @@ impl Transaction {
             )));
         }
 
-        // amount=0 is allowed for token operations and EVM contract calls (data field carries op/calldata)
-        if self.amount == 0 && !TokenOp::is_token_op(&self.data) && !self.is_evm_tx() {
+        // amount=0 is allowed for token operations, EVM contract calls,
+        // AND staking operations (data field carries op/calldata). The
+        // staking-op exemption was missed when StakingOp dispatch landed —
+        // surfaced 2026-04-26 when the first ClaimRewards tx was rejected
+        // here despite being a valid op (data = `{"op":"claim_rewards"}`).
+        // ClaimRewards specifically has tx.amount=0 because the apply-time
+        // payout transfers from PROTOCOL_TREASURY → claimer; no on-tx
+        // amount needed. Same exemption applies to other no-fund-movement
+        // staking ops (Unjail, SubmitEvidence).
+        if self.amount == 0
+            && !TokenOp::is_token_op(&self.data)
+            && !self.is_evm_tx()
+            && !StakingOp::is_staking_op(&self.data)
+        {
             return Err(SentrixError::InvalidTransaction(
-                "amount must be > 0 (unless token/EVM operation)".to_string(),
+                "amount must be > 0 (unless token/EVM/staking operation)".to_string(),
             ));
         }
 
