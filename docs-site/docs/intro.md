@@ -23,8 +23,8 @@ Sentrix is the financial infrastructure for the real economy — starting with I
 
 | | |
 |---|---|
-| **Mainnet** | Chain ID `7119` · `https://sentrix-rpc.sentriscloud.com/rpc` |
-| **Testnet** | Chain ID `7120` · `https://testnet-rpc.sentriscloud.com/rpc` |
+| **Mainnet** | Chain ID `7119` · `https://rpc.sentrixchain.com/rpc` |
+| **Testnet** | Chain ID `7120` · `https://testnet-rpc.sentrixchain.com/rpc` |
 | **Block Time** | 1 second |
 | **Consensus** | Voyager DPoS+BFT (live since April 2026) |
 | **Execution** | EVM-native (revm 37) |

@@ -7,10 +7,10 @@ All Sentrix services run under `sentriscloud.com`. DNS managed via Cloudflare.
 | Domain | What |
 |--------|------|
 | sentrix.sentriscloud.com | Landing page |
-| sentrixscan.sentriscloud.com | Block explorer |
-| sentrix-api.sentriscloud.com | REST API |
-| sentrix-rpc.sentriscloud.com | Mainnet JSON-RPC |
-| testnet-rpc.sentriscloud.com | Testnet JSON-RPC |
+| scan.sentrixchain.com | Block explorer |
+| api.sentrixchain.com | REST API |
+| rpc.sentrixchain.com | Mainnet JSON-RPC |
+| testnet-rpc.sentrixchain.com | Testnet JSON-RPC |
 | sentrix-wallet.sentriscloud.com | Wallet UI |
 | sentrixlaunch.sentriscloud.com | Token launchpad |
 | coinblast.sentriscloud.com | CoinBlast |
@@ -19,9 +19,9 @@ All Sentrix services run under `sentriscloud.com`. DNS managed via Cloudflare.
 ## Mainnet Endpoints
 
 ```
-RPC:      https://sentrix-rpc.sentriscloud.com
-API:      https://sentrix-api.sentriscloud.com
-Explorer: https://sentrixscan.sentriscloud.com
+RPC:      https://rpc.sentrixchain.com
+API:      https://api.sentrixchain.com
+Explorer: https://scan.sentrixchain.com
 Wallet:   https://sentrix-wallet.sentriscloud.com
 Faucet:   https://faucet.sentriscloud.com
 Chain ID: 7119
@@ -30,7 +30,7 @@ Chain ID: 7119
 ## Testnet Endpoints
 
 ```
-RPC:      https://testnet-rpc.sentriscloud.com
+RPC:      https://testnet-rpc.sentrixchain.com
 Chain ID: 7120
 ```
 
@@ -38,7 +38,7 @@ Chain ID: 7120
 
 Connect to testnet (for development and testing):
 ```
-RPC URL:  https://testnet-rpc.sentriscloud.com
+RPC URL:  https://testnet-rpc.sentrixchain.com
 Chain ID: 7120
 Symbol:   SRX
 ```
@@ -46,8 +46,8 @@ Symbol:   SRX
 Testnet tokens have no real value. Use the faucet to get test SRX.
 
 ```bash
-curl https://testnet-rpc.sentriscloud.com/chain/info
-curl -X POST https://testnet-rpc.sentriscloud.com/rpc \
+curl https://testnet-rpc.sentrixchain.com/chain/info
+curl -X POST https://testnet-rpc.sentrixchain.com/rpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}'
 ```
@@ -56,7 +56,7 @@ curl -X POST https://testnet-rpc.sentriscloud.com/rpc \
 
 Connect to mainnet:
 ```
-RPC URL:  https://sentrix-rpc.sentriscloud.com
+RPC URL:  https://rpc.sentrixchain.com
 Chain ID: 7119
 Symbol:   SRX
 ```

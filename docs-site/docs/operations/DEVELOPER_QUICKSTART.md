@@ -8,9 +8,9 @@ Build on Sentrix in 10 minutes. Deploy a smart contract, read chain state, and s
 
 | | |
 |---|---|
-| RPC URL | `https://testnet-rpc.sentriscloud.com/rpc` |
+| RPC URL | `https://testnet-rpc.sentrixchain.com/rpc` |
 | Chain ID | `7120` |
-| Explorer | `https://sentrixscan.sentriscloud.com` |
+| Explorer | `https://scan.sentrixchain.com` |
 | Faucet | `https://faucet.sentriscloud.com` |
 
 ### MetaMask setup
@@ -20,10 +20,10 @@ Settings → Networks → Add network manually:
 | Field | Value |
 |---|---|
 | Network name | `Sentrix Testnet` |
-| RPC URL | `https://testnet-rpc.sentriscloud.com/rpc` |
+| RPC URL | `https://testnet-rpc.sentrixchain.com/rpc` |
 | Chain ID | `7120` |
 | Symbol | `SRX` |
-| Block Explorer | `https://sentrixscan.sentriscloud.com` |
+| Block Explorer | `https://scan.sentrixchain.com` |
 
 Get test SRX from the [faucet](https://faucet.sentriscloud.com).
 
@@ -66,7 +66,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 
 // Read-only client
 const client = createPublicClient({
-  transport: http('https://testnet-rpc.sentriscloud.com/rpc'),
+  transport: http('https://testnet-rpc.sentrixchain.com/rpc'),
 })
 
 const height = await client.getBlockNumber()
@@ -76,7 +76,7 @@ const balance = await client.getBalance({ address: '0x...' })
 const account = privateKeyToAccount('0x...')
 const wallet = createWalletClient({
   account,
-  transport: http('https://testnet-rpc.sentriscloud.com/rpc'),
+  transport: http('https://testnet-rpc.sentrixchain.com/rpc'),
 })
 
 const hash = await wallet.sendTransaction({
@@ -89,16 +89,16 @@ const hash = await wallet.sendTransaction({
 
 ```bash
 # Chain info
-curl https://testnet-rpc.sentriscloud.com/chain/info
+curl https://testnet-rpc.sentrixchain.com/chain/info
 
 # Get balance
-curl https://testnet-rpc.sentriscloud.com/accounts/0xYOUR_ADDRESS/balance
+curl https://testnet-rpc.sentrixchain.com/accounts/0xYOUR_ADDRESS/balance
 
 # List validators
-curl https://testnet-rpc.sentriscloud.com/validators
+curl https://testnet-rpc.sentrixchain.com/validators
 
 # Prometheus metrics
-curl https://testnet-rpc.sentriscloud.com/metrics
+curl https://testnet-rpc.sentrixchain.com/metrics
 ```
 
 ## JSON-RPC Methods
@@ -107,19 +107,19 @@ All standard Ethereum JSON-RPC methods are supported:
 
 ```bash
 # Chain ID
-curl -X POST https://testnet-rpc.sentriscloud.com/rpc \
+curl -X POST https://testnet-rpc.sentrixchain.com/rpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}'
 
 # Block number
 curl -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
-  https://testnet-rpc.sentriscloud.com/rpc
+  https://testnet-rpc.sentrixchain.com/rpc
 
 # Get balance (returns wei)
 curl -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xYOUR_ADDRESS","latest"],"id":1}' \
-  https://testnet-rpc.sentriscloud.com/rpc
+  https://testnet-rpc.sentrixchain.com/rpc
 ```
 
 Full method list: `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getTransactionCount`, `eth_getCode`, `eth_getStorageAt`, `eth_call`, `eth_estimateGas`, `eth_gasPrice`, `eth_sendRawTransaction`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getBlockByNumber`, `eth_getBlockByHash`, `net_version`, `net_listening`.
@@ -131,7 +131,7 @@ Full method list: `eth_chainId`, `eth_blockNumber`, `eth_getBalance`, `eth_getTr
 module.exports = {
   networks: {
     sentrixTestnet: {
-      url: "https://testnet-rpc.sentriscloud.com/rpc",
+      url: "https://testnet-rpc.sentrixchain.com/rpc",
       chainId: 7120,
       accounts: [process.env.PRIVATE_KEY],
     },
@@ -142,7 +142,7 @@ module.exports = {
 ```toml
 # foundry.toml
 [rpc_endpoints]
-sentrix_testnet = "https://testnet-rpc.sentriscloud.com/rpc"
+sentrix_testnet = "https://testnet-rpc.sentrixchain.com/rpc"
 ```
 
 ## Gas Model

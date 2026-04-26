@@ -5,7 +5,7 @@
 // Two limiters are layered on each request:
 // * `GlobalIpLimiter` — cap every endpoint at `SENTRIX_GLOBAL_RATE_LIMIT`
 //   (default 300 / min / IP). Raised 2026-04-21 from 60 → 300 so the
-//   block-explorer frontend (sentrixscan.sentriscloud.com) can poll the
+//   block-explorer frontend (scan.sentrixchain.com) can poll the
 //   ~8 live stats endpoints it uses without tripping the limit on a
 //   shared office / NAT IP. Reads are cheap; 300/min is still well
 //   below any realistic DoS threshold on this hardware.

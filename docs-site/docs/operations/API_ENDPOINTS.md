@@ -3,8 +3,8 @@
 Reference for frontend integration. Source: `crates/sentrix-rpc/src/routes/mod.rs` (REST) and `crates/sentrix-rpc/src/jsonrpc/{eth,net,web3,sentrix}.rs` (JSON-RPC).
 
 Base URLs:
-- **Mainnet:** `https://sentrix-rpc.sentriscloud.com` (chain_id 7119, **Voyager DPoS+BFT** since 2026-04-25)
-- **Testnet:** `https://testnet-rpc.sentriscloud.com` (chain_id 7120, **Voyager DPoS+BFT** since 2026-04-23)
+- **Mainnet:** `https://rpc.sentrixchain.com` (chain_id 7119, **Voyager DPoS+BFT** since 2026-04-25)
+- **Testnet:** `https://testnet-rpc.sentrixchain.com` (chain_id 7120, **Voyager DPoS+BFT** since 2026-04-23)
 
 Rate limits (per IP): **60 req/min global**, **10 req/min write endpoints** (POST to `/transactions`, `/tokens/deploy|transfer|burn`, `/rpc`).
 
@@ -339,7 +339,7 @@ Cross-check any shape by `curl`ing the live endpoint — responses are authorita
 
 ### Chain state
 ```bash
-curl -s https://sentrix-rpc.sentriscloud.com/chain/info
+curl -s https://rpc.sentrixchain.com/chain/info
 # {
 #   "chain_id": 7119, "height": 80123, "total_blocks": 80124,
 #   "active_validators": 3, "circulating_supply_srx": 63030377.988,
@@ -348,7 +348,7 @@ curl -s https://sentrix-rpc.sentriscloud.com/chain/info
 #   "window_is_partial": false, "window_start_block": 79123
 # }
 
-curl -s https://sentrix-rpc.sentriscloud.com/sentrix_status
+curl -s https://rpc.sentrixchain.com/sentrix_status
 # { "version": {"version":"2.1.1","build":"unknown"}, "chain_id": 7119,
 #   "consensus": "PoA", "native_token": "SRX",
 #   "sync_info": { "latest_block_height": 80123, ... },
@@ -357,16 +357,16 @@ curl -s https://sentrix-rpc.sentriscloud.com/sentrix_status
 
 ### Account balance + nonce (REST)
 ```bash
-curl -s https://sentrix-rpc.sentriscloud.com/accounts/0x682126f5f973bddda2c92fb0dfce8a4ba275c99b/balance
+curl -s https://rpc.sentrixchain.com/accounts/0x682126f5f973bddda2c92fb0dfce8a4ba275c99b/balance
 # { "address": "0x682126...", "balance": 664000000000 }   // in sentri
 
-curl -s https://sentrix-rpc.sentriscloud.com/accounts/0x682126f5f973bddda2c92fb0dfce8a4ba275c99b/nonce
+curl -s https://rpc.sentrixchain.com/accounts/0x682126f5f973bddda2c92fb0dfce8a4ba275c99b/nonce
 # { "address": "0x682126...", "nonce": 9 }
 ```
 
 ### Account balance (JSON-RPC, wei)
 ```bash
-curl -s -X POST https://sentrix-rpc.sentriscloud.com/rpc \
+curl -s -X POST https://rpc.sentrixchain.com/rpc \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"eth_getBalance",
        "params":["0x682126f5f973bddda2c92fb0dfce8a4ba275c99b","latest"],"id":1}'
@@ -375,7 +375,7 @@ curl -s -X POST https://sentrix-rpc.sentriscloud.com/rpc \
 
 ### Latest block
 ```bash
-curl -s https://sentrix-rpc.sentriscloud.com/blocks/80123
+curl -s https://rpc.sentrixchain.com/blocks/80123
 # { "index": 80123, "hash": "f35cd...", "previous_hash": "abc...",
 #   "timestamp": 1776625635, "tx_count": 1, "validator": "0x...",
 #   "merkle_root": "...", "round": 0, "has_justification": false }
@@ -383,7 +383,7 @@ curl -s https://sentrix-rpc.sentriscloud.com/blocks/80123
 
 ### Validator set (PoA)
 ```bash
-curl -s -X POST https://sentrix-rpc.sentriscloud.com/rpc \
+curl -s -X POST https://rpc.sentrixchain.com/rpc \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"sentrix_getValidatorSet","params":[],"id":1}'
 # {
@@ -410,7 +410,7 @@ curl -s -X POST https://sentrix-rpc.sentriscloud.com/rpc \
 3. Fetch nonce via JSON-RPC `eth_getTransactionCount`.
 4. `POST /tokens/deploy`:
 ```bash
-curl -s -X POST https://testnet-rpc.sentriscloud.com/tokens/deploy \
+curl -s -X POST https://testnet-rpc.sentrixchain.com/tokens/deploy \
   -H 'Content-Type: application/json' \
   -d '{
     "transaction": {
@@ -437,7 +437,7 @@ After the next block, `GET /tokens` lists the new contract at `SRC20_<40 hex>`, 
 ### Send SRX (native transfer)
 Same pattern, amount > 0 and empty `data`:
 ```bash
-curl -s -X POST https://testnet-rpc.sentriscloud.com/transactions \
+curl -s -X POST https://testnet-rpc.sentrixchain.com/transactions \
   -H 'Content-Type: application/json' \
   -d '{"transaction": { "from_address":"0x...", "to_address":"0x...",
                         "amount": 1000000000, "fee": 10000, "nonce": 3,
@@ -449,7 +449,7 @@ curl -s -X POST https://testnet-rpc.sentriscloud.com/transactions \
 
 ### Block receipts (batch)
 ```bash
-curl -s -X POST https://sentrix-rpc.sentriscloud.com/rpc \
+curl -s -X POST https://rpc.sentrixchain.com/rpc \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"eth_getBlockReceipts","params":["latest"],"id":1}'
 # { "result": [{
@@ -463,7 +463,7 @@ curl -s -X POST https://sentrix-rpc.sentriscloud.com/rpc \
 
 ### EVM event logs (filter)
 ```bash
-curl -s -X POST https://sentrix-rpc.sentriscloud.com/rpc \
+curl -s -X POST https://rpc.sentrixchain.com/rpc \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"eth_getLogs","params":[{
         "fromBlock":"0x0","toBlock":"latest",

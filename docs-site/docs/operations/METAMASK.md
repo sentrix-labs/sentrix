@@ -10,10 +10,10 @@ Sentrix is fully MetaMask-compatible on both networks. Mainnet (chain ID 7119) a
    | Field | Value |
    |-------|-------|
    | **Network Name** | Sentrix Testnet |
-   | **New RPC URL** | `https://testnet-rpc.sentriscloud.com/rpc` |
+   | **New RPC URL** | `https://testnet-rpc.sentrixchain.com/rpc` |
    | **Chain ID** | `7120` |
    | **Currency Symbol** | `SRX` |
-   | **Block Explorer URL** | `https://sentrixscan.sentriscloud.com` |
+   | **Block Explorer URL** | `https://scan.sentrixchain.com` |
 
 3. Save. Switch to "Sentrix Testnet" in the network dropdown.
 
@@ -22,10 +22,10 @@ Sentrix is fully MetaMask-compatible on both networks. Mainnet (chain ID 7119) a
    | Field | Value |
    |-------|-------|
    | **Network Name** | Sentrix |
-   | **New RPC URL** | `https://sentrix-rpc.sentriscloud.com` |
+   | **New RPC URL** | `https://rpc.sentrixchain.com` |
    | **Chain ID** | `7119` |
    | **Currency Symbol** | `SRX` |
-   | **Block Explorer URL** | `https://sentrixscan.sentriscloud.com` |
+   | **Block Explorer URL** | `https://scan.sentrixchain.com` |
 
 Mainnet supports `eth_sendRawTransaction` and Solidity contract deployment since the 2026-04-25 Voyager activation. Use mainnet for production deployments and testnet for development.
 
@@ -52,12 +52,12 @@ The contract address appears in Remix and is queryable via `eth_getCode`.
 
 ```bash
 # Get deployed contract code
-curl -X POST https://testnet-rpc.sentriscloud.com/rpc \
+curl -X POST https://testnet-rpc.sentrixchain.com/rpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_getCode","params":["0xCONTRACT_ADDR","latest"],"id":1}'
 
 # Call a function (example: totalSupply() = 0x18160ddd)
-curl -X POST https://testnet-rpc.sentriscloud.com/rpc \
+curl -X POST https://testnet-rpc.sentrixchain.com/rpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_call","params":[{"to":"0xCONTRACT_ADDR","data":"0x18160ddd"},"latest"],"id":1}'
 ```

@@ -1,7 +1,7 @@
 # Sentrix — Technical Whitepaper
 
 **Version 3.4 — 2026-04-26 (post tokenomics-v2 fork; max supply 315M, BTC-parity 4-year halving)**
-**Author: SentrisCloud**
+**Author: Sentrix Labs** (operated by SentrisCloud)
 
 ---
 
@@ -443,9 +443,9 @@ See [SECURITY.md](SECURITY.md) for responsible disclosure policy.
 
 ### 14.4 Official Channels
 
-- Explorer: sentrixscan.sentriscloud.com
-- API: sentrix-api.sentriscloud.com
-- RPC: sentrix-rpc.sentriscloud.com
+- Explorer: scan.sentrixchain.com
+- API: api.sentrixchain.com
+- RPC: rpc.sentrixchain.com
 - GitHub: github.com/sentrix-labs/sentrix
 - Email: operator@sentriscloud.com
 
