@@ -8,10 +8,12 @@ If you discover a security vulnerability in Sentrix, we appreciate your responsi
 
 ### How to report
 
-Send an email to the maintainer address listed on the Sentrix Labs
-GitHub organization profile (<https://github.com/sentrix-labs>), or
-open a private GitHub Security Advisory at
+Email **<security@sentrixchain.com>** with the details below, or open
+a private GitHub Security Advisory at
 <https://github.com/sentrix-labs/sentrix/security/advisories/new>.
+
+For abuse reports (network-level, spam, validator misconduct):
+**<abuse@sentrixchain.com>**.
 
 Please include:
 - Description of the vulnerability
