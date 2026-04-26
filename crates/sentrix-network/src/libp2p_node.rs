@@ -13,7 +13,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+
+/// Cumulative count of "already-applied" blocks skipped in libp2p sync
+/// BlocksResponse handler. Crosses a power-of-ten threshold → WARN log
+/// surfaces re-emergence of the concurrent-GetBlocks race that caused
+/// the 2026-04-26 mainnet stall (h=604547).
+static SYNC_SKIPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
 use futures::StreamExt;
 use libp2p::{
@@ -1513,6 +1520,26 @@ async fn on_inbound_response(
                     peer_str,
                     skipped
                 );
+            }
+            // Re-emergence guard: cumulative skip count across handler
+            // invocations. The duplicate-skip filter masks the
+            // concurrent-GetBlocks-race symptom; if total grows quickly,
+            // request coalescing (single-flight) should be tightened.
+            // Warn at first crossing of each order-of-magnitude threshold
+            // (10, 100, 1k, 10k, 100k) to surface escalation without
+            // spamming every batch.
+            if skipped > 0 {
+                let prev = SYNC_SKIPPED_TOTAL.fetch_add(skipped, Ordering::Relaxed);
+                let total = prev + skipped;
+                for threshold in [10u64, 100, 1_000, 10_000, 100_000] {
+                    if prev < threshold && total >= threshold {
+                        tracing::warn!(
+                            "libp2p sync: cumulative skipped (already-applied) crossed {} — \
+                             concurrent-GetBlocks race firing; consider single-flight coalescing",
+                            threshold
+                        );
+                    }
+                }
             }
         });
         // If we got a full batch (50 blocks), request more
