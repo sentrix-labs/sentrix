@@ -7,6 +7,30 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.40] — 2026-04-27 — Explorer richlist percentage display fork-aware
+
+> **Display-only polish PR.** Closes the last 3 sites that still used static `MAX_SUPPLY` (210M) for percentage-of-supply display, even though the consensus + `/chain/info` RPC display were already fork-aware in v2.1.39. After the tokenomics v2 fork activated on mainnet at h=640800, the `/explorer/richlist` HTML page, `GET /accounts` REST endpoint, and `GET /accounts/richlist` REST endpoint were still calculating percentages against the pre-fork 210M cap — making top holders look ~33% smaller than reality.
+
+### Fixed
+
+- `crates/sentrix-rpc/src/explorer.rs` — Rich List HTML: percentage calc + "Total supply: N SRX" footer string both now use `bc.max_supply_for(bc.height())`. Pre-fork: 210M, post-fork: 315M.
+- `crates/sentrix-rpc/src/explorer_api.rs` — `GET /accounts` (paginated) percentage calc now fork-aware. Removed unused `use sentrix_core::blockchain::MAX_SUPPLY` import.
+- `crates/sentrix-rpc/src/routes/accounts.rs` — `GET /accounts/richlist` REST endpoint percentage calc now fork-aware.
+
+### No consensus impact
+
+This release touches only `sentrix-rpc` (display layer). No changes to consensus crates (`sentrix-bft`, `sentrix-core::block_executor`, `sentrix-trie`, `sentrix-staking::distribute_reward`, `sentrix-evm::executor`). Drop-in chain.db compatible with v2.1.39.
+
+### Migration
+
+No operator action required. Hot-swap binary at any time. Restart causes ~10s downtime per validator if rolling, or ~5s halt-all+simultaneous-start (recommended per `feedback_mainnet_restart_cascade_jailing.md`).
+
+### Tests
+
+`cargo test --workspace`: 772 passed, 0 failed, 11 ignored. `cargo clippy --workspace --tests -- -D warnings`: clean.
+
+---
+
 ## [2.1.39] — 2026-04-26 — Tokenomics v2 fork (BTC-parity halving + 315M cap) — **ACTIVE on mainnet**
 
 > **Consensus fork — ACTIVE end-to-end on mainnet since h=640800 (2026-04-26 evening).** Both consensus dispatch (cap enforcement, halving math) and RPC display (`/chain/info` `max_supply_srx`) now report v2 schedule. Re-targets emission curve to BTC-parity 4-year halving (126M blocks at 1s) + raises MAX_SUPPLY from 210M to 315M. Closes the v1 math gap (geometric series asymptoted at 84M from mining → 147M effective max, not the 210M originally documented). Side benefit: validator runway extended to ~year 20, premine ratio drops 30% nominal → 20% (industry-leading optics).

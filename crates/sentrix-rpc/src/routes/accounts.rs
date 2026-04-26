@@ -91,7 +91,7 @@ pub(super) async fn get_richlist(State(state): State<SharedState>) -> Json<serde
         .iter()
         .filter(|(_, a)| a.balance > 0)
         .map(|(addr, a)| {
-            let pct = a.balance as f64 / sentrix_core::blockchain::MAX_SUPPLY as f64 * 100.0;
+            let pct = a.balance as f64 / bc.max_supply_for(bc.height()) as f64 * 100.0;
             serde_json::json!({
                 "address": addr,
                 "balance_sentri": a.balance,
