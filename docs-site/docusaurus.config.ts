@@ -30,10 +30,15 @@ const config: Config = {
       'classic',
       {
         docs: {
+          path: '../docs',
+          // Skip files that are GitHub-specific (folder README) — Docusaurus
+          // would otherwise try to render docs/README.md at the same route
+          // as src/pages/index.tsx (the marketing homepage).
+          exclude: ['README.md'],
           sidebarPath: './sidebars.ts',
           routeBasePath: '/',
           editUrl:
-            'https://github.com/sentrix-labs/sentrix/tree/main/docs-site/',
+            'https://github.com/sentrix-labs/sentrix/tree/main/',
         },
         blog: false,
         theme: {
