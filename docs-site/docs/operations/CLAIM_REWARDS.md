@@ -9,7 +9,7 @@ Active on mainnet since h=590100 (2026-04-25). Default behaviour for v2.1.30+ bi
 ## Mechanism
 
 ```
-Pre-V4 fork (h<590100):
+Pre-V4 fork (`h<590100`):
   block produced → coinbase 1 SRX → validator balance (direct credit)
 
 Post-V4 fork (h≥590100):

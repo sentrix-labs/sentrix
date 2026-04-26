@@ -168,4 +168,4 @@ See [docs/tokenomics/STAKING.md](../tokenomics/STAKING.md) for full staking mech
   or `journalctl` logs.
 - `chmod 600` all systemd unit files that contain passwords.
 - Enable disk encryption on the validator host (`SENTRIX_ENCRYPTED_DISK=true`).
-- See [SECURITY.md](../../SECURITY.md) for the vulnerability disclosure policy.
+- See [SECURITY.md on GitHub](https://github.com/sentrix-labs/sentrix/blob/main/SECURITY.md) for the vulnerability disclosure policy, or email `security@sentrixchain.com`.
