@@ -9,7 +9,7 @@ Backup, restore, and migrate Sentrix chain state.
 > the boot validator now requires. The canonical state-recovery path
 > is **frozen-rsync of `chain.db`** from a healthy validator with all
 > nodes halted; see
-> [EMERGENCY_ROLLBACK.md § 3](EMERGENCY_ROLLBACK.md#3-state-recovery-chaindb-restore)
+> [EMERGENCY_ROLLBACK.md § 2](EMERGENCY_ROLLBACK.md#2-state-recovery-chaindb-restore)
 > and the internal
 > `internal operator runbook`.
 >
