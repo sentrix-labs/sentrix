@@ -1,0 +1,50 @@
+# Pioneer — PoA Chain (Complete)
+
+Done. Live in production.
+
+## What's Running
+
+- PoA consensus, round-robin, 1s blocks (v2.0.0; was 3s in v1.x)
+- 3 validators on 3 VPS (v2.0.0), full mesh peering
+- Account model with Ethereum-style addresses
+- Two-pass atomic block validation
+- ECDSA secp256k1 signing with chain_id replay protection
+- SentrixTrie (256-level Binary SMT, BLAKE3+SHA-256)
+- SRC-20 tokens (SNTX deployed, 10B supply)
+- libp2p networking (Noise XX + Yamux, bincode wire, Kademlia DHT, gossipsub)
+- REST API (25+ endpoints) + JSON-RPC 2.0 (20 methods)
+- Block explorer (12 pages, dark theme)
+- Encrypted keystore (AES-256-GCM, Argon2id)
+- MDBX storage with 1000-block sliding window + disk pruning
+- CI/CD: GitHub Actions → test → build → 3-VPS deploy
+- Branch protection on main (PR + CI required)
+- Pentest 6/6 passed on live production node
+
+## Numbers
+
+| | |
+|-|-|
+| Tests | 551 |
+| PRs merged | #1–#111 |
+| Audit rounds | 11 (116 findings, 78+ fixed) |
+| Chain height | 141,000+ |
+| Pentest | 6/6 passed on live node |
+| `unsafe` blocks | 0 |
+| Clippy warnings | 0 |
+
+## Security Audits
+
+| Audit | Findings | Status |
+|-------|----------|--------|
+| V4 | 23 | All fixed ✅ |
+| V5 | 11 | All fixed ✅ |
+| V6 | 13 | All fixed ✅ |
+| V7 | 15 | All fixed ✅ |
+| V8 | 12 | All fixed ✅ |
+| V9 | 20 | 4 fixed, 16 tracked |
+| V10 | Enterprise — 43/45 (95%) | Complete ✅ |
+| V11 | 22 | Report available |
+
+## What's Next
+
+Next up: Voyager (DPoS + BFT + EVM). See [PHASE2.md](PHASE2.md).

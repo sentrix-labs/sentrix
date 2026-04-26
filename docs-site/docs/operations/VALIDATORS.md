@@ -1,0 +1,76 @@
+# Validators
+
+4 active validators in DPoS+BFT consensus (Voyager, v2.1.30+).
+
+## Current Set
+
+| Slot | Name | Address prefix | Role |
+|------|------|---------------|------|
+| 0 | Sentrix Treasury   | `0x0804...` | Treasury validator |
+| 1 | Sentrix Foundation | `0x753f...` | Foundation validator |
+| 2 | Sentrix Core       | `0x87c9...` | Core validator |
+| 3 | Sentrix Beacon     | `0x4cad...` | Beacon validator |
+
+Sorted by address. Block producer = `height % 4`.
+
+(Nusantara, BlockForge Asia, PacificStake, Archipelago — decommissioned during v2.0.0 reset; services stopped, NOT on chain.)
+
+## Adding a Validator
+
+Needs admin auth + valid secp256k1 pubkey that derives to the address.
+
+```bash
+# CLI
+sentrix validator add --address 0x... --public-key 04... --name "Name"
+
+# API
+curl -X POST http://[NODE_IP]:8545/validators \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <key>" \
+  -d '{"address":"0x...","public_key":"04...","name":"Name","caller":"<admin>"}'
+```
+
+## Changing Validator Set (Read This)
+
+This is the one procedure that can brick the chain. Round-robin depends on all nodes having the exact same validator set.
+
+```
+1. Stop ALL nodes on ALL machines
+2. Run add/remove on EVERY data directory
+3. Start ALL nodes
+```
+
+If you add a validator to some nodes but not others, they'll disagree on whose turn it is → chain stalls permanently.
+
+## Other Commands
+
+```bash
+sentrix validator list
+sentrix validator toggle --address 0x... --active false
+sentrix validator rename --address 0x... --name "New Name"
+sentrix validator remove --address 0x...
+```
+
+`MIN_ACTIVE_VALIDATORS = 1` (since PR #234, v2.1.11). The chain can
+proceed with a single active validator if the rest are jailed or
+inactive. `MIN_BFT_VALIDATORS = 4` is the BFT-quorum floor for
+Voyager activation.
+
+## Audit Trail
+
+Every operation logged. View with:
+
+```bash
+curl -H "X-API-Key: <key>" http://[NODE_IP]:8545/admin/log
+```
+
+## Economics
+
+Each validator produces ~21,600 blocks/day (86,400 1-second slots ÷ 4
+validators). That's ~21,600 SRX/day per validator from rewards alone,
+plus `floor(fee/2)` from each included transaction. Total chain
+throughput stays at 86,400 blocks/day (1s block time).
+
+## Voyager
+
+DPoS: open registration with 15K SRX stake, top 100 by stake score, epoch-based rotation, slashing. See [Voyager](../roadmap/PHASE2.md).
