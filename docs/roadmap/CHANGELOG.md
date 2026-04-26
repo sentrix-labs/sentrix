@@ -1,5 +1,48 @@
 # Changelog
 
+## [2.1.38] — 2026-04-26 — Legacy TCP-path deletion + cumulative skip metric
+
+Hardening on top of v2.1.37 (same incident surface). PR #334 second + third commits.
+
+### Removed
+- `crates/sentrix-network/src/sync.rs` deleted entirely (158 LOC, dead code).
+- `crates/sentrix-network/src/node.rs` trimmed 645 → 36 LOC. Kept only `NodeEvent`, `SharedBlockchain`, `DEFAULT_PORT`. Both deleted sites had the same `for block in batch` cascade-bail bug pattern as the v2.1.37 fix surface — eliminating dead code with a known bug rather than carrying defensive filters.
+
+### Added
+- `static SYNC_SKIPPED_TOTAL: AtomicU64` cumulative counter in `libp2p_node.rs`.
+- Threshold-crossing WARN log at 10/100/1k/10k/100k cumulative skipped — surfaces re-emergence of the concurrent-GetBlocks race so operators can decide when to ship single-flight coalescing.
+
+### Migration
+- Drop-in chain.db compatible with v2.1.37.
+
+---
+
+## [2.1.37] — 2026-04-26 — libp2p sync cascade-bail fix (mainnet stall RCA)
+
+P0 hotfix. Mainnet stalled at h=604547 for ~1h 45min on 2026-04-26 morning. PR #334 first commit.
+
+### Root cause
+`libp2p_node.rs` BlocksResponse handler bailed on the first already-applied block in a batch and dropped the rest of valid forward blocks in the same response. Concurrent GetBlocks paths (periodic `sync_interval` + `TriggerSync` + reactive chain-on-full-batch) all read `our_height` and ask `from: our_height+1`. Responses overlap. Cumulative drift over thousands of sync rounds → 4-way chain.db divergence at h=604547 across the 4 mainnet validators.
+
+### Fixed
+- `crates/sentrix-network/src/libp2p_node.rs` BlocksResponse loop: filter `block.index <= chain.height()` BEFORE `add_block_from_peer`. Skip duplicates silently, keep applying forward blocks. Loop only breaks on real validation errors.
+
+### Tests
+- `test_libp2p_sync_loop_skips_duplicates_and_applies_remaining` in `crates/sentrix-core/tests/fork_determinism.rs` — racy batch with already-applied prefix advances chain to expected height instead of stalling.
+
+### Recovery (operator-driven)
+1. Forensic backup divergent chain.db on each validator
+2. Treasury picked as canonical (most progressed, self-consistent, signer-set matched majority)
+3. Tar-pipe Treasury chain.db → Foundation, Core, Beacon
+4. MD5 parity confirmed (`mdbx.dat` md5 = `567c7165...`)
+5. v2.1.37 binary deployed (docker bullseye, glibc 2.31)
+6. Rolling restart: Treasury → Foundation → Core → Beacon
+
+### Migration
+- Drop-in chain.db compatible with v2.1.36.
+
+---
+
 ## [2.1.36] — 2026-04-26 — V4 reward v2 + 14 PR marathon
 
 Single-night marathon (PRs #316–#331; binaries v2.1.31 → v2.1.36). All 4 mainnet validators on v2.1.36 in Voyager DPoS+BFT.
