@@ -1080,7 +1080,7 @@ pub async fn explorer_richlist(State(state): State<SharedState>) -> Html<String>
         r#"
     {}
     <h2>Rich List — Top SRX Holders</h2>
-    <p style="color:#6b7280;font-size:13px;margin-bottom:16px">Top 50 addresses by SRX balance &nbsp;|&nbsp; Total supply: 210,000,000 SRX</p>
+    <p style="color:#6b7280;font-size:13px;margin-bottom:16px">Top 50 addresses by SRX balance &nbsp;|&nbsp; Total supply: 315,000,000 SRX</p>
     {}
     <table>
     <tr><th>Rank</th><th>Address</th><th>Balance</th><th>% of Supply</th></tr>

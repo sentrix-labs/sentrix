@@ -11,7 +11,7 @@ Build on Sentrix in 10 minutes. Deploy a smart contract, read chain state, and s
 | RPC URL | `https://testnet-rpc.sentrixchain.com/rpc` |
 | Chain ID | `7120` |
 | Explorer | `https://scan.sentrixchain.com` |
-| Faucet | `https://faucet.sentriscloud.com` |
+| Faucet | `https://faucet.sentrixchain.com` |
 
 ### MetaMask setup
 
@@ -25,7 +25,7 @@ Settings → Networks → Add network manually:
 | Symbol | `SRX` |
 | Block Explorer | `https://scan.sentrixchain.com` |
 
-Get test SRX from the [faucet](https://faucet.sentriscloud.com).
+Get test SRX from the [faucet](https://faucet.sentrixchain.com).
 
 ## Deploy a Smart Contract (Remix)
 

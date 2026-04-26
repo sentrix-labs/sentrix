@@ -49,4 +49,4 @@ Sentrix runs as a 14-crate Rust workspace with MDBX-backed state, libp2p network
 
 ---
 
-*Open source under BUSL-1.1, transitions to open-source after the Change Date. Built by SentrisCloud.*
+*Open source under BUSL-1.1, transitions to open-source after the Change Date. Built by Sentrix Labs (operated by SentrisCloud).*

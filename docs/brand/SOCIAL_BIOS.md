@@ -184,7 +184,7 @@ discipline (fixed 315M supply, 4-year halving) and Ethereum's
 programmability (EVM-native, Solidity-ready) — built for
 Southeast Asia's 600 million people first, then the world.
 
-Live in production since April 2026. Built in Rust by SentrisCloud.
+Live in production since April 2026. Built in Rust by Sentrix Labs (operated by SentrisCloud).
 
 For builders:        builders@sentrixchain.com
 For partners:        partners@sentriscloud.com
