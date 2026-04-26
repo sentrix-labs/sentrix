@@ -15,10 +15,10 @@ const FeatureList: FeatureItem[] = [
     icon: '🏛️',
     description: (
       <>
-        EVM-native L1 with Solidity smart contracts (revm 37). Built for real-world
-        assets — invoices, receivables, gold, real estate. Sourcify verification,
-        canonical contract suite, and token standards (ERC-20, ERC-721, SRC-721)
-        production-ready.
+        EVM-native L1 with Solidity smart contracts (revm 37). Built ground-up
+        for real-world asset use cases. EIP-1559 fee market, ERC-20 / ERC-721 /
+        SRC-721 token standards specified, MetaMask + hardhat + ethers.js ready
+        out of the box.
       </>
     ),
   },
@@ -40,7 +40,7 @@ const FeatureList: FeatureItem[] = [
       <>
         Financial infrastructure for the real economy — Indonesia first, then the
         world. 1-second blocks, 0.0001 SRX min fee, 5,000 tx per block. Built for
-        Southeast Asia's 600 million people. RWA-ready from day one.
+        Southeast Asia's 600 million people.
       </>
     ),
   },
