@@ -1441,6 +1441,7 @@ impl Blockchain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::env_test_lock;
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
     use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
 
@@ -3049,6 +3050,7 @@ mod tests {
     /// regardless of epoch boundary or evidence state.
     #[test]
     fn test_build_jail_evidence_system_tx_none_pre_fork() {
+        let _guard = env_test_lock();
         unsafe {
             std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
         }
@@ -3063,7 +3065,7 @@ mod tests {
     /// heights even post-fork.
     #[test]
     fn test_build_jail_evidence_system_tx_none_non_boundary() {
-        // SAFETY: env-var mutation in tests; CI runs single-threaded.
+        let _guard = env_test_lock();
         unsafe {
             std::env::set_var("JAIL_CONSENSUS_HEIGHT", "0");
         }
@@ -3080,6 +3082,7 @@ mod tests {
     /// post-fork, returns None (Q3-A: skip emission for empty bundle).
     #[test]
     fn test_build_jail_evidence_system_tx_none_no_evidence() {
+        let _guard = env_test_lock();
         unsafe {
             std::env::set_var("JAIL_CONSENSUS_HEIGHT", "0");
         }
@@ -3104,6 +3107,7 @@ mod tests {
     fn test_build_jail_evidence_system_tx_some_with_evidence() {
         use sentrix_primitives::transaction::{PROTOCOL_TREASURY, StakingOp};
 
+        let _guard = env_test_lock();
         unsafe {
             std::env::set_var("JAIL_CONSENSUS_HEIGHT", "0");
         }

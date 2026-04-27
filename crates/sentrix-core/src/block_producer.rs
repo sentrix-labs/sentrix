@@ -46,6 +46,16 @@ impl Blockchain {
 
         let mut transactions = vec![coinbase];
 
+        // Phase D: at epoch boundaries post-fork, emit JailEvidenceBundle
+        // system tx with locally-computed downtime evidence. Helper returns
+        // None pre-fork, at non-boundaries, or with no evidence — making this
+        // a no-op on default builds (JAIL_CONSENSUS_HEIGHT=u64::MAX).
+        if let Some(jail_tx) =
+            self.build_jail_evidence_system_tx(next_height, block_timestamp)
+        {
+            transactions.push(jail_tx);
+        }
+
         // Take up to MAX_TX_PER_BLOCK from mempool (snapshot — do NOT drain here).
         // Clone mempool transactions into the block — do NOT drain before add_block succeeds.
         // add_block() removes mined txs from mempool via retain() after a successful commit.
@@ -94,6 +104,7 @@ impl Blockchain {
 #[cfg(test)]
 mod tests {
     use crate::blockchain::{Blockchain, CHAIN_ID};
+    use crate::test_util::env_test_lock;
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
     use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
 
@@ -181,5 +192,78 @@ mod tests {
         let mut bc = setup();
         let result = bc.create_block("not_a_validator");
         assert!(result.is_err());
+    }
+
+    /// Phase D Step 3: pre-fork (default), no JailEvidenceBundle is emitted
+    /// regardless of whether the block index lands on an epoch boundary.
+    /// Block contains only coinbase (+ any mempool txs).
+    #[test]
+    fn test_create_block_no_jail_bundle_pre_fork() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
+        }
+        let mut bc = setup();
+        let block = bc.create_block("v1").unwrap();
+        // Only coinbase, no system tx
+        assert_eq!(block.transactions.len(), 1);
+        assert!(block.transactions[0].is_coinbase());
+    }
+
+    /// Phase D Step 3: post-fork at epoch boundary with downtime evidence,
+    /// proposer prepends JailEvidenceBundle as tx[1] (right after coinbase).
+    /// This verifies the wire-up: helper invoked, tx structure correct.
+    /// Note: this test exercises create_block_voyager + manually crafts the
+    /// blockchain state to land on an epoch boundary.
+    #[test]
+    fn test_create_block_voyager_emits_jail_bundle_at_boundary() {
+        use sentrix_primitives::transaction::PROTOCOL_TREASURY;
+
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::set_var("JAIL_CONSENSUS_HEIGHT", "0");
+        }
+
+        let mut bc = setup();
+
+        // Inject a downer into active_set + populate full liveness window
+        let downer = "0xfeedfacefeedfacefeedfacefeedfacefeedface".to_string();
+        bc.stake_registry.active_set = vec![downer.clone()];
+        let window = sentrix_staking::slashing::LIVENESS_WINDOW;
+        for h in 0..window {
+            bc.slashing.liveness.record(&downer, h, false);
+        }
+
+        // Force chain to height (EPOCH_LENGTH - 2) so next block lands at
+        // EPOCH_LENGTH - 1 (boundary). We don't actually need to mine —
+        // build_block reads self.height() + 1 from chain length.
+        // Instead, monkey-pad the chain to the right height with empty blocks.
+        let target_height = sentrix_staking::epoch::EPOCH_LENGTH - 2;
+        let prev_hash = bc.latest_block().unwrap().hash.clone();
+        let pad = sentrix_primitives::block::Block::new(
+            target_height,
+            prev_hash,
+            vec![sentrix_primitives::transaction::Transaction::new_coinbase(
+                "v1".into(),
+                0,
+                target_height,
+                1_700_000_000,
+            )],
+            "v1".into(),
+        );
+        bc.chain.push(pad);
+
+        let block = bc.create_block_voyager("v1").unwrap();
+
+        // tx[0] = coinbase, tx[1] = JailEvidenceBundle system tx
+        assert_eq!(block.transactions.len(), 2);
+        assert!(block.transactions[0].is_coinbase());
+        assert!(block.transactions[1].is_system_tx());
+        assert_eq!(block.transactions[1].from_address, PROTOCOL_TREASURY);
+        assert!(block.transactions[1].is_jail_evidence_bundle_tx());
+
+        unsafe {
+            std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
+        }
     }
 }

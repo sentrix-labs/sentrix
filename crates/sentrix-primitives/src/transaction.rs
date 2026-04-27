@@ -310,6 +310,14 @@ impl Transaction {
         )
     }
 
+    /// Returns true if this is a Phase D system-emitted tx (PROTOCOL_TREASURY
+    /// sender + JailEvidenceBundle payload). Used by validate / Pass-1 / Pass-2
+    /// to skip standard nonce/balance/fee/signature checks; auth happens via
+    /// consensus dispatch (recompute-and-compare in block_executor).
+    pub fn is_system_tx(&self) -> bool {
+        self.from_address == PROTOCOL_TREASURY && self.is_jail_evidence_bundle_tx()
+    }
+
     // Canonical signing payload uses BTreeMap for deterministic key ordering across all nodes
     // and serde_json for proper escaping of special characters
     pub fn signing_payload(&self) -> String {
@@ -418,6 +426,13 @@ impl Transaction {
 
     pub fn validate(&self, expected_nonce: u64, expected_chain_id: u64) -> SentrixResult<()> {
         if self.is_coinbase() {
+            return Ok(());
+        }
+
+        // Phase D: system-emitted txs (JailEvidenceBundle from PROTOCOL_TREASURY)
+        // bypass standard validation. Their auth is consensus-driven: dispatch
+        // verifies the evidence list against the local LivenessTracker recompute.
+        if self.is_system_tx() {
             return Ok(());
         }
 
