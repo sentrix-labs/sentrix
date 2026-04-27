@@ -175,6 +175,13 @@ impl Blockchain {
         let mut seen_sender_nonce: HashSet<(String, u64)> = HashSet::new();
 
         for tx in block.transactions.iter().skip(1) {
+            // Phase D: system-emitted txs (JailEvidenceBundle from PROTOCOL_TREASURY)
+            // skip standard nonce/balance validation. Auth is consensus-driven:
+            // verified at apply via recompute-and-compare in block_executor.
+            if tx.is_system_tx() {
+                continue;
+            }
+
             if !seen_sender_nonce.insert((tx.from_address.clone(), tx.nonce)) {
                 return Err(SentrixError::InvalidBlock(format!(
                     "duplicate (sender, nonce) pair for {} nonce {} in block",
@@ -433,6 +440,13 @@ impl Blockchain {
         let mut seen_sender_nonce: HashSet<(String, u64)> = HashSet::new();
 
         for tx in block.transactions.iter().skip(1) {
+            // Phase D: system-emitted txs (JailEvidenceBundle from PROTOCOL_TREASURY)
+            // skip standard nonce/balance validation. Auth is consensus-driven:
+            // verified at apply via recompute-and-compare in block_executor.
+            if tx.is_system_tx() {
+                continue;
+            }
+
             if !seen_sender_nonce.insert((tx.from_address.clone(), tx.nonce)) {
                 return Err(SentrixError::InvalidBlock(format!(
                     "duplicate (sender, nonce) pair for {} nonce {} in block",
@@ -751,15 +765,22 @@ impl Blockchain {
         // Apply all transactions
         let mut total_fee: u64 = 0;
         for tx in block.transactions.iter().skip(1) {
-            self.accounts
-                .transfer(&tx.from_address, &tx.to_address, tx.amount, tx.fee)?;
-            // P1: checked_add — 5000 tx × max fee is far below u64::MAX
-            // in practice, but the guard is cheap and prevents a silent
-            // wrap if MAX_TX_PER_BLOCK or MIN_TX_FEE are ever tuned
-            // upward past the implicit ceiling.
-            total_fee = total_fee
-                .checked_add(tx.fee)
-                .ok_or_else(|| SentrixError::Internal("block total_fee overflow".to_string()))?;
+            // Phase D: system-emitted txs (JailEvidenceBundle from
+            // PROTOCOL_TREASURY) skip account transfer + nonce increment.
+            // They carry amount=0, fee=0 and a zero-balance "self-transfer"
+            // would still bump PROTOCOL_TREASURY's nonce, polluting state.
+            // Dispatch (staking_op match below) is the only state mutation.
+            if !tx.is_system_tx() {
+                self.accounts
+                    .transfer(&tx.from_address, &tx.to_address, tx.amount, tx.fee)?;
+                // P1: checked_add — 5000 tx × max fee is far below u64::MAX
+                // in practice, but the guard is cheap and prevents a silent
+                // wrap if MAX_TX_PER_BLOCK or MIN_TX_FEE are ever tuned
+                // upward past the implicit ceiling.
+                total_fee = total_fee
+                    .checked_add(tx.fee)
+                    .ok_or_else(|| SentrixError::Internal("block total_fee overflow".to_string()))?;
+            }
 
             // Execute token operation if present in data field
             if let Some(token_op) = TokenOp::decode(&tx.data) {
