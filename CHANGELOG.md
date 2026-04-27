@@ -7,6 +7,59 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.41] — 2026-04-27 — Jail-cascade observability + fork-gated BFT safety gate relaxation
+
+> **Liveness fix bundle for the jail-cascade pattern.** Two mainnet stalls on 2026-04-26 (h=633599 evening, h=662399 night) traced to per-validator stake_registry divergence (one validator sees another as jailed, others see active). The P1 BFT safety gate then refused to participate (active < MIN_BFT_VALIDATORS=4), stalling the chain.
+>
+> This release ships:
+> 1. **Observability metric** — DEBUG-level tracing snapshot of per-validator (signed_count, missed_count) every 1000 blocks. Operators can diff per-validator counts via `journalctl -u sentrix-node -g 'jail counter snapshot'` to detect divergence early.
+> 2. **Fork-gated BFT safety gate relaxation** — new `BFT_GATE_RELAX_HEIGHT` env var (default `u64::MAX` = disabled). Pre-fork: gate uses `MIN_BFT_VALIDATORS (=4)` (current behavior, unchanged on default). Post-fork: gate uses `⌈2/3 × total⌉` supermajority (= 3 for 4-validator network = 1-jail tolerance).
+>
+> **Default behavior is unchanged.** Operators must explicitly set `BFT_GATE_RELAX_HEIGHT=<height>` on each validator to activate the relaxation. Coordinated rollout required (testnet bake, then mainnet halt-all + simultaneous-start with env var).
+
+### Added
+
+- `crates/sentrix-staking/src/slashing.rs` — DEBUG tracing per-validator participation snapshot every 1000 blocks (PR #350)
+- `crates/sentrix-core/src/blockchain.rs`:
+  - `BFT_GATE_RELAX_HEIGHT_DEFAULT = u64::MAX` const
+  - `get_bft_gate_relax_height()` env reader
+  - `Blockchain::is_bft_gate_relax_height(h) -> bool` static check
+  - `Blockchain::min_active_for_bft(h, total) -> usize` dispatch helper
+  - 2 regression tests: `test_bft_gate_relax_fork_threshold`, `test_bft_gate_relax_disabled_by_default`
+- `bin/sentrix/src/main.rs` — P1 BFT safety gate uses `min_active_for_bft(h, total)` lookup
+- `audits/jail-cascade-root-cause-analysis.md` — full RCA (asymmetric record_block_signatures, locally-computed jail decision)
+- `audits/consensus-computed-jail-design.md` — long-term fix design (4-6 weeks: JailTransaction model)
+- `runbooks/jail-divergence-recovery.md` (founder-private) — operator recovery procedure
+
+### Migration
+
+Drop-in chain.db compatible with v2.1.40. Hot-swap binary at any time. Behavior unchanged until operator sets `BFT_GATE_RELAX_HEIGHT` env var.
+
+To activate (after testnet bake):
+```
+# Set env on each validator's systemd EnvironmentFile, choose height in future
+BFT_GATE_RELAX_HEIGHT=<future_height>
+# Halt all + simultaneous-start (per feedback_mainnet_restart_cascade_jailing)
+```
+
+Pre-activation chain operates exactly as v2.1.40. Post-activation: chain stays live with active=3 of total=4.
+
+### Tests
+
+`cargo test --workspace`: 774 passed, 0 failed, 11 ignored (was 772 in v2.1.40, +2 new regression tests). Clippy clean.
+
+### Related
+
+- 2 incidents recovered via chain.db rsync from canonical (`incidents/2026-04-26-evening-rolling-restart-jail-cascade-stall.md`, `incidents/2026-04-26-night-jail-divergence-stall-h662399.md`)
+- Long-term fix (consensus-computed jail) is the real solution; this release is mitigation while that ships (4-6 weeks)
+
+### PRs
+
+- #350 — audit + observability + design docs (merged 2026-04-27)
+- #351 — fork-gated BFT safety gate relaxation (merged 2026-04-27, fresh-brain reviewed by autonomous session, regression tests added)
+
+---
+
 ## [2.1.40] — 2026-04-27 — Explorer richlist percentage display fork-aware
 
 > **Display-only polish PR.** Closes the last 3 sites that still used static `MAX_SUPPLY` (210M) for percentage-of-supply display, even though the consensus + `/chain/info` RPC display were already fork-aware in v2.1.39. After the tokenomics v2 fork activated on mainnet at h=640800, the `/explorer/richlist` HTML page, `GET /accounts` REST endpoint, and `GET /accounts/richlist` REST endpoint were still calculating percentages against the pre-fork 210M cap — making top holders look ~33% smaller than reality.
