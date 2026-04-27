@@ -846,6 +846,14 @@ async fn on_swarm_event(
                             let mut chain = bc.write().await;
                             match chain.add_block_from_peer(gossip.block.clone()) {
                                 Ok(()) => {
+                                    // Asymmetric-recording fix (see comment at libp2p sync site).
+                                    if let Some(j) = &gossip.block.justification {
+                                        let active = chain.stake_registry.active_set.clone();
+                                        let signers: Vec<String> = j.precommits.iter()
+                                            .map(|p| p.validator.clone())
+                                            .collect();
+                                        chain.slashing.record_block_signatures(&active, &signers, gossip.block.index);
+                                    }
                                     let updated =
                                         chain.latest_block().ok().cloned().unwrap_or(gossip.block);
                                     drop(chain);
@@ -1197,9 +1205,19 @@ async fn on_inbound_request(
             let etx = event_tx.clone();
             tokio::spawn(async move {
                 let mut chain = bc.write().await;
+                let block_idx = block.index;
+                let block_justification = block.justification.clone();
                 match chain.add_block_from_peer(*block.clone()) {
                     Ok(()) => {
-                        tracing::info!("libp2p: applied block {} from {}", block.index, peer);
+                        // Asymmetric-recording fix (see comment at libp2p sync site).
+                        if let Some(j) = &block_justification {
+                            let active = chain.stake_registry.active_set.clone();
+                            let signers: Vec<String> = j.precommits.iter()
+                                .map(|p| p.validator.clone())
+                                .collect();
+                            chain.slashing.record_block_signatures(&active, &signers, block_idx);
+                        }
+                        tracing::info!("libp2p: applied block {} from {}", block_idx, peer);
                         // Capture H2 (with state_root + recomputed hash) before releasing
                         // the write lock — same fix as validator loop (PR #78).
                         let updated = chain.latest_block().ok().cloned().unwrap_or(*block);
@@ -1498,6 +1516,24 @@ async fn on_inbound_response(
                 }
                 match chain.add_block_from_peer(block.clone()) {
                     Ok(()) => {
+                        // ── Asymmetric-recording fix (2026-04-27 audit) ──
+                        // Validator-finalize paths in main.rs record liveness
+                        // (record_block_signatures) for self-produced and BFT-
+                        // finalized blocks, but blocks applied via libp2p sync
+                        // (catch-up) DO NOT trigger that bookkeeping. The gap
+                        // accumulates ~33% baseline divergence in peer-view
+                        // signed counts vs self-view (proven empirically on
+                        // testnet at h=558000), driving the 2026-04-26 jail
+                        // cascade pattern. This fix records liveness for any
+                        // peer-applied block that has a BFT justification
+                        // (post-Voyager). See `audits/jail-cascade-root-cause-analysis.md`.
+                        if let Some(j) = &block.justification {
+                            let active = chain.stake_registry.active_set.clone();
+                            let signers: Vec<String> = j.precommits.iter()
+                                .map(|p| p.validator.clone())
+                                .collect();
+                            chain.slashing.record_block_signatures(&active, &signers, block.index);
+                        }
                         // Use H2 (post-add_block state_root hash) — not the raw peer block (PR #78).
                         let updated = chain
                             .latest_block()
