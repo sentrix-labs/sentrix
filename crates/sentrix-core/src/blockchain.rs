@@ -1576,9 +1576,7 @@ mod tests {
     /// BLOCK_REWARD = 1 SRX in sentri — no jump.
     #[test]
     fn test_tokenomics_v2_fork_boundary_no_reward_jump() {
-        // SAFETY: env-var mutation in tests is explicitly serialized via
-        // a single-threaded harness in CI. `unsafe { set_var }` is the
-        // correct API for Rust 2024 edition.
+        let _guard = env_test_lock();
         unsafe {
             std::env::set_var("TOKENOMICS_V2_HEIGHT", "100");
         }
@@ -2999,7 +2997,7 @@ mod tests {
     /// h=633599 + h=662399). See `audits/jail-cascade-root-cause-analysis.md`.
     #[test]
     fn test_bft_gate_relax_fork_threshold() {
-        // SAFETY: env-var mutation in tests; CI runs single-threaded.
+        let _guard = env_test_lock();
         unsafe {
             std::env::set_var("BFT_GATE_RELAX_HEIGHT", "100");
         }
@@ -3036,7 +3034,7 @@ mod tests {
     /// is_bft_gate_relax_height: u64::MAX default = always disabled.
     #[test]
     fn test_bft_gate_relax_disabled_by_default() {
-        // SAFETY: env-var mutation in tests; CI runs single-threaded.
+        let _guard = env_test_lock();
         unsafe {
             std::env::remove_var("BFT_GATE_RELAX_HEIGHT");
         }

@@ -1613,10 +1613,9 @@ mod tests {
     /// someone inadvertently flips the default.
     #[test]
     fn test_v4_reward_v2_fork_height_default_disabled() {
-        // Ensure env var is not set for this test — if other tests
-        // set it we'd need serial_test, but currently no test does.
-        // Defensive: read the actual function and assert the
-        // mainnet-safe default.
+        // Phase D tests now also touch VOYAGER_REWARD_V2_HEIGHT, so we need
+        // crate-wide serialization to avoid races on the global env table.
+        let _guard = crate::test_util::env_test_lock();
         unsafe {
             std::env::remove_var("VOYAGER_REWARD_V2_HEIGHT");
         }
