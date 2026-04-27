@@ -1,5 +1,80 @@
 # Changelog
 
+## [Unreleased] — 2026-04-27 (later) — Phase A→D consensus-jail + testnet bootstrap
+
+Consensus-jail full stack lands as a fork-gated future activation. Default `JAIL_CONSENSUS_HEIGHT=u64::MAX` makes the entire dispatch path inert until an operator opts in.
+
+### Added
+
+- `Transaction::new_jail_evidence_bundle()` system-tx constructor + `is_system_tx()` predicate
+- `Blockchain::build_jail_evidence_system_tx()` proposer helper (epoch-boundary emission, returns None pre-fork / non-boundary / no-evidence)
+- `block_producer` calls helper after coinbase
+- `validate_block` Q4 required-presence: at epoch boundary post-fork with local downtime evidence, block MUST contain matching `JailEvidenceBundle` system tx
+- Phase C dispatch: cited-epoch check + local recompute compare + per-validator jail apply
+- 4-validator consensus-determinism integration test (`tests/phase_d_4validator_determinism.rs`) — proves all peers converge on identical jail state + identical state_root, plus negative test that diverging LivenessTracker rejects via dispatch
+- `genesis/testnet.toml` (chain_id 7120) + `bin/sentrix-faucet/` standalone HTTP service
+- CI uploads `sentrix-faucet` release binary as workflow artifact alongside `sentrix`
+- `pub(crate) mod test_util::env_test_lock()` so fork-gate tests serialize across modules under cargo's default parallel runner
+
+### Hygiene
+
+- Internal-tooling and operator-host references scrubbed from public source files, audits, and docs (round 2). Final grep across tracked files: zero matches.
+
+### Activation
+
+`JAIL_CONSENSUS_HEIGHT` defaults disabled. To activate, operators set the env var on all validators in a coordinated halt-all + simultaneous-start. Prerequisites: LivenessTracker convergence verified across the fleet (≥4h clean operation post asymmetric-record fixes), then 24-48h testnet bake before mainnet.
+
+### PRs
+
+- #359 — Phase A data plumbing
+- #365 — Phase B helpers + fork gate
+- #366 — Phase C dispatch verification
+- #368 — Phase D Step 1+2 (system tx auth + helper)
+- #369 — Phase D Step 3+4 (proposer emit + Pass-1/Pass-2 skip)
+- #371 — Phase D Q4 + Step 5-lite (required-presence + e2e)
+- #372 — Phase D Step 5-full (4-validator determinism)
+- #373 — internal-references hygiene scrub round 2
+- #374 — testnet genesis + faucet binary
+- #375 — CI faucet artifact upload
+- #376 — public CHANGELOG sync
+
+---
+
+## [2.1.41] — 2026-04-27 — Jail-cascade observability + fork-gated BFT safety gate relaxation
+
+Liveness fix bundle for the jail-cascade pattern. Two mainnet stalls on 2026-04-26 (h=633599 evening, h=662399 night) traced to per-validator stake_registry divergence (one validator sees another as jailed, others see active). The P1 BFT safety gate then refused to participate (active < MIN_BFT_VALIDATORS=4), stalling the chain.
+
+### Added
+
+- DEBUG-level tracing snapshot of per-validator (signed_count, missed_count) every 1000 blocks (PR #350)
+- `BFT_GATE_RELAX_HEIGHT` env-gated activation, default `u64::MAX` (disabled)
+- `Blockchain::is_bft_gate_relax_height(h)` + `min_active_for_bft(h, total)` runtime-aware helpers (pre-fork: `MIN_BFT_VALIDATORS=4`; post-fork: `⌈2/3 × N⌉` supermajority)
+- P1 BFT safety gate uses runtime-aware `min_active_for_bft` lookup (PRs #351, #355)
+- Asymmetric-application fixes: `record_block_signatures`, `distribute_reward`, `epoch_manager.record_block` now fire from libp2p apply paths (was: only validator-loop finalize) (#356, #362)
+
+### Activation
+
+Operators must explicitly set `BFT_GATE_RELAX_HEIGHT=<height>` on each validator to activate the relaxation. Coordinated rollout required (testnet bake, then mainnet halt-all + simultaneous-start with env var).
+
+### PRs
+
+- #350 (observability + RCA + design)
+- #351 (P1 gate relaxation, with self-review fix for clamp bug)
+- #355 (Pass-2 L2 gate parity)
+- #356, #362 (asymmetric apply fixes)
+
+---
+
+## [2.1.40] — 2026-04-27 — Fork-aware explorer richlist display
+
+Polish release. Pre-fork the explorer richlist hardcoded "Total supply: 210000000 SRX" — a tokenomics-v2 chain post-fork should show 315M. v2.1.40 makes the explorer page read max supply via `/chain/info` (which already reports fork-aware values per #337), so the display tracks reality without further code changes.
+
+### PRs
+
+- #348 — fork-aware richlist display
+
+---
+
 ## [2.1.39] — 2026-04-26 — Tokenomics v2 fork (BTC-parity halving + 315M cap)
 
 Consensus fork. Re-targets emission curve: 4-year halving (126M blocks) + 315M cap. Closes v1 math gap (geometric asymptoted at 84M from mining; 147M effective max instead of nominal 210M).
