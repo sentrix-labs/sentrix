@@ -79,6 +79,14 @@ jobs:
           path: target/release/sentrix
           retention-days: 1
 
+      - name: Upload faucet binary
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@v5
+        with:
+          name: sentrix-faucet-binary
+          path: target/release/sentrix-faucet
+          retention-days: 1
+
   # RustSec advisory scan. Runs in parallel with Test so a newly-published
   # advisory against any transitive dep surfaces in ≤ 1 CI run rather than
   # waiting for the next manual `cargo audit` sweep. Ignore list mirrors
