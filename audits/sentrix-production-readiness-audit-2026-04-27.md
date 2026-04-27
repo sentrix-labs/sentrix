@@ -96,7 +96,7 @@ Per round: ~44s
 
 **Symptom:** When BFT can't finalize at height N (proposer offline, nil-majority), validators continue trying. Each validator stages a different block locally. Their local chain.db state diverges. After 5+ min stuck, MD5 of `mdbx.dat` differs across all validators.
 
-**Why:** Per CLAUDE.md state-recovery rules, "state_root stamping at apply time" means each validator stamps its own state_root. If state_roots already differ (e.g., stale auto-jail counter), block hashes differ for the same proposer + prev_hash, leading to permanent divergence even after recovery.
+**Why:** Per state-recovery rules (operator runbook), "state_root stamping at apply time" means each validator stamps its own state_root. If state_roots already differ (e.g., stale auto-jail counter), block hashes differ for the same proposer + prev_hash, leading to permanent divergence even after recovery.
 
 **Implication:** Recovery from any stall REQUIRES chain.db rsync from canonical (well-tested today, ~5-10 min downtime). Not feasible at scale (multi-validator network can't ask each operator to rsync from others).
 
