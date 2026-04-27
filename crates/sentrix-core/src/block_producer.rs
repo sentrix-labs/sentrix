@@ -104,6 +104,7 @@ impl Blockchain {
 #[cfg(test)]
 mod tests {
     use crate::blockchain::{Blockchain, CHAIN_ID};
+    use crate::test_util::env_test_lock;
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
     use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
 
@@ -198,8 +199,7 @@ mod tests {
     /// Block contains only coinbase (+ any mempool txs).
     #[test]
     fn test_create_block_no_jail_bundle_pre_fork() {
-        // SAFETY: env-var mutation in tests is serialized by the harness
-        // (single-threaded) per existing fork-gate tests in blockchain.rs.
+        let _guard = env_test_lock();
         unsafe {
             std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
         }
@@ -219,6 +219,7 @@ mod tests {
     fn test_create_block_voyager_emits_jail_bundle_at_boundary() {
         use sentrix_primitives::transaction::PROTOCOL_TREASURY;
 
+        let _guard = env_test_lock();
         unsafe {
             std::env::set_var("JAIL_CONSENSUS_HEIGHT", "0");
         }
