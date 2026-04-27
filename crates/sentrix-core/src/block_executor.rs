@@ -332,6 +332,20 @@ impl Blockchain {
                             ));
                         }
                     }
+                    op if op.is_nft_family() => {
+                        // SRC-721 + SRC-1155 dispatch is gated by
+                        // NFT_TOKENOP_HEIGHT fork. Pre-fork: reject. Wire
+                        // format stable from this PR; storage layer +
+                        // dispatch land in the follow-up PR.
+                        if !Self::is_nft_tokenop_height(self.height() + 1) {
+                            return Err(SentrixError::InvalidTransaction(
+                                "NFT TokenOp dispatch is gated by \
+                                 NFT_TOKENOP_HEIGHT fork (currently disabled)"
+                                    .into(),
+                            ));
+                        }
+                    }
+                    _ => unreachable!("TokenOp variant handled above"),
                 }
             }
 
@@ -611,6 +625,16 @@ impl Blockchain {
                             ));
                         }
                     }
+                    op if op.is_nft_family() => {
+                        if !Self::is_nft_tokenop_height(self.height() + 1) {
+                            return Err(SentrixError::InvalidTransaction(
+                                "NFT TokenOp dispatch is gated by \
+                                 NFT_TOKENOP_HEIGHT fork (currently disabled)"
+                                    .into(),
+                            ));
+                        }
+                    }
+                    _ => unreachable!("TokenOp variant handled above"),
                 }
             }
 
@@ -868,6 +892,30 @@ impl Blockchain {
                             amount,
                         )?;
                     }
+                    op if op.is_nft_family() => {
+                        // Pass-2 apply path: NFT TokenOp dispatch is
+                        // gated by NFT_TOKENOP_HEIGHT fork. Pre-fork:
+                        // reject (Pass-1 already rejected; this is
+                        // belt-and-suspenders). Storage layer handlers
+                        // land in the follow-up PR.
+                        if !Self::is_nft_tokenop_height(block.index) {
+                            return Err(SentrixError::InvalidTransaction(
+                                "NFT TokenOp dispatch is gated by \
+                                 NFT_TOKENOP_HEIGHT fork (currently disabled)"
+                                    .into(),
+                            ));
+                        }
+                        // Post-fork dispatch land in follow-up PR; for
+                        // now reject explicitly so accidentally enabling
+                        // the fork doesn't silently apply non-existent
+                        // handlers.
+                        return Err(SentrixError::InvalidTransaction(
+                            "NFT TokenOp dispatch handlers not yet wired \
+                             (Phase B follow-up PR)"
+                                .into(),
+                        ));
+                    }
+                    _ => unreachable!("TokenOp variant handled above"),
                 }
             }
 

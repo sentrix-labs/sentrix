@@ -28,9 +28,22 @@ pub const TOKEN_OP_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
 pub const PROTOCOL_TREASURY: &str = "0x0000000000000000000000000000000000000002";
 
 // ── Token operation types (encoded in Transaction.data field) ──
+//
+// Wire format: JSON-encoded `{"op":"<variant_name_snake_case>", ...fields}`.
+// Variants split into 3 family groups:
+//   1. Fungible (SRC-20-equivalent): Deploy, Transfer, Burn, Mint, Approve
+//   2. NFT (SRC-721-equivalent): Deploy/Mint/Transfer/Burn/Approve/SetApprovalForAll
+//      — gated by NFT_TOKENOP_HEIGHT fork. Pre-fork: dispatch rejects.
+//   3. Multi-token (SRC-1155-equivalent): DeployMulti/Mint/Transfer/Burn/BatchMint/BatchTransfer
+//      — same fork gate.
+//
+// EVM ERC-20/721/1155 deployed via `eth_sendRawTransaction` is a parallel
+// path; the two stacks DO NOT share contract addresses (native contract
+// addresses are derived from tx.txid; EVM addresses follow CREATE/CREATE2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum TokenOp {
+    // ── SRC-20 (fungible) ────────────────────────────────────
     // max_supply=0 means unlimited; #[serde(default)] for backward compatibility with older transactions
     Deploy {
         name: String,
@@ -59,6 +72,132 @@ pub enum TokenOp {
         spender: String,
         amount: u64,
     },
+
+    // ── SRC-721 (NFT) ────────────────────────────────────────
+    // Gated by NFT_TOKENOP_HEIGHT fork. Pre-fork: dispatch rejects.
+    /// Deploy a SRC-721 NFT collection. `max_supply=0` means unlimited.
+    /// `base_uri` is the metadata-URI prefix; per-token URI is
+    /// `{base_uri}{token_id}`. Mint operations may override by passing
+    /// `metadata_uri` explicitly.
+    DeployNft {
+        name: String,
+        symbol: String,
+        base_uri: String,
+        max_supply: u64,
+    },
+    /// Mint a single SRC-721 NFT. Owner-only (deployer of the NFT contract).
+    /// `metadata_uri` overrides the contract's base_uri convention if non-empty.
+    MintNft {
+        contract: String,
+        to: String,
+        token_id: u64,
+        #[serde(default)]
+        metadata_uri: String,
+    },
+    /// Transfer a SRC-721 NFT. Sender (`tx.from_address`) must be the
+    /// current owner OR an approved operator.
+    TransferNft {
+        contract: String,
+        from: String,
+        to: String,
+        token_id: u64,
+    },
+    /// Burn a SRC-721 NFT. Sender must be the current owner.
+    BurnNft {
+        contract: String,
+        token_id: u64,
+    },
+    /// Approve a single token for transfer by `spender`. Approval cleared
+    /// on next successful transfer.
+    ApproveNft {
+        contract: String,
+        spender: String,
+        token_id: u64,
+    },
+    /// Approve / revoke an operator for all tokens owned by `tx.from_address`
+    /// in this contract. Mirrors ERC-721's `setApprovalForAll`.
+    SetApprovalForAll {
+        contract: String,
+        operator: String,
+        approved: bool,
+    },
+
+    // ── SRC-1155 (multi-token) ───────────────────────────────
+    // Gated by NFT_TOKENOP_HEIGHT fork (same gate as SRC-721).
+    /// Deploy a SRC-1155 multi-token contract. `base_uri` is the prefix for
+    /// per-token URIs (`{base_uri}{token_id}`).
+    DeployMulti {
+        name: String,
+        symbol: String,
+        base_uri: String,
+    },
+    /// Mint `amount` units of `token_id` to `to`. Owner-only.
+    /// `data` is opaque metadata passed through to receivers (matches ERC-1155).
+    MintMulti {
+        contract: String,
+        to: String,
+        token_id: u64,
+        amount: u64,
+        #[serde(default)]
+        data: String,
+    },
+    /// Transfer `amount` units of `token_id`. Sender must be `from` OR an
+    /// approved operator (via `SetApprovalForAll`).
+    TransferMulti {
+        contract: String,
+        from: String,
+        to: String,
+        token_id: u64,
+        amount: u64,
+    },
+    /// Burn `amount` units of `token_id` held by `from`. Sender must be
+    /// `from` OR an approved operator.
+    BurnMulti {
+        contract: String,
+        from: String,
+        token_id: u64,
+        amount: u64,
+    },
+    /// Batch-mint multiple `token_id` quantities. Lengths of `ids` and
+    /// `amounts` must match. Owner-only.
+    BatchMintMulti {
+        contract: String,
+        to: String,
+        ids: Vec<u64>,
+        amounts: Vec<u64>,
+    },
+    /// Batch-transfer multiple `token_id` quantities. Lengths of `ids` and
+    /// `amounts` must match. Sender must be `from` OR an approved operator.
+    BatchTransferMulti {
+        contract: String,
+        from: String,
+        to: String,
+        ids: Vec<u64>,
+        amounts: Vec<u64>,
+    },
+}
+
+impl TokenOp {
+    /// Returns true if this variant requires the `NFT_TOKENOP_HEIGHT`
+    /// fork to be active (SRC-721 + SRC-1155 family). Pre-fork dispatch
+    /// must reject these variants. Used by Pass-1 validation.
+    pub fn is_nft_family(&self) -> bool {
+        matches!(
+            self,
+            TokenOp::DeployNft { .. }
+                | TokenOp::MintNft { .. }
+                | TokenOp::TransferNft { .. }
+                | TokenOp::BurnNft { .. }
+                | TokenOp::ApproveNft { .. }
+                | TokenOp::SetApprovalForAll { .. }
+                | TokenOp::DeployMulti { .. }
+                | TokenOp::MintMulti { .. }
+                | TokenOp::TransferMulti { .. }
+                | TokenOp::BurnMulti { .. }
+                | TokenOp::BatchMintMulti { .. }
+                | TokenOp::BatchTransferMulti { .. }
+        )
+    }
 }
 
 // ── Staking operation types (Voyager Phase 2a) ──────────────
@@ -809,5 +948,105 @@ mod tests {
         };
         let b = a.clone();
         assert_eq!(a, b, "JailEvidence must implement PartialEq for testing");
+    }
+
+    // ── SRC-721 / SRC-1155 TokenOp wire-format tests ──────────────
+
+    #[test]
+    fn test_nft_deploy_round_trip() {
+        let op = TokenOp::DeployNft {
+            name: "Test NFT".into(),
+            symbol: "TNFT".into(),
+            base_uri: "ipfs://Qm/".into(),
+            max_supply: 10_000,
+        };
+        let encoded = op.encode().expect("encode");
+        assert!(encoded.contains("\"op\":\"deploy_nft\""));
+        let decoded = TokenOp::decode(&encoded).expect("decode");
+        assert!(matches!(decoded, TokenOp::DeployNft { .. }));
+    }
+
+    #[test]
+    fn test_nft_mint_round_trip() {
+        let op = TokenOp::MintNft {
+            contract: "0xnft1".into(),
+            to: "0xrecipient".into(),
+            token_id: 42,
+            metadata_uri: "ipfs://Qm/42.json".into(),
+        };
+        let encoded = op.encode().expect("encode");
+        assert!(encoded.contains("\"op\":\"mint_nft\""));
+        let decoded = TokenOp::decode(&encoded).expect("decode");
+        assert!(matches!(decoded, TokenOp::MintNft { token_id: 42, .. }));
+    }
+
+    #[test]
+    fn test_set_approval_for_all_round_trip() {
+        let op = TokenOp::SetApprovalForAll {
+            contract: "0xnft1".into(),
+            operator: "0xop".into(),
+            approved: true,
+        };
+        let encoded = op.encode().expect("encode");
+        assert!(encoded.contains("\"op\":\"set_approval_for_all\""));
+        let decoded = TokenOp::decode(&encoded).expect("decode");
+        assert!(matches!(decoded, TokenOp::SetApprovalForAll { approved: true, .. }));
+    }
+
+    #[test]
+    fn test_multi_batch_mint_round_trip() {
+        let op = TokenOp::BatchMintMulti {
+            contract: "0xmt1".into(),
+            to: "0xrecipient".into(),
+            ids: vec![1, 2, 3],
+            amounts: vec![10, 20, 30],
+        };
+        let encoded = op.encode().expect("encode");
+        assert!(encoded.contains("\"op\":\"batch_mint_multi\""));
+        let decoded = TokenOp::decode(&encoded).expect("decode");
+        assert!(matches!(decoded, TokenOp::BatchMintMulti { .. }));
+    }
+
+    #[test]
+    fn test_is_nft_family_predicate() {
+        // SRC-20 fungible variants → NOT NFT family
+        assert!(!TokenOp::Deploy {
+            name: "x".into(), symbol: "X".into(), decimals: 8, supply: 0, max_supply: 0
+        }.is_nft_family());
+        assert!(!TokenOp::Transfer {
+            contract: "c".into(), to: "t".into(), amount: 1
+        }.is_nft_family());
+
+        // SRC-721 variants → NFT family
+        assert!(TokenOp::DeployNft {
+            name: "n".into(), symbol: "N".into(), base_uri: "u".into(), max_supply: 0
+        }.is_nft_family());
+        assert!(TokenOp::MintNft {
+            contract: "c".into(), to: "t".into(), token_id: 1, metadata_uri: String::new()
+        }.is_nft_family());
+        assert!(TokenOp::SetApprovalForAll {
+            contract: "c".into(), operator: "o".into(), approved: false
+        }.is_nft_family());
+
+        // SRC-1155 variants → NFT family
+        assert!(TokenOp::DeployMulti {
+            name: "n".into(), symbol: "N".into(), base_uri: "u".into()
+        }.is_nft_family());
+        assert!(TokenOp::BatchTransferMulti {
+            contract: "c".into(), from: "f".into(), to: "t".into(),
+            ids: vec![1], amounts: vec![1]
+        }.is_nft_family());
+    }
+
+    #[test]
+    fn test_nft_op_decodes_via_token_op_enum() {
+        // Proves wire format is stable: a JSON-encoded NFT op decodes
+        // through TokenOp::decode without requiring a separate enum.
+        let json = r#"{"op":"transfer_nft","contract":"0xc","from":"0xf","to":"0xt","token_id":7}"#;
+        let decoded = TokenOp::decode(json).expect("decode");
+        match decoded {
+            TokenOp::TransferNft { token_id, .. } => assert_eq!(token_id, 7),
+            _ => panic!("expected TransferNft variant"),
+        }
     }
 }
