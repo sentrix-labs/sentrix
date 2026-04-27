@@ -305,8 +305,8 @@ impl LibP2pNode {
     /// Used by the L1 dial-tick in the validator loop to skip peers
     /// already in an established connection — without this check, every
     /// 30s tick re-dials every active-set member, and pending dial
-    /// attempts accumulate over hours. See incident
-    /// `founder-private/incidents/2026-04-25-libp2p-connection-thrashing.md`.
+    /// attempts accumulate over hours. (Operator incident runbooks cover
+    /// the 2026-04-25 connection-thrashing incident.)
     pub async fn connected_peers(&self) -> HashSet<PeerId> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         if self

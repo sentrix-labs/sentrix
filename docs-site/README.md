@@ -84,7 +84,7 @@ Configures GitHub Pages serving from `gh-pages` branch.
 ## Brand
 
 - Tagline: **"Where real assets live."**
-- Primary positioning: see `founder-private/BRAND_POSITIONING.md` (locked-in 2026-04-26)
+- Primary positioning: locked-in 2026-04-26 (internal brand-positioning doc)
 - Logo source: [github.com/sentrix-labs/brand-kit](https://github.com/sentrix-labs/brand-kit)
 
 ## Maintenance
@@ -96,4 +96,4 @@ Configures GitHub Pages serving from `gh-pages` branch.
 
 ## Source positioning
 
-Master tokenomics + brand positioning: `founder-private/BRAND_POSITIONING.md` (private repo).
+Master tokenomics + brand positioning: held in an internal brand-positioning doc (private repo).

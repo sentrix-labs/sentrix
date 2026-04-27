@@ -687,9 +687,9 @@ impl Blockchain {
     /// **Use [`voyager_mode_for`] in consensus paths** — it ORs this
     /// check with the runtime persisted `voyager_activated` flag, so
     /// post-activation chains don't depend on the env var being set
-    /// correctly. The 2026-04-26 mainnet stall (incident report at
-    /// `founder-private/incidents/2026-04-26-voyager-fork-height-env-bug.md`)
-    /// happened because `validate_block` called this static function:
+    /// correctly. The 2026-04-26 mainnet stall (covered by operator
+    /// incident runbooks) happened because `validate_block` called this
+    /// static function:
     /// env var was at default `u64::MAX`, function returned false,
     /// validate_block fell through to Pioneer auth check, which
     /// rejected legitimate Voyager skip-round blocks.

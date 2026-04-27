@@ -78,7 +78,7 @@ The 2026-04-25 / 2026-04-26 incident hotfix series:
 - v2.1.34: connection_limits cap loosened 1→2 (production hotfix)
 - v2.1.35: Voyager-mode-for migration sweep + claim-rewards tool
 - v2.1.36: tx validate exempts staking ops from amount>0 check (ClaimRewards submission fix)
-- v2.1.37: libp2p sync cascade-bail filter (P0: 2026-04-26 mainnet stall at h=604547 root cause + fix). Recovered via Treasury-canonical chain.db rsync. See PR #334 + RCA at `incidents/2026-04-26-libp2p-sync-cascade-bail-stall.md` (founder-private).
+- v2.1.37: libp2p sync cascade-bail filter (P0: 2026-04-26 mainnet stall at h=604547 root cause + fix). Recovered via Treasury-canonical chain.db rsync. See PR #334 (RCA held in operator runbooks).
 - v2.1.38: legacy TCP-path deletion (sync.rs + node.rs trimmed) + cumulative skip-counter observability for race re-emergence detection
 - v2.1.39: tokenomics v2 fork (consensus, env-gated). 126M-block halving (4-year BTC-parity) + 315M MAX_SUPPLY. Activated on testnet at h=381651 (2026-04-26), armed on mainnet at h=640800 via `TOKENOMICS_V2_HEIGHT` env var. Same fork-gate pattern as VOYAGER_REWARD_V2_HEIGHT (zero behavior change pre-fork-height; runtime dispatch in `get_block_reward()` + `max_supply_for(height)` + `halvings_at(height)`). PR #336 + #337 (RPC display fix).
 
@@ -130,8 +130,8 @@ and the divergence is gone.
 > → Foundation, Core, Beacon. MD5 parity confirmed
 > (`mdbx.dat` md5 = `567c7165301fff7e95ded23d03df63cd`). Restart Treasury
 > → Foundation → Core → Beacon. Chain advanced past h=604548 within
-> seconds. Per-validator hash parity verified at h=604650. RCA in
-> `incidents/2026-04-26-libp2p-sync-cascade-bail-stall.md` (founder-private).
+> seconds. Per-validator hash parity verified at h=604650. (RCA held in
+> operator runbooks.)
 
 > **Worked example #2 (2026-04-26 evening mainnet stall, h=633599).**
 > Rolling restart used to load `TOKENOMICS_V2_HEIGHT` env var into

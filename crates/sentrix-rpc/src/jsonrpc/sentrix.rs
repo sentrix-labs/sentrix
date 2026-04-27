@@ -79,8 +79,8 @@ async fn sentrix_get_validator_set(state: &SharedState) -> DispatchResult {
     // 2026-04-26: use voyager_mode_for() runtime-aware check instead of
     // static is_voyager_height(). Same env-var-default-u64::MAX foot-gun
     // that bit validate_block — stale RPC reporting "is_dpos=false" when
-    // chain runtime says voyager_activated=true. See incident
-    // founder-private/incidents/2026-04-26-voyager-fork-height-env-bug.md.
+    // chain runtime says voyager_activated=true. (Operator runbooks
+    // cover the corresponding 2026-04-26 incident.)
     let is_dpos = bc.voyager_mode_for(next_height) && !bc.stake_registry.validators.is_empty();
 
     if is_dpos {

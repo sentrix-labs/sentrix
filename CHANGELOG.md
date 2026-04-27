@@ -29,7 +29,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `bin/sentrix/src/main.rs` — P1 BFT safety gate uses `min_active_for_bft(h, total)` lookup
 - `audits/jail-cascade-root-cause-analysis.md` — full RCA (asymmetric record_block_signatures, locally-computed jail decision)
 - `audits/consensus-computed-jail-design.md` — long-term fix design (4-6 weeks: JailTransaction model)
-- `runbooks/jail-divergence-recovery.md` (founder-private) — operator recovery procedure
+- Operator runbook: jail-divergence recovery procedure (internal)
 
 ### Migration
 
