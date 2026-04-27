@@ -153,6 +153,35 @@ impl Blockchain {
             ));
         }
 
+        // Phase D Q4 (required-presence): post-fork at epoch boundaries, if
+        // local LivenessTracker shows downtime evidence, the block MUST
+        // contain a JailEvidenceBundle system tx. Otherwise the proposer
+        // omitted a required system op — reject the block.
+        //
+        // Symmetry note: if local_evidence is empty, dispatch (block_executor
+        // apply path) already rejects blocks that include a JailEvidenceBundle
+        // whose claimed evidence diverges from local recompute. So we only
+        // need to enforce presence here, not absence.
+        //
+        // Pre-fork (default JAIL_CONSENSUS_HEIGHT=u64::MAX): this branch is
+        // unreachable, so behavior is unchanged on default builds.
+        if Self::is_jail_consensus_height(expected_index)
+            && sentrix_staking::epoch::EpochManager::is_epoch_boundary(expected_index)
+        {
+            let active_set = self.stake_registry.active_set.clone();
+            let local_evidence = self.slashing.compute_jail_evidence(&active_set);
+            if !local_evidence.is_empty()
+                && !block.transactions.iter().any(|tx| tx.is_system_tx())
+            {
+                return Err(SentrixError::InvalidBlock(format!(
+                    "boundary block {} missing required JailEvidenceBundle \
+                     (local evidence: {} entries — proposer omitted required system op)",
+                    expected_index,
+                    local_evidence.len()
+                )));
+            }
+        }
+
         let reward = self.get_block_reward();
         let coinbase = block
             .coinbase()
@@ -1584,10 +1613,9 @@ mod tests {
     /// someone inadvertently flips the default.
     #[test]
     fn test_v4_reward_v2_fork_height_default_disabled() {
-        // Ensure env var is not set for this test — if other tests
-        // set it we'd need serial_test, but currently no test does.
-        // Defensive: read the actual function and assert the
-        // mainnet-safe default.
+        // Phase D tests now also touch VOYAGER_REWARD_V2_HEIGHT, so we need
+        // crate-wide serialization to avoid races on the global env table.
+        let _guard = crate::test_util::env_test_lock();
         unsafe {
             std::env::remove_var("VOYAGER_REWARD_V2_HEIGHT");
         }
@@ -2017,5 +2045,156 @@ mod tests {
             bc.add_block(block).is_ok(),
             "add_block must succeed without trie"
         );
+    }
+
+    /// Phase D Step 5-lite: end-to-end exercise of the consensus-jail flow
+    /// in single-validator mode. Drives:
+    ///   1. proposer-side helper (Step 1+2): build_jail_evidence_system_tx
+    ///   2. block_producer wire-up (Step 3): tx[1] = system tx
+    ///   3. Pass-1 skip (Step 4a): system tx bypasses nonce/balance checks
+    ///   4. Pass-1 Q4 required-presence: ours has system tx, passes
+    ///   5. Pass-2 skip (Step 4b): no transfer for system tx
+    ///   6. Phase C dispatch: recompute-and-compare matches (single validator,
+    ///      same LivenessTracker), jail applied to stake_registry
+    ///
+    /// Asserts: post-add_block the cited validator is jailed in stake_registry.
+    #[test]
+    fn test_phase_d_e2e_emit_validate_apply_jail() {
+        let _guard = crate::test_util::env_test_lock();
+        // Both forks active (consensus-jail dispatch needs reward_v2 active
+        // since dispatch lives inside `if is_reward_v2_height(...)`)
+        unsafe {
+            std::env::set_var("VOYAGER_REWARD_V2_HEIGHT", "0");
+            std::env::set_var("JAIL_CONSENSUS_HEIGHT", "0");
+        }
+
+        let mut bc = setup();
+        bc.voyager_activated = true; // bypass Pioneer auth in validate_block
+
+        // Inject a downer in active_set + populate liveness window with
+        // all-missed records so is_downtime triggers.
+        let downer = "0xfeedfacefeedfacefeedfacefeedfacefeedface".to_string();
+        bc.stake_registry.active_set = vec![downer.clone()];
+        bc.stake_registry
+            .register_validator(&downer, sentrix_staking::staking::MIN_SELF_STAKE, 1000, 0)
+            .expect("register downer");
+        let window = sentrix_staking::slashing::LIVENESS_WINDOW;
+        for h in 0..window {
+            bc.slashing.liveness.record(&downer, h, false);
+        }
+
+        // Pad chain to (boundary - 1) so next produced block lands on boundary.
+        let target_height = sentrix_staking::epoch::EPOCH_LENGTH - 2;
+        let prev_hash = bc.latest_block().unwrap().hash.clone();
+        let pad = sentrix_primitives::block::Block::new(
+            target_height,
+            prev_hash,
+            vec![Transaction::new_coinbase(
+                "v1".into(),
+                0,
+                target_height,
+                1_700_000_000,
+            )],
+            "v1".into(),
+        );
+        bc.chain.push(pad);
+
+        // Pre-condition: downer not jailed
+        let pre_jailed = bc
+            .stake_registry
+            .get_validator(&downer)
+            .map(|v| v.is_jailed)
+            .unwrap_or(false);
+        assert!(!pre_jailed, "downer must not be jailed pre-emission");
+
+        // Drive proposer → emits block with system tx at [1]
+        let block = bc.create_block_voyager("v1").expect("create_block_voyager");
+        assert_eq!(block.transactions.len(), 2);
+        assert!(block.transactions[1].is_system_tx());
+
+        // add_block runs full Pass-1 + Pass-2 + dispatch + state mutation
+        bc.add_block(block).expect("add_block must accept Phase D system tx");
+
+        // Post-condition: downer jailed
+        let post_jailed = bc
+            .stake_registry
+            .get_validator(&downer)
+            .map(|v| v.is_jailed)
+            .unwrap_or(false);
+        assert!(
+            post_jailed,
+            "downer must be jailed after consensus-jail dispatch applied"
+        );
+
+        unsafe {
+            std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
+            std::env::remove_var("VOYAGER_REWARD_V2_HEIGHT");
+        }
+    }
+
+    /// Phase D Q4 required-presence: post-fork at boundary with downtime
+    /// evidence locally, a block missing the JailEvidenceBundle is rejected.
+    #[test]
+    fn test_phase_d_q4_required_presence_rejects_missing_bundle() {
+        let _guard = crate::test_util::env_test_lock();
+        unsafe {
+            std::env::set_var("VOYAGER_REWARD_V2_HEIGHT", "0");
+            std::env::set_var("JAIL_CONSENSUS_HEIGHT", "0");
+        }
+
+        let mut bc = setup();
+        bc.voyager_activated = true;
+
+        // Inject downer + downtime
+        let downer = "0xfeedfacefeedfacefeedfacefeedfacefeedface".to_string();
+        bc.stake_registry.active_set = vec![downer.clone()];
+        bc.stake_registry
+            .register_validator(&downer, sentrix_staking::staking::MIN_SELF_STAKE, 1000, 0)
+            .unwrap();
+        let window = sentrix_staking::slashing::LIVENESS_WINDOW;
+        for h in 0..window {
+            bc.slashing.liveness.record(&downer, h, false);
+        }
+
+        // Pad to boundary - 1
+        let target_height = sentrix_staking::epoch::EPOCH_LENGTH - 2;
+        let prev_hash = bc.latest_block().unwrap().hash.clone();
+        let pad = sentrix_primitives::block::Block::new(
+            target_height,
+            prev_hash,
+            vec![Transaction::new_coinbase(
+                "v1".into(),
+                0,
+                target_height,
+                1_700_000_000,
+            )],
+            "v1".into(),
+        );
+        bc.chain.push(pad);
+
+        // Hand-craft a boundary block WITHOUT a system tx (simulates faulty
+        // proposer that omits the required JailEvidenceBundle).
+        let boundary = sentrix_staking::epoch::EPOCH_LENGTH - 1;
+        let reward = bc.get_block_reward();
+        let coinbase = Transaction::new_coinbase("v1".into(), reward, boundary, 1_700_000_001);
+        let bad_block = sentrix_primitives::block::Block::new(
+            boundary,
+            bc.latest_block().unwrap().hash.clone(),
+            vec![coinbase],
+            "v1".into(),
+        );
+
+        let err = bc
+            .validate_block(&bad_block)
+            .expect_err("missing JailEvidenceBundle at boundary post-fork must reject");
+        assert!(
+            format!("{err:?}").contains("missing required JailEvidenceBundle"),
+            "expected required-presence rejection; got: {err:?}"
+        );
+
+        unsafe {
+            std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
+            std::env::remove_var("VOYAGER_REWARD_V2_HEIGHT");
+        }
     }
 }
