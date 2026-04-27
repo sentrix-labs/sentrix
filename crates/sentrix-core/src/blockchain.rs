@@ -114,6 +114,16 @@ const BFT_GATE_RELAX_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// is incomplete). Wire-format stable per Phase A (PR #359).
 const JAIL_CONSENSUS_HEIGHT_DEFAULT: u64 = u64::MAX;
 
+/// Activation height for SRC-721 + SRC-1155 native NFT/multi-token TokenOp
+/// variants. Pre-fork: dispatch rejects (`is_nft_family()` returning true).
+/// Post-fork: full handlers run (storage layer + REST).
+///
+/// CONSENSUS CHANGE — every validator must set the same value; mismatch
+/// produces a fork. Operator activates with halt-all + simultaneous-start
+/// after testnet bake.
+/// u64::MAX = disabled (safe default; wire format stable from this PR).
+const NFT_TOKENOP_HEIGHT_DEFAULT: u64 = u64::MAX;
+
 /// Read Voyager fork height from env, default u64::MAX (mainnet safe).
 /// Testnet sets VOYAGER_FORK_HEIGHT=<height> in systemd service.
 pub fn get_voyager_fork_height() -> u64 {
@@ -173,6 +183,16 @@ pub fn get_jail_consensus_height() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(JAIL_CONSENSUS_HEIGHT_DEFAULT)
+}
+
+/// Read NFT TokenOp fork height from env, default `u64::MAX` (disabled).
+/// Post-fork: SRC-721 + SRC-1155 dispatch active. Operators activate via
+/// halt-all + simultaneous-start with `NFT_TOKENOP_HEIGHT=<height>`.
+pub fn get_nft_tokenop_height() -> u64 {
+    std::env::var("NFT_TOKENOP_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(NFT_TOKENOP_HEIGHT_DEFAULT)
 }
 
 /// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
@@ -748,6 +768,15 @@ impl Blockchain {
     /// jail as on-chain state mutation. Pre-fork: legacy local check_liveness.
     pub fn is_jail_consensus_height(height: u64) -> bool {
         let fork = get_jail_consensus_height();
+        fork != u64::MAX && height >= fork
+    }
+
+    /// Is the given height at or after the NFT TokenOp fork?
+    /// Post-fork: SRC-721 + SRC-1155 TokenOp variants dispatch.
+    /// Pre-fork: dispatch rejects (wire format stable, storage layer
+    /// + REST handlers gated until activation).
+    pub fn is_nft_tokenop_height(height: u64) -> bool {
+        let fork = get_nft_tokenop_height();
         fork != u64::MAX && height >= fork
     }
 
