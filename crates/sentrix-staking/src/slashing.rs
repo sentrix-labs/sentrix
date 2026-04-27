@@ -362,12 +362,16 @@ impl SlashingEngine {
         }
 
         // Periodic per-validator participation snapshot (every 1000 blocks)
-        // for fleet-wide correlation. Low-volume — only emits on a 0.1%
-        // sampling cadence to avoid log flood. Full per-validator counts.
+        // for fleet-wide correlation. INFO-level so operators see it by
+        // default without enabling DEBUG logs — that's the whole point of
+        // the metric (divergence detection requires fleet-wide visibility,
+        // can't ask operator to remember to enable extra logging).
+        // Volume: ~4 lines / 1000 blocks / validator = ~16 lines/hr per
+        // validator at 1s blocks. Low enough to not be noise.
         if height.is_multiple_of(1000) {
             for validator in active_set {
                 let (signed_count, missed_count) = self.liveness.get_stats(validator);
-                tracing::debug!(
+                tracing::info!(
                     target: "sentrix_staking::slashing",
                     height,
                     validator = %validator,
