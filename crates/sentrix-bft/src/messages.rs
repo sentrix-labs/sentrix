@@ -42,8 +42,7 @@ use sha2::{Digest, Sha256};
 // validators (not on this binary) can no longer cross-verify v2-signed
 // messages — that's the whole point.
 //
-// See: `founder-private/audits/bft-signing-fork-design.md` for the full
-// 5-phase migration plan.
+// See operator runbooks for the full 5-phase migration plan.
 
 /// Hard-fork height at which BFT signing v2 (chain_id-in-payload)
 /// activates. `u64::MAX` = inert; v2 dispatch never fires in this binary.

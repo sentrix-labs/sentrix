@@ -51,7 +51,7 @@
 blog.txt
 tlog.txt
 
-# ── Operator-specific deploy scripts (live in founder-private) ─
+# ── Operator-specific deploy scripts (operator-internal repo) ─
 # These bake in operator infrastructure (wg1 IPs via fleet.env, role
 # mapping, satya_master SSH key path). Keeping them out of the public
 # repo avoids leaking operational topology and recurring depersonalization

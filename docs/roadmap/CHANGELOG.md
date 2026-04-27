@@ -101,9 +101,9 @@ Single-night marathon (PRs #316–#331; binaries v2.1.31 → v2.1.36). All 4 mai
 - Public docs synced to v2.1.36 (README, NETWORKS, EMERGENCY_ROLLBACK).
 
 ### Fixed
-- **VOYAGER_FORK_HEIGHT env default `u64::MAX` bug** — caused h=597524 stall (`is_voyager_height()` returned false → validate_block fell into Pioneer auth → rejected Voyager skip-round blocks as "Unauthorized validator"). Fixed via PR #324 (`voyager_mode_for` runtime check) + operator hot-fix (env=579047). Incident report: `incidents/2026-04-26-voyager-fork-height-env-bug.md` (founder-private).
+- **VOYAGER_FORK_HEIGHT env default `u64::MAX` bug** — caused h=597524 stall (`is_voyager_height()` returned false → validate_block fell into Pioneer auth → rejected Voyager skip-round blocks as "Unauthorized validator"). Fixed via PR #324 (`voyager_mode_for` runtime check) + operator hot-fix (env=579047). Incident report held in operator runbooks.
 - **libp2p connection accumulation** — 4-tier hardening: dial-tick connected-peers pre-check (#319) + advert `/p2p/` suffix (#321) + connection_limits cap (#323) + max-per-peer 1→2 hotfix (#326).
-- **`fast-deploy.sh REPO_ROOT`** broken after script moved to founder-private — added `SENTRIX_REPO` env-var override.
+- **`fast-deploy.sh REPO_ROOT`** broken after script moved to operator-internal repo — added `SENTRIX_REPO` env-var override.
 - **`cp ETXTBSY`** when overwriting running executable — switched to cp-to-tmp-stage-then-mv-rename pattern.
 
 ### Notes

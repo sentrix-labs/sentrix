@@ -1,6 +1,6 @@
 # Sentrix — sentrixchain.com Hero Copy
 
-Hero section for `sentrixchain.com` (chain & developer audience). For business/products audience hero, see `founder-private/marketing/SENTRISCLOUD_HERO_COPY.md`.
+Hero section for `sentrixchain.com` (chain & developer audience). The business/products audience hero copy is held internally.
 
 ---
 
@@ -87,4 +87,4 @@ Network abuse: abuse@sentrixchain.com
 
 ## Source positioning (do not edit here — see master)
 
-Master: `founder-private/BRAND_POSITIONING.md` (internal — not published)
+Master copy held in internal brand-positioning doc (not published).

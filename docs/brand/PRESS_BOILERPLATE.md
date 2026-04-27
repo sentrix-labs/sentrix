@@ -106,4 +106,4 @@ funded; "Founder" is universally appropriate at this stage.
 
 ---
 
-*Brand positioning master: `founder-private/BRAND_POSITIONING.md`. Locked-in 2026-04-26.*
+*Brand positioning master held internally. Locked-in 2026-04-26.*

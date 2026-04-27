@@ -77,7 +77,7 @@ Validator received blocks but isn't applying them. Look for:
 
 ### Fork (different block hashes at same height)
 
-`/chain/blocks/<height>` returns different `hash` across peers. Recovery: chain.db rsync from canonical (see EMERGENCY_ROLLBACK.md § State Recovery for full procedure). 2026-04-26 morning incident (h=604547, 4-way state divergence) is a worked example — RCA at `incidents/2026-04-26-libp2p-sync-cascade-bail-stall.md` (founder-private).
+`/chain/blocks/<height>` returns different `hash` across peers. Recovery: chain.db rsync from canonical (see EMERGENCY_ROLLBACK.md § State Recovery for full procedure). 2026-04-26 morning incident (h=604547, 4-way state divergence) is a worked example — RCA held in operator runbooks.
 
 ### Node won't start
 

@@ -141,7 +141,7 @@ Genesis validation:
 - BFT gate threshold logic (PR #351, #355)
 - Hardcoded supply display (PR #347, #348)
 - Observability gaps (PR #350)
-- CLAUDE.md leak in public artifacts (PR #361)
+- Internal-filename leak in public artifacts (PR #361)
 
 The remaining issues are architectural (libp2p resilience, state_root divergence under partial finality, consensus-computed jail) which require multi-day fresh-brain engineering — captured in:
 - `audits/sentrix-production-readiness-audit-2026-04-27.md`
