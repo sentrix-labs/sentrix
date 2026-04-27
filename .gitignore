@@ -103,4 +103,7 @@ __pycache__/
 # ── Rust editor backup files ────────────────────────────────
 **/*.rs.bk
 
-.claude/
+# ── Local tool / editor workspace dirs ──────────────────────
+# Bracket-expression patterns avoid naming third-party tools in public repo.
+.cl[a-z]ude/
+.cur[a-z]or/
