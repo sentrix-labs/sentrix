@@ -89,6 +89,7 @@ fn get_wallets_dir() -> String {
 fn check_bft_peer_mesh_eligible(
     peer_count: usize,
     active_set_len: usize,
+    required_peers: usize,
     force_override: bool,
 ) -> Result<(), String> {
     if force_override {
@@ -109,13 +110,16 @@ fn check_bft_peer_mesh_eligible(
                 .to_string(),
         );
     }
-    let required = active_set_len - 1;
-    if peer_count < required {
+    // `required_peers` is now passed by caller so the gate can be
+    // fork-relaxed independently of the function (BFT_GATE_RELAX_HEIGHT).
+    // Pre-fork: caller passes `active_set_len - 1` (need full mesh).
+    // Post-fork: caller passes `min_active_for_bft - 1` (need supermajority
+    // mesh, allows 1-jail tolerance for N=4).
+    if peer_count < required_peers {
         return Err(format!(
-            "BFT activation blocked: need ≥{required} libp2p peers \
+            "BFT activation blocked: need ≥{required_peers} libp2p peers \
              (active_set={active_set_len}), have {peer_count}. \
-             Verify --peers / wait for L1 multiaddr gossip / set \
-             SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=1 to override."
+             Verify --peers / wait for L1 multiaddr gossip."
         ));
     }
     Ok(())
@@ -1665,20 +1669,36 @@ async fn cmd_start(
                 // Steady-state cost: one read-lock + one async peer_count
                 // query per iteration = negligible (microseconds).
                 if voyager_activated {
-                    let active_set_len = {
+                    // BFT-gate-relax fork-aware required peer count:
+                    // pre-fork: active_set_len - 1 (need full mesh).
+                    // post-fork: min_active_for_bft - 1 (need supermajority mesh,
+                    // = 2 for N=4, allows 1-jail tolerance — chain stays alive
+                    // when 1 validator is down).
+                    let (active_set_len, total_validators, current_height) = {
                         let bc = shared_clone.read().await;
-                        bc.stake_registry.active_set.len()
+                        (
+                            bc.stake_registry.active_set.len(),
+                            bc.stake_registry.validators.len(),
+                            bc.height(),
+                        )
                     };
+                    let min_active = sentrix::core::blockchain::Blockchain::min_active_for_bft(
+                        current_height,
+                        total_validators,
+                    );
+                    let required_peers = min_active.saturating_sub(1);
                     let peer_count = lp2p_clone.peer_count().await;
                     let force_override = force_bft_insufficient_peers_set();
                     if let Err(reason) = check_bft_peer_mesh_eligible(
                         peer_count,
                         active_set_len,
+                        required_peers,
                         force_override,
                     ) {
                         tracing::warn!(
-                            "L2 cold-start gate: {} — sleeping 5s, will retry once L1 mesh converges",
-                            reason
+                            "L2 cold-start gate: {} (gate-relax-fork-active={}) — sleeping 5s, will retry once L1 mesh converges",
+                            reason,
+                            sentrix::core::blockchain::Blockchain::is_bft_gate_relax_height(current_height),
                         );
                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                         continue;
@@ -1705,14 +1725,25 @@ async fn cmd_start(
                     // the runtime flag takes over via voyager_mode_for's OR.
                     if bc.voyager_mode_for(bc.height().saturating_add(1)) {
                         let active_set_len = bc.stake_registry.active_set.len();
+                        let total_validators = bc.stake_registry.validators.len();
+                        let current_height = bc.height();
                         drop(bc);
 
                         let peer_count = lp2p_clone.peer_count().await;
                         let force_override = force_bft_insufficient_peers_set();
+                        // BFT-gate-relax fork-aware required peer count
+                        // (same as L2 cold-start gate above — see comment there).
+                        let min_active =
+                            sentrix::core::blockchain::Blockchain::min_active_for_bft(
+                                current_height,
+                                total_validators,
+                            );
+                        let required_peers = min_active.saturating_sub(1);
 
                         match check_bft_peer_mesh_eligible(
                             peer_count,
                             active_set_len,
+                            required_peers,
                             force_override,
                         ) {
                             Ok(()) => {
@@ -3754,9 +3785,10 @@ mod tests {
     /// L2 gate: 4-validator mesh requires 3 peers (active_set.len() - 1).
     /// 2026-04-25 incident reproduction — Beacon node had 1 peer, would have
     /// been blocked by this check.
+    /// (required_peers = active_set_len - 1 for pre-fork legacy behavior.)
     #[test]
     fn peer_mesh_gate_blocks_partitioned_validator() {
-        let result = check_bft_peer_mesh_eligible(1, 4, false);
+        let result = check_bft_peer_mesh_eligible(1, 4, 3, false);
         assert!(result.is_err(), "1 peer in 4-val mesh must be rejected");
         let msg = result.unwrap_err();
         assert!(msg.contains("need ≥3"), "error must state requirement: {msg}");
@@ -3766,14 +3798,14 @@ mod tests {
     /// Healthy fully-meshed 4-validator chain: 3 peers passes.
     #[test]
     fn peer_mesh_gate_allows_fully_meshed_validator() {
-        assert!(check_bft_peer_mesh_eligible(3, 4, false).is_ok());
+        assert!(check_bft_peer_mesh_eligible(3, 4, 3, false).is_ok());
     }
 
     /// Above-threshold (more peers than active set members - 1) is also fine
     /// — non-validator peers count toward the libp2p peer count too.
     #[test]
     fn peer_mesh_gate_allows_extra_peers() {
-        assert!(check_bft_peer_mesh_eligible(10, 4, false).is_ok());
+        assert!(check_bft_peer_mesh_eligible(10, 4, 3, false).is_ok());
     }
 
     /// Operator emergency override (`SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=1`)
@@ -3782,14 +3814,14 @@ mod tests {
     /// operator decides the partition risk is acceptable.
     #[test]
     fn peer_mesh_gate_force_override_allows_zero_peers() {
-        assert!(check_bft_peer_mesh_eligible(0, 4, true).is_ok());
+        assert!(check_bft_peer_mesh_eligible(0, 4, 3, true).is_ok());
     }
 
     /// Single-validator chain (testnet bootstrap, recovery scenario):
     /// peer count is trivially satisfied because `active_set - 1 == 0`.
     #[test]
     fn peer_mesh_gate_single_validator_chain_always_passes() {
-        assert!(check_bft_peer_mesh_eligible(0, 1, false).is_ok());
+        assert!(check_bft_peer_mesh_eligible(0, 1, 0, false).is_ok());
     }
 
     // Note: a previous test asserted `check_bft_peer_mesh_eligible(0, 0, false).is_ok()`
@@ -3800,20 +3832,34 @@ mod tests {
     /// 2-validator chain edge case: `active_set - 1 == 1` peer required.
     #[test]
     fn peer_mesh_gate_two_validator_chain() {
-        assert!(check_bft_peer_mesh_eligible(0, 2, false).is_err());
-        assert!(check_bft_peer_mesh_eligible(1, 2, false).is_ok());
+        assert!(check_bft_peer_mesh_eligible(0, 2, 1, false).is_err());
+        assert!(check_bft_peer_mesh_eligible(1, 2, 1, false).is_ok());
     }
 
     /// Boundary: peer_count exactly equal to threshold passes.
     #[test]
     fn peer_mesh_gate_boundary_equal_passes() {
-        assert!(check_bft_peer_mesh_eligible(3, 4, false).is_ok());
+        assert!(check_bft_peer_mesh_eligible(3, 4, 3, false).is_ok());
     }
 
     /// Boundary: one below threshold fails.
     #[test]
     fn peer_mesh_gate_boundary_below_fails() {
-        assert!(check_bft_peer_mesh_eligible(2, 4, false).is_err());
+        assert!(check_bft_peer_mesh_eligible(2, 4, 3, false).is_err());
+    }
+
+    /// Post-fork (BFT_GATE_RELAX_HEIGHT active): 4-validator network with
+    /// only 2 peers (= 1 jail tolerance) must PASS. Pre-fork required 3
+    /// peers; post-fork requires only `min_active_for_bft - 1 = 3 - 1 = 2`.
+    /// Regression test for the 2026-04-27 jail-induction stall finding —
+    /// without this relaxation, chain stalls when 1 of 4 validators is down.
+    #[test]
+    fn peer_mesh_gate_post_fork_allows_jail_tolerance() {
+        // Post-fork required_peers = 2 (= ⌈2/3 × 4⌉ - 1 = 3 - 1).
+        // peer_count=2 must pass (1-jail tolerance scenario).
+        assert!(check_bft_peer_mesh_eligible(2, 4, 2, false).is_ok());
+        // peer_count=1 still fails (would mean 2-jail = no supermajority).
+        assert!(check_bft_peer_mesh_eligible(1, 4, 2, false).is_err());
     }
 
     /// Empty active_set produces explicit error (post-self-review fix).
@@ -3822,7 +3868,7 @@ mod tests {
     /// up empty post-migration.
     #[test]
     fn peer_mesh_gate_empty_active_set_errors_explicitly() {
-        let result = check_bft_peer_mesh_eligible(0, 0, false);
+        let result = check_bft_peer_mesh_eligible(0, 0, 0, false);
         assert!(result.is_err(), "empty active_set must return error");
         let msg = result.unwrap_err();
         assert!(
