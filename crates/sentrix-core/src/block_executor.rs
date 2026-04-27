@@ -980,6 +980,23 @@ impl Blockchain {
                         // submitter IS the offender in this naive shape).
                         // Follow-up: separate submitter + offender fields.
                     }
+                    StakingOp::JailEvidenceBundle { .. } => {
+                        // Phase A (data plumbing): no-op until Phase B wires
+                        // the consensus-jail dispatch. Once dispatch lands,
+                        // this branch will:
+                        //   1. Verify evidence by recomputing per-validator
+                        //      signed_count + missed_count against the cited
+                        //      epoch range (block range from chain).
+                        //   2. If verified: mark cited validators as jailed
+                        //      (deterministic on-chain state mutation).
+                        //   3. If verification mismatch: reject the block
+                        //      (Pass-1 invariant violation).
+                        //
+                        // Activation gated by JAIL_CONSENSUS_HEIGHT env var
+                        // (separate from BFT_GATE_RELAX_HEIGHT). Default:
+                        // u64::MAX (disabled). Wire Plan: Phase B.
+                        // See `audits/consensus-computed-jail-design.md`.
+                    }
                 }
             }
 
