@@ -80,6 +80,24 @@ const VOYAGER_REWARD_V2_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// require additional dispatch logic to preserve cumulative halvings.
 const TOKENOMICS_V2_HEIGHT_DEFAULT: u64 = u64::MAX;
 
+/// BFT-gate-relax fork height — at/after this block, the validator-loop's
+/// "P1 BFT safety gate" relaxes from `active >= MIN_BFT_VALIDATORS (=4)`
+/// to `active >= ⌈2/3 × total_validator_count⌉`. For our 4-validator
+/// network this drops the gate threshold from 4 to 3, allowing BFT to
+/// continue when 1 validator is locally-jailed (= jail-cascade liveness
+/// margin).
+///
+/// SAFETY: BFT supermajority for finality is `⌈2/3 × N⌉` votes. With
+/// active=3 of total=4 and all 3 active validators sign, the precommit
+/// threshold (3 of 4 stake-weighted) is reached → finality possible.
+/// With active=2 of total=4, 2 < 3 → gate still blocks (correct).
+///
+/// This is a CONSENSUS-LIVENESS CHANGE (not safety-affecting if peers
+/// converge on the new threshold); activate via env var fork pattern.
+/// Fork is OPTIONAL — leaves as `u64::MAX` until operator decides to
+/// flip on. See `audits/jail-cascade-root-cause-analysis.md`.
+const BFT_GATE_RELAX_HEIGHT_DEFAULT: u64 = u64::MAX;
+
 /// Read Voyager fork height from env, default u64::MAX (mainnet safe).
 /// Testnet sets VOYAGER_FORK_HEIGHT=<height> in systemd service.
 pub fn get_voyager_fork_height() -> u64 {
@@ -117,6 +135,19 @@ pub fn get_tokenomics_v2_height() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(TOKENOMICS_V2_HEIGHT_DEFAULT)
+}
+
+/// BFT-gate-relax: read fork height from env, default `u64::MAX`
+/// (disabled — keeps current `active >= MIN_BFT_VALIDATORS` gate).
+/// Post-fork: `active >= ⌈2/3 × total⌉` (= 3 for 4-validator network).
+/// Fork is optional — operators set `BFT_GATE_RELAX_HEIGHT=<height>`
+/// when they want to enable jail-cascade liveness margin.
+/// See `audits/jail-cascade-root-cause-analysis.md`.
+pub fn get_bft_gate_relax_height() -> u64 {
+    std::env::var("BFT_GATE_RELAX_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(BFT_GATE_RELAX_HEIGHT_DEFAULT)
 }
 
 /// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
@@ -684,6 +715,40 @@ impl Blockchain {
     pub fn is_tokenomics_v2_height(height: u64) -> bool {
         let fork = get_tokenomics_v2_height();
         fork != u64::MAX && height >= fork
+    }
+
+    /// BFT-gate-relax: is the given height at or after the fork?
+    /// Post-fork: validator-loop's P1 BFT safety gate uses
+    /// `active >= ⌈2/3 × total⌉` instead of `active >= MIN_BFT_VALIDATORS (=4)`.
+    /// For 4-validator network: gate becomes 3 instead of 4 (= 1-jail tolerance).
+    /// See `audits/jail-cascade-root-cause-analysis.md`.
+    pub fn is_bft_gate_relax_height(height: u64) -> bool {
+        let fork = get_bft_gate_relax_height();
+        fork != u64::MAX && height >= fork
+    }
+
+    /// BFT-gate-relax: minimum active validator count for BFT participation.
+    /// Pre-fork: returns `MIN_BFT_VALIDATORS` (= 4 absolute, current behavior).
+    /// Post-fork: returns `⌈2/3 × total_validator_count⌉` (supermajority for
+    /// finality). For N=4: 3 (= 1-jail tolerance). For N=7: 5. For N=10: 7.
+    ///
+    /// `total_validator_count` = total registered validators (active + jailed).
+    /// Returns USIZE for direct comparison with `active_count() (-> usize)`.
+    ///
+    /// NOTE: The network-design floor (`MIN_BFT_VALIDATORS = 4` total
+    /// registered validators) is enforced separately at Voyager activation
+    /// time, NOT in this per-block gate. Once Voyager is active, total ≥ 4
+    /// is invariant, so the post-fork return is always ≥ ⌈8/3⌉ = 3.
+    /// Clamping post-fork return to MIN_BFT_VALIDATORS=4 would defeat the
+    /// purpose of the relaxation (4-validator network would still gate at 4).
+    pub fn min_active_for_bft(height: u64, total_validator_count: usize) -> usize {
+        if !Self::is_bft_gate_relax_height(height) {
+            // Pre-fork: legacy gate. active < MIN_BFT_VALIDATORS = stall.
+            return sentrix_staking::staking::MIN_BFT_VALIDATORS;
+        }
+        // Post-fork: ⌈2/3 × N⌉ supermajority. For N=4 → 3 (= 1-jail tolerance).
+        // Integer math: ⌈2N/3⌉ = (2N + 2) / 3 (exact for N ≥ 1).
+        total_validator_count.saturating_mul(2).saturating_add(2) / 3
     }
 
     /// Tokenomics v2: max supply for a given height (fork-aware).
@@ -2825,6 +2890,62 @@ mod tests {
             .get_block_any(recent_height)
             .expect("recent block must be returned");
         assert_eq!(in_window.index, recent_height);
+    }
+
+    // ── BFT-gate-relax fork tests ────────────────────────────
+
+    /// Pre-fork (env disabled): gate uses MIN_BFT_VALIDATORS = 4 absolute.
+    /// Post-fork (env enabled): gate uses ⌈2/3 × N⌉ supermajority.
+    /// For N=4 → 3 (= 1-jail tolerance). Regression test for the
+    /// jail-cascade liveness fix earned 2026-04-26 (mainnet stalls
+    /// h=633599 + h=662399). See `audits/jail-cascade-root-cause-analysis.md`.
+    #[test]
+    fn test_bft_gate_relax_fork_threshold() {
+        // SAFETY: env-var mutation in tests; CI runs single-threaded.
+        unsafe {
+            std::env::set_var("BFT_GATE_RELAX_HEIGHT", "100");
+        }
+
+        // Pre-fork (h=99): legacy gate = 4 regardless of total.
+        assert_eq!(Blockchain::min_active_for_bft(99, 4), 4);
+        assert_eq!(Blockchain::min_active_for_bft(99, 7), 4);
+        assert_eq!(Blockchain::min_active_for_bft(99, 100), 4);
+
+        // Post-fork (h=100): supermajority = ⌈2N/3⌉.
+        // The KEY case: N=4 → 3 (was 4 pre-fork). Allows 1-jail tolerance.
+        assert_eq!(
+            Blockchain::min_active_for_bft(100, 4),
+            3,
+            "POST-FORK 4-validator network must allow active=3 (= 1-jail tolerance)"
+        );
+        // N=5 → ⌈10/3⌉ = 4
+        assert_eq!(Blockchain::min_active_for_bft(100, 5), 4);
+        // N=6 → ⌈12/3⌉ = 4
+        assert_eq!(Blockchain::min_active_for_bft(100, 6), 4);
+        // N=7 → ⌈14/3⌉ = 5
+        assert_eq!(Blockchain::min_active_for_bft(100, 7), 5);
+        // N=10 → ⌈20/3⌉ = 7
+        assert_eq!(Blockchain::min_active_for_bft(100, 10), 7);
+        // N=21 (target validator count) → ⌈42/3⌉ = 14
+        assert_eq!(Blockchain::min_active_for_bft(100, 21), 14);
+
+        // Cleanup so other tests don't see this env var.
+        unsafe {
+            std::env::remove_var("BFT_GATE_RELAX_HEIGHT");
+        }
+    }
+
+    /// is_bft_gate_relax_height: u64::MAX default = always disabled.
+    #[test]
+    fn test_bft_gate_relax_disabled_by_default() {
+        // SAFETY: env-var mutation in tests; CI runs single-threaded.
+        unsafe {
+            std::env::remove_var("BFT_GATE_RELAX_HEIGHT");
+        }
+        assert!(!Blockchain::is_bft_gate_relax_height(0));
+        assert!(!Blockchain::is_bft_gate_relax_height(u64::MAX - 1));
+        // Default-disabled gate = pre-fork behavior.
+        assert_eq!(Blockchain::min_active_for_bft(1_000_000, 4), 4);
     }
 }
 // fake addr 0x1234567890abcdef1234567890abcdef12345678

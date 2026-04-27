@@ -1881,13 +1881,26 @@ async fn cmd_start(
                     {
                         let bc_check = shared_clone.read().await;
                         let active = bc_check.stake_registry.active_count();
-                        if active < sentrix::core::staking::MIN_BFT_VALIDATORS {
+                        // BFT-gate-relax fork-aware threshold:
+                        // Pre-fork: MIN_BFT_VALIDATORS (= 4 absolute).
+                        // Post-fork: ⌈2/3 × total⌉ clamped to MIN_BFT_VALIDATORS.
+                        // For 4-validator network post-fork: gate becomes 3 (allows 1-jail tolerance).
+                        // See audits/jail-cascade-root-cause-analysis.md.
+                        let total_validators = bc_check.stake_registry.validators.len();
+                        let min_active =
+                            sentrix::core::blockchain::Blockchain::min_active_for_bft(
+                                next_height,
+                                total_validators,
+                            );
+                        if active < min_active {
                             tracing::warn!(
                                 "P1: skipping BFT round at height {} — active set \
-                                 {} < minimum {} for BFT safety",
+                                 {} < minimum {} for BFT safety (total={}, gate-relax-fork={})",
                                 next_height,
                                 active,
-                                sentrix::core::staking::MIN_BFT_VALIDATORS
+                                min_active,
+                                total_validators,
+                                sentrix::core::blockchain::Blockchain::is_bft_gate_relax_height(next_height),
                             );
                             drop(bc_check);
                             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
