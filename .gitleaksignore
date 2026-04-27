@@ -6,34 +6,49 @@
 # secret. If you can't justify it in one line, do not add it —
 # rotate the credential and filter-repo it out instead.
 #
+# IMPORTANT: do NOT quote the offending strings verbatim in the
+# comments below. Doing so makes this file itself a gitleaks hit
+# (every edit produces a new commit-sha:.gitleaksignore fingerprint
+# for the same string). Use generic descriptions instead.
+#
 # Last verified: 2026-04-27
 # Verifier: pre-commit-hook + manual audit per finding
 
 # ── curl-auth-header rule: docs-example placeholder ──
-# All three findings are the literal placeholder string
-# `your-api-key-here` in API_REFERENCE.md authentication example —
+# All three findings are a literal placeholder header value in
+# API_REFERENCE.md authentication example — verified-false-positive,
 # not a real key. Three commits because docs-site/ is a Docusaurus
 # mirror of docs/, scaffolded across multiple commits.
 3b335811d9eec49cdff1d38129fe29d8035fbc0c:docs-site/docs/operations/API_REFERENCE.md:curl-auth-header:360
 f9905fad0ce965f537471eb39092c07a61f66499:docs-site/docs/operations/API_REFERENCE.md:curl-auth-header:360
 a7691f817b785f1db6689113601b2305d58aa331:docs/operations/API_REFERENCE.md:curl-auth-header:137
 
-# ── generic-api-key rule: REDACTED-marker placeholder ──
-# String `REDACTED_COMPROMISED_KEY_DRAINED_2026_04_17` is the marker
-# left by the 2026-04-17 filter-repo (commit 523921a) that scrubbed
-# the original v1 leaked private key. The real key was drained on
-# mainnet to a freshly generated address (recorded in operator
-# private store). The placeholder string itself is not a secret;
-# its mixed-case + digits + underscores triggers the entropy regex.
+# ── generic-api-key rule: filter-repo placeholder marker ──
+# All three findings hit the marker string left by the 2026-04-17
+# filter-repo (commit 523921a) that scrubbed the original v1 leaked
+# private key from benchmark/*.py. The real key was drained on
+# mainnet to a freshly generated address (recorded operator-side).
+# The placeholder marker is verified-false-positive; its
+# mixed-case + digits + underscores triggers the entropy regex.
 87869c0f9c31b7cf07ae4df2432f365d251a9550:benchmark/deploy_src20.py:generic-api-key:12
 27a8de57e2e514a3e5714627e23f6c8ee3262319:benchmark/test_eth_send_raw.py:generic-api-key:10
 826ae657988f1d7632c8e008853006a303dd2798:benchmark/deploy_evm_test.py:generic-api-key:12
 
 # ── generic-api-key rule: in-test password literal ──
-# `let password = "argon2_test_pw";` inside `#[test] fn
-# test_i02_argon2id_decrypt_roundtrip` of src/wallet/keystore.rs.
-# Test fixture string used to round-trip an Argon2id keystore;
-# never a deploy credential. File no longer exists on main (moved
-# to crates/sentrix-wallet/) but historical commits remain.
+# Test fixture string in src/wallet/keystore.rs:279 used to
+# round-trip an Argon2id keystore inside an integration-style
+# unit test (test_i02_argon2id_decrypt_roundtrip);
+# verified-false-positive, never a deploy credential. File no
+# longer exists on main (moved to crates/sentrix-wallet/) but
+# the original commits remain in history.
 03bbd26b2b7596aa36eefc5cb82ce52e58e5581b:src/wallet/keystore.rs:generic-api-key:279
 cfb34b32a37e38978ce3f1aa4248b2a0bff8978d:src/wallet/keystore.rs:generic-api-key:279
+
+# ── generic-api-key rule: prior .gitleaksignore self-reference ──
+# Earlier revisions of this file quoted the offending strings
+# verbatim in their comments, making this file itself a hit.
+# Subsequent revision (this one) replaced verbatim quotes with
+# generic descriptions — verified-false-positive. Two fingerprints
+# for the two prior commits that contained the verbatim quote.
+86bfba8d735d26370c28b4fb4799da8b4b783ef1:.gitleaksignore:generic-api-key:33
+fcaf688a8a69c96e38b4a09221a766c26cbe5054:.gitleaksignore:generic-api-key:33
