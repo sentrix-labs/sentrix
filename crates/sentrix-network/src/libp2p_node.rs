@@ -41,11 +41,11 @@ use crate::behaviour::{
     BLOCKS_TOPIC, GossipBlock, GossipTransaction, SentrixBehaviour, SentrixBehaviourEvent,
     SentrixRequest, SentrixResponse, TXS_TOPIC, VALIDATOR_ADVERTS_TOPIC,
 };
-use sentrix_wire::MultiaddrAdvertisement;
 use crate::node::{NodeEvent, SharedBlockchain};
 use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::transaction::Transaction;
+use sentrix_wire::MultiaddrAdvertisement;
 
 // ── P2P protection constants ────────────────────────────
 /// Maximum number of verified (handshaked) peers.
@@ -95,7 +95,10 @@ enum SwarmCommand {
     /// Returns `Some` with the latest-by-sequence advertisement seen
     /// for that address, or `None` if no advertisement has been
     /// observed yet.
-    GetCachedAdvert(String, tokio::sync::oneshot::Sender<Option<MultiaddrAdvertisement>>),
+    GetCachedAdvert(
+        String,
+        tokio::sync::oneshot::Sender<Option<MultiaddrAdvertisement>>,
+    ),
     /// L1: snapshot of every cached advertisement. Used by the
     /// periodic dial-tick in the validator loop to decide which
     /// active-set members it can reach.
@@ -154,6 +157,18 @@ impl LibP2pNode {
         })
     }
 
+    /// Fire-and-forget send to the swarm task. If this fails, the background
+    /// task has exited or the channel is broken: BFT and gossip outbound
+    /// messages are silently lost unless we surface it here.
+    async fn send_swarm_cmd(&self, cmd: SwarmCommand, op: &'static str) {
+        if self.cmd_tx.send(cmd).await.is_err() {
+            tracing::error!(
+                "libp2p: swarm task closed or command channel broken while sending {} - message dropped",
+                op
+            );
+        }
+    }
+
     /// Start listening on `addr` (e.g. `/ip4/0.0.0.0/tcp/30303`).
     pub async fn listen_on(&self, addr: Multiaddr) -> SentrixResult<()> {
         self.cmd_tx
@@ -172,15 +187,17 @@ impl LibP2pNode {
 
     /// Broadcast a new block to all peers via gossipsub.
     pub async fn broadcast_block(&self, block: &Block) {
-        let _ = self
-            .cmd_tx
-            .send(SwarmCommand::GossipBlock(Box::new(block.clone())))
-            .await;
+        self.send_swarm_cmd(
+            SwarmCommand::GossipBlock(Box::new(block.clone())),
+            "gossip block",
+        )
+        .await;
     }
 
     /// Broadcast a new transaction to all peers via gossipsub.
     pub async fn broadcast_transaction(&self, tx: &Transaction) {
-        let _ = self.cmd_tx.send(SwarmCommand::GossipTx(tx.clone())).await;
+        self.send_swarm_cmd(SwarmCommand::GossipTx(tx.clone()), "gossip transaction")
+            .await;
     }
 
     /// Broadcast a BFT proposal to all verified peers.
@@ -188,7 +205,8 @@ impl LibP2pNode {
         let req = SentrixRequest::BftProposal {
             proposal: Box::new(proposal.clone()),
         };
-        let _ = self.cmd_tx.send(SwarmCommand::Broadcast(req)).await;
+        self.send_swarm_cmd(SwarmCommand::Broadcast(req), "bft proposal")
+            .await;
     }
 
     /// Broadcast a BFT prevote to all verified peers.
@@ -196,7 +214,8 @@ impl LibP2pNode {
         let req = SentrixRequest::BftPrevote {
             prevote: prevote.clone(),
         };
-        let _ = self.cmd_tx.send(SwarmCommand::Broadcast(req)).await;
+        self.send_swarm_cmd(SwarmCommand::Broadcast(req), "bft prevote")
+            .await;
     }
 
     /// Broadcast a BFT precommit to all verified peers.
@@ -204,7 +223,8 @@ impl LibP2pNode {
         let req = SentrixRequest::BftPrecommit {
             precommit: precommit.clone(),
         };
-        let _ = self.cmd_tx.send(SwarmCommand::Broadcast(req)).await;
+        self.send_swarm_cmd(SwarmCommand::Broadcast(req), "bft precommit")
+            .await;
     }
 
     /// Broadcast our current BFT round status so peers can sync rounds.
@@ -214,10 +234,11 @@ impl LibP2pNode {
     /// against the on-chain stake registry and dial the advertised
     /// multiaddrs on their next discovery tick.
     pub async fn broadcast_validator_advert(&self, advert: MultiaddrAdvertisement) {
-        let _ = self
-            .cmd_tx
-            .send(SwarmCommand::GossipValidatorAdvert(Box::new(advert)))
-            .await;
+        self.send_swarm_cmd(
+            SwarmCommand::GossipValidatorAdvert(Box::new(advert)),
+            "validator advert",
+        )
+        .await;
     }
 
     /// L1: read the cached advertisement for a specific validator
@@ -255,12 +276,14 @@ impl LibP2pNode {
         let req = SentrixRequest::BftRoundStatus {
             status: status.clone(),
         };
-        let _ = self.cmd_tx.send(SwarmCommand::Broadcast(req)).await;
+        self.send_swarm_cmd(SwarmCommand::Broadcast(req), "bft round status")
+            .await;
     }
 
     /// Re-dial bootstrap peers that may have disconnected.
     pub async fn reconnect_peers(&self, addrs: Vec<Multiaddr>) {
-        let _ = self.cmd_tx.send(SwarmCommand::ReconnectPeers(addrs)).await;
+        self.send_swarm_cmd(SwarmCommand::ReconnectPeers(addrs), "reconnect peers")
+            .await;
     }
 
     /// Ask the swarm to immediately issue a `GetBlocks` to the first
@@ -269,20 +292,20 @@ impl LibP2pNode {
     /// catch up before the next round starts, not wait up to 30s for
     /// the periodic sync interval to fire.
     pub async fn trigger_sync(&self) {
-        let _ = self.cmd_tx.send(SwarmCommand::TriggerSync).await;
+        self.send_swarm_cmd(SwarmCommand::TriggerSync, "trigger sync")
+            .await;
     }
 
     /// Add a known peer to the Kademlia routing table (bootstrap node).
     pub async fn add_kad_peer(&self, peer_id: PeerId, addr: Multiaddr) {
-        let _ = self
-            .cmd_tx
-            .send(SwarmCommand::AddKadPeer(peer_id, addr))
+        self.send_swarm_cmd(SwarmCommand::AddKadPeer(peer_id, addr), "add kad peer")
             .await;
     }
 
     /// Trigger a Kademlia bootstrap (random walk to discover peers).
     pub async fn kad_bootstrap(&self) {
-        let _ = self.cmd_tx.send(SwarmCommand::KadBootstrap).await;
+        self.send_swarm_cmd(SwarmCommand::KadBootstrap, "kad bootstrap")
+            .await;
     }
 
     /// Returns the number of currently verified (handshaked) peers.
@@ -524,6 +547,12 @@ async fn run_swarm(
                     Some(SwarmCommand::Broadcast(req)) => {
                         let peers: Vec<PeerId> = verified_peers.iter().cloned().collect();
                         let variant = req.variant_name();
+                        if peers.is_empty() {
+                            tracing::warn!(
+                                "BFT/network: Broadcast {} dropped - no verified peers yet (handshake may still be in flight)",
+                                variant
+                            );
+                        }
                         for peer_id in peers {
                             let req_id = swarm
                                 .behaviour_mut()
@@ -851,10 +880,16 @@ async fn on_swarm_event(
                                     // so libp2p-applied blocks have identical state mutations.
                                     if let Some(j) = &gossip.block.justification {
                                         let active = chain.stake_registry.active_set.clone();
-                                        let signers: Vec<String> = j.precommits.iter()
+                                        let signers: Vec<String> = j
+                                            .precommits
+                                            .iter()
                                             .map(|p| p.validator.clone())
                                             .collect();
-                                        chain.slashing.record_block_signatures(&active, &signers, gossip.block.index);
+                                        chain.slashing.record_block_signatures(
+                                            &active,
+                                            &signers,
+                                            gossip.block.index,
+                                        );
 
                                         // Reward distribution — mirror main.rs validator-finalize.
                                         // Without this, libp2p-synced validators have stale
@@ -862,12 +897,17 @@ async fn on_swarm_event(
                                         // → ClaimRewards tx credits divergent amounts (HIGH severity
                                         // latent consensus-divergence bug).
                                         let proposer = gossip.block.validator.clone();
-                                        let reward_signers: Vec<(String, u64)> = j.precommits.iter()
+                                        let reward_signers: Vec<(String, u64)> = j
+                                            .precommits
+                                            .iter()
                                             .map(|p| (p.validator.clone(), p.stake_weight))
                                             .collect();
                                         let reward = chain.get_block_reward();
                                         let _ = chain.stake_registry.distribute_reward(
-                                            &proposer, &reward_signers, reward, 0,
+                                            &proposer,
+                                            &reward_signers,
+                                            reward,
+                                            0,
                                         );
                                         // Epoch tracking — mirror main.rs validator-finalize.
                                         chain.epoch_manager.record_block(reward);
@@ -1082,9 +1122,7 @@ async fn on_rr_event(
             // background traffic (e.g. periodic GetBlocks for sync). Until
             // the variant shows up in logs, investigation of the real
             // latency hotspot is blind.
-            let variant = pending_variants
-                .remove(&request_id)
-                .unwrap_or("Unknown");
+            let variant = pending_variants.remove(&request_id).unwrap_or("Unknown");
             tracing::warn!(
                 "libp2p: outbound failure to {} ({}): {}",
                 peer,
@@ -1231,17 +1269,23 @@ async fn on_inbound_request(
                         // Asymmetric-recording fix bundle (see audits/reward-distribution-flow-audit-2026-04-27.md).
                         if let Some(j) = &block_justification {
                             let active = chain.stake_registry.active_set.clone();
-                            let signers: Vec<String> = j.precommits.iter()
-                                .map(|p| p.validator.clone())
-                                .collect();
-                            chain.slashing.record_block_signatures(&active, &signers, block_idx);
+                            let signers: Vec<String> =
+                                j.precommits.iter().map(|p| p.validator.clone()).collect();
+                            chain
+                                .slashing
+                                .record_block_signatures(&active, &signers, block_idx);
                             // Reward distribution + epoch tracking (mirror main.rs validator-finalize).
-                            let reward_signers: Vec<(String, u64)> = j.precommits.iter()
+                            let reward_signers: Vec<(String, u64)> = j
+                                .precommits
+                                .iter()
                                 .map(|p| (p.validator.clone(), p.stake_weight))
                                 .collect();
                             let reward = chain.get_block_reward();
                             let _ = chain.stake_registry.distribute_reward(
-                                &block_validator, &reward_signers, reward, 0,
+                                &block_validator,
+                                &reward_signers,
+                                reward,
+                                0,
                             );
                             chain.epoch_manager.record_block(reward);
                         }
@@ -1554,18 +1598,24 @@ async fn on_inbound_response(
                         // See `audits/reward-distribution-flow-audit-2026-04-27.md`.
                         if let Some(j) = &block.justification {
                             let active = chain.stake_registry.active_set.clone();
-                            let signers: Vec<String> = j.precommits.iter()
-                                .map(|p| p.validator.clone())
-                                .collect();
-                            chain.slashing.record_block_signatures(&active, &signers, block.index);
+                            let signers: Vec<String> =
+                                j.precommits.iter().map(|p| p.validator.clone()).collect();
+                            chain
+                                .slashing
+                                .record_block_signatures(&active, &signers, block.index);
                             // Reward distribution + epoch tracking.
                             let proposer = block.validator.clone();
-                            let reward_signers: Vec<(String, u64)> = j.precommits.iter()
+                            let reward_signers: Vec<(String, u64)> = j
+                                .precommits
+                                .iter()
                                 .map(|p| (p.validator.clone(), p.stake_weight))
                                 .collect();
                             let reward = chain.get_block_reward();
                             let _ = chain.stake_registry.distribute_reward(
-                                &proposer, &reward_signers, reward, 0,
+                                &proposer,
+                                &reward_signers,
+                                reward,
+                                0,
                             );
                             chain.epoch_manager.record_block(reward);
                         }
@@ -1726,7 +1776,10 @@ mod tests {
     fn test_block_boundary_rejects_missing_state_root_above_fork() {
         let block = make_test_block(STATE_ROOT_FORK_HEIGHT + 1, None);
         let reason = block_boundary_reject_reason(&block, 7119);
-        assert!(reason.is_some(), "must reject above fork when state_root None");
+        assert!(
+            reason.is_some(),
+            "must reject above fork when state_root None"
+        );
         assert!(
             reason.unwrap().contains("state_root"),
             "reason should mention state_root; got: {:?}",
