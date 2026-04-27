@@ -7,6 +7,53 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [Unreleased] — 2026-04-27 (later) — Phase A→D consensus-jail full stack + testnet bootstrap
+
+> **The asymmetric-application bug class is now fixed at the protocol level.** Phase A (data types) shipped earlier this day in #359; this batch ships Phase B (helpers + fork gate), Phase C (dispatch verification), and Phase D (proposer emission + Pass-1/Pass-2 wiring + 4-validator determinism harness). Default behavior is unchanged: `JAIL_CONSENSUS_HEIGHT=u64::MAX` on default builds means the entire dispatch path is unreachable until an operator opts in.
+>
+> Also bootstraps testnet activation: `genesis/testnet.toml` (chain ID 7120) and a standalone faucet HTTP service binary, plus an internal-references hygiene scrub.
+
+### Added
+
+- **`genesis/testnet.toml`** — full testnet genesis (chain_id 7120). Mirrors mainnet allocations + a dedicated faucet wallet entry. Loaded at runtime via `--genesis genesis/testnet.toml`.
+- **`bin/sentrix-faucet/`** — standalone HTTP faucet service:
+  - `POST /faucet/drip` builds + signs + submits a drip transaction from a pre-loaded keystore
+  - `GET /faucet/health` reports current nonce + faucet address
+  - Per-IP rate limiting (3 drips per hour default), per-recipient cooldown (24h default)
+  - Keystore password loaded from `SENTRIX_FAUCET_PASSWORD` env var (never logged)
+  - All defaults configurable via CLI flags + `SENTRIX_FAUCET_*` env vars
+- **`crates/sentrix-primitives/src/transaction.rs`**:
+  - `Transaction::new_jail_evidence_bundle()` — builds system tx (sender = `PROTOCOL_TREASURY`, sig/pubkey empty, data = JSON-encoded `StakingOp::JailEvidenceBundle`)
+  - `Transaction::is_system_tx()` — universal predicate for Phase D system txs
+  - `Transaction::is_jail_evidence_bundle_tx()` — payload sniff
+  - `Transaction::verify()` — bypasses standard signature verification for system txs (auth via consensus dispatch recompute-and-compare)
+- **`crates/sentrix-core/src/blockchain.rs`**:
+  - `Blockchain::build_jail_evidence_system_tx(next_height, ts) -> Option<Transaction>` — proposer helper. Returns `None` pre-fork, at non-boundary heights, or with no evidence (Q3-A: skip empty bundles); otherwise `Some(tx)`
+  - `JAIL_CONSENSUS_HEIGHT` env reader + `is_jail_consensus_height(height)` helper (default `u64::MAX` = disabled)
+  - `compute_jail_evidence(active_set)` on `SlashingEngine` — produces deterministic `Vec<JailEvidence>` from local LivenessTracker
+- **`crates/sentrix-core/src/block_producer.rs`** — `build_block` now calls `build_jail_evidence_system_tx` after coinbase. Pre-fork: helper returns `None`, behavior unchanged.
+- **`crates/sentrix-core/src/block_executor.rs`**:
+  - `validate_block` Q4 required-presence check at epoch boundaries post-fork
+  - Pass-1 + Pass-2 paths skip system tx for nonce/fee/balance bookkeeping
+  - Phase C dispatch handler: cited-epoch check + local recompute compare + per-validator jail apply
+- **`crates/sentrix-core/tests/phase_d_4validator_determinism.rs`** — 4-Blockchain integration harness: positive (all 4 converge on identical jail state + identical `state_root`) + negative (peer with diverging LivenessTracker rejects via dispatch recompute-and-compare)
+- **`crates/sentrix-core/src/lib.rs`** — `pub(crate) mod test_util` with `env_test_lock()` so fork-gate tests serialize across modules under cargo's default parallel runner
+- **CI** — workflow uploads `sentrix-faucet` release binary as a workflow artifact alongside `sentrix`
+
+### Hygiene
+
+- Scrubbed all remaining internal-tooling and operator-host references from public source files, audits, and docs (`CHANGELOG`, `docs/operations/EMERGENCY_ROLLBACK.md`, `docs/operations/MONITORING.md`, `docs/brand/HERO_COPY.md`, `docs/brand/PRESS_BOILERPLATE.md`, `docs-site/README.md`, several inline doc-comments). Replaces them with generic terms ("operator runbooks", "validator host", "internal documentation"). Final grep across tracked files returns zero matches.
+
+### Activation
+
+`JAIL_CONSENSUS_HEIGHT` defaults to `u64::MAX` (disabled). To activate, operators set the env var on all validators in a coordinated halt-all + simultaneous-start. Activation prerequisites:
+
+1. Verify `LivenessTracker` has converged across the fleet (≥ 4h of clean operation post asymmetric-record fixes shipped earlier today)
+2. Bake on testnet 24-48h with `JAIL_CONSENSUS_HEIGHT=<low>`
+3. Mainnet activation: halt-all + simultaneous-start with `JAIL_CONSENSUS_HEIGHT=<future_height>`
+
+---
+
 ## [2.1.41] — 2026-04-27 — Jail-cascade observability + fork-gated BFT safety gate relaxation
 
 > **Liveness fix bundle for the jail-cascade pattern.** Two mainnet stalls on 2026-04-26 (h=633599 evening, h=662399 night) traced to per-validator stake_registry divergence (one validator sees another as jailed, others see active). The P1 BFT safety gate then refused to participate (active < MIN_BFT_VALIDATORS=4), stalling the chain.
