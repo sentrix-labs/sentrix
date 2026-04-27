@@ -824,8 +824,21 @@ impl Blockchain {
             // would still bump PROTOCOL_TREASURY's nonce, polluting state.
             // Dispatch (staking_op match below) is the only state mutation.
             if !tx.is_system_tx() {
-                self.accounts
-                    .transfer(&tx.from_address, &tx.to_address, tx.amount, tx.fee)?;
+                if tx.is_evm_tx() {
+                    // EVM tx: revm owns nonce + value + recipient credit
+                    // when `execute_evm_tx_in_block` runs below. Native
+                    // pass must NOT bump nonce or transfer value — doing
+                    // so caused `NonceTooLow { tx, state }` in revm
+                    // because state.nonce was already bumped by the time
+                    // revm read it. See
+                    // `audits/evm-create-nonce-bug-2026-04-27.md`.
+                    // Only the fee is collected here (split 50/50
+                    // burn/validator like every other tx).
+                    self.accounts.charge_fee_only(&tx.from_address, tx.fee)?;
+                } else {
+                    self.accounts
+                        .transfer(&tx.from_address, &tx.to_address, tx.amount, tx.fee)?;
+                }
                 // P1: checked_add — 5000 tx × max fee is far below u64::MAX
                 // in practice, but the guard is cheap and prevents a silent
                 // wrap if MAX_TX_PER_BLOCK or MIN_TX_FEE are ever tuned
@@ -1515,7 +1528,16 @@ impl Blockchain {
             .data(alloy_primitives::Bytes::from(calldata))
             .gas_limit(gas_limit)
             .gas_price(INITIAL_BASE_FEE as u128)
-            .nonce(sender_nonce.saturating_sub(1))
+            // EVM CREATE/CALL nonce: revm checks `tx.nonce == state.nonce`
+            // and bumps state.nonce internally. Native pass no longer
+            // pre-bumps nonce for EVM txs (charge_fee_only above), so
+            // `sender_nonce` here equals what the EVM tx claimed in its
+            // RLP. Pre-fix this used `sender_nonce.saturating_sub(1)` to
+            // compensate for native double-bump; that was a band-aid that
+            // broke for fresh-wallet CREATE (nonce 0 saturating to 0,
+            // state already at 1 → NonceTooLow). See
+            // `audits/evm-create-nonce-bug-2026-04-27.md`.
+            .nonce(sender_nonce)
             .chain_id(Some(tx.chain_id))
             .build()
             .unwrap_or_default();
