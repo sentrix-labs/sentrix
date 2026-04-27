@@ -846,13 +846,31 @@ async fn on_swarm_event(
                             let mut chain = bc.write().await;
                             match chain.add_block_from_peer(gossip.block.clone()) {
                                 Ok(()) => {
-                                    // Asymmetric-recording fix (see comment at libp2p sync site).
+                                    // Asymmetric-recording fix bundle (see audits/reward-distribution-flow-audit-2026-04-27.md).
+                                    // Apply same bookkeeping that main.rs validator-finalize paths apply,
+                                    // so libp2p-applied blocks have identical state mutations.
                                     if let Some(j) = &gossip.block.justification {
                                         let active = chain.stake_registry.active_set.clone();
                                         let signers: Vec<String> = j.precommits.iter()
                                             .map(|p| p.validator.clone())
                                             .collect();
                                         chain.slashing.record_block_signatures(&active, &signers, gossip.block.index);
+
+                                        // Reward distribution — mirror main.rs validator-finalize.
+                                        // Without this, libp2p-synced validators have stale
+                                        // pending_rewards / delegator_rewards accumulators
+                                        // → ClaimRewards tx credits divergent amounts (HIGH severity
+                                        // latent consensus-divergence bug).
+                                        let proposer = gossip.block.validator.clone();
+                                        let reward_signers: Vec<(String, u64)> = j.precommits.iter()
+                                            .map(|p| (p.validator.clone(), p.stake_weight))
+                                            .collect();
+                                        let reward = chain.get_block_reward();
+                                        let _ = chain.stake_registry.distribute_reward(
+                                            &proposer, &reward_signers, reward, 0,
+                                        );
+                                        // Epoch tracking — mirror main.rs validator-finalize.
+                                        chain.epoch_manager.record_block(reward);
                                     }
                                     let updated =
                                         chain.latest_block().ok().cloned().unwrap_or(gossip.block);
@@ -1206,16 +1224,26 @@ async fn on_inbound_request(
             tokio::spawn(async move {
                 let mut chain = bc.write().await;
                 let block_idx = block.index;
+                let block_validator = block.validator.clone();
                 let block_justification = block.justification.clone();
                 match chain.add_block_from_peer(*block.clone()) {
                     Ok(()) => {
-                        // Asymmetric-recording fix (see comment at libp2p sync site).
+                        // Asymmetric-recording fix bundle (see audits/reward-distribution-flow-audit-2026-04-27.md).
                         if let Some(j) = &block_justification {
                             let active = chain.stake_registry.active_set.clone();
                             let signers: Vec<String> = j.precommits.iter()
                                 .map(|p| p.validator.clone())
                                 .collect();
                             chain.slashing.record_block_signatures(&active, &signers, block_idx);
+                            // Reward distribution + epoch tracking (mirror main.rs validator-finalize).
+                            let reward_signers: Vec<(String, u64)> = j.precommits.iter()
+                                .map(|p| (p.validator.clone(), p.stake_weight))
+                                .collect();
+                            let reward = chain.get_block_reward();
+                            let _ = chain.stake_registry.distribute_reward(
+                                &block_validator, &reward_signers, reward, 0,
+                            );
+                            chain.epoch_manager.record_block(reward);
                         }
                         tracing::info!("libp2p: applied block {} from {}", block_idx, peer);
                         // Capture H2 (with state_root + recomputed hash) before releasing
@@ -1516,23 +1544,30 @@ async fn on_inbound_response(
                 }
                 match chain.add_block_from_peer(block.clone()) {
                     Ok(()) => {
-                        // ── Asymmetric-recording fix (2026-04-27 audit) ──
-                        // Validator-finalize paths in main.rs record liveness
-                        // (record_block_signatures) for self-produced and BFT-
-                        // finalized blocks, but blocks applied via libp2p sync
-                        // (catch-up) DO NOT trigger that bookkeeping. The gap
-                        // accumulates ~33% baseline divergence in peer-view
-                        // signed counts vs self-view (proven empirically on
-                        // testnet at h=558000), driving the 2026-04-26 jail
-                        // cascade pattern. This fix records liveness for any
-                        // peer-applied block that has a BFT justification
-                        // (post-Voyager). See `audits/jail-cascade-root-cause-analysis.md`.
+                        // ── Asymmetric-recording fix bundle (2026-04-27 audit) ──
+                        // Validator-finalize paths in main.rs apply 3 bookkeeping
+                        // calls per block: record_block_signatures (liveness),
+                        // distribute_reward (validator/delegator accumulators),
+                        // epoch_manager.record_block (epoch state). libp2p
+                        // catch-up sync didn't apply ANY of these → divergent
+                        // state across validators. Fix mirrors all 3 calls.
+                        // See `audits/reward-distribution-flow-audit-2026-04-27.md`.
                         if let Some(j) = &block.justification {
                             let active = chain.stake_registry.active_set.clone();
                             let signers: Vec<String> = j.precommits.iter()
                                 .map(|p| p.validator.clone())
                                 .collect();
                             chain.slashing.record_block_signatures(&active, &signers, block.index);
+                            // Reward distribution + epoch tracking.
+                            let proposer = block.validator.clone();
+                            let reward_signers: Vec<(String, u64)> = j.precommits.iter()
+                                .map(|p| (p.validator.clone(), p.stake_weight))
+                                .collect();
+                            let reward = chain.get_block_reward();
+                            let _ = chain.stake_registry.distribute_reward(
+                                &proposer, &reward_signers, reward, 0,
+                            );
+                            chain.epoch_manager.record_block(reward);
                         }
                         // Use H2 (post-add_block state_root hash) — not the raw peer block (PR #78).
                         let updated = chain
