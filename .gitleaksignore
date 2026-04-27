@@ -1,0 +1,39 @@
+# gitleaks fingerprint allowlist — verified false positives only.
+#
+# Format: <commit-sha>:<file-path>:<rule-id>:<line>
+#
+# Every entry below MUST cite a specific reason it is not a real
+# secret. If you can't justify it in one line, do not add it —
+# rotate the credential and filter-repo it out instead.
+#
+# Last verified: 2026-04-27
+# Verifier: pre-commit-hook + manual audit per finding
+
+# ── curl-auth-header rule: docs-example placeholder ──
+# All three findings are the literal placeholder string
+# `your-api-key-here` in API_REFERENCE.md authentication example —
+# not a real key. Three commits because docs-site/ is a Docusaurus
+# mirror of docs/, scaffolded across multiple commits.
+3b335811d9eec49cdff1d38129fe29d8035fbc0c:docs-site/docs/operations/API_REFERENCE.md:curl-auth-header:360
+f9905fad0ce965f537471eb39092c07a61f66499:docs-site/docs/operations/API_REFERENCE.md:curl-auth-header:360
+a7691f817b785f1db6689113601b2305d58aa331:docs/operations/API_REFERENCE.md:curl-auth-header:137
+
+# ── generic-api-key rule: REDACTED-marker placeholder ──
+# String `REDACTED_COMPROMISED_KEY_DRAINED_2026_04_17` is the marker
+# left by the 2026-04-17 filter-repo (commit 523921a) that scrubbed
+# the original v1 leaked private key. The real key was drained on
+# mainnet to a freshly generated address (recorded in operator
+# private store). The placeholder string itself is not a secret;
+# its mixed-case + digits + underscores triggers the entropy regex.
+87869c0f9c31b7cf07ae4df2432f365d251a9550:benchmark/deploy_src20.py:generic-api-key:12
+27a8de57e2e514a3e5714627e23f6c8ee3262319:benchmark/test_eth_send_raw.py:generic-api-key:10
+826ae657988f1d7632c8e008853006a303dd2798:benchmark/deploy_evm_test.py:generic-api-key:12
+
+# ── generic-api-key rule: in-test password literal ──
+# `let password = "argon2_test_pw";` inside `#[test] fn
+# test_i02_argon2id_decrypt_roundtrip` of src/wallet/keystore.rs.
+# Test fixture string used to round-trip an Argon2id keystore;
+# never a deploy credential. File no longer exists on main (moved
+# to crates/sentrix-wallet/) but historical commits remain.
+03bbd26b2b7596aa36eefc5cb82ce52e58e5581b:src/wallet/keystore.rs:generic-api-key:279
+cfb34b32a37e38978ce3f1aa4248b2a0bff8978d:src/wallet/keystore.rs:generic-api-key:279
