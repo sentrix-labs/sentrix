@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-codec"
-version = "2.1.41"
+version = "2.1.43"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Centralised encoding: bincode + hex wrappers for Sentrix"
