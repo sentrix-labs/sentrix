@@ -117,6 +117,32 @@ impl AccountDB {
         Ok(())
     }
 
+    /// Charge `fee` against `from` without transferring value, without
+    /// crediting any recipient, and **without bumping the nonce.** Used by
+    /// the EVM apply path: revm owns nonce + value + recipient credit, so
+    /// the native pass must only collect the fee. Using regular `transfer`
+    /// for EVM txs causes `NonceTooLow { tx, state }` in revm because
+    /// native bumped the nonce before revm read state — see
+    /// `audits/evm-create-nonce-bug-2026-04-27.md`.
+    pub fn charge_fee_only(&mut self, from: &str, fee: u64) -> SentrixResult<()> {
+        let from_balance = self.get_balance(from);
+        if from_balance < fee {
+            return Err(SentrixError::InsufficientBalance {
+                have: from_balance,
+                need: fee,
+            });
+        }
+        let sender = self.get_or_create(from);
+        sender.balance = sender
+            .balance
+            .checked_sub(fee)
+            .ok_or_else(|| SentrixError::Internal("balance underflow".to_string()))?;
+        // No nonce bump — revm increments for EVM txs.
+        let burn_amount = fee.div_ceil(2);
+        self.total_burned = self.total_burned.saturating_add(burn_amount);
+        Ok(())
+    }
+
     pub fn transfer(&mut self, from: &str, to: &str, amount: u64, fee: u64) -> SentrixResult<()> {
         let total = amount
             .checked_add(fee)
@@ -451,5 +477,49 @@ mod tests {
             let validator = fee - burn;
             assert_eq!(burn + validator, fee, "fee={fee} not fully distributed");
         }
+    }
+
+    // ── charge_fee_only — regression for EVM CREATE nonce-too-low bug ──
+
+    #[test]
+    fn test_charge_fee_only_deducts_fee_and_does_not_bump_nonce() {
+        let mut db = AccountDB::new();
+        db.credit("alice", 100_000).unwrap();
+        let pre_nonce = db.get_nonce("alice");
+
+        db.charge_fee_only("alice", 10_000).expect("charge should succeed");
+
+        assert_eq!(db.get_balance("alice"), 90_000, "fee should be deducted");
+        assert_eq!(
+            db.get_nonce("alice"),
+            pre_nonce,
+            "charge_fee_only must NOT bump nonce — revm owns nonce for EVM txs"
+        );
+        assert_eq!(db.total_burned, 5_000, "half of fee burned, ceil-div");
+    }
+
+    #[test]
+    fn test_charge_fee_only_rejects_insufficient_balance() {
+        let mut db = AccountDB::new();
+        db.credit("alice", 9_999).unwrap();
+        let result = db.charge_fee_only("alice", 10_000);
+        assert!(matches!(
+            result,
+            Err(SentrixError::InsufficientBalance { have: 9_999, need: 10_000 })
+        ));
+        assert_eq!(db.get_balance("alice"), 9_999, "balance unchanged on rejection");
+        assert_eq!(db.get_nonce("alice"), 0, "nonce unchanged on rejection");
+    }
+
+    #[test]
+    fn test_transfer_still_bumps_nonce() {
+        // Regression guard: charge_fee_only is for EVM only;
+        // transfer (native path) MUST still bump nonce.
+        let mut db = AccountDB::new();
+        db.credit("alice", 100_000).unwrap();
+        db.transfer("alice", "bob", 50_000, 10_000).unwrap();
+        assert_eq!(db.get_nonce("alice"), 1, "native transfer must bump nonce");
+        assert_eq!(db.get_balance("alice"), 40_000);
+        assert_eq!(db.get_balance("bob"), 50_000);
     }
 }
