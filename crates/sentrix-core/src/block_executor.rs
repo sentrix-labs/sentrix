@@ -980,22 +980,83 @@ impl Blockchain {
                         // submitter IS the offender in this naive shape).
                         // Follow-up: separate submitter + offender fields.
                     }
-                    StakingOp::JailEvidenceBundle { .. } => {
-                        // Phase A (data plumbing): no-op until Phase B wires
-                        // the consensus-jail dispatch. Once dispatch lands,
-                        // this branch will:
-                        //   1. Verify evidence by recomputing per-validator
-                        //      signed_count + missed_count against the cited
-                        //      epoch range (block range from chain).
-                        //   2. If verified: mark cited validators as jailed
-                        //      (deterministic on-chain state mutation).
-                        //   3. If verification mismatch: reject the block
-                        //      (Pass-1 invariant violation).
+                    StakingOp::JailEvidenceBundle {
+                        epoch: claimed_epoch,
+                        epoch_start_block: _,
+                        epoch_end_block: _,
+                        evidence: claimed_evidence,
+                    } => {
+                        // Phase C: consensus-applied jail dispatch.
                         //
-                        // Activation gated by JAIL_CONSENSUS_HEIGHT env var
-                        // (separate from BFT_GATE_RELAX_HEIGHT). Default:
-                        // u64::MAX (disabled). Wire Plan: Phase B.
-                        // See `audits/consensus-computed-jail-design.md`.
+                        // Pre-fork (JAIL_CONSENSUS_HEIGHT=u64::MAX, default):
+                        //   reject this op type as invalid (wire format stable
+                        //   per Phase A but dispatch only valid post-fork).
+                        // Post-fork: verify evidence + apply jail.
+                        if !Self::is_jail_consensus_height(self.height()) {
+                            return Err(SentrixError::InvalidTransaction(
+                                "JailEvidenceBundle dispatch is gated by \
+                                 JAIL_CONSENSUS_HEIGHT fork (currently disabled)"
+                                    .into(),
+                            ));
+                        }
+
+                        // Verify the cited epoch matches current epoch boundary.
+                        // Boundary block's epoch should be `(height + 1) / EPOCH_LENGTH - 1`
+                        // when the boundary is the LAST block of the epoch.
+                        let current_epoch =
+                            sentrix_staking::epoch::EpochManager::epoch_for_height(
+                                self.height(),
+                            );
+                        if claimed_epoch != current_epoch {
+                            return Err(SentrixError::InvalidTransaction(format!(
+                                "JailEvidenceBundle epoch {} != current epoch {}",
+                                claimed_epoch, current_epoch
+                            )));
+                        }
+
+                        // Verification: recompute evidence locally + compare.
+                        // Determinism: each validator's LivenessTracker should
+                        // produce the same evidence list (post asymmetric-record
+                        // fix in PR #356 + #362). If a validator's local view
+                        // differs, it'll reject this block — that's the safety
+                        // mechanism (block can't finalize unless 2/3+ of
+                        // stake-weighted validators agree on evidence).
+                        let active_set = self.stake_registry.active_set.clone();
+                        let local_evidence =
+                            self.slashing.compute_jail_evidence(&active_set);
+
+                        if local_evidence != *claimed_evidence {
+                            return Err(SentrixError::InvalidTransaction(format!(
+                                "JailEvidenceBundle verification failed: \
+                                 local recompute differs from claim \
+                                 (local={} claimed={})",
+                                local_evidence.len(),
+                                claimed_evidence.len()
+                            )));
+                        }
+
+                        // Verified — apply jail to each cited validator.
+                        // jail() updates stake_registry (consensus state mutation).
+                        let current_height = self.height();
+                        for ev in claimed_evidence {
+                            if let Err(e) = self.stake_registry.jail(
+                                &ev.validator,
+                                sentrix_staking::slashing::DOWNTIME_JAIL_BLOCKS,
+                                current_height,
+                            ) {
+                                tracing::warn!(
+                                    "JailEvidenceBundle apply: jail({}) failed: {}",
+                                    ev.validator,
+                                    e
+                                );
+                                // Don't fail the whole block — individual jail
+                                // can fail (e.g., already-jailed). Log and continue.
+                                continue;
+                            }
+                            // Reset liveness tracker for this validator (matches
+                            // legacy check_liveness behavior).
+                            self.slashing.liveness.reset(&ev.validator);
+                        }
                     }
                 }
             }
