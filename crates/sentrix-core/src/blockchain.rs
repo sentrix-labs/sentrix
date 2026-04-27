@@ -98,6 +98,22 @@ const TOKENOMICS_V2_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// flip on. See `audits/jail-cascade-root-cause-analysis.md`.
 const BFT_GATE_RELAX_HEIGHT_DEFAULT: u64 = u64::MAX;
 
+/// Phase B (consensus-computed jail) fork height. Activates the
+/// `StakingOp::JailEvidenceBundle` dispatch path: epoch-boundary
+/// proposer includes JailEvidence in block, peers Pass-1-validate by
+/// recomputing from chain history, jail decision applied as consensus
+/// state mutation (deterministic by design).
+///
+/// Pre-fork: legacy `SlashingEngine::check_liveness` runs at epoch
+/// boundary (per-validator, locally-computed jail). Post-fork: Phase B
+/// dispatch takes over (consensus-applied jail).
+///
+/// CONSENSUS CHANGE — every validator must set the same value;
+/// mismatch produces a fork. Coordinated operator rollout required.
+/// u64::MAX = disabled (safe default while Phase B implementation
+/// is incomplete). Wire-format stable per Phase A (PR #359).
+const JAIL_CONSENSUS_HEIGHT_DEFAULT: u64 = u64::MAX;
+
 /// Read Voyager fork height from env, default u64::MAX (mainnet safe).
 /// Testnet sets VOYAGER_FORK_HEIGHT=<height> in systemd service.
 pub fn get_voyager_fork_height() -> u64 {
@@ -148,6 +164,15 @@ pub fn get_bft_gate_relax_height() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(BFT_GATE_RELAX_HEIGHT_DEFAULT)
+}
+
+/// Phase B: read JAIL_CONSENSUS_HEIGHT from env. Default `u64::MAX`
+/// (disabled). Activates consensus-computed jail dispatch when set.
+pub fn get_jail_consensus_height() -> u64 {
+    std::env::var("JAIL_CONSENSUS_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(JAIL_CONSENSUS_HEIGHT_DEFAULT)
 }
 
 /// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
@@ -714,6 +739,15 @@ impl Blockchain {
     /// Post-fork: 126M halving + 315M cap (BTC-parity 4-year emission).
     pub fn is_tokenomics_v2_height(height: u64) -> bool {
         let fork = get_tokenomics_v2_height();
+        fork != u64::MAX && height >= fork
+    }
+
+    /// Phase B (consensus-jail): is the given height at or after the fork?
+    /// Post-fork: `StakingOp::JailEvidenceBundle` dispatch is consensus-valid;
+    /// epoch-boundary proposer includes evidence; peers verify and apply
+    /// jail as on-chain state mutation. Pre-fork: legacy local check_liveness.
+    pub fn is_jail_consensus_height(height: u64) -> bool {
+        let fork = get_jail_consensus_height();
         fork != u64::MAX && height >= fork
     }
 
