@@ -76,6 +76,44 @@ The gap matters because:
 
 To prove this hypothesis empirically, observability metric (fix #2) would log per-validator-per-block "expected signers vs actual signers" — divergence in this list across validators = smoking gun.
 
+### Empirical confirmation (2026-04-27 testnet, post fix #2 + #3 deploy)
+
+After fix #2 (PR #350) deployed + log level bumped to INFO (PR #353), v2.1.41 testnet at h=558000 produced this snapshot across all 4 validators:
+
+```
+val1 (self = 0x682126f5f9):
+  validator=0x245785f409  signed=9746   missed=4654   (peer view)
+  validator=0x47b21b7715  signed=9681   missed=4719   (peer view)
+  validator=0x4f9988506a  signed=9377   missed=5023   (peer view)
+  validator=0x682126f5f9  signed=14396  missed=4      ← SELF (99.97%)
+
+val2 (self = 0x4f9988506a):
+  validator=0x245785f409  signed=9739   missed=4661   (peer view)
+  validator=0x47b21b7715  signed=9355   missed=5045   (peer view)
+  validator=0x4f9988506a  signed=14399  missed=1      ← SELF (99.99%)
+  validator=0x682126f5f9  signed=9707   missed=4693   (peer view)
+
+val3 (self = 0x245785f409):
+  validator=0x245785f409  signed=14398  missed=2      ← SELF (99.99%)
+  validator=0x47b21b7715  signed=9632   missed=4768   (peer view)
+  validator=0x4f9988506a  signed=9660   missed=4740   (peer view)
+  validator=0x682126f5f9  signed=9510   missed=4890   (peer view)
+
+val4 (self = 0x47b21b7715):
+  validator=0x245785f409  signed=9432   missed=4968   (peer view)
+  validator=0x47b21b7715  signed=14399  missed=1      ← SELF (99.99%)
+  validator=0x4f9988506a  signed=9695   missed=4705   (peer view)
+  validator=0x682126f5f9  signed=9674   missed=4726   (peer view)
+```
+
+**Pattern is unmistakable**: each validator sees ITSELF as ~99.99% signed, but each PEER as ~66-68% signed (= ~32-34% "missed" in window). This is the asymmetric recording bug in action — confirms hypothesis.
+
+**Why no jail yet**: peer view shows 66-68% signed, threshold is 30% (`MIN_SIGNED_PER_WINDOW = 4320 / LIVENESS_WINDOW = 14400`). Comfortably above threshold under steady-state operation.
+
+**Why mainnet jail-cascade fires**: when a real validator has actual downtime (1-hour outage, restart, network partition), its peer-view signed-count drops closer to threshold. Combined with the systematic ~33% missed baseline from the asymmetric recording bug, peer views cross threshold while self-view stays high → divergent jail decision → BFT stall (h=633599 + h=662399 evidence).
+
+**Why fix #3 (gate relaxation) is essential**: observability alone doesn't fix the divergence — it just exposes it. Fix #3 gives liveness margin (1-jail tolerance for N=4) so chain doesn't stall on the first divergent jail. Fix #4 (consensus-computed jail, 4-6 weeks scope) eliminates divergence entirely.
+
 ---
 
 ## Root cause: jail decision is locally-computed, not consensus-coordinated
