@@ -245,6 +245,44 @@ impl Transaction {
         tx
     }
 
+    /// Phase D: build a system-emitted JailEvidenceBundle transaction. Sender
+    /// is `PROTOCOL_TREASURY`; signature/public_key empty (auth via Pass-1
+    /// recompute-and-compare in dispatch). The op payload is JSON-encoded
+    /// `StakingOp::JailEvidenceBundle`. This tx is only valid in finalized
+    /// blocks at epoch boundaries when post-fork.
+    pub fn new_jail_evidence_bundle(
+        op: StakingOp,
+        block_index: u64,
+        block_timestamp: u64,
+    ) -> SentrixResult<Self> {
+        // Defensive: only accept the JailEvidenceBundle variant
+        if !matches!(op, StakingOp::JailEvidenceBundle { .. }) {
+            return Err(SentrixError::InvalidTransaction(
+                "new_jail_evidence_bundle: op must be StakingOp::JailEvidenceBundle".into(),
+            ));
+        }
+        let data = serde_json::to_string(&op).map_err(|e| {
+            SentrixError::InvalidTransaction(format!(
+                "new_jail_evidence_bundle: serialize failed: {e}"
+            ))
+        })?;
+        let mut tx = Self {
+            txid: String::new(),
+            from_address: PROTOCOL_TREASURY.to_string(),
+            to_address: PROTOCOL_TREASURY.to_string(),
+            amount: 0,
+            fee: 0,
+            nonce: block_index,
+            data,
+            timestamp: block_timestamp,
+            chain_id: 0,
+            signature: String::new(),
+            public_key: String::new(),
+        };
+        tx.txid = tx.compute_txid();
+        Ok(tx)
+    }
+
     pub fn is_coinbase(&self) -> bool {
         self.from_address == COINBASE_ADDRESS
     }
@@ -253,6 +291,23 @@ impl Transaction {
     /// Format: data starts with "EVM:" and signature contains the original RLP-encoded tx.
     pub fn is_evm_tx(&self) -> bool {
         self.data.starts_with("EVM:")
+    }
+
+    /// Returns true if this tx carries a `StakingOp::JailEvidenceBundle` payload.
+    /// Used by Phase D consensus-jail emission — system-emitted txs at epoch
+    /// boundaries when post-fork. Auth via PROTOCOL_TREASURY sender + Pass-1
+    /// recompute-and-compare in dispatch.
+    pub fn is_jail_evidence_bundle_tx(&self) -> bool {
+        // Cheap pre-check: StakingOp uses #[serde(tag = "op", rename_all =
+        // "snake_case")], so the variant tag in JSON is "jail_evidence_bundle".
+        if !self.data.contains("\"jail_evidence_bundle\"") {
+            return false;
+        }
+        // Only accept if payload is well-formed StakingOp::JailEvidenceBundle
+        matches!(
+            serde_json::from_str::<StakingOp>(&self.data),
+            Ok(StakingOp::JailEvidenceBundle { .. })
+        )
     }
 
     // Canonical signing payload uses BTreeMap for deterministic key ordering across all nodes
@@ -312,6 +367,25 @@ impl Transaction {
         // signature recovery. The original RLP-encoded tx is stored in `signature`
         // for re-verification at block validation time.
         if self.is_evm_tx() {
+            return Ok(());
+        }
+
+        // Phase D: system-emitted JailEvidenceBundle txs (consensus-applied
+        // jail decisions) bypass signature verification. Authorization model:
+        // - tx.from_address == PROTOCOL_TREASURY (system actor)
+        // - tx.data is JSON-encoded StakingOp::JailEvidenceBundle
+        // - signature + public_key empty
+        // - dispatch (block_executor) verifies evidence cryptographically by
+        //   recomputing from local LivenessTracker — non-matching evidence
+        //   rejects the block at Pass-1
+        // Auth via consensus: this op type only valid in finalized blocks
+        // (BFT supermajority signs block, all participants verified evidence).
+        if self.from_address == PROTOCOL_TREASURY && self.is_jail_evidence_bundle_tx() {
+            if !self.signature.is_empty() || !self.public_key.is_empty() {
+                return Err(SentrixError::InvalidTransaction(
+                    "JailEvidenceBundle system tx must not have signature or public_key".into(),
+                ));
+            }
             return Ok(());
         }
 

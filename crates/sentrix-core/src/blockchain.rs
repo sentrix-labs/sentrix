@@ -785,6 +785,69 @@ impl Blockchain {
         total_validator_count.saturating_mul(2).saturating_add(2) / 3
     }
 
+    /// Phase D: build a JailEvidenceBundle system transaction for the given
+    /// boundary height, if one should be emitted. Returns:
+    /// - `None` if pre-fork (JAIL_CONSENSUS_HEIGHT not reached)
+    /// - `None` if `next_height` is not an epoch boundary
+    /// - `None` if local LivenessTracker shows no validators meeting the
+    ///   downtime threshold (Q3-A: skip emission for empty bundles)
+    /// - `Some(tx)` otherwise: a fully-formed system tx with PROTOCOL_TREASURY
+    ///   sender, empty signature, JSON-encoded `StakingOp::JailEvidenceBundle`
+    ///
+    /// The proposer's block_producer calls this at build_block time. Peers
+    /// recompute via `compute_jail_evidence` in dispatch (see block_executor)
+    /// and reject the block if the evidence diverges.
+    ///
+    /// `next_height` is the height the proposer is about to produce (NOT the
+    /// current chain head). The boundary check uses `next_height`.
+    /// `block_timestamp` is the timestamp the proposer chose for the block.
+    pub fn build_jail_evidence_system_tx(
+        &self,
+        next_height: u64,
+        block_timestamp: u64,
+    ) -> Option<Transaction> {
+        // Gate 1: post-fork only
+        if !Self::is_jail_consensus_height(next_height) {
+            return None;
+        }
+        // Gate 2: epoch boundary only
+        if !sentrix_staking::epoch::EpochManager::is_epoch_boundary(next_height) {
+            return None;
+        }
+        // Gate 3: must have evidence (Q3-A: skip emission for empty bundles)
+        let active_set = self.stake_registry.active_set.clone();
+        let evidence = self.slashing.compute_jail_evidence(&active_set);
+        if evidence.is_empty() {
+            return None;
+        }
+
+        // Compute epoch metadata for the bundle
+        let epoch =
+            sentrix_staking::epoch::EpochManager::epoch_for_height(next_height);
+        let epoch_length = sentrix_staking::epoch::EPOCH_LENGTH;
+        let epoch_start_block = epoch.saturating_mul(epoch_length);
+        let epoch_end_block = next_height; // boundary block IS the end
+
+        let op = sentrix_primitives::transaction::StakingOp::JailEvidenceBundle {
+            epoch,
+            epoch_start_block,
+            epoch_end_block,
+            evidence,
+        };
+
+        match Transaction::new_jail_evidence_bundle(op, next_height, block_timestamp) {
+            Ok(tx) => Some(tx),
+            Err(e) => {
+                tracing::error!(
+                    "build_jail_evidence_system_tx: failed to build tx at h={}: {}",
+                    next_height,
+                    e
+                );
+                None
+            }
+        }
+    }
+
     /// Tokenomics v2: max supply for a given height (fork-aware).
     /// Pre-fork: 210M (`MAX_SUPPLY`). Post-fork: 315M (`MAX_SUPPLY_V2`).
     pub fn max_supply_for(&self, height: u64) -> u64 {
@@ -2980,6 +3043,126 @@ mod tests {
         assert!(!Blockchain::is_bft_gate_relax_height(u64::MAX - 1));
         // Default-disabled gate = pre-fork behavior.
         assert_eq!(Blockchain::min_active_for_bft(1_000_000, 4), 4);
+    }
+
+    /// Phase D: build_jail_evidence_system_tx returns None pre-fork
+    /// regardless of epoch boundary or evidence state.
+    #[test]
+    fn test_build_jail_evidence_system_tx_none_pre_fork() {
+        unsafe {
+            std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
+        }
+        let bc = Blockchain::new("admin".to_string());
+        // Pre-fork (default): even at epoch boundary, returns None
+        let boundary = sentrix_staking::epoch::EPOCH_LENGTH - 1;
+        let tx = bc.build_jail_evidence_system_tx(boundary, 1_700_000_000);
+        assert!(tx.is_none(), "pre-fork must return None");
+    }
+
+    /// Phase D: build_jail_evidence_system_tx returns None at non-boundary
+    /// heights even post-fork.
+    #[test]
+    fn test_build_jail_evidence_system_tx_none_non_boundary() {
+        // SAFETY: env-var mutation in tests; CI runs single-threaded.
+        unsafe {
+            std::env::set_var("JAIL_CONSENSUS_HEIGHT", "0");
+        }
+        let bc = Blockchain::new("admin".to_string());
+        // h=100 is not an epoch boundary (EPOCH_LENGTH = 28800)
+        let tx = bc.build_jail_evidence_system_tx(100, 1_700_000_000);
+        assert!(tx.is_none(), "non-boundary must return None");
+        unsafe {
+            std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
+        }
+    }
+
+    /// Phase D: with no jailed/downtime validators, even at epoch boundary
+    /// post-fork, returns None (Q3-A: skip emission for empty bundle).
+    #[test]
+    fn test_build_jail_evidence_system_tx_none_no_evidence() {
+        unsafe {
+            std::env::set_var("JAIL_CONSENSUS_HEIGHT", "0");
+        }
+        let bc = Blockchain::new("admin".to_string());
+        let boundary = sentrix_staking::epoch::EPOCH_LENGTH - 1;
+        // Fresh chain has empty active_set + no liveness data, so
+        // compute_jail_evidence returns empty Vec.
+        let tx = bc.build_jail_evidence_system_tx(boundary, 1_700_000_000);
+        assert!(
+            tx.is_none(),
+            "boundary post-fork with no evidence must return None"
+        );
+        unsafe {
+            std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
+        }
+    }
+
+    /// Phase D: with downtime evidence at epoch boundary post-fork, helper
+    /// returns Some(tx) — sender PROTOCOL_TREASURY, empty signature, JSON-
+    /// encoded JailEvidenceBundle that survives Transaction::verify().
+    #[test]
+    fn test_build_jail_evidence_system_tx_some_with_evidence() {
+        use sentrix_primitives::transaction::{PROTOCOL_TREASURY, StakingOp};
+
+        unsafe {
+            std::env::set_var("JAIL_CONSENSUS_HEIGHT", "0");
+        }
+
+        let mut bc = Blockchain::new("admin".to_string());
+
+        // Inject a validator into active_set + populate full liveness window
+        // entirely with MISSED records → triggers is_downtime predicate.
+        let downer = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string();
+        bc.stake_registry.active_set = vec![downer.clone()];
+        let window = sentrix_staking::slashing::LIVENESS_WINDOW;
+        for h in 0..window {
+            bc.slashing.liveness.record(&downer, h, false);
+        }
+        assert!(bc.slashing.liveness.is_downtime(&downer));
+
+        let boundary = sentrix_staking::epoch::EPOCH_LENGTH - 1;
+        let tx = bc
+            .build_jail_evidence_system_tx(boundary, 1_700_000_000)
+            .expect("post-fork boundary with downtime must emit");
+
+        // Auth fields: PROTOCOL_TREASURY sender, empty sig+pubkey
+        assert_eq!(tx.from_address, PROTOCOL_TREASURY);
+        assert_eq!(tx.to_address, PROTOCOL_TREASURY);
+        assert_eq!(tx.amount, 0);
+        assert_eq!(tx.fee, 0);
+        assert!(tx.signature.is_empty());
+        assert!(tx.public_key.is_empty());
+
+        // Payload round-trips
+        assert!(tx.is_jail_evidence_bundle_tx());
+
+        // verify() must succeed for system tx (Phase D special-case)
+        tx.verify().expect("system tx verify must pass");
+
+        // Decode the bundle, sanity-check fields
+        let op: StakingOp = serde_json::from_str(&tx.data).unwrap();
+        match op {
+            StakingOp::JailEvidenceBundle {
+                epoch,
+                epoch_start_block,
+                epoch_end_block,
+                evidence,
+            } => {
+                assert_eq!(
+                    epoch,
+                    sentrix_staking::epoch::EpochManager::epoch_for_height(boundary)
+                );
+                assert_eq!(epoch_start_block, 0);
+                assert_eq!(epoch_end_block, boundary);
+                assert_eq!(evidence.len(), 1);
+                assert_eq!(evidence[0].validator, downer);
+            }
+            _ => panic!("expected JailEvidenceBundle variant"),
+        }
+
+        unsafe {
+            std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
+        }
     }
 }
 // fake addr 0x1234567890abcdef1234567890abcdef12345678
