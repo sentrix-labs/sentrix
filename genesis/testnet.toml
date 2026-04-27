@@ -1,0 +1,60 @@
+# Sentrix Testnet genesis configuration.
+#
+# Loaded at runtime via `--genesis genesis/testnet.toml`. Unlike mainnet,
+# testnet has no hardcoded byte-identity check — this file is the single
+# source of truth.
+#
+# Reset policy: testnet may be reset (genesis re-rolled) at operator
+# discretion. Keep the testnet faucet wallet keystore + private key off
+# this file (loaded separately by the faucet service).
+
+[chain]
+chain_id = 7120
+name = "Sentrix Testnet"
+
+[genesis]
+# Testnet genesis instant — distinct from mainnet (forces different block 0 hash).
+timestamp = 1714200000
+parent_hash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+# ── Validators ──────────────────────────────────────────────────────────
+#
+# Pubkeys empty: testnet validators bootstrap via keystore-on-disk, same
+# as mainnet. Stake values match the testnet 4-validator topology.
+
+[[genesis.validators]]
+address = "0x328d56b8174697ef6c9e40e19b7663797e16fa47"
+stake = 1050000000000000
+pubkey = ""
+
+# ── Genesis allocations (testnet only — mock SRX) ──────────────────────
+#
+# All amounts in sentri (1 SRX = 100_000_000 sentri). Mirror of mainnet
+# allocations + a dedicated faucet wallet for /faucet/drip dispensing.
+
+# Founder — 21,000,000 testnet-SRX
+[[genesis.balances]]
+address = "0x252f8cfed5acfa9d00d99a65e2ac91f395a35d78"
+amount = 2100000000000000
+
+# Ecosystem Fund — 21,000,000 testnet-SRX
+[[genesis.balances]]
+address = "0xeb70fdefd00fdb768dec06c478f450c351499f14"
+amount = 2100000000000000
+
+# Early Validator — 10,500,000 testnet-SRX
+[[genesis.balances]]
+address = "0x328d56b8174697ef6c9e40e19b7663797e16fa47"
+amount = 1050000000000000
+
+# Reserve — 10,500,000 testnet-SRX
+[[genesis.balances]]
+address = "0x2578cad17e3e56c2970a5b5eab45952439f5ba97"
+amount = 1050000000000000
+
+# Faucet wallet — 100,000,000 testnet-SRX (dispense pool)
+# Address generated 2026-04-27. Keystore + private key held off-repo.
+# Funded large enough to survive heavy testnet usage; refill via redeploy.
+[[genesis.balances]]
+address = "0x2ffc302fcd8c0eeab2796b3c1d134f18e8237762"
+amount = 10000000000000000
