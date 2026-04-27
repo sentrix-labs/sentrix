@@ -343,6 +343,13 @@ impl SlashingEngine {
 
     /// Record block production for liveness tracking.
     /// `proposer` signed, everyone else in active_set should also have signed (voted).
+    ///
+    /// Per-validator signed/missed counts emitted as DEBUG-level tracing every
+    /// EPOCH_LENGTH boundary. Use with `RUST_LOG=sentrix_staking::slashing=debug`
+    /// to detect jail-counter divergence across the fleet (each validator's log
+    /// should show identical signed/missed for any given height — divergence is
+    /// the smoking-gun signature of the 2026-04-26 jail-cascade pattern).
+    /// See `audits/jail-cascade-root-cause-analysis.md`.
     pub fn record_block_signatures(
         &mut self,
         active_set: &[String],
@@ -352,6 +359,23 @@ impl SlashingEngine {
         for validator in active_set {
             let signed = signers.contains(validator);
             self.liveness.record(validator, height, signed);
+        }
+
+        // Periodic per-validator participation snapshot (every 1000 blocks)
+        // for fleet-wide correlation. Low-volume — only emits on a 0.1%
+        // sampling cadence to avoid log flood. Full per-validator counts.
+        if height.is_multiple_of(1000) {
+            for validator in active_set {
+                let (signed_count, missed_count) = self.liveness.get_stats(validator);
+                tracing::debug!(
+                    target: "sentrix_staking::slashing",
+                    height,
+                    validator = %validator,
+                    signed = signed_count,
+                    missed = missed_count,
+                    "jail counter snapshot"
+                );
+            }
         }
     }
 }
