@@ -76,9 +76,15 @@ fn setup_validator_chain() -> Blockchain {
     }
 
     // Pad to (boundary - 1) so the next block lands on epoch boundary.
+    // Block::new stamps the timestamp from SystemTime::now(); two
+    // setup_validator_chain() calls straddling a wall-clock-second
+    // boundary would otherwise produce divergent pad-block hashes →
+    // diverging_evidence_rejected fails with "invalid previous hash"
+    // before the evidence-divergence check it actually wants to assert.
+    // Pin timestamp + recompute hash so all instances start identical.
     let target_height = sentrix_staking::epoch::EPOCH_LENGTH - 2;
     let prev_hash = bc.latest_block().unwrap().hash.clone();
-    let pad = Block::new(
+    let mut pad = Block::new(
         target_height,
         prev_hash,
         vec![Transaction::new_coinbase(
@@ -89,6 +95,8 @@ fn setup_validator_chain() -> Blockchain {
         )],
         validator,
     );
+    pad.timestamp = 1_700_000_000;
+    pad.hash = pad.calculate_hash();
     bc.chain.push(pad);
 
     bc
