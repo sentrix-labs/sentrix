@@ -81,6 +81,10 @@ The 2026-04-25 / 2026-04-26 incident hotfix series:
 - v2.1.37: libp2p sync cascade-bail filter (P0: 2026-04-26 mainnet stall at h=604547 root cause + fix). Recovered via Treasury-canonical chain.db rsync. See PR #334 (RCA held in operator runbooks).
 - v2.1.38: legacy TCP-path deletion (sync.rs + node.rs trimmed) + cumulative skip-counter observability for race re-emergence detection
 - v2.1.39: tokenomics v2 fork (consensus, env-gated). 126M-block halving (4-year BTC-parity) + 315M MAX_SUPPLY. Activated on testnet at h=381651 (2026-04-26), armed on mainnet at h=640800 via `TOKENOMICS_V2_HEIGHT` env var. Same fork-gate pattern as VOYAGER_REWARD_V2_HEIGHT (zero behavior change pre-fork-height; runtime dispatch in `get_block_reward()` + `max_supply_for(height)` + `halvings_at(height)`). PR #336 + #337 (RPC display fix).
+- v2.1.40: fork-aware explorer richlist display (pre-fork hardcoded 210M now tracks `/chain/info` `max_supply_srx`). PR #348.
+- v2.1.41: jail-cascade observability + fork-gated BFT safety gate relaxation (`BFT_GATE_RELAX_HEIGHT`, default DISABLED — operator activates after testnet bake). PRs #350-#352.
+- v2.1.42 / v2.1.43: asymmetric-application fixes (record_block_signatures + distribute_reward + epoch_manager now fire from libp2p apply paths, not just validator-loop finalize). PRs #356, #362.
+- v2.1.44: Phase A→D consensus-jail full stack (StakingOp::JailEvidenceBundle epoch-boundary system tx, dispatch recompute-and-compare, 4-validator determinism harness). All dormant pre-fork via `JAIL_CONSENSUS_HEIGHT=u64::MAX` default. Activation = operator halt-all event. PRs #359/#365/#366/#368/#369/#371/#372 + testnet bootstrap (#374).
 
 ---
 
