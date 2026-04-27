@@ -100,6 +100,36 @@ pub enum StakingOp {
         signature_a: String,
         signature_b: String,
     },
+    /// Phase A: Consensus-computed jail evidence (data plumbing only —
+    /// no dispatch wired yet). Activated post `JAIL_CONSENSUS_HEIGHT` fork
+    /// (separate from BFT_GATE_RELAX_HEIGHT). At epoch boundary, the
+    /// proposer scans the last LIVENESS_WINDOW blocks' justification.precommits,
+    /// computes per-validator (signed_count, missed_count), includes the
+    /// JailEvidence list in the boundary block as this StakingOp variant.
+    /// Other validators Pass-1-validate (recompute independently from same
+    /// blocks; reject block if cited evidence doesn't match).
+    /// See `audits/consensus-computed-jail-design.md`.
+    JailEvidenceBundle {
+        epoch: u64,
+        epoch_start_block: u64,
+        epoch_end_block: u64,
+        evidence: Vec<JailEvidence>,
+    },
+}
+
+/// Phase A data type: per-validator missed-block evidence for an epoch.
+/// Self-validating: peers recompute by scanning chain for the same window
+/// and comparing signed_count and missed_count. justification_hashes lets
+/// peers selectively verify missed-block claims.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JailEvidence {
+    pub validator: String,
+    pub signed_count: u64,
+    pub missed_count: u64,
+    /// Hashes of blocks where validator was in active_set but missing
+    /// from precommits. Subset (full list optional for size; min 1 for
+    /// proof-of-evidence).
+    pub justification_hashes: Vec<String>,
 }
 
 impl StakingOp {
@@ -606,5 +636,89 @@ mod tests {
         assert!(parsed_inject["data"].as_str().unwrap().contains("attacker"));
         // The "from" field must still be the real address, not "attacker"
         assert_eq!(parsed_inject["from"], from);
+    }
+
+    // ── JailEvidenceBundle (Phase A — consensus-jail data plumbing) ──
+
+    #[test]
+    fn test_jail_evidence_bundle_encode_decode_roundtrip() {
+        let bundle = StakingOp::JailEvidenceBundle {
+            epoch: 42,
+            epoch_start_block: 590100,
+            epoch_end_block: 604499,
+            evidence: vec![
+                JailEvidence {
+                    validator: "0x87c9976d4b2e360b9fbb87e4bd5442edce2a7511".into(),
+                    signed_count: 3000,
+                    missed_count: 11400,
+                    justification_hashes: vec!["abc123".into(), "def456".into()],
+                },
+            ],
+        };
+
+        let encoded = bundle.encode().expect("encode");
+        let decoded = StakingOp::decode(&encoded).expect("decode");
+        match decoded {
+            StakingOp::JailEvidenceBundle {
+                epoch,
+                epoch_start_block,
+                epoch_end_block,
+                evidence,
+            } => {
+                assert_eq!(epoch, 42);
+                assert_eq!(epoch_start_block, 590100);
+                assert_eq!(epoch_end_block, 604499);
+                assert_eq!(evidence.len(), 1);
+                assert_eq!(
+                    evidence[0].validator,
+                    "0x87c9976d4b2e360b9fbb87e4bd5442edce2a7511"
+                );
+                assert_eq!(evidence[0].signed_count, 3000);
+                assert_eq!(evidence[0].missed_count, 11400);
+                assert_eq!(evidence[0].justification_hashes.len(), 2);
+            }
+            other => panic!("expected JailEvidenceBundle, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_jail_evidence_serialization_uses_snake_case_op_tag() {
+        let bundle = StakingOp::JailEvidenceBundle {
+            epoch: 1,
+            epoch_start_block: 0,
+            epoch_end_block: 14400,
+            evidence: vec![],
+        };
+        let encoded = bundle.encode().expect("encode");
+        // Per #[serde(tag = "op", rename_all = "snake_case")] on StakingOp,
+        // the variant tag should be "jail_evidence_bundle".
+        assert!(
+            encoded.contains("\"op\":\"jail_evidence_bundle\""),
+            "expected snake_case op tag, got: {encoded}"
+        );
+    }
+
+    #[test]
+    fn test_jail_evidence_is_staking_op() {
+        let bundle = StakingOp::JailEvidenceBundle {
+            epoch: 1,
+            epoch_start_block: 0,
+            epoch_end_block: 14400,
+            evidence: vec![],
+        };
+        let encoded = bundle.encode().expect("encode");
+        assert!(StakingOp::is_staking_op(&encoded));
+    }
+
+    #[test]
+    fn test_jail_evidence_struct_equality() {
+        let a = JailEvidence {
+            validator: "0xval1".into(),
+            signed_count: 100,
+            missed_count: 50,
+            justification_hashes: vec!["h1".into()],
+        };
+        let b = a.clone();
+        assert_eq!(a, b, "JailEvidence must implement PartialEq for testing");
     }
 }
