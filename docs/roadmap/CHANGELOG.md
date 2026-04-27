@@ -127,7 +127,7 @@ Pivotal release: mainnet hard-fork from Pioneer (PoA round-robin) to Voyager (DP
 ### Changed
 - WHITEPAPER bumped to v3.2 with new §2.5 Voyager DPoS+BFT design + §2.6 L1/L2 peer auto-discovery sections.
 - `SENTRIX_FORCE_PIONEER_MODE` removed from all env files.
-- CLAUDE.md trimmed to ~25 incident-earned rules.
+- Internal operator runbooks trimmed to ~25 incident-earned rules.
 
 ### Fixed
 - Issue #268 (legacy block tolerance) closed via `SENTRIX_LEGACY_VALIDATION_HEIGHT=557144`.

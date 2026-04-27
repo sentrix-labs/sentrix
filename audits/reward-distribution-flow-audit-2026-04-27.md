@@ -144,7 +144,7 @@ For tonight (autonomous mode): defer fix. The bug is latent (not actively diverg
 - Mainnet deploy (halt-all + simultaneous-start for state-mutation change)
 - Ideally testnet bake first
 
-Per CLAUDE.md hard limit #2 (fresh-brain review for consensus-touching), do NOT ship in this session.
+Per consensus discipline (fresh-brain review for consensus-touching), do NOT ship in this session.
 
 ---
 

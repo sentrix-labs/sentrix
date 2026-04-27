@@ -147,7 +147,7 @@ Fallback: if fork mechanism has bug, env var lets us roll back per-validator (se
 - Phase D (mainnet activation): 1 day operator action
 - **Total calendar: 4-6 weeks**
 
-Per consensus discipline (CLAUDE.md): each phase = separate PR with regression test, fresh-brain review, no self-merge.
+Per consensus discipline (operator runbook): each phase = separate PR with regression test, fresh-brain review, no self-merge.
 
 ---
 
