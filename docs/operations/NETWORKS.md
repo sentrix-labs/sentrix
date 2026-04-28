@@ -15,7 +15,7 @@
 | Consensus | **Voyager** (DPoS + BFT, `voyager_activated=true` since h=579047 / 2026-04-25) |
 | EVM | Active — `evm_activated=true` since the same height; MetaMask compatible |
 | Reward distribution | **V4 reward v2** active since h=590100 / 2026-04-25 — coinbase routes to `PROTOCOL_TREASURY` (0x0000…0002), validators + delegators claim via `ClaimRewards` staking op |
-| Binary | v2.1.44 |
+| Binary | v2.1.46 |
 
 ## Testnet
 
@@ -36,8 +36,8 @@
 Testnet tokens have no real value. Use the faucet to get test SRX.
 
 Testnet runs in Docker on build host (`/opt/sentrix-testnet-docker/`) since
-the 2026-04-23 migration; fresh genesis at chain_id 7120, current
-height ~382K (post tokenomics-v2 fork at h=381651), binary v2.1.44.
+the 2026-04-23 migration; fresh genesis at chain_id 7120, post tokenomics-v2
+fork at h=381651, binary v2.1.44.
 
 > **Mainnet operational note (2026-04-25, post-Voyager):** mainnet successfully
 > transitioned from Pioneer PoA to Voyager DPoS+BFT at h=579047. EVM was
