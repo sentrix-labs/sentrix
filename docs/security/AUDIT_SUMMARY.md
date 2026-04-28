@@ -125,7 +125,7 @@ In the interim, the chain runs continuous internal review:
 - `cargo audit` + `gitleaks` on every PR
 - `slither` + `mythril` on Solidity contracts (CI gate)
 - Manual code review by Sentrix Labs / SentrisCloud security team for every PR
-- Public bug bounty: see [SECURITY.md](../../SECURITY.md) (safe-harbor policy in effect)
+- Public bug bounty: see [SECURITY.md](https://github.com/sentrix-labs/sentrix/blob/main/SECURITY.md) (safe-harbor policy in effect)
 
 ## How to report
 
@@ -135,11 +135,11 @@ If you find a security issue:
 2. Email `security@sentriscloud.com` with details.
 3. Include reproduction steps, impact assessment, and suggested fix if applicable.
 4. We acknowledge within 48 hours; remediation timeline depends on severity.
-5. Safe-harbor policy applies — researchers acting in good faith are protected from legal action; see [SECURITY.md](../../SECURITY.md) for full terms.
+5. Safe-harbor policy applies — researchers acting in good faith are protected from legal action; see [SECURITY.md](https://github.com/sentrix-labs/sentrix/blob/main/SECURITY.md) for full terms.
 
 ## Cross-references
 
-- [`SECURITY.md`](../../SECURITY.md) — safe-harbor + reporting policy
+- [`SECURITY.md`](https://github.com/sentrix-labs/sentrix/blob/main/SECURITY.md) — safe-harbor + reporting policy
 - [`SECURITY_REPORT.md`](SECURITY_REPORT.md) — V1–V10 cumulative summary
 - [`SECURITY_AUDIT_V11.md`](SECURITY_AUDIT_V11.md) — most recent round, full detail
 - [`ATTACK_VECTORS.md`](ATTACK_VECTORS.md) — threat model
