@@ -29,6 +29,8 @@ Sentrix is fully MetaMask-compatible on both networks. Mainnet (chain ID 7119) a
 
 Mainnet supports `eth_sendRawTransaction` and Solidity contract deployment since the 2026-04-25 Voyager activation. Use mainnet for production deployments and testnet for development.
 
+> **Two parallel block explorers.** The custom `scan.sentrixchain.com` is the primary UX (covers Sentrix's native TokenOp / StakingOp events + validator pages + label system). For EVM-standard tooling — ERC-20 token holders, smart-contract source verification, EIP-3091 URLs — use `blockscout.sentrixchain.com`. Either URL works in MetaMask's "Block Explorer URL" field; pick the one matching the feature you'll use most. Listing platforms (CoinGecko / CoinMarketCap) and wallets that expect Blockscout-style endpoints should use the Blockscout URL.
+
 ## Get Test SRX
 
 Faucet: https://faucet.sentrixchain.com (or use a funded testnet wallet directly).

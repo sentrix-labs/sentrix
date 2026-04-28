@@ -6,7 +6,8 @@
 |-|-|
 | Chain ID | 7119 (0x1bcf) |
 | RPC | https://rpc.sentrixchain.com |
-| Explorer | https://scan.sentrixchain.com |
+| Explorer (custom) | https://scan.sentrixchain.com — native TokenOps + StakingOps + validator UX |
+| Explorer (Blockscout) | https://blockscout.sentrixchain.com — EVM-standard UX (ERC-20 transfers, source verification) |
 | P2P port | 30303 |
 | API port | 8545 |
 | Block time | 1s |
@@ -60,6 +61,13 @@ Add network manually:
 | Chain ID | 7119 | 7120 |
 | Symbol | SRX | SRX |
 | Explorer | https://scan.sentrixchain.com | https://scan.sentrixchain.com (toggle Testnet) |
+
+> Sentrix runs **two parallel explorers**. `scan.sentrixchain.com` (custom) is the
+> primary UX for native protocol features — TokenOp / StakingOp events, validator
+> pages, label system. `blockscout.sentrixchain.com` (Blockscout v8) is the
+> EVM-standard sidecar for ERC-20 holders, contract source verification, and
+> EIP-3091-style URLs that wallets and listing sites expect. Either URL works in
+> the explorer field; pick by the feature you need.
 
 ### ethers.js
 
