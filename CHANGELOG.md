@@ -7,7 +7,34 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [Unreleased] — 2026-04-27 (later) — Phase A→D consensus-jail full stack + testnet bootstrap
+## [Unreleased]
+
+> Empty placeholder — next release will land on this branch.
+
+---
+
+## [2.1.46] — 2026-04-28 — eth_call → revm wiring + AddSelfStake activation + version bump
+
+> **Mainnet activation of `StakingOp::AddSelfStake`** + first cut of routing `eth_call` through real revm execution against live chain state. vps3 unjailed via real-SRX self-bond (no phantom-mint). 4-of-4 validators active. Workspace version bumped 2.1.44 → 2.1.46 across root + every internal crate.
+
+### Added / Fixed
+
+- **`crates/sentrix-rpc/src/jsonrpc/eth.rs`** (#389) — `eth_call` and `eth_estimateGas` now route through revm execution against the live chain state via `SentrixEvmDb::from_account_db(&bc.accounts)` (was `InMemoryDB` which only pre-loaded contract code, leaving every storage slot zero). Address normalization added so EIP-55 checksummed addresses resolve correctly against the lowercase `AccountDB` keys.
+- **`StakingOp::AddSelfStake`** — fork activated at `ADD_SELF_STAKE_HEIGHT=731245` on mainnet. Validators can bond real SRX into their own `self_stake` without the phantom-mint that pre-PR-#384 `force-unjail` produced. Recovery path for slashed validators with `self_stake < MIN_SELF_STAKE`.
+- **`reset-trie` CLI flag** (#384) — operator-side recovery printout for the force-unjail one-way trap.
+- **Operator-host scrub round** (#386, #387) — additional internal-tooling-reference scrub on operator-host paths.
+
+### Internal
+
+- **Workspace `Cargo.toml`** (#388) — bumped `version = "2.1.44" → "2.1.46"` across root + every internal crate + bin (uniform). `tools/*` keep their independent `0.1.0`.
+
+### Known follow-ups
+
+- **PR #389 partial** — wired `eth_call` through revm but mainnet probe found dry-run gas cap mismatch with EIP-7825; follow-up PR #391 caps at `TX_GAS_LIMIT_CAP` (16,777,216) instead of `BLOCK_GAS_LIMIT` (30M) so the per-tx cap revm enforces in `SpecId >= Osaka` doesn't reject every dry-run.
+
+---
+
+## [2.1.42] — 2026-04-27 (later) — Phase A→D consensus-jail full stack + testnet bootstrap
 
 > **The asymmetric-application bug class is now fixed at the protocol level.** Phase A (data types) shipped earlier this day in #359; this batch ships Phase B (helpers + fork gate), Phase C (dispatch verification), and Phase D (proposer emission + Pass-1/Pass-2 wiring + 4-validator determinism harness). Default behavior is unchanged: `JAIL_CONSENSUS_HEIGHT=u64::MAX` on default builds means the entire dispatch path is unreachable until an operator opts in.
 >
