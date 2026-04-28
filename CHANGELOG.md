@@ -7,7 +7,50 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
-## [Unreleased] — 2026-04-27 (later) — Phase A→D consensus-jail full stack + testnet bootstrap
+## [Unreleased] — 2026-04-28 — Tokenomics docs + listing-readiness + multisig migration
+
+> **No consensus changes.** Documentation, public-facing artifacts, and on-chain governance moves only.
+
+### Added
+
+- **`docs/tokenomics`** (via `sentriscloud-frontend/apps/chain-landing`) — public tokenomics page mirroring the source-of-truth tokenomics policy: 315M cap, 63M premine (20%) / 252M mining (80%), BTC-parity 4-year halving, 50% native fee burn, allocation breakdown per slot, listing roadmap. Linked from the in-page Tokenomics section.
+- Premine + governance wallet labels in the explorer (`apps/scan/lib/labels.tsx`): Founder, Sentrix Ecosystem Fund, Validator Incentive Pool, Strategic Reserve, Authority, SentrixSafe (mainnet + testnet).
+
+### Governance — SentrixSafe ownership migration FINAL
+
+Both Safes (mainnet `0x6272dC0C842F05542f9fF7B5443E93C0642a3b26` + testnet `0xc9D7a61D7C2F428F6A055916488041fD00532110`) are now **1-of-1 with the authority signer** `0xa25236925bc10954e0519731cc7ba97f4bb5714b` (threshold=1, nonce=2). Bootstrap deployer retired from Safe ownership.
+
+| Step | Chain | Tx | Block |
+|---|---|---|---|
+| addOwner(authority, 1) | testnet 7120 | `0xb70a83eb416e…` | 881639 |
+| addOwner(authority, 1) | mainnet 7119 | `0xd17400c35f07…` | 755821 |
+| removeOwner(deployer, 1) | testnet 7120 | `0xb0c69e89252c…` | 884599 |
+| removeOwner(deployer, 1) | mainnet 7119 | `0x8e9ca8b4cbe0…` | 757829 |
+
+### Documentation
+
+- `genesis/mainnet.toml` — clarifying comment block explains the v2 → v3 founder admin transfer history (block 444070, 2026-04-24). Comment-only; genesis hash regression test continues to pass.
+
+---
+
+## [2.1.46] — 2026-04-28 — eth_call → revm execution + AddSelfStake activation + version bump
+
+> **Mainnet activation of `StakingOp::AddSelfStake`** + **`eth_call` now executes against real chain state** (was stubbed). vps3 unjailed via real-SRX self-bond (no phantom-mint). 4-of-4 validators active.
+
+### Added / Fixed
+
+- **`crates/sentrix-rpc/src/jsonrpc/eth.rs`** (#389) — `eth_call` now wires through to revm execution against the live chain state. Two bugs fixed: address case-sensitive lookup + storage slots not pre-loaded into dry-run DB. `cast call <WSRX> "name()(string)"` now returns `"Wrapped SRX"`.
+- **`StakingOp::AddSelfStake`** — fork activated at `ADD_SELF_STAKE_HEIGHT=731245`. Validators can now bond real SRX into their own `self_stake` without the phantom-mint that pre-PR-#384 `force-unjail` produced. Recovery path for slashed validators with `self_stake < MIN_SELF_STAKE`.
+- **`reset-trie` CLI flag** (#384) — operator-side recovery printout for the force-unjail one-way trap.
+- **Operator-host scrub round** (#386, #387) — additional internal-tooling-reference scrub on operator-host paths and PM2 stale entries.
+
+### Internal
+
+- **Workspace `Cargo.toml`** (#388) — bumped `version = "2.1.44" → "2.1.46"` across root + every internal crate + bin (uniform). `tools/*` keep their independent `0.1.0`.
+
+---
+
+## [2.1.42] — 2026-04-27 (later) — Phase A→D consensus-jail full stack + testnet bootstrap
 
 > **The asymmetric-application bug class is now fixed at the protocol level.** Phase A (data types) shipped earlier this day in #359; this batch ships Phase B (helpers + fork gate), Phase C (dispatch verification), and Phase D (proposer emission + Pass-1/Pass-2 wiring + 4-validator determinism harness). Default behavior is unchanged: `JAIL_CONSENSUS_HEIGHT=u64::MAX` on default builds means the entire dispatch path is unreachable until an operator opts in.
 >
