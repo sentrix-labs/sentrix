@@ -32,41 +32,42 @@ Non-goals:
 
 Each phase has its own snapshot, eligibility filter, and Merkle distribution. Phases run sequentially — completion of one does not gate the next, but earlier phases inform later snapshot designs (e.g., Phase 1 testnet activity may filter Phase 3 mainnet snapshots).
 
-## Phase 1 — Testnet Heroes (detailed mechanics)
+## Phase 1 — Testnet Heroes (design direction)
 
-This is the imminent phase. Detailed mechanics for later phases will be added as their snapshot dates approach.
+Phase 1 is in design phase. Specific parameters (tx-count threshold, wallet-age threshold, snapshot height, claim window length, per-wallet distribution amount) will be locked and announced together at Phase 1 launch — they are deliberately not pre-committed here so that the design can adapt to actual testnet activity patterns observed pre-launch.
 
-### Eligibility filter
+### Eligibility direction
 
-A wallet on testnet 7120 is eligible if **all** of the following hold at the snapshot height:
+A wallet on testnet 7120 will be eligible if it shows evidence of **real participation** — not just faucet farming. Direction signals:
 
-1. **Cumulative tx count ≥ 50** — meaningful interaction, not faucet-claim-only
-2. **Wallet age ≥ 30 days** before snapshot — filters mass wallet generation in the days preceding announcement
-3. **At least one of the following "real activity" signals:**
-   - Deployed at least one smart contract on testnet
-   - Completed at least one DEX swap (once DEX is live on testnet)
-   - Operated as a registered validator on testnet for ≥ 7 days
-   - Verified via partner platform (Galxe / Zealy / Sentrix-quest portal — TBD)
+- Some minimum cumulative transaction count (threshold TBD at launch)
+- Some minimum wallet age before the snapshot (threshold TBD at launch)
+- At least one "real activity" signal — examples being considered:
+   - Smart contract deployed on testnet
+   - DEX swap (post DEX launch on testnet)
+   - Operating as registered testnet validator
+   - Verified completion via partner quest platform
 
-The "real activity" requirement is the primary sybil filter. Faucet-only farming (claim 10M tSRX, sit, claim airdrop) does not qualify.
+The "real activity" requirement is the primary sybil filter. Faucet-only farming will not qualify.
 
 ### Snapshot height
 
-Target: chain 7120 height **400,000** (estimated 2 weeks after public Phase 1 announcement). Exact height locked at announcement; activity after the snapshot does not count.
+Locked + announced at Phase 1 launch. Activity after the snapshot does not count.
 
-### Distribution
+### Distribution direction
 
-- **Flat allocation per eligible wallet** — all eligible wallets receive equal share. If 500 wallets qualify, each receives 2,000 SRX.
-- **No tiering** — Phase 1 is a community-trust signal (equal treatment for "passed the filter"). Tiering arrives in Phase 5 (Retroactive Builders) where merit genuinely differs.
-- **Mainnet SRX, not testnet tSRX** — recipients claim mainnet 7119 token, even though eligibility is determined on testnet 7120. Reason: mainnet token is the only one with real economic value.
-- **Claim window: 90 days** from contract deploy. Unclaimed SRX returns to Strategic Reserve (does not burn) — preserves the supply curve in `docs/tokenomics/OVERVIEW.md`.
+- **Distribution recipient token: mainnet SRX, not testnet tSRX** — recipients claim mainnet 7119 token, even though eligibility is determined on testnet 7120. Reason: mainnet token is the only one with real economic value.
+- **Per-wallet amount + tiering rules:** locked at launch (informed by snapshot eligible-pool size).
+- **Claim window length:** locked at launch. Unclaimed SRX disposition (return to Strategic Reserve vs. roll into next phase vs. burn) will be specified at launch.
 
-### Distribution mechanism
+### Distribution mechanism (planned shape)
 
-- Off-chain: snapshot eligibility → Merkle tree of `(address, amount)` leaves → publish root + leaf list (open data, anyone can verify their inclusion)
+- Off-chain: snapshot eligibility → Merkle tree of `(address, amount)` leaves → publish root + leaf list (open data, anyone can verify inclusion)
 - On-chain: deploy `MerkleAirdrop` claim contract on mainnet 7119, pre-fund with 1,000,000 SRX from Strategic Reserve in a single transparent transaction
 - User flow: connect wallet → see eligibility → call `claim(proof, amount)` → receive SRX
-- Sweep flow: after 90-day window, owner calls `sweep()` → unclaimed balance returns to Strategic Reserve
+- Sweep flow at end of claim window → unclaimed disposition per Phase 1 launch terms
+
+The Merkle-claim contract has not been deployed yet. Design + audit precede deployment.
 
 ### Exclusion list (hard rule, no exceptions)
 
@@ -84,16 +85,16 @@ The following wallets are excluded from all airdrop phases regardless of activit
 
 Specific addresses for validators + faucets are listed in the canonical addresses doc inside `sentrix-labs/canonical-contracts`.
 
-### Sybil resistance summary
+### Sybil resistance direction
 
-The eligibility filter is structured to make sybil farming unattractive:
+The eligibility filter is being designed to make sybil farming unattractive vs. expected reward. Layered filters under consideration:
 
-- **30-day wallet age** filters mass-generated wallets in announcement window
-- **50-tx threshold** raises cost of mass farming
-- **Real activity signal** (contract deploy / DEX swap / validator op / verified quest) requires non-trivial action that's hard to script-farm at scale
-- **Flat distribution** removes the incentive to fragment farming across many wallets (1 farmed wallet = same as 1 organic wallet)
+- Wallet-age cutoff (filters wallets generated mass-style after announcement)
+- Cumulative transaction-count threshold (raises farming cost)
+- "Real activity" signal — contract deploy / DEX swap / validator operation / verified quest. This is the primary filter: it requires non-trivial action that is hard to script-farm at scale.
+- Distribution shape (flat vs. tiered) — chosen to minimize the marginal value of farming many wallets vs. one organic wallet
 
-The result is a smaller eligible pool (~500 wallets expected for Phase 1, may be lower) but each recipient receives a meaningful 2,000 SRX. We optimize for "every recipient earned this" over "we hit a high claim count."
+We optimize for "every recipient earned this" over hitting a high claim count. The eligible pool is expected to be smaller-and-meaningful, not large-and-diluted.
 
 ## Phases 2–5 — design notes
 
@@ -101,35 +102,19 @@ Detailed mechanics will be published before each phase launches. Direction signa
 
 ### Phase 2 — Quest Campaign (Q3 2026)
 
-Galxe / Zealy / equivalent task platform integration. Tasks designed around real protocol use:
-- "Wrap 100 SRX → unwrap → record txid" (WSRX integration)
-- "Deploy a SRC-20 token via TokenFactory" (TokenFactory integration)
-- "Add liquidity to SRX/USDC pool on Sentrix DEX" (post-DEX-launch)
-
-Allocation per quest tier; rewards in mainnet SRX. Same exclusion list as Phase 1.
+Quest-platform integration (Galxe, Zealy, or equivalent — final platform TBD). Quests designed around real protocol use (canonical contract interaction, DEX activity post-launch, etc.). Allocation per quest tier; rewards in mainnet SRX. Same exclusion list as Phase 1.
 
 ### Phase 3 — Activity Rewards (Q3 2026)
 
-Mainnet snapshot. Eligibility weighted by:
-- Tx velocity over a measurement window (e.g., last 90 days)
-- Balance retention (avoiding "claim and dump" pattern)
-- Diverse interactions (not just SRX transfers — count contract calls)
-
-Distribution may be tiered (proportional to score) rather than flat. Final mechanic locked at snapshot.
+Mainnet snapshot of active wallets. Eligibility likely to combine signals such as transaction velocity over a measurement window, balance retention, and diversity of interactions. Specific weights + thresholds locked at snapshot.
 
 ### Phase 4 — Validator Delegators (Q4 2026)
 
-Pro-rata distribution to delegators on active validators at snapshot height. Validator self-stake does not count (validators already earn V4 rewards). Targets distributed staking participation.
+Pro-rata distribution to delegators on active validators at snapshot height. Targets distributed staking participation. Specific eligibility rules (e.g., handling of validator self-stake) locked at snapshot.
 
 ### Phase 5 — Retroactive Builders (Q4 2026 / Q1 2027)
 
-Committee-reviewed allocation for:
-- dApp deployers who shipped real users (DEX, NFT marketplace, game, etc.)
-- External audit contributors (third-party audits with public reports)
-- Ecosystem PRs to canonical-contracts, sentrix repo, frontend monorepo
-- Educational content creators (verified, non-trivial)
-
-Tiered allocation. Committee composition: SentrixSafe authority + 2–3 community members (TBD post-multisig migration).
+Committee-reviewed allocation for ecosystem contributors — dApp deployers, audit contributors, ecosystem PR authors, educational content creators. Tiered allocation. Committee composition will be specified before review begins (post-SentrixSafe-3-of-5-migration).
 
 ## Auditability
 
@@ -155,14 +140,16 @@ The Merkle tree leaf list is published openly so anyone can:
 
 ## Roadmap
 
-| Date | Milestone |
+| Quarter | Milestone |
 |---|---|
-| Q2 2026 | Phase 1 announcement (post-Chainlist listing); snapshot height locked + announced |
+| Q2 2026 | Phase 1 announcement (post-Chainlist listing); snapshot height locked at announcement |
 | Q2 2026 | `MerkleAirdrop.sol` deploy + pre-fund (single tx from Strategic Reserve) |
-| Q2 2026 | Phase 1 claim window opens (90 days) |
-| Q3 2026 | Phase 1 sweep + Phase 2 / 3 launch |
-| Q4 2026 | Phase 4 launch (post-DEX activity meaningful) |
+| Q2 2026 | Phase 1 claim window opens |
+| Q3 2026 | Phase 2 + Phase 3 launch (per tokenomics §6) |
+| Q4 2026 | Phase 4 launch |
 | Q4 2026 / Q1 2027 | Phase 5 retroactive committee review |
+
+Quarter-level targets follow tokenomics §6. Specific dates within each quarter are not pre-committed.
 
 ## Cross-references
 

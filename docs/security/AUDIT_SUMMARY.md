@@ -23,19 +23,12 @@ For the full technical detail of any individual round, see [`SECURITY_AUDIT_V11.
 
 ## Audit history
 
-| Round | Date | Scope | Findings (C/H/M/L/Info) | Status |
-|---|---|---|---|---|
-| V1–V3 | Jan 2026 – Feb 2026 | Foundational consensus + storage layer | 0 / 4 / 8 / 12 / 6 | All resolved or accepted |
-| V4 | Feb 2026 | BFT signing + double-sign detection | 0 / 1 / 3 / 5 / 4 | All resolved |
-| V5 | Mar 2026 | EVM integration + revm wiring | 0 / 2 / 4 / 6 / 5 | All resolved |
-| V6 | Mar 2026 | Validator security + keystore handling | 0 / 1 / 2 / 4 / 3 | All resolved |
-| V7 | Mar 2026 | Networking layer + libp2p hardening | 0 / 0 / 3 / 5 / 4 | All resolved |
-| V8 | Apr 2026 | Tokenomics correctness + supply invariants | 0 / 1 / 2 / 3 / 5 | All resolved |
-| V9 | Apr 2026 | Slashing + jailing logic | 0 / 0 / 2 / 4 / 4 | All resolved |
-| V10 | Apr 2026 | Pre-mainnet sweep | 0 / 1 / 3 / 4 / 6 | All resolved |
-| V11 | 2026-04-25 | Code review (39 files, ~6,500 LoC) | 0 / 2 / 5 / 7 / 8 | High items resolved; medium/low tracked |
+- **Cumulative through round 10:** 94 findings raised, 78 fixed (per [`SECURITY_REPORT.md`](SECURITY_REPORT.md))
+- **Round V11 (2026-04-25):** 0 critical / 2 high / 5 medium / 7 low / 8 info-level findings (per [`SECURITY_AUDIT_V11.md`](SECURITY_AUDIT_V11.md))
+- **Total cumulative:** 116 findings, 78+ fixed (numbers from `SECURITY_REPORT.md` + V11)
+- **0 critical** findings outstanding across all rounds
 
-**Severity legend:** C = critical, H = high, M = medium, L = low, Info = positive finding (good practice noted).
+Per-round breakdown of V1–V10 is aggregated in `SECURITY_REPORT.md` rather than maintained as separate files. V11 is documented separately because it was a deep code review (39 files, ~6,500 LoC).
 
 ### V11 highlights (most recent)
 
@@ -79,14 +72,14 @@ Pentest scenarios run against live testnet + mainnet (controlled, with operator 
 
 | Scenario | Outcome |
 |---|---|
-| Double-sign attempt by malicious validator | ✅ Detected & evidence-bundled (slashing engine) |
-| Long-range attack via finalized state replay | ✅ Rejected (committed-root protection) |
-| RPC overload / DoS attempt | ✅ Per-IP rate limiter held; no node degradation |
-| WebSocket connection flood | ✅ Per-IP connection limiter (10/IP) blocked excess |
-| Mempool spam (low-fee tx flood) | ✅ Min-fee + admit-rate-limit cleared spam without dropping legitimate tx |
-| Storage layer corruption simulation | ✅ MDBX integrity checks caught corruption; recovery ran cleanly |
+| RPC Flood (1000 requests) | ✅ Per-IP rate limiter held; chain never stalled |
+| Malformed requests (32 cases: invalid JSON, SQLi, XSS, path traversal, etc.) | ✅ 31/32 — proper HTTP error codes; nginx caught one before node |
+| Double-spend (same-nonce tx pairs via REST + RPC) | ✅ Auth layer blocked unauthenticated tx submissions before validation |
+| TX spam (100 rapid + 5 duplicate-nonce) | ✅ All rejected at auth + rate-limit layer |
+| P2P connection flood (120 simultaneous TCP) | ✅ Zero impact on block production or API latency |
+| Oversized payloads (1KB → 2MB on RPC + TX endpoints) | ✅ Nginx drops large payloads before reaching node |
 
-**6/6 passed.** Methodology + per-scenario detail in [`PENTEST_RESULTS.md`](PENTEST_RESULTS.md).
+**6/6 passed.** Tested 2026-04-15 against live Foundation validator. Chain advanced from height 140,282 → 140,811 during the run with no missed blocks. Full methodology + raw test output in [`PENTEST_RESULTS.md`](PENTEST_RESULTS.md).
 
 ## Score breakdown
 
@@ -114,12 +107,13 @@ Areas for continued improvement (tracked in `docs/security/` + audit folder):
 
 **Status:** No third-party audit firm has reviewed Sentrix Chain code as of 2026-04-28.
 
-**Plan:** Engage one of the well-known smart-contract / consensus auditors (Trail of Bits, OpenZeppelin Spearbit, Quantstamp, or similar) in **Q2 2026** for:
-- Full Rust core audit (consensus + storage + RPC, ~50K LoC scope)
-- Solidity contracts audit (canonical-contracts repo, ~1.5K LoC)
-- Estimated audit + remediation window: **6–8 weeks**
+**Plan:** Engage a tier-1 smart-contract / consensus audit firm in Q2 2026 (per tokenomics roadmap §9). Specific firm selection and audit timeline will be announced when engagement is signed.
 
-Budget allocated from Strategic Reserve (see [`docs/tokenomics/OVERVIEW.md`](../tokenomics/OVERVIEW.md)). External audit completion is a Tier-1 prerequisite for major CEX listings.
+**Scope (target):**
+- Rust core (consensus + storage + RPC layers)
+- Solidity contracts (canonical-contracts repo)
+
+Budget allocated from Strategic Reserve (see [`docs/tokenomics/OVERVIEW.md`](../tokenomics/OVERVIEW.md)). External audit completion is a prerequisite for major CEX listings.
 
 In the interim, the chain runs continuous internal review:
 - `cargo audit` + `gitleaks` on every PR
