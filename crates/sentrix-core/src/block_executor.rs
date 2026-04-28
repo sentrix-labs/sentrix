@@ -868,6 +868,17 @@ impl Blockchain {
                             max_supply,
                             &tx.txid,
                         )?;
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_token_op(&sentrix_primitives::events::TokenOpEvent {
+                                op: "deploy".to_string(),
+                                contract: tx.txid.clone(),
+                                from: tx.from_address.clone(),
+                                to: String::new(),
+                                amount: supply,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
+                        }
                     }
                     TokenOp::Transfer {
                         contract,
@@ -880,10 +891,32 @@ impl Blockchain {
                             &to,
                             amount,
                         )?;
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_token_op(&sentrix_primitives::events::TokenOpEvent {
+                                op: "transfer".to_string(),
+                                contract: contract.clone(),
+                                from: tx.from_address.clone(),
+                                to: to.clone(),
+                                amount,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
+                        }
                     }
                     TokenOp::Burn { contract, amount } => {
                         self.contracts
                             .execute_burn(&contract, &tx.from_address, amount)?;
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_token_op(&sentrix_primitives::events::TokenOpEvent {
+                                op: "burn".to_string(),
+                                contract: contract.clone(),
+                                from: tx.from_address.clone(),
+                                to: String::new(),
+                                amount,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
+                        }
                     }
                     TokenOp::Mint {
                         contract,
@@ -892,6 +925,17 @@ impl Blockchain {
                     } => {
                         self.contracts
                             .execute_mint(&contract, &tx.from_address, &to, amount)?;
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_token_op(&sentrix_primitives::events::TokenOpEvent {
+                                op: "mint".to_string(),
+                                contract: contract.clone(),
+                                from: tx.from_address.clone(),
+                                to: to.clone(),
+                                amount,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
+                        }
                     }
                     TokenOp::Approve {
                         contract,
@@ -904,6 +948,17 @@ impl Blockchain {
                             &spender,
                             amount,
                         )?;
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_token_op(&sentrix_primitives::events::TokenOpEvent {
+                                op: "approve".to_string(),
+                                contract: contract.clone(),
+                                from: tx.from_address.clone(),
+                                to: spender.clone(),
+                                amount,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
+                        }
                     }
                     op if op.is_nft_family() => {
                         // Pass-2 apply path: NFT TokenOp dispatch is
@@ -975,6 +1030,17 @@ impl Blockchain {
                                 0,
                             )?;
                         }
+                        // Phase 3 WS: notify sentrix_subscribe(stakingOps).
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_staking_op(&sentrix_primitives::events::StakingOpEvent {
+                                op: "claim_rewards".to_string(),
+                                validator: claimer.clone(),
+                                delegator: claimer.clone(),
+                                amount: total_claim,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
+                        }
                     }
                     StakingOp::RegisterValidator {
                         self_stake,
@@ -1016,6 +1082,16 @@ impl Blockchain {
                             amount,
                             block.index,
                         )?;
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_staking_op(&sentrix_primitives::events::StakingOpEvent {
+                                op: "delegate".to_string(),
+                                validator: validator.clone(),
+                                delegator: tx.from_address.clone(),
+                                amount,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
+                        }
                     }
                     StakingOp::Undelegate { validator, amount } => {
                         // No escrow movement on request — money stays in
@@ -1059,6 +1135,16 @@ impl Blockchain {
                         }
                         self.stake_registry
                             .unjail(&tx.from_address, block.index)?;
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_staking_op(&sentrix_primitives::events::StakingOpEvent {
+                                op: "unjail".to_string(),
+                                validator: tx.from_address.clone(),
+                                delegator: tx.from_address.clone(),
+                                amount: 0,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
+                        }
                     }
                     StakingOp::SubmitEvidence {
                         height,
@@ -1206,6 +1292,25 @@ impl Blockchain {
                         // proposer rotation immediately rather than
                         // waiting for the next epoch tick.
                         self.stake_registry.update_active_set();
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_staking_op(&sentrix_primitives::events::StakingOpEvent {
+                                op: "add_self_stake".to_string(),
+                                validator: tx.from_address.clone(),
+                                delegator: tx.from_address.clone(),
+                                amount,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
+                            // The active-set refresh effectively a validator
+                            // set rotation event when a previously-jailed
+                            // validator re-enters; emit so dApps tracking
+                            // active set get a notif.
+                            let active: Vec<String> = self.stake_registry.active_set.to_vec();
+                            let epoch = sentrix_staking::epoch::EpochManager::epoch_for_height(
+                                block.index,
+                            );
+                            emitter.emit_validator_set(epoch, &active);
+                        }
                     }
                 }
             }

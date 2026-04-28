@@ -14,7 +14,10 @@
 //! events behind is no longer "real-time" anyway.
 
 use sentrix_primitives::block::Block;
-use sentrix_primitives::events::{EventEmitter, LogData};
+use sentrix_primitives::events::{
+    EventEmitter, JailEvent as PrimJailEvent, LogData, StakingOpEvent as PrimStakingOpEvent,
+    TokenOpEvent as PrimTokenOpEvent,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -164,6 +167,46 @@ pub struct ValidatorSetEvent {
     pub validators: Vec<String>,
 }
 
+/// Sentrix-native: emitted on `sentrix_subscribe(tokenOps)`. Fires
+/// after every successfully-applied native TokenOp (SRC-20/721/1155).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenOpEvent {
+    pub op: String,
+    pub contract: String,
+    pub from: String,
+    pub to: String,
+    pub amount: u64,
+    pub txid: String,
+    #[serde(rename = "blockHeight")]
+    pub block_height: u64,
+}
+
+/// Sentrix-native: emitted on `sentrix_subscribe(stakingOps)`. Fires
+/// after every successfully-applied StakingOp.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StakingOpEvent {
+    pub op: String,
+    pub validator: String,
+    pub delegator: String,
+    pub amount: u64,
+    pub txid: String,
+    #[serde(rename = "blockHeight")]
+    pub block_height: u64,
+}
+
+/// Sentrix-native: emitted on `sentrix_subscribe(jail)`. Fires only
+/// post-fork (`JAIL_CONSENSUS_HEIGHT` active) when JailEvidenceBundle
+/// dispatch produces a jail decision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JailEvent {
+    pub validator: String,
+    pub epoch: u64,
+    #[serde(rename = "missedBlocks")]
+    pub missed_blocks: u64,
+    #[serde(rename = "blockHeight")]
+    pub block_height: u64,
+}
+
 /// Concrete event bus. Held as `Arc<EventBus>` and shared between
 /// the consensus path (which calls `emit_*` methods) and the
 /// WebSocket subscription handlers (which call `<channel>.subscribe()`
@@ -175,6 +218,9 @@ pub struct EventBus {
     pub pending_txs: broadcast::Sender<PendingTxEvent>,
     pub finalized: broadcast::Sender<FinalizedEvent>,
     pub validator_set: broadcast::Sender<ValidatorSetEvent>,
+    pub token_ops: broadcast::Sender<TokenOpEvent>,
+    pub staking_ops: broadcast::Sender<StakingOpEvent>,
+    pub jail: broadcast::Sender<JailEvent>,
 }
 
 impl EventBus {
@@ -192,6 +238,9 @@ impl EventBus {
             pending_txs: broadcast::channel(capacity).0,
             finalized: broadcast::channel(capacity).0,
             validator_set: broadcast::channel(capacity).0,
+            token_ops: broadcast::channel(capacity).0,
+            staking_ops: broadcast::channel(capacity).0,
+            jail: broadcast::channel(capacity).0,
         }
     }
 }
@@ -241,6 +290,38 @@ impl EventEmitter for EventBus {
         let _ = self.validator_set.send(ValidatorSetEvent {
             epoch,
             validators: validators.to_vec(),
+        });
+    }
+
+    fn emit_token_op(&self, ev: &PrimTokenOpEvent) {
+        let _ = self.token_ops.send(TokenOpEvent {
+            op: ev.op.clone(),
+            contract: ev.contract.clone(),
+            from: ev.from.clone(),
+            to: ev.to.clone(),
+            amount: ev.amount,
+            txid: ev.txid.clone(),
+            block_height: ev.block_height,
+        });
+    }
+
+    fn emit_staking_op(&self, ev: &PrimStakingOpEvent) {
+        let _ = self.staking_ops.send(StakingOpEvent {
+            op: ev.op.clone(),
+            validator: ev.validator.clone(),
+            delegator: ev.delegator.clone(),
+            amount: ev.amount,
+            txid: ev.txid.clone(),
+            block_height: ev.block_height,
+        });
+    }
+
+    fn emit_jail(&self, ev: &PrimJailEvent) {
+        let _ = self.jail.send(JailEvent {
+            validator: ev.validator.clone(),
+            epoch: ev.epoch,
+            missed_blocks: ev.missed_blocks,
+            block_height: ev.block_height,
         });
     }
 }
