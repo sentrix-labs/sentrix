@@ -17,7 +17,9 @@ Sentrix is the financial infrastructure for the real economy — starting with I
 - 🦊 **Connect MetaMask** — [Network Config](operations/METAMASK)
 - 🔗 **API Reference** — [REST + JSON-RPC Endpoints](operations/API_ENDPOINTS)
 - ⚙️ **Run a Node** — [Validator Guide](operations/VALIDATOR_GUIDE)
-- 🪙 **Tokenomics** — [SRX](tokenomics/SRX) · [SRC-20 Standard](tokenomics/TOKEN_STANDARDS) · [Staking](tokenomics/STAKING)
+- 🪙 **Tokenomics** — [Overview](tokenomics/OVERVIEW) · [SRX](tokenomics/SRX) · [Staking](tokenomics/STAKING) · [Reward Escrow](tokenomics/REWARD_ESCROW) · [SRC-20 Standard](tokenomics/TOKEN_STANDARDS)
+- 🛡️ **Security** — [Multi-sig & Authority](security/MULTISIG) · [Audit Reports](security/SECURITY_AUDIT_V11)
+- 📡 **Operations** — [Mainnet Observability](operations/OBSERVABILITY) · [Validator Onboarding](operations/VALIDATOR_ONBOARDING)
 
 ## Network at a glance
 
