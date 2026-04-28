@@ -15,7 +15,7 @@
 | Consensus | **Voyager** (DPoS + BFT, `voyager_activated=true` since h=579047 / 2026-04-25) |
 | EVM | Active — `evm_activated=true` since the same height; MetaMask compatible |
 | Reward distribution | **V4 reward v2** active since h=590100 / 2026-04-25 — coinbase routes to `PROTOCOL_TREASURY` (0x0000…0002), validators + delegators claim via `ClaimRewards` staking op |
-| Binary | v2.1.44 |
+| Binary | v2.1.46 |
 
 ## Testnet
 
