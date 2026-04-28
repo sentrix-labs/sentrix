@@ -487,7 +487,20 @@ enum ChainCommands {
     /// Drop all trie state (trie_nodes, trie_values, trie_roots) so the next startup
     /// rebuilds the trie from scratch via V7-I-02 backfill.  Run this command while
     /// the node is STOPPED, then restart normally.
-    ResetTrie,
+    ResetTrie {
+        /// Acknowledge the consensus-divergence risk on a non-genesis
+        /// chain. Required when current height > 0. Without it, reset-trie
+        /// refuses on production chains (see 2026-04-21 3-way fork
+        /// incident). The cluster-wide recovery procedure: halt ALL
+        /// peers, run reset-trie + any chain.db edits on the canonical
+        /// peer, tar-pipe its chain.db to every other peer, simultaneous
+        /// start. Each peer's init_trie then backfills from the
+        /// (identical) AccountDB so all peers agree on the rebuilt trie
+        /// shape. Running reset-trie on a single peer while others keep
+        /// incrementally-built tries WILL silently fork.
+        #[arg(long)]
+        i_understand_divergence_risk: bool,
+    },
     /// Deep cross-table consistency check: walk every AccountDB entry and verify
     /// the trie leaf at that address encodes matching (balance, nonce). Detects
     /// mixed-timestamp chain.db that arises from rsync-while-live (the #268
@@ -699,7 +712,9 @@ async fn main() -> anyhow::Result<()> {
             ChainCommands::Info => cmd_chain_info()?,
             ChainCommands::Validate => cmd_chain_validate()?,
             ChainCommands::Block { index } => cmd_chain_block(index)?,
-            ChainCommands::ResetTrie => cmd_chain_reset_trie()?,
+            ChainCommands::ResetTrie {
+                i_understand_divergence_risk,
+            } => cmd_chain_reset_trie(i_understand_divergence_risk)?,
             ChainCommands::VerifyDeep => cmd_chain_verify_deep()?,
         },
 
@@ -1140,6 +1155,35 @@ fn cmd_validator_force_unjail(
         "Active set: {} validators",
         bc.stake_registry.active_count()
     );
+
+    // The mutation above writes stake_registry to TABLE_STATE but does
+    // NOT update the state_trie. After 2026-04-25's verify-deep gate,
+    // chain.db that's been touched by force-unjail without a trie
+    // rebuild will fail the boot-time consistency check on subsequent
+    // peers — discovered live during the 2026-04-27 vps3 unjail
+    // attempt. The recovery is a cluster-wide trie rebuild from the
+    // post-edit AccountDB. Print the canonical procedure here so the
+    // operator doesn't have to remember it from the runbook.
+    println!();
+    println!("NEXT STEPS — cluster-wide trie reconciliation:");
+    println!();
+    println!("  This command edited stake_registry but did NOT update the");
+    println!("  state_trie. Other peers will reject the post-edit chain.db");
+    println!("  via verify-deep until you complete the cluster-wide rebuild.");
+    println!();
+    println!("  1. Confirm ALL other peers are halted (systemctl is-active).");
+    println!("  2. On THIS peer, drop the trie tables:");
+    println!("       sentrix chain reset-trie --i-understand-divergence-risk");
+    println!("  3. tar-pipe THIS peer's chain.db to every other peer:");
+    println!("       ssh canonical 'tar -C <data_dir> -cf - chain.db' \\");
+    println!("         | ssh peer 'tar -C <data_dir> -xf - --overwrite'");
+    println!("  4. Simultaneous-start all peers. Each peer's init_trie will");
+    println!("     backfill the trie from the (identical) AccountDB → all");
+    println!("     peers converge on the same backfill-shape trie.");
+    println!();
+    println!("  Until step 4, the chain remains halted. Skipping the");
+    println!("  reset-trie step on this peer or any other peer will fork.");
+
     Ok(())
 }
 
@@ -3208,7 +3252,7 @@ fn cmd_chain_block(index: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_chain_reset_trie() -> anyhow::Result<()> {
+fn cmd_chain_reset_trie(i_understand_divergence_risk: bool) -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
     if !storage.has_blockchain() {
         anyhow::bail!("Chain not initialized.");
@@ -3221,40 +3265,60 @@ fn cmd_chain_reset_trie() -> anyhow::Result<()> {
     // genesis — silent fork. v2.1.5 added a boot-time backfill-vs-header
     // guard, and PR #206 added a full trie-reachability check, but the
     // cleanest protection is to refuse reset-trie on a production chain
-    // in the first place. The rsync-from-peer recovery preserves the
-    // incremental trie shape and is the canonical path for mainnet.
+    // unless the operator explicitly acknowledges the divergence risk.
     let height = storage
         .load_height()
         .map_err(|e| anyhow::anyhow!("reading chain height: {e}"))?;
     if height > 0 {
-        // The env-var escape hatch is checked INSIDE this branch — a prior
-        // draft of this guard checked it *after* `bail!` which meant the
-        // override was dead code. Keep the check here and nowhere else.
-        let override_set = std::env::var("SENTRIX_ALLOW_RESET_TRIE_ON_NONZERO_HEIGHT")
+        // Two ways to authorize: explicit CLI flag (preferred) or the
+        // legacy env-var override (kept for back-compat with existing
+        // ops scripts). Either alone is sufficient.
+        let env_override = std::env::var("SENTRIX_ALLOW_RESET_TRIE_ON_NONZERO_HEIGHT")
             .map(|v| v == "1")
             .unwrap_or(false);
-        if !override_set {
+        if !i_understand_divergence_risk && !env_override {
             anyhow::bail!(
                 "Refusing reset-trie on a chain at height {height} > 0.\n\
-                 This command wipes trie_nodes/trie_values/trie_roots and rebuilds \
-                 from AccountDB on next boot. On a chain past genesis the rebuilt \
-                 trie CAN differ from peers' incrementally-built tries (see the \
-                 2026-04-21 3-way fork incident for what that looks like in prod).\n\
                  \n\
-                 Correct recoveries for a damaged trie on a non-genesis chain:\n\
-                 1. Stop this node.\n\
-                 2. rsync /opt/sentrix/data/chain.db from a healthy peer (all validators stopped).\n\
-                 3. Restart. The boot-time integrity check will confirm the copy is intact.\n\
+                 This command wipes trie_nodes/trie_values/trie_roots and \
+                 rebuilds from AccountDB on next boot. The incremental \
+                 path (update_trie_for_block during apply_block) only \
+                 inserts accounts touched by blocks; backfill inserts \
+                 every account with balance > 0. For the same logical \
+                 state, the two paths produce different trie node shapes, \
+                 so a SINGLE validator that runs reset-trie while peers \
+                 keep their incrementally-built tries will silently fork \
+                 — see the 2026-04-21 3-way fork incident for what that \
+                 looks like in prod.\n\
                  \n\
-                 If you REALLY need reset-trie on a non-genesis chain (devnet / \
-                 isolated testing only), set `SENTRIX_ALLOW_RESET_TRIE_ON_NONZERO_HEIGHT=1` \
-                 in your environment. This flag does not exist on release builds \
-                 that operators should be using."
+                 Use cases:\n\
+                 \n\
+                 (1) Single damaged peer, fleet healthy: prefer rsync \
+                 from a confirmed-halted canonical peer. The whole-trie \
+                 copy preserves the incremental shape and there's no \
+                 fork risk.\n\
+                 \n\
+                 (2) Cluster-wide recovery (e.g. after a chain.db edit \
+                 like force-unjail that mutates AccountDB without a \
+                 corresponding trie commit): halt ALL peers, run \
+                 reset-trie on the canonical peer, tar-pipe its \
+                 (trie-empty) chain.db to every other peer, simultaneous \
+                 start. Each peer's init_trie then backfills from the \
+                 (identical) post-edit AccountDB → all peers converge \
+                 on the same backfill-shape trie. Re-run with \
+                 `--i-understand-divergence-risk` to acknowledge and \
+                 proceed.\n\
+                 \n\
+                 The legacy env-var override \
+                 `SENTRIX_ALLOW_RESET_TRIE_ON_NONZERO_HEIGHT=1` is also \
+                 honored for back-compat with existing ops scripts."
             );
         }
         tracing::warn!(
-            "reset-trie proceeding on non-zero height (h={height}) via env override — \
-             you are on your own; fork is very likely on a shared chain"
+            "reset-trie proceeding on non-zero height (h={height}) — \
+             cluster-wide procedure required: this peer's rebuilt trie \
+             will only agree with peers if they also reset+restart from \
+             the SAME post-edit AccountDB. A single-peer reset will fork."
         );
     }
 
@@ -3262,6 +3326,14 @@ fn cmd_chain_reset_trie() -> anyhow::Result<()> {
     println!(
         "Trie state cleared. Start the node normally — it will rebuild the trie from AccountDB."
     );
+    if height > 0 {
+        println!();
+        println!(
+            "REMINDER: cluster-wide procedure required on a non-genesis chain. \
+             tar-pipe this chain.db to every peer (with all peers halted) before \
+             starting any of them, otherwise this peer will fork."
+        );
+    }
     Ok(())
 }
 
