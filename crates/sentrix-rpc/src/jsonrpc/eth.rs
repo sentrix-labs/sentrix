@@ -445,15 +445,24 @@ async fn run_evm_dry_run(
         .unwrap_or("0x")
         .trim_start_matches("0x");
     let data_bytes = hex::decode(data_hex).unwrap_or_default();
-    // P1: cap at BLOCK_GAS_LIMIT. Without the cap a client can request
-    // `u64::MAX` gas and force the EVM to run until it naturally OOGs,
-    // which at current INITIAL_BASE_FEE is a free long-running compute
-    // request against the validator — asymmetric DoS.
+    // P1: cap at TX_GAS_LIMIT_CAP (EIP-7825, 16_777_216). Without the cap
+    // a client can request `u64::MAX` gas and force the EVM to run until
+    // it naturally OOGs, which at current INITIAL_BASE_FEE is a free
+    // long-running compute request against the validator — asymmetric DoS.
+    //
+    // Cap MUST be `TX_GAS_LIMIT_CAP`, not `BLOCK_GAS_LIMIT`. revm with
+    // SpecId >= Osaka rejects `gas_limit > TX_GAS_LIMIT_CAP` (= 2^24)
+    // with `TxGasLimitGreaterThanCap` even for read-only dry-runs, so
+    // defaulting to `BLOCK_GAS_LIMIT` (30M) caused every `eth_call` and
+    // every `eth_estimateGas` to fail. Live-discovered 2026-04-28 after
+    // PR #389 deploy when `cast call WSRX.name()` returned `0x` for every
+    // canonical contract. View calls fit inside 16M comfortably (most
+    // use < 100K gas).
     let gas_limit = call_obj["gas"]
         .as_str()
         .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
-        .unwrap_or(sentrix_evm::gas::BLOCK_GAS_LIMIT)
-        .min(sentrix_evm::gas::BLOCK_GAS_LIMIT);
+        .unwrap_or(sentrix_evm::gas::TX_GAS_LIMIT_CAP)
+        .min(sentrix_evm::gas::TX_GAS_LIMIT_CAP);
 
     let bc = state.read().await;
     use sentrix_evm::database::parse_sentrix_address;

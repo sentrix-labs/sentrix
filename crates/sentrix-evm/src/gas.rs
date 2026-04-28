@@ -13,6 +13,13 @@ pub const GAS_TARGET: u64 = 15_000_000;
 /// Maximum gas per block
 pub const BLOCK_GAS_LIMIT: u64 = 30_000_000;
 
+/// Per-transaction gas limit cap (EIP-7825, active in revm SpecId >= Osaka).
+/// 2^24 = 16_777_216. revm rejects any TxEnv whose `gas_limit` exceeds this
+/// with `TxGasLimitGreaterThanCap` even for read-only `eth_call` dry-runs,
+/// so the RPC layer must clamp `eth_call`/`eth_estimateGas` gas to this cap
+/// rather than `BLOCK_GAS_LIMIT`. View calls fit inside this comfortably.
+pub const TX_GAS_LIMIT_CAP: u64 = 16_777_216;
+
 /// Denominator for base fee change (max 12.5% per block)
 pub const BASE_FEE_CHANGE_DENOMINATOR: u64 = 8;
 
