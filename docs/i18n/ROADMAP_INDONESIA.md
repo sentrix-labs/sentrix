@@ -56,7 +56,7 @@ Founder Sentrix (Satya Kwok) berbasis di Indonesia. Tim core, advisor planning, 
 
 ## Peta Jalan — Indonesia Spesifik
 
-Roadmap di bawah ini fokus ke milestone yang relevan untuk pasar Indonesia. Untuk roadmap teknis chain secara menyeluruh, lihat [`docs/operations/ROADMAP.md`](../operations/ROADMAP.md).
+Roadmap di bawah ini fokus ke milestone yang relevan untuk pasar Indonesia. Untuk roadmap teknis chain secara menyeluruh, lihat dokumen Roadmap di [`docs/roadmap/`](../roadmap/PHASE1) (Phase 1, 2, 3).
 
 ### Q2 2026 (April – Juni) — Foundation & Visibility
 
@@ -147,7 +147,7 @@ Roadmap di bawah ini fokus ke milestone yang relevan untuk pasar Indonesia. Untu
 - **Faucet:** [https://faucet.sentrixchain.com](https://faucet.sentrixchain.com)
 - **Block explorer:** [https://scan.sentrixchain.com](https://scan.sentrixchain.com)
 - **GitHub:** [github.com/sentrix-labs](https://github.com/sentrix-labs)
-- **Security disclosures:** `security@sentriscloud.com` (lihat [SECURITY.md](../../SECURITY.md))
+- **Security disclosures:** `security@sentriscloud.com` (lihat [SECURITY.md](https://github.com/sentrix-labs/sentrix/blob/main/SECURITY.md))
 - **General contact:** Akan dipublish menjelang Phase 1 airdrop launch
 
 ---
