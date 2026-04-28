@@ -424,10 +424,22 @@ async fn run_evm_dry_run(
         return Err((-32000, "EVM not active yet".into()));
     }
 
-    let from_str = call_obj["from"]
+    // Sentrix's AccountDB stores addresses lowercase (per
+    // `address_to_sentrix` which uses `hex::encode(...)`). EVM tooling
+    // commonly sends checksummed mixed-case addresses (EIP-55). A naive
+    // `accounts.get(to_str)` lookup with a checksummed address misses
+    // every contract → eth_call returns "0x" silently. Normalize to
+    // lowercase before any AccountDB lookup. Live-discovered 2026-04-28
+    // when canonical contracts (deployed lowercase per EVM CREATE
+    // semantics) returned empty `name()` / `getBlockNumber()` /
+    // `tokensOf()` over JSON-RPC.
+    let from_str_owned = call_obj["from"]
         .as_str()
-        .unwrap_or("0x0000000000000000000000000000000000000000");
-    let to_str = call_obj["to"].as_str().unwrap_or("");
+        .unwrap_or("0x0000000000000000000000000000000000000000")
+        .to_ascii_lowercase();
+    let to_str_owned = call_obj["to"].as_str().unwrap_or("").to_ascii_lowercase();
+    let from_str: &str = &from_str_owned;
+    let to_str: &str = &to_str_owned;
     let data_hex = call_obj["data"]
         .as_str()
         .unwrap_or("0x")
@@ -468,44 +480,29 @@ async fn run_evm_dry_run(
 
     let base_fee = sentrix_evm::gas::INITIAL_BASE_FEE;
 
-    let mut in_mem_db = revm::database::InMemoryDB::default();
-    let sender_balance = bc.accounts.get_balance(from_str);
-    let sender_nonce = bc.accounts.get_nonce(from_str);
-    in_mem_db.insert_account_info(
-        from_addr,
-        revm::state::AccountInfo {
-            balance: alloy_primitives::U256::from(sender_balance)
-                .saturating_mul(alloy_primitives::U256::from(10_000_000_000u64)),
-            nonce: sender_nonce,
-            code_hash: revm::primitives::KECCAK_EMPTY,
-            account_id: None,
-            code: None,
-        },
-    );
-    if let Some(target) = to_addr
-        && let Some(target_account) = bc.accounts.accounts.get(to_str)
-        && target_account.is_contract()
-    {
-        let code_hash_hex = hex::encode(target_account.code_hash);
-        if let Some(code_bytes) = bc.accounts.get_contract_code(&code_hash_hex) {
-            let bytecode =
-                revm::state::Bytecode::new_raw(alloy_primitives::Bytes::from(code_bytes.clone()));
-            let code_hash = alloy_primitives::B256::from(target_account.code_hash);
-            in_mem_db.insert_account_info(
-                target,
-                revm::state::AccountInfo {
-                    balance: alloy_primitives::U256::from(target_account.balance),
-                    nonce: target_account.nonce,
-                    code_hash,
-                    account_id: None,
-                    code: Some(bytecode),
-                },
-            );
+    // Use SentrixEvmDb (revm::Database backed by AccountDB) instead of
+    // InMemoryDB. The previous InMemoryDB pre-loaded only the target
+    // contract's CODE — storage slots returned 0 for every read, so any
+    // ERC-20 `name()` / `symbol()` / `balanceOf(addr)` / etc. returned
+    // empty bytes. SentrixEvmDb's `Database` trait reads storage slots
+    // on-demand from AccountDB's contract_storage map (populated by
+    // `commit_state_to_account_db` on every CREATE/CALL). This makes
+    // eth_call results match real on-chain state.
+    let mut evm_db = sentrix_evm::database::SentrixEvmDb::from_account_db(&bc.accounts);
+    // Override sender balance with a generous (but not absurd) amount in
+    // wei so balance/gas checks during dry-run don't trip on a freshly
+    // queried zero-balance EOA. Read-only callers don't have to be funded.
+    use revm::Database;
+    if let Ok(mut sender_info) = evm_db.basic(from_addr).map(|opt| opt.unwrap_or_default()) {
+        if sender_info.balance.is_zero() {
+            sender_info.balance = alloy_primitives::U256::from(1u64) << 96; // ~7.9e28 wei, plenty for any view call
         }
+        evm_db.insert_account(from_addr, sender_info);
     }
     drop(bc);
 
-    sentrix_evm::executor::execute_call(in_mem_db, tx, base_fee, chain_id)
+    sentrix_evm::executor::execute_call_with_state(evm_db, tx, base_fee, chain_id)
+        .map(|(receipt, _state)| receipt)
         .map_err(|e| (-32000, format!("EVM execution failed: {e}")))
 }
 
