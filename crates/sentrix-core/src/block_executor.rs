@@ -1169,6 +1169,44 @@ impl Blockchain {
                             self.slashing.liveness.reset(&ev.validator);
                         }
                     }
+                    StakingOp::AddSelfStake { amount } => {
+                        // Fork-gated: pre-`ADD_SELF_STAKE_HEIGHT` reject.
+                        // Wire format is stable from the activation PR;
+                        // gate keeps dispatch dormant until operator
+                        // rollout (halt-all + simultaneous-start with
+                        // env var set on every validator).
+                        if !Self::is_add_self_stake_height(block.index) {
+                            return Err(SentrixError::InvalidTransaction(
+                                "AddSelfStake dispatch is gated by \
+                                 ADD_SELF_STAKE_HEIGHT fork (currently \
+                                 disabled)"
+                                    .into(),
+                            ));
+                        }
+                        // Authorization: only the validator itself may
+                        // add to its own self_stake. tx.from_address is
+                        // the validator's wallet; the fn must be called
+                        // with the same address as the registry key.
+                        // Outer accounts.transfer in apply-Pass-2 has
+                        // already moved tx.amount from from_address →
+                        // PROTOCOL_TREASURY at this point; dispatch only
+                        // updates the registry. tx.amount must equal
+                        // data.amount (escrow / dispatch agreement).
+                        if tx.amount != amount {
+                            return Err(SentrixError::InvalidTransaction(format!(
+                                "AddSelfStake: tx.amount ({}) must equal \
+                                 stake amount ({})",
+                                tx.amount, amount
+                            )));
+                        }
+                        self.stake_registry
+                            .add_self_stake(&tx.from_address, amount)?;
+                        // Refresh active set so a previously-slashed
+                        // validator that crosses MIN_SELF_STAKE re-enters
+                        // proposer rotation immediately rather than
+                        // waiting for the next epoch tick.
+                        self.stake_registry.update_active_set();
+                    }
                 }
             }
 
