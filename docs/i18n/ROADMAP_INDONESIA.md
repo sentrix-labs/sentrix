@@ -80,8 +80,7 @@ Roadmap di bawah ini fokus ke milestone yang relevan untuk pasar Indonesia. Untu
 | **Airdrop Phase 2 — Quest Campaign** (1.000.000 SRX) | Galxe / Zealy-style integration, partnership platform Indonesia |
 | **DEX launch (canonical AMM)** | Uniswap V2-fork atau equivalen, bootstrap likuiditas dari Strategic Reserve (1.5M SRX) |
 | **Engagement Tokocrypto + Pintu** | Listing CEX Indonesia tier-1, Bappebti-licensed |
-| **SentrixSafe migrasi 1-of-1 → 3-of-5** | Governance multisig dengan 3 dari 5 signer (per tokenomics §8) |
-| **Founder vesting contract deploy** | Lock 21M SRX founder allocation on-chain (saat ini social commitment, akan jadi enforced contract) |
+| **Founder vesting contract deploy** | Lock 21M SRX founder allocation on-chain (per tokenomics §9) — saat ini social commitment, jadi enforced contract setelah deploy |
 
 ### Q4 2026 (Oktober – Desember) — Ekspansi Ekosistem
 
@@ -132,7 +131,7 @@ Roadmap setelah 2026 belum di-commit ke timeline spesifik. Direction signals:
 
 1. **Bahasa Indonesia gap:** kami butuh tutorial, video, threads, deep-dive Bahasa Indonesia tentang Sentrix
 2. **Phase 5 retroactive eligible:** content creator dengan output verified + non-trivial → committee review untuk grant alokasi
-3. **Strategic Reserve dukungan partnership:** untuk creator dengan reach signifikan, partnership formal possible (Q3+ post-multisig migration)
+3. **Strategic Reserve dukungan partnership:** untuk creator dengan reach signifikan, partnership formal possible (timing TBD per kapasitas operasional)
 
 ---
 

@@ -5,7 +5,7 @@ title: Multi-sig & Authority Wallet
 
 # SentrixSafe & authority wallet model
 
-How privileged actions on Sentrix Chain are governed: a minimal Gnosis Safe-derived multi-sig, currently 1-of-1 with a dedicated authority signer, transitioning to 3-of-5 in Q3 2026.
+How privileged actions on Sentrix Chain are governed: a minimal Gnosis Safe-derived multi-sig, currently 1-of-1 with a dedicated authority signer. The contract is shape-ready to expand to N-of-M when independent signers are recruited; no specific expansion timeline is committed.
 
 ## Architecture
 
@@ -62,19 +62,18 @@ cast call 0x6272dC0C842F05542f9fF7B5443E93C0642a3b26 "getThreshold()(uint256)" \
 # → 1
 ```
 
-## Q3 2026: 3-of-5 migration plan
+## Multi-sig expansion (no committed timeline)
 
-Adds 4 additional signers to the Safe, then `changeThreshold(3)`. Target signer slate:
+The contract is shape-ready for N-of-M expansion. Whenever independent signers are recruited and onboarded, the expansion is a same-day on-chain operation:
 
-| Slot | Role | Held by |
-|---|---|---|
-| 1 | Authority (current) | Sentrix Labs core team |
-| 2 | Founder backup | Cold-storage wallet, separate from Founder v3 premine |
-| 3 | Independent advisor 1 | TBD |
-| 4 | Independent advisor 2 | TBD |
-| 5 | Security council seat | TBD (audit firm or community-elected) |
+```
+addOwner(<new_signer>, threshold=1)   // repeat per signer; threshold stays 1 until last step
+changeThreshold(<new_threshold>)      // raise quorum once full signer set is in place
+```
 
-Sequenced as: `addOwner(slot2, threshold=1)` → `addOwner(slot3, threshold=1)` → `addOwner(slot4, threshold=1)` → `addOwner(slot5, threshold=1)` → `changeThreshold(3)`. All signed by current authority (1-of-1 still suffices throughout).
+No timeline is committed because committing to a specific quarter without recruited signers in pipeline would be performative — a multi-sig wallet with non-responsive co-signers is operationally worse than a working 1-of-1.
+
+The contract surface (1-of-1 today, expansion-ready) is the right signal to listing platforms and partners: governance contract exists + ready to expand, not "we will definitely have N signers by date X."
 
 ## Key contract operations gated by Safe
 

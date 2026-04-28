@@ -114,7 +114,7 @@ Pro-rata distribution to delegators on active validators at snapshot height. Tar
 
 ### Phase 5 — Retroactive Builders (Q4 2026 / Q1 2027)
 
-Committee-reviewed allocation for ecosystem contributors — dApp deployers, audit contributors, ecosystem PR authors, educational content creators. Tiered allocation. Committee composition will be specified before review begins (post-SentrixSafe-3-of-5-migration).
+Committee-reviewed allocation for ecosystem contributors — dApp deployers, audit contributors, ecosystem PR authors, educational content creators. Tiered allocation. Committee composition will be specified before review begins.
 
 ## Auditability
 
