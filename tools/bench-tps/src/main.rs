@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 #[derive(Parser, Debug)]
 #[command(about = "Sentrix TPS + pentest bench")]
 struct Args {
-    /// Node RPC base URL (e.g. http://10.20.0.4:9545)
+    /// Node RPC base URL (e.g. http://localhost:9545)
     #[arg(long, default_value = "http://localhost:9545")]
     rpc: String,
 

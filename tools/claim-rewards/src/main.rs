@@ -8,7 +8,7 @@
 //
 // Usage:
 //   echo "<64-hex-privkey>" | claim-rewards \
-//     --rpc       http://10.20.0.2:8545 \
+//     --rpc       http://localhost:8545 \
 //     --chain-id  7119
 //   # add --dry-run to build + sign without POSTing
 //
@@ -34,7 +34,7 @@ use std::time::Duration;
 
 #[derive(Parser)]
 struct Args {
-    /// RPC base URL (e.g. http://10.20.0.2:8545)
+    /// RPC base URL (e.g. http://localhost:8545)
     #[arg(long)]
     rpc: String,
 
