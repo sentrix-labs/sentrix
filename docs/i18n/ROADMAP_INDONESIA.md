@@ -83,27 +83,24 @@ Roadmap di bawah ini fokus ke milestone yang relevan untuk pasar Indonesia. Untu
 | **Founder vesting contract deploy** | Lock 21M SRX founder allocation on-chain (saat ini social commitment, akan jadi enforced contract) |
 | **Bahasa Indonesia content expansion** | Translasi docs utama (validator guide, smart contract tutorial, faucet, claim airdrop) |
 
-### Q4 2026 (Oktober – Desember) — Real Economy Integration
+### Q4 2026 (Oktober – Desember) — Ekspansi Ekosistem
 
 | Milestone | Catatan |
 |---|---|
-| **Airdrop Phase 3 — Activity Rewards** (800.000 SRX) | Reward untuk active mainnet wallets, snapshot mainnet |
-| **Airdrop Phase 4 — Validator Delegators** (700.000 SRX) | Pro-rata ke delegator pada active validator set |
-| **External validator onboarding** | Saat ini 4 validator semua Foundation-operated. Target: ≥10 validator dengan operator independen |
-| **Indodax + 1 CEX Indonesia tambahan listing** | Tier-1 Indonesia CEX coverage |
-| **First RWA pilot integration** | Aset dunia nyata pertama on-chain (kategori belum diumumkan; akan di-publish saat partnership signed) |
-| **Native event/log system + GraphQL indexer** | Infrastruktur dApp-level — analytics, NFT marketplace listings, dApp discovery |
-| **Komunitas builder Indonesia — bootcamp + grants** | Program dev edukasi + grant pool dari Ecosystem Fund |
+| **Airdrop Phase 3 — Activity Rewards** (800.000 SRX) | Reward untuk active mainnet wallets, snapshot mainnet (per tokenomics §6) |
+| **Airdrop Phase 4 — Validator Delegators** (700.000 SRX) | Pro-rata ke delegator pada active validator set (per tokenomics §6) |
+| **External validator onboarding mulai** | Saat ini 4 validator semua Foundation-operated. Onboarding criteria + cadence akan dipublish saat ready. Target jumlah validator belum di-commit. |
+| **Indonesian CEX listing engagement berlanjut** | Tokocrypto / Pintu / Indodax — per status engagement-nya |
 
-### 2027+ — Skala & Decentralisasi
+### 2027+ — Decentralisasi Bertahap
 
-| Milestone | Catatan |
-|---|---|
-| **Airdrop Phase 5 — Retroactive Builders** (1.500.000 SRX) | Committee-reviewed: dApp deployers, audit contributors, ecosystem PRs |
-| **Tier-2 CEX international** | Gate.io, MEXC, KuCoin tier (post DEX TVL > $1M) |
-| **On-chain governance untuk protocol upgrade** | Saat ini upgrade dilakukan via koordinasi operator. Q4 2027+ target: voting-based governance |
-| **Decentralized treasury (DAO-style)** | Replace Foundation-coordinated multisig dengan governance token-based decision making |
-| **Tier-3 CEX (Binance, Coinbase) — realistik post-traction** | Setelah TVL meaningful + daily active address sustainable + regulator clarity |
+Roadmap setelah 2026 belum di-commit ke timeline spesifik. Direction signals:
+
+- **Airdrop Phase 5 — Retroactive Builders** (1.500.000 SRX) — committee-reviewed (per tokenomics §6, target Q4 2026 / Q1 2027)
+- **Tier-2 CEX international** (Gate.io, MEXC, KuCoin tier per tokenomics §7) — gated by DEX TVL milestone
+- **Tier-3 CEX** (Binance, Coinbase) — realistik post-traction (TVL meaningful + daily active addresses sustainable + regulator clarity)
+- **On-chain governance untuk protocol upgrade** — saat ini upgrade via koordinasi operator. Future move to voting-based governance is on roadmap once external validator set is mature; specific year not committed.
+- **Decentralized treasury (DAO-style)** — eventual replacement untuk Foundation-coordinated multisig. Sequenced after on-chain governance framework live.
 
 ---
 
@@ -128,8 +125,8 @@ Roadmap di bawah ini fokus ke milestone yang relevan untuk pasar Indonesia. Untu
 
 ### Untuk validator
 
-1. **Saat ini:** Foundation-operated 4 validator. External onboarding mulai Q4 2026.
-2. **Persyaratan teknis (akan dipublish):** minimum self-stake, hardware spec, uptime SLA, networking tier
+1. **Saat ini:** Foundation-operated 4 validator. External onboarding direction-signaled untuk Q4 2026 (criteria + cadence akan dipublish saat ready).
+2. **Persyaratan teknis:** akan dipublish saat onboarding window dibuka (minimum self-stake, hardware spec, uptime SLA, networking tier)
 3. **Reward economics:** V4 distribution — block reward + tx fee revenue, pro-rata berdasarkan stake
 
 ### Untuk content creator / educator
@@ -156,15 +153,12 @@ Roadmap di bawah ini fokus ke milestone yang relevan untuk pasar Indonesia. Untu
 
 Dokumen ini adalah **dokumen pertama** dalam program i18n Sentrix. Goal: membuat informasi tentang Sentrix Chain dapat diakses dalam Bahasa Indonesia, bukan hanya Inggris.
 
-**Roadmap translasi (urut prioritas):**
+**Status program i18n:**
 
-1. ✅ ROADMAP_INDONESIA.md (file ini — strategi & roadmap)
-2. ⏳ Faucet user guide
-3. ⏳ Validator setup guide
-4. ⏳ Smart contract developer quickstart
-5. ⏳ Tokenomics overview
-6. ⏳ Governance & multisig
-7. ⏳ Airdrop claim guide
+1. ✅ ROADMAP_INDONESIA.md (file ini — strategi & roadmap dalam Bahasa Indonesia)
+2. ⏳ Translasi tambahan (developer guide, validator guide, dll) belum di-commit ke prioritas spesifik. Direction: setelah content English stabil dan demand komunitas terlihat.
+
+Translasi yang dibutuhkan akan ditentukan berdasarkan demand komunitas — bukan via lump-translate semua docs sekaligus.
 
 **Kontribusi translasi:** translator dari komunitas Indonesia sangat dibutuhkan. PR dapat di-submit ke `sentrix-labs/sentrix` dengan path `docs/i18n/<filename>.md`. Style guide: pertahankan istilah teknis Inggris (smart contract, validator, mempool), translate konsep umum (governance → tata kelola, airdrop → airdrop [tetap], dll). Tidak terlalu kaku — Bahasa Indonesia conversational lebih baik daripada Bahasa Indonesia kaku translasi mesin.
 
