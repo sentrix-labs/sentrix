@@ -1068,6 +1068,16 @@ impl Blockchain {
                             format!("Community:{}", &tx.from_address[..10]),
                             public_key,
                         );
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_staking_op(&sentrix_primitives::events::StakingOpEvent {
+                                op: "register_validator".to_string(),
+                                validator: tx.from_address.clone(),
+                                delegator: tx.from_address.clone(),
+                                amount: self_stake,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
+                        }
                     }
                     StakingOp::Delegate { validator, amount } => {
                         if tx.amount != amount {
@@ -1108,6 +1118,16 @@ impl Blockchain {
                             amount,
                             block.index,
                         )?;
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_staking_op(&sentrix_primitives::events::StakingOpEvent {
+                                op: "undelegate".to_string(),
+                                validator: validator.clone(),
+                                delegator: tx.from_address.clone(),
+                                amount,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
+                        }
                     }
                     StakingOp::Redelegate {
                         from_validator,
@@ -1126,6 +1146,16 @@ impl Blockchain {
                             amount,
                             block.index,
                         )?;
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_staking_op(&sentrix_primitives::events::StakingOpEvent {
+                                op: format!("redelegate:{}->{}", from_validator, to_validator),
+                                validator: to_validator.clone(),
+                                delegator: tx.from_address.clone(),
+                                amount,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
+                        }
                     }
                     StakingOp::Unjail => {
                         if tx.amount != 0 {
@@ -1176,6 +1206,16 @@ impl Blockchain {
                         // has no reporter field in SubmitEvidence (the
                         // submitter IS the offender in this naive shape).
                         // Follow-up: separate submitter + offender fields.
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_staking_op(&sentrix_primitives::events::StakingOpEvent {
+                                op: "submit_evidence".to_string(),
+                                validator: tx.from_address.clone(),
+                                delegator: tx.from_address.clone(),
+                                amount: 0,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
+                        }
                     }
                     StakingOp::JailEvidenceBundle {
                         epoch: claimed_epoch,
@@ -1235,7 +1275,8 @@ impl Blockchain {
                         // Verified — apply jail to each cited validator.
                         // jail() updates stake_registry (consensus state mutation).
                         let current_height = self.height();
-                        for ev in claimed_evidence {
+                        let evidence_count = claimed_evidence.len() as u64;
+                        for ev in &claimed_evidence {
                             if let Err(e) = self.stake_registry.jail(
                                 &ev.validator,
                                 sentrix_staking::slashing::DOWNTIME_JAIL_BLOCKS,
@@ -1253,6 +1294,34 @@ impl Blockchain {
                             // Reset liveness tracker for this validator (matches
                             // legacy check_liveness behavior).
                             self.slashing.liveness.reset(&ev.validator);
+
+                            // Phase 3 WS: notify sentrix_subscribe(jail) per
+                            // jailed validator. Fires only when JAIL_CONSENSUS
+                            // dispatch actually applies a jail (post-fork only;
+                            // the gate at line 1192 ensures pre-fork rejects
+                            // before reaching here).
+                            if let Some(emitter) = &self.event_emitter {
+                                emitter.emit_jail(&sentrix_primitives::events::JailEvent {
+                                    validator: ev.validator.clone(),
+                                    epoch: claimed_epoch,
+                                    missed_blocks: ev.missed_count,
+                                    block_height: block.index,
+                                });
+                            }
+                        }
+                        // One staking_op event for the bundle as a whole, so
+                        // a dApp watching sentrix_stakingOps sees the
+                        // JailEvidenceBundle dispatch even if it doesn't
+                        // separately subscribe to sentrix_jail.
+                        if let Some(emitter) = &self.event_emitter {
+                            emitter.emit_staking_op(&sentrix_primitives::events::StakingOpEvent {
+                                op: "jail_evidence_bundle".to_string(),
+                                validator: tx.from_address.clone(),
+                                delegator: tx.from_address.clone(),
+                                amount: evidence_count,
+                                txid: tx.txid.clone(),
+                                block_height: block.index,
+                            });
                         }
                     }
                     StakingOp::AddSelfStake { amount } => {

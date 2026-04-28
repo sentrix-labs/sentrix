@@ -51,7 +51,10 @@ const config: Config = {
   themeConfig: {
     image: 'img/sentrix-social-card.png',
     colorMode: {
-      respectPrefersColorScheme: true,
+      // Sentrix is a dark-first brand — first paint stays dark even when
+      // the OS prefers light. Toggle still works for users who want light.
+      defaultMode: 'dark',
+      respectPrefersColorScheme: false,
     },
     navbar: {
       title: 'Sentrix Chain',
