@@ -136,6 +136,11 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and PR process.
 
+## Community
+
+- **GitHub Discussions** — https://github.com/sentrix-labs/sentrix/discussions for design conversations, feature proposals, validator setup help, integration questions.
+- **Org profile** — https://github.com/sentrix-labs for canonical contracts, brand kit, and other Sentrix Labs repos.
+
 ## License
 
 [Business Source License 1.1](LICENSE) (BUSL-1.1). Converts to Apache 2.0 after the Change Date.
