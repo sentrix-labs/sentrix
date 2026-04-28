@@ -178,9 +178,9 @@ There is no governance vote for emergency response; the operator coordinates. On
 |---|---|
 | Q2 2026 | Foundation-operated 1-of-1 SentrixSafe, hardcoded fork gating, off-chain operator coordination |
 | Q3 2026 | SentrixSafe → 3-of-5 multisig migration; founder-vesting contract deploy (locks §2a on-chain) |
-| Q4 2026 | External validator onboarding begins (current 4 validators are Foundation-operated; expansion target + cadence to be set when operator readiness criteria are finalized) |
-| 2027+ | On-chain governance for protocol upgrades (proposal + voting framework, exact mechanism TBD) |
-| 2027+ | Decentralized treasury governance (DAO-style, replacing Foundation-coordinated multisig) |
+| Future (no committed timing) | External validator onboarding — current 4 validators are Foundation-operated; criteria, cadence, and timing all TBD when operator-readiness framework is finalized |
+| Future (no committed timing) | On-chain governance for protocol upgrades — proposal + voting framework, mechanism TBD |
+| Future (no committed timing) | Decentralized treasury governance (DAO-style), replacing Foundation-coordinated multisig |
 
 The trajectory is intentional: bootstrap with concentrated control for safety + speed, decentralize as community + tooling matures. No "instant DAO at launch" — that's a recipe for unmaintained governance.
 

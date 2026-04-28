@@ -24,7 +24,7 @@ Non-goals:
 
 | Phase | Allocation | Audience | Trigger |
 |---|---|---|---|
-| **1 — Testnet Heroes** | 1,000,000 SRX | Validators + power-users on chain 7120 (cumulative tx count ≥ N pre-snapshot, wallet age ≥ 30 days) | Q2 2026, post-Chainlist listing |
+| **1 — Testnet Heroes** | 1,000,000 SRX | Validators + power-users on chain 7120 (cumulative tx count ≥ N pre-snapshot) | Q2 2026, post-Chainlist listing |
 | **2 — Quest Campaign** | 1,000,000 SRX | Galxe / Zealy-style task completers (faucet, swap, contract-deploy quests) | Q3 2026 |
 | **3 — Activity Rewards** | 800,000 SRX | Active mainnet wallets (tx velocity + balance retention metrics) | Q3 2026 |
 | **4 — Validator Delegators** | 700,000 SRX | Pro-rata to delegators on active validators (snapshot height TBD) | Q4 2026 |
