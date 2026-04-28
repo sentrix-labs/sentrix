@@ -41,7 +41,8 @@
 //! reconnect to resubscribe.
 
 use crate::events::{
-    EventBus, FinalizedEvent, LogEvent, NewHeadEvent, PendingTxEvent, ValidatorSetEvent,
+    EventBus, FinalizedEvent, JailEvent, LogEvent, NewHeadEvent, PendingTxEvent, StakingOpEvent,
+    TokenOpEvent, ValidatorSetEvent,
 };
 use crate::jsonrpc::{JsonRpcRequest, JsonRpcResponse, dispatch_request};
 use crate::routes::SharedState;
@@ -337,6 +338,18 @@ async fn handle_subscribe(
         "sentrix_validatorSet" => {
             let rx = bus.validator_set.subscribe();
             spawn_validator_set_listener(rx, sender.clone(), sub_id.clone())
+        }
+        "sentrix_tokenOps" => {
+            let rx = bus.token_ops.subscribe();
+            spawn_token_ops_listener(rx, sender.clone(), sub_id.clone())
+        }
+        "sentrix_stakingOps" => {
+            let rx = bus.staking_ops.subscribe();
+            spawn_staking_ops_listener(rx, sender.clone(), sub_id.clone())
+        }
+        "sentrix_jail" => {
+            let rx = bus.jail.subscribe();
+            spawn_jail_listener(rx, sender.clone(), sub_id.clone())
         }
         "syncing" => {
             // Sentrix doesn't have a long-lived "syncing" mode, but we
@@ -646,6 +659,60 @@ fn spawn_finalized_listener(
 /// `emit_validator_set`.
 fn spawn_validator_set_listener(
     mut rx: broadcast::Receiver<ValidatorSetEvent>,
+    sender: Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+    sub_id: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            let payload = wrap_subscription(&sub_id, json!(event));
+            let mut s = sender.lock().await;
+            if s.send(Message::Text(payload.to_string().into())).await.is_err() {
+                break;
+            }
+        }
+    })
+}
+
+/// Phase 3: Sentrix-native — `sentrix_tokenOps` listener. Forwards
+/// every successfully-applied native TokenOp event.
+fn spawn_token_ops_listener(
+    mut rx: broadcast::Receiver<TokenOpEvent>,
+    sender: Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+    sub_id: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            let payload = wrap_subscription(&sub_id, json!(event));
+            let mut s = sender.lock().await;
+            if s.send(Message::Text(payload.to_string().into())).await.is_err() {
+                break;
+            }
+        }
+    })
+}
+
+/// Phase 3: Sentrix-native — `sentrix_stakingOps` listener.
+fn spawn_staking_ops_listener(
+    mut rx: broadcast::Receiver<StakingOpEvent>,
+    sender: Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+    sub_id: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            let payload = wrap_subscription(&sub_id, json!(event));
+            let mut s = sender.lock().await;
+            if s.send(Message::Text(payload.to_string().into())).await.is_err() {
+                break;
+            }
+        }
+    })
+}
+
+/// Phase 3: Sentrix-native — `sentrix_jail` listener. Silent until
+/// `JAIL_CONSENSUS_HEIGHT` activates and JailEvidenceBundle dispatch
+/// produces real jail decisions.
+fn spawn_jail_listener(
+    mut rx: broadcast::Receiver<JailEvent>,
     sender: Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
     sub_id: String,
 ) -> tokio::task::JoinHandle<()> {

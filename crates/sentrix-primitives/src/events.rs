@@ -78,6 +78,58 @@ pub trait EventEmitter: Send + Sync + std::fmt::Debug {
     /// Sentrix-native: called at epoch boundary when the validator
     /// set rotates. Subscribers see the new active set.
     fn emit_validator_set(&self, _epoch: u64, _validators: &[String]) {}
+
+    /// Sentrix-native: called after every successfully-applied
+    /// TokenOp (SRC-20 / SRC-721 / SRC-1155 native token operation).
+    /// Subscribers see Op-type + contract + from/to/amount where
+    /// applicable.
+    fn emit_token_op(&self, _ev: &TokenOpEvent) {}
+
+    /// Sentrix-native: called after every successfully-applied
+    /// StakingOp (Delegate / Undelegate / ClaimRewards / AddSelfStake
+    /// / Unjail / RegisterValidator / JailEvidenceBundle).
+    /// Subscribers see Op-type + validator + delegator + amount.
+    fn emit_staking_op(&self, _ev: &StakingOpEvent) {}
+
+    /// Sentrix-native: called when a validator is jailed via the
+    /// consensus path (post `JAIL_CONSENSUS_HEIGHT` activation, when
+    /// JailEvidenceBundle dispatch applies a jail decision).
+    fn emit_jail(&self, _ev: &JailEvent) {}
+}
+
+/// Native TokenOp event — sentrix_subscribe(tokenOps).
+#[derive(Debug, Clone)]
+pub struct TokenOpEvent {
+    pub op: String,         // "deploy" / "transfer" / "burn" / "mint" / "approve" / etc.
+    pub contract: String,   // 0x-prefixed contract address (or "" for deploy)
+    pub from: String,       // 0x-prefixed sender
+    pub to: String,         // 0x-prefixed recipient (or "" for burn)
+    pub amount: u64,        // token amount in base units (decimals applied by display)
+    pub txid: String,       // tx hash
+    pub block_height: u64,
+}
+
+/// Native StakingOp event — sentrix_subscribe(stakingOps).
+#[derive(Debug, Clone)]
+pub struct StakingOpEvent {
+    pub op: String,         // "delegate" / "undelegate" / "claim_rewards" / etc.
+    pub validator: String,  // 0x-prefixed validator address
+    pub delegator: String,  // 0x-prefixed delegator (== validator for self-stake)
+    pub amount: u64,        // amount in sentri (0 for ClaimRewards / Unjail)
+    pub txid: String,
+    pub block_height: u64,
+}
+
+/// Validator-jailed event — sentrix_subscribe(jail). Fires only
+/// post-fork when JailEvidenceBundle dispatch produces an actual
+/// jail. Pre-fork (`JAIL_CONSENSUS_HEIGHT == u64::MAX`) the channel
+/// is silent.
+#[derive(Debug, Clone)]
+pub struct JailEvent {
+    pub validator: String,
+    pub epoch: u64,
+    pub missed_blocks: u64,
+    pub block_height: u64,
 }
 
 /// No-op emitter used as the default — useful for tests and any

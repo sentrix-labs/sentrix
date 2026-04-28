@@ -20,7 +20,9 @@ pub use account::{Account, AccountDB, EMPTY_CODE_HASH, EMPTY_STORAGE_ROOT, SENTR
 pub use address::derive_address;
 pub use block::Block;
 pub use error::{SentrixError, SentrixResult};
-pub use events::{EventEmitter, LogData, NoopEmitter, SharedEmitter};
+pub use events::{
+    EventEmitter, JailEvent, LogData, NoopEmitter, SharedEmitter, StakingOpEvent, TokenOpEvent,
+};
 pub use justification::{BlockJustification, SignedPrecommit, supermajority_threshold};
 pub use merkle::{merkle_root, sha256_hex};
 pub use transaction::Transaction;
