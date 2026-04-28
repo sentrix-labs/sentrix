@@ -19,7 +19,7 @@ For the full technical detail of any individual round, see [`SECURITY_AUDIT_V11.
 - **0 critical** findings outstanding
 - **0 fund-loss vulnerabilities** identified across all rounds
 - **6/6 pentest scenarios** passed on live network
-- **All audits** conducted by internal Sentrix Labs / SentrisCloud security team — no external audit firm engaged yet (planned Q2 2026, see [Pending external audit](#pending-external-audit))
+- **All audits** conducted by internal Sentrix Labs / SentrisCloud security team — no external audit firm engaged yet (see [External audit posture](#external-audit-posture))
 
 ## Audit history
 
@@ -103,23 +103,17 @@ Areas for continued improvement (tracked in `docs/security/` + audit folder):
 - BFT skip-round corner cases (Phase 2 RCA findings — implementation in progress)
 - External validator onboarding hardening (ongoing as set decentralizes)
 
-## Pending external audit
+## External audit posture
 
-**Status:** No third-party audit firm has reviewed Sentrix Chain code as of 2026-04-28.
+No third-party audit firm has reviewed Sentrix Chain code as of 2026-04-28. External audit is something we'd pursue when budget + scope align — no committed timeline.
 
-**Plan:** Engage a tier-1 smart-contract / consensus audit firm in Q2 2026 (per tokenomics roadmap §9). Specific firm selection and audit timeline will be announced when engagement is signed.
-
-**Scope (target):**
-- Rust core (consensus + storage + RPC layers)
-- Solidity contracts (canonical-contracts repo)
-
-Budget allocated from Strategic Reserve (see [`docs/tokenomics/OVERVIEW.md`](../tokenomics/OVERVIEW.md)). External audit completion is a prerequisite for major CEX listings.
-
-In the interim, the chain runs continuous internal review:
+The chain runs continuous internal review:
 - `cargo audit` + `gitleaks` on every PR
 - `slither` + `mythril` on Solidity contracts (CI gate)
 - Manual code review by Sentrix Labs / SentrisCloud security team for every PR
 - Public bug bounty: see [SECURITY.md](https://github.com/sentrix-labs/sentrix/blob/main/SECURITY.md) (safe-harbor policy in effect)
+
+Listing platforms or external auditors performing diligence: contact `security@sentriscloud.com` for code-walkthrough or audit-prep discussion.
 
 ## How to report
 

@@ -65,7 +65,7 @@ Roadmap di bawah ini fokus ke milestone yang relevan untuk pasar Indonesia. Untu
 | Mainnet Sentrix Chain stabil | ✅ Selesai 25 April 2026 | 4 validator aktif, EVM live, V4 reward distribution aktif |
 | Submit ke Chainlist.org | ✅ PR diajukan (`ethereum-lists/chains#8266`) | Menunggu maintainer review |
 | Submit ke CoinGecko + CoinMarketCap | ⏳ Aplikasi sedang disusun | Target launch listing Q2 |
-| Audit eksternal — engagement firma audit | ⏳ Q2 target | 6–8 minggu audit + remediation window |
+| Audit eksternal | ⏳ Pertimbangan ke depan, bergantung budget + scope. Saat ini ongoing internal review (cargo audit + slither + mythril CI per PR + manual review). Tidak ada commitment timeline spesifik. |
 | Verifikasi kontrak self-host (Sourcify-equivalent) | ⏳ Q2 target | Untuk dApp builder dapat verify bytecode ↔ source |
 | Faucet testnet SRX (10M tSRX per claim) | ✅ Live | https://faucet.sentrixchain.com (testnet) |
 | Block explorer | ✅ Live | https://scan.sentrixchain.com |
