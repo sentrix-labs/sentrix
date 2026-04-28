@@ -12,7 +12,7 @@ use std::time::Duration;
 
 #[derive(Parser)]
 struct Args {
-    /// RPC base URL (e.g. http://10.20.0.2:8545)
+    /// RPC base URL (e.g. http://localhost:8545)
     #[arg(long)]
     rpc: String,
 
