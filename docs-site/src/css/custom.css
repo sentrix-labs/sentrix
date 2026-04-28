@@ -1,30 +1,271 @@
-/**
- * Any CSS included here will be global. The classic template
- * bundles Infima by default. Infima is a CSS framework designed to
- * work well for content-centric websites.
+/* Sentrix Chain docs — gold-on-black editorial brand override.
+ *
+ * Mirrors the chain landing palette (apps/chain-landing/globals.css):
+ *   gold       #f4c75e
+ *   black bk   #0a0a0b
+ *   surface    #18181c
+ *
+ * Replaces Infima's default green/teal with brand tokens so docs reads
+ * as the same product family as sentrixchain.com + solux + faucet.
  */
 
-/* You can override the default Infima variables here. */
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Playfair+Display:wght@500;600;700&display=swap');
+
 :root {
-  --ifm-color-primary: #2e8555;
-  --ifm-color-primary-dark: #29784c;
-  --ifm-color-primary-darker: #277148;
-  --ifm-color-primary-darkest: #205d3b;
-  --ifm-color-primary-light: #33925d;
-  --ifm-color-primary-lighter: #359962;
-  --ifm-color-primary-lightest: #3cad6e;
-  --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  --sentrix-gold:        #f4c75e;
+  --sentrix-gold-l:      #ffd97a;
+  --sentrix-gold-d:      #d4a937;
+  --sentrix-bk:          #0a0a0b;
+  --sentrix-bk-2:        #111114;
+  --sentrix-sf:          #18181c;
+  --sentrix-sf-2:        #232328;
+  --sentrix-tx:          #fafafa;
+  --sentrix-tx-2:        #d4d4d8;
+  --sentrix-tx-m:        #9b9ba3;
+  --sentrix-tx-d:        #65656d;
+  --sentrix-brd:         rgba(255, 255, 255, 0.08);
+  --sentrix-brd-gold:    rgba(244, 199, 94, 0.32);
+
+  /* Map Infima primary to Sentrix gold. The classic theme uses this for
+     hero backgrounds, link colors, button fills, and code-block accents. */
+  --ifm-color-primary:           #f4c75e;
+  --ifm-color-primary-dark:      #d4a937;
+  --ifm-color-primary-darker:    #c89730;
+  --ifm-color-primary-darkest:   #a17a29;
+  --ifm-color-primary-light:     #ffd97a;
+  --ifm-color-primary-lighter:   #ffe19a;
+  --ifm-color-primary-lightest:  #ffe9b8;
+
+  /* Typography — Geist sans + Playfair serif + Geist mono, brand-matched */
+  --ifm-font-family-base: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --ifm-font-family-monospace: 'Geist Mono', ui-monospace, 'Courier New', monospace;
+  --ifm-heading-font-family: 'Geist', -apple-system, sans-serif;
+
+  --ifm-code-font-size: 92%;
+  --ifm-code-background: rgba(244, 199, 94, 0.08);
+  --ifm-code-color: #f4c75e;
+  --docusaurus-highlighted-code-line-bg: rgba(244, 199, 94, 0.12);
 }
 
-/* For readability concerns, you should choose a lighter palette in dark mode. */
+/* Dark mode is default + canonical for this brand. */
 [data-theme='dark'] {
-  --ifm-color-primary: #25c2a0;
-  --ifm-color-primary-dark: #21af90;
-  --ifm-color-primary-darker: #1fa588;
-  --ifm-color-primary-darkest: #1a8870;
-  --ifm-color-primary-light: #29d5b0;
-  --ifm-color-primary-lighter: #32d8b4;
-  --ifm-color-primary-lightest: #4fddbf;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+  --ifm-background-color:        #0a0a0b !important;
+  --ifm-background-surface-color: #18181c !important;
+  --ifm-color-content:           #fafafa;
+  --ifm-color-content-secondary: #d4d4d8;
+
+  --ifm-color-primary:           #f4c75e;
+  --ifm-color-primary-dark:      #d4a937;
+  --ifm-color-primary-darker:    #c89730;
+  --ifm-color-primary-darkest:   #a17a29;
+  --ifm-color-primary-light:     #ffd97a;
+  --ifm-color-primary-lighter:   #ffe19a;
+  --ifm-color-primary-lightest:  #ffe9b8;
+
+  --ifm-navbar-background-color: rgba(10, 10, 11, 0.85);
+  --ifm-footer-background-color: #111114;
+  --ifm-footer-color:            #d4d4d8;
+  --ifm-footer-link-color:       #9b9ba3;
+  --ifm-footer-title-color:      #f4c75e;
+
+  --ifm-toc-border-color:        rgba(255, 255, 255, 0.08);
+  --ifm-color-emphasis-300:      rgba(255, 255, 255, 0.16);
+
+  --docusaurus-highlighted-code-line-bg: rgba(244, 199, 94, 0.10);
+  --ifm-code-background: rgba(244, 199, 94, 0.10);
+}
+
+/* Force dark mode default — Sentrix is a dark-first brand. The toggle still
+   works; users who prefer light get it, but first paint is dark. */
+html { background: var(--sentrix-bk); color: var(--sentrix-tx); }
+
+/* Navbar — translucent dark with subtle blur, gold logo + links */
+.navbar {
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border-bottom: 1px solid var(--sentrix-brd);
+}
+.navbar__brand,
+.navbar__title {
+  color: var(--sentrix-gold);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.navbar__link {
+  color: var(--sentrix-tx-m);
+  font-weight: 500;
+  transition: color 150ms ease;
+}
+.navbar__link:hover,
+.navbar__link--active {
+  color: var(--sentrix-gold);
+}
+
+/* Hero — replace Infima's flat primary fill with Sentrix dark + gold radial.
+   Same gradient shape the chain landing's luxe-card uses. */
+.hero--primary {
+  background:
+    radial-gradient(120% 80% at 0% 0%, rgba(244, 199, 94, 0.14) 0%, transparent 50%),
+    radial-gradient(140% 100% at 100% 100%, rgba(212, 169, 55, 0.10) 0%, transparent 55%),
+    linear-gradient(165deg, #221d15 0%, #16161a 50%, #110f12 100%) !important;
+  color: var(--sentrix-tx) !important;
+  border-bottom: 1px solid var(--sentrix-brd);
+  position: relative;
+  overflow: hidden;
+}
+.hero--primary::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.06'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+}
+.hero__title {
+  font-family: 'Playfair Display', Georgia, serif !important;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  font-size: clamp(48px, 7vw, 88px);
+  line-height: 1.05;
+  color: var(--sentrix-gold) !important;
+  margin-bottom: 0.4em;
+}
+.hero__subtitle {
+  font-family: 'Playfair Display', Georgia, serif !important;
+  font-style: italic;
+  font-weight: 500;
+  font-size: clamp(20px, 2.4vw, 28px);
+  color: var(--sentrix-tx) !important;
+  opacity: 1 !important;
+  margin-bottom: 1rem;
+}
+
+/* Hero CTA buttons — gold-fill primary + ghost outline */
+.hero .button--secondary {
+  background: var(--sentrix-gold) !important;
+  color: #3a2a0e !important;
+  border: 1px solid var(--sentrix-gold) !important;
+  font-weight: 600;
+  font-size: 14px;
+  border-radius: 999px;
+  padding: 14px 28px;
+  transition: all 150ms ease;
+}
+.hero .button--secondary:hover {
+  background: var(--sentrix-gold-l) !important;
+  border-color: var(--sentrix-gold-l) !important;
+  transform: translateY(-1px);
+}
+.hero .button--outline.button--secondary {
+  background: transparent !important;
+  color: var(--sentrix-gold) !important;
+  border: 1px solid var(--sentrix-brd-gold) !important;
+}
+.hero .button--outline.button--secondary:hover {
+  background: rgba(244, 199, 94, 0.08) !important;
+  border-color: var(--sentrix-gold) !important;
+}
+
+/* Footer — match the chain landing's footer surface */
+.footer {
+  background: var(--sentrix-bk-2);
+  border-top: 1px solid var(--sentrix-brd);
+}
+.footer--dark {
+  --ifm-footer-background-color: var(--sentrix-bk-2);
+}
+.footer__title {
+  color: var(--sentrix-gold);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+.footer__link-item {
+  color: var(--sentrix-tx-m);
+  transition: color 150ms ease;
+}
+.footer__link-item:hover {
+  color: var(--sentrix-gold);
+  text-decoration: none;
+}
+.footer__copyright {
+  color: var(--sentrix-tx-d);
+  font-size: 12px;
+}
+
+/* Sidebar + ToC — refined dark surfaces */
+.menu__link {
+  color: var(--sentrix-tx-m);
+  font-weight: 500;
+  border-radius: 8px;
+}
+.menu__link:hover {
+  background: rgba(244, 199, 94, 0.06);
+  color: var(--sentrix-tx);
+}
+.menu__link--active {
+  background: rgba(244, 199, 94, 0.10);
+  color: var(--sentrix-gold);
+  font-weight: 600;
+}
+
+/* Doc article body */
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  font-family: 'Geist', -apple-system, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.markdown a {
+  color: var(--sentrix-gold);
+  text-decoration: none;
+  border-bottom: 1px solid var(--sentrix-brd-gold);
+}
+.markdown a:hover {
+  color: var(--sentrix-gold-l);
+  border-bottom-color: var(--sentrix-gold);
+}
+.markdown code {
+  background: rgba(244, 199, 94, 0.08);
+  color: var(--sentrix-gold);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+/* Code blocks (Prism) — dark surface with gold accent */
+.theme-code-block {
+  border-radius: 12px;
+  border: 1px solid var(--sentrix-brd);
+}
+
+/* Pagination buttons */
+.pagination-nav__link {
+  border: 1px solid var(--sentrix-brd);
+  border-radius: 12px;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+.pagination-nav__link:hover {
+  border-color: var(--sentrix-brd-gold);
+  background: rgba(244, 199, 94, 0.04);
+}
+.pagination-nav__sublabel {
+  color: var(--sentrix-tx-d);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+.pagination-nav__label {
+  color: var(--sentrix-gold);
+  font-weight: 600;
+}
+
+/* Theme toggle — keep visible but quiet */
+.colorModeToggle_DEke,
+[class*="colorModeToggle"] {
+  color: var(--sentrix-tx-m);
 }
