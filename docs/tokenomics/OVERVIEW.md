@@ -129,7 +129,7 @@ Listing fee budget: 3M SRX from Strategic Reserve.
 | Period | Setup | Authority signer(s) |
 |---|---|---|
 | **Today (2026-04-28)** | SentrixSafe 1-of-1 on both chains | Authority `0xa25236925bc10954e0519731cc7ba97f4bb5714b` |
-| **Q3 2026 target** | SentrixSafe 3-of-5 multi-sig | Authority + Founder backup + 2× independent advisors + 1× security council |
+| **Future (no committed timing)** | SentrixSafe N-of-M multi-sig — expansion to multiple signers when independent co-signers are recruited and onboarded | Authority + future co-signers |
 
 Migration history (2026-04-28): `addOwner(authority)` testnet block 881639 + mainnet block 755821; `removeOwner(deployer)` testnet block 884599 + mainnet block 757829. Bootstrap deployer EOA retired from Safe ownership. Tx hashes in [canonical-contracts ADDRESSES.md](https://github.com/sentrix-labs/canonical-contracts/blob/main/docs/ADDRESSES.md).
 

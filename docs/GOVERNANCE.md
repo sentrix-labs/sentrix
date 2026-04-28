@@ -6,7 +6,7 @@ This document describes how decisions are made on Sentrix Chain — who controls
 
 ## TL;DR
 
-- **Treasury control:** SentrixSafe multisig contracts (Gnosis Safe-style) deployed on both chains. Currently 1-of-1 (bootstrap), transitioning to 3-of-5 in Q3 2026.
+- **Treasury control:** SentrixSafe multisig contracts (Gnosis Safe-style) deployed on both chains. Currently 1-of-1 with the Authority key as sole owner. Multi-sig expansion (adding owners + raising threshold) is possible at any time via on-chain `addOwner()` + `changeThreshold()`, but no specific expansion timeline is committed.
 - **Protocol upgrades:** Hard forks gated by build-time constants + height triggers. Validators must adopt the upgraded binary; misalignment results in self-fork (no committee veto).
 - **Audit / change log:** every governance-relevant transaction (multisig spend, fork activation, premine outflow) is publicly visible on `scan.sentrixchain.com`.
 
@@ -56,26 +56,18 @@ Why deploy multisig if effectively single-sig? Three reasons:
 
 Tx hashes available in [`canonical-contracts/docs/ADDRESSES.md`](https://github.com/sentrix-labs/canonical-contracts/blob/main/docs/ADDRESSES.md).
 
-### Q3 2026 target — 3-of-5
+### Multi-sig expansion (no committed timeline)
 
-Migration plan:
+The contract is shape-ready for N-of-M expansion. Adding owners + raising threshold is a same-day on-chain operation:
 
-| Owner | Role |
-|---|---|
-| Authority | Operational signer (existing) |
-| Founder backup | Recovery key (cold) |
-| Independent advisor #1 | External oversight |
-| Independent advisor #2 | External oversight |
-| Security council seat | Reserved for community-elected member |
+```
+addOwner(<new_signer_address>)   // repeat per signer
+changeThreshold(<new_threshold>) // raise threshold
+```
 
-Threshold increases from 1 → 3. Migration steps:
-1. `addOwner(founder_backup)`
-2. `addOwner(advisor_1)`
-3. `addOwner(advisor_2)`
-4. `addOwner(council)`
-5. `changeThreshold(3)`
+Expansion will happen when independent signers (advisors, security council members) are recruited and onboarded. No timeline is committed because committing to a specific quarter without recruited signers in pipeline would be performative — a 3-of-5 wallet with non-responsive co-signers is worse than a working 1-of-1.
 
-After migration, no spend can occur without 3 of 5 signers. The Authority alone cannot unilaterally move treasury funds.
+The 1-of-1 setup is honest about Sentrix's current operational stage. The signal we want to send to listing platforms and partners is: governance contract exists + ready to expand, not "we will definitely have 5 signers by date X."
 
 ## 2. Protocol upgrades (hard forks)
 
@@ -177,10 +169,11 @@ There is no governance vote for emergency response; the operator coordinates. On
 | Quarter | Milestone |
 |---|---|
 | Q2 2026 | Foundation-operated 1-of-1 SentrixSafe, hardcoded fork gating, off-chain operator coordination |
-| Q3 2026 | SentrixSafe → 3-of-5 multisig migration; founder-vesting contract deploy (locks §2a on-chain) |
-| Q4 2026 | External validator onboarding begins (current 4 validators are Foundation-operated; expansion target + cadence to be set when operator readiness criteria are finalized) |
-| 2027+ | On-chain governance for protocol upgrades (proposal + voting framework, exact mechanism TBD) |
-| 2027+ | Decentralized treasury governance (DAO-style, replacing Foundation-coordinated multisig) |
+| Q3 2026 | Founder-vesting contract deploy (locks §2a on-chain) per tokenomics §9 |
+| Future (no committed timing) | SentrixSafe multi-sig expansion — when independent signers are recruited |
+| Future (no committed timing) | External validator onboarding — current 4 validators are Foundation-operated; criteria, cadence, and timing all TBD when operator-readiness framework is finalized |
+| Future (no committed timing) | On-chain governance for protocol upgrades — proposal + voting framework, mechanism TBD |
+| Future (no committed timing) | Decentralized treasury governance (DAO-style), replacing Foundation-coordinated multisig |
 
 The trajectory is intentional: bootstrap with concentrated control for safety + speed, decentralize as community + tooling matures. No "instant DAO at launch" — that's a recipe for unmaintained governance.
 

@@ -143,7 +143,7 @@ For most dApp use cases, you don't need to deploy your own infrastructure contra
 - **WSRX** is required if you're building or integrating with DEX/lending — most protocols only accept ERC-20 tokens, not native SRX
 - **Multicall3** address matches the well-known `mds1/multicall` deployment on other chains (the JS libraries auto-detect it)
 - **TokenFactory** lets non-Solidity-experts deploy a token in one transaction, no copy-paste-deploy ritual needed
-- **SentrixSafe** is the same contract Sentrix's own treasury uses (1-of-1 today, 3-of-5 Q3 2026)
+- **SentrixSafe** is the same contract Sentrix's own treasury uses (currently 1-of-1, expansion-ready)
 
 For complete walkthrough — deploying via Hardhat / Foundry / wagmi / viem — see [`canonical-contracts/docs/INTEGRATION.md`](https://github.com/sentrix-labs/canonical-contracts/blob/main/docs/INTEGRATION.md).
 

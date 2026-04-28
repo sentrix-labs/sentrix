@@ -67,6 +67,8 @@ Roadmap di bawah ini fokus ke milestone yang relevan untuk pasar Indonesia. Untu
 | Submit ke CoinGecko + CoinMarketCap | ⏳ Aplikasi sedang disusun | Target launch listing Q2 |
 | Audit eksternal | ⏳ Pertimbangan ke depan, bergantung budget + scope. Saat ini ongoing internal review (cargo audit + slither + mythril CI per PR + manual review). Tidak ada commitment timeline spesifik. |
 | Verifikasi kontrak self-host (Sourcify-equivalent) | ⏳ Q2 target | Untuk dApp builder dapat verify bytecode ↔ source |
+| SDK packaging (`@sentrix/sdk-js`, `sentrix-sdk-rs`) | ⏳ Q2 target (per tokenomics §9) | Untuk dApp developer integrate cepat |
+| Docs site polish | ⏳ Q2 target (per tokenomics §9) | Improve onboarding + i18n coverage |
 | Faucet testnet SRX (10M tSRX per claim) | ✅ Live | https://faucet.sentrixchain.com (testnet) |
 | Block explorer | ✅ Live | https://scan.sentrixchain.com |
 
@@ -78,10 +80,7 @@ Roadmap di bawah ini fokus ke milestone yang relevan untuk pasar Indonesia. Untu
 | **Airdrop Phase 2 — Quest Campaign** (1.000.000 SRX) | Galxe / Zealy-style integration, partnership platform Indonesia |
 | **DEX launch (canonical AMM)** | Uniswap V2-fork atau equivalen, bootstrap likuiditas dari Strategic Reserve (1.5M SRX) |
 | **Engagement Tokocrypto + Pintu** | Listing CEX Indonesia tier-1, Bappebti-licensed |
-| **SDK packaging** (`@sentrix/sdk-js`, `sentrix-sdk-rs`) | Untuk dApp developer Indonesia bisa integrate cepat |
-| **SentrixSafe migrasi 1-of-1 → 3-of-5** | Governance multisig dengan 3 dari 5 signer (founder, founder backup, 2 advisor independen, security council seat) |
-| **Founder vesting contract deploy** | Lock 21M SRX founder allocation on-chain (saat ini social commitment, akan jadi enforced contract) |
-| **Bahasa Indonesia content expansion** | Translasi docs utama (validator guide, smart contract tutorial, faucet, claim airdrop) |
+| **Founder vesting contract deploy** | Lock 21M SRX founder allocation on-chain (per tokenomics §9) — saat ini social commitment, jadi enforced contract setelah deploy |
 
 ### Q4 2026 (Oktober – Desember) — Ekspansi Ekosistem
 
@@ -89,8 +88,7 @@ Roadmap di bawah ini fokus ke milestone yang relevan untuk pasar Indonesia. Untu
 |---|---|
 | **Airdrop Phase 3 — Activity Rewards** (800.000 SRX) | Reward untuk active mainnet wallets, snapshot mainnet (per tokenomics §6) |
 | **Airdrop Phase 4 — Validator Delegators** (700.000 SRX) | Pro-rata ke delegator pada active validator set (per tokenomics §6) |
-| **External validator onboarding mulai** | Saat ini 4 validator semua Foundation-operated. Onboarding criteria + cadence akan dipublish saat ready. Target jumlah validator belum di-commit. |
-| **Indonesian CEX listing engagement berlanjut** | Tokocrypto / Pintu / Indodax — per status engagement-nya |
+| **Indonesian CEX listing engagement berlanjut** | Tokocrypto / Pintu / Indodax — per status engagement masing-masing |
 
 ### 2027+ — Decentralisasi Bertahap
 
@@ -111,7 +109,7 @@ Roadmap setelah 2026 belum di-commit ke timeline spesifik. Direction signals:
 1. **Cobain testnet:** Klaim 10M tSRX di [https://faucet.sentrixchain.com](https://faucet.sentrixchain.com) (chain ID 7120 di Metamask)
 2. **Cek block explorer:** [https://scan.sentrixchain.com](https://scan.sentrixchain.com) — lihat transaksi, validator, kontrak
 3. **Follow channel resmi:** Telegram, Twitter/X (akun resmi akan dipublish menjelang Phase 1 airdrop)
-4. **Eligibility airdrop Phase 1** (Testnet Heroes): Lakukan minimum 50 tx di testnet, deploy minimum 1 kontrak, atau jadi validator testnet selama ≥7 hari sebelum snapshot height (target 400.000)
+4. **Eligibility airdrop Phase 1** (Testnet Heroes): Detail kriteria + threshold + snapshot height akan diumumkan saat Phase 1 launch. Direction: bukan sekadar klaim faucet, tapi real participation (deploy kontrak / aktivitas DEX / operasi validator testnet / completion via partner quest platform). Lihat [`AIRDROP_MECHANICS.md`](../tokenomics/AIRDROP_MECHANICS.md) untuk design direction terbaru.
 
 ### Untuk developer
 
@@ -125,7 +123,7 @@ Roadmap setelah 2026 belum di-commit ke timeline spesifik. Direction signals:
 
 ### Untuk validator
 
-1. **Saat ini:** Foundation-operated 4 validator. External onboarding direction-signaled untuk Q4 2026 (criteria + cadence akan dipublish saat ready).
+1. **Saat ini:** Foundation-operated 4 validator. External onboarding ada di roadmap; timing + criteria belum committed.
 2. **Persyaratan teknis:** akan dipublish saat onboarding window dibuka (minimum self-stake, hardware spec, uptime SLA, networking tier)
 3. **Reward economics:** V4 distribution — block reward + tx fee revenue, pro-rata berdasarkan stake
 
@@ -133,7 +131,7 @@ Roadmap setelah 2026 belum di-commit ke timeline spesifik. Direction signals:
 
 1. **Bahasa Indonesia gap:** kami butuh tutorial, video, threads, deep-dive Bahasa Indonesia tentang Sentrix
 2. **Phase 5 retroactive eligible:** content creator dengan output verified + non-trivial → committee review untuk grant alokasi
-3. **Strategic Reserve dukungan partnership:** untuk creator dengan reach signifikan, partnership formal possible (Q3+ post-multisig migration)
+3. **Strategic Reserve dukungan partnership:** untuk creator dengan reach signifikan, partnership formal possible (timing TBD per kapasitas operasional)
 
 ---
 
