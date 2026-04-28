@@ -42,6 +42,19 @@ pubkey = ""
 # the live chain.
 
 # Founder — 21,000,000 SRX
+#
+# HISTORICAL NOTE — DO NOT EDIT THIS ADDRESS:
+# This file lists the original Founder v2 address as the genesis seed. The
+# v2 wallet was compromised via session-context leak on 2026-04-23 and the
+# admin role + balance were transferred on-chain to Founder v3
+# (0x5b5b06688dcdbe532353ac610aaff41af825279d) on 2026-04-24 via tx
+# 0x07354cc4208d3fa52033aa84cca02ac02774fa913407573427cf0d037c2d4c2e
+# at block 444070.
+#
+# Genesis is immutable consensus history — modifying this address would
+# fork the chain and invalidate every existing block. The live admin
+# Founder v3 is the result of normal on-chain activity post-genesis,
+# fully verifiable on https://scan.sentrixchain.com.
 [[genesis.balances]]
 address = "0x252f8cfed5acfa9d00d99a65e2ac91f395a35d78"
 amount = 2100000000000000
