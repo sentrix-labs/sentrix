@@ -18,8 +18,8 @@ Two main pools hold protocol-level capital:
 
 | Pool | Allocation | Purpose | Control mechanism |
 |---|---|---|---|
-| Strategic Reserve | 10,500,000 SRX | Airdrop campaign (5M), CEX listing fees (3M), DEX bootstrap liquidity (1.5M), emergency (1M) | SentrixSafe-governed (social custody bridge while Reserve EOA migrates into Safe-owned contract; planned Q3 2026) |
-| Ecosystem Fund | 21,000,000 SRX | Operational ops: faucet refill, marketing, bounties, dev grants | SentrixSafe-governed |
+| Strategic Reserve | 10,500,000 SRX | Airdrop campaign (5M), CEX listing fees (3M), DEX bootstrap liquidity (1.5M), emergency (1M) | EOA wallet, key held by Authority (same operator who controls SentrixSafe). Social custody — on-chain enforcement (Reserve owned by SentrixSafe contract) is acknowledged as a roadmap item without committed timeline. |
+| Ecosystem Fund | 21,000,000 SRX | Operational ops: faucet refill, marketing, bounties, dev grants | EOA wallet, key held by Authority. Same custody model as Strategic Reserve. |
 
 Sub-bucket targets are **policy-level commitments** (documented in this repo and on `sentrixchain.com/docs/tokenomics`). They are **not on-chain enforced** — they are auditable via on-chain transaction history.
 
@@ -105,8 +105,8 @@ For an upgrade to succeed without partition:
 
 There is **no on-chain governance vote** for protocol upgrades in the current model. This is a deliberate choice for the current bootstrap phase:
 - 4-validator network — voting would be performative
-- Operator-coordinated upgrades have been reliable to date (8+ forks shipped without partition incidents)
-- Future: once external validator onboarding scales beyond Foundation set, on-chain governance for upgrades is on the roadmap (no committed timeline yet)
+- 6 fork activations have shipped to date (see Past activations table below); 2 notable recovery incidents occurred (Voyager livelock 2026-04-25 — peer-mesh partition; cascade-jail 2026-04-28 — chain.db state divergence post deploy). Both resolved via halt-all + chain.db rsync from canonical state. No invalid block was ever accepted; no funds were lost.
+- Future: once external validator onboarding scales beyond Foundation set, on-chain governance for upgrades is a roadmap consideration (no committed timeline)
 
 ### Past activations
 
@@ -168,7 +168,7 @@ Mainnet incidents (validator jailing, livelock, chain.db divergence) are handled
 3. **Rsync** — broadcast canonical chain.db to other validators
 4. **Simul-start** — all validators start within a 1-2 second window
 
-This pattern is documented in operator runbooks. Recovery MTTR has been < 5 minutes for incidents experienced to date.
+This pattern is documented in operator runbooks. Recovery MTTR has improved over time as tooling matured: earlier incidents (Voyager livelock 2026-04-25, BFT cascade events) took 30+ minutes. Recent incidents (cascade-jail recovery 2026-04-28) recovered in approximately 3 minutes via halt-all + chain.db rsync. Trend is improving; fully-automated recovery tooling is a roadmap item.
 
 There is no governance vote for emergency response; the operator coordinates. Once the validator set decentralizes beyond the Foundation, this model will need a community-aware variant.
 
@@ -178,7 +178,7 @@ There is no governance vote for emergency response; the operator coordinates. On
 |---|---|
 | Q2 2026 | Foundation-operated 1-of-1 SentrixSafe, hardcoded fork gating, off-chain operator coordination |
 | Q3 2026 | SentrixSafe → 3-of-5 multisig migration; founder-vesting contract deploy (locks §2a on-chain) |
-| Q4 2026 | External validator onboarding (current 4 validators are Foundation-operated; goal: ≥10 active validators with independent operators) |
+| Q4 2026 | External validator onboarding begins (current 4 validators are Foundation-operated; expansion target + cadence to be set when operator readiness criteria are finalized) |
 | 2027+ | On-chain governance for protocol upgrades (proposal + voting framework, exact mechanism TBD) |
 | 2027+ | Decentralized treasury governance (DAO-style, replacing Foundation-coordinated multisig) |
 
