@@ -1160,10 +1160,10 @@ fn cmd_validator_force_unjail(
     // NOT update the state_trie. After 2026-04-25's verify-deep gate,
     // chain.db that's been touched by force-unjail without a trie
     // rebuild will fail the boot-time consistency check on subsequent
-    // peers — discovered live during the 2026-04-27 vps3 unjail
-    // attempt. The recovery is a cluster-wide trie rebuild from the
-    // post-edit AccountDB. Print the canonical procedure here so the
-    // operator doesn't have to remember it from the runbook.
+    // peers — discovered live during the 2026-04-27 unjail attempt.
+    // The recovery is a cluster-wide trie rebuild from the post-edit
+    // AccountDB. Print the canonical procedure here so the operator
+    // doesn't have to remember it from the runbook.
     println!();
     println!("NEXT STEPS — cluster-wide trie reconciliation:");
     println!();

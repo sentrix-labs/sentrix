@@ -28,7 +28,7 @@ This is **correct in theory** — only remove when all connections to that peer 
 ## Hypothesis: brief peer_count=0 during peer-stop event
 
 **What we observed (mainnet test, 2026-04-27 ~6:25 WIB):**
-- Stopped Beacon (vps5) at T=0
+- Stopped Beacon validator at T=0
 - Other 3 validators: peer_count expected 2 (Foundation+Treasury+Core seeing each other minus Beacon)
 - Logs showed nil-precommit for h=690613 across ~10 rounds (5 minutes)
 - Eventually chain stalled despite 3 online validators
