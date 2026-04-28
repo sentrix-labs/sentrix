@@ -4831,7 +4831,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",
@@ -4879,7 +4879,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-bft"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "bincode",
  "secp256k1 0.31.1",
@@ -4894,7 +4894,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-codec"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "bincode",
  "hex",
@@ -4903,7 +4903,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-core"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "alloy-consensus",
  "alloy-eips 2.0.0",
@@ -4933,7 +4933,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-evm"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "alloy-primitives",
  "hex",
@@ -4948,7 +4948,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-faucet"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "anyhow",
  "axum",
@@ -4969,7 +4969,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-network"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "async-trait",
  "bincode",
@@ -4987,7 +4987,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-node"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "anyhow",
  "axum",
@@ -5007,14 +5007,14 @@ dependencies = [
 
 [[package]]
 name = "sentrix-precompiles"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "alloy-primitives",
 ]
 
 [[package]]
 name = "sentrix-primitives"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "hex",
  "secp256k1 0.31.1",
@@ -5028,7 +5028,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-rpc"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "alloy-consensus",
  "alloy-eips 2.0.0",
@@ -5057,14 +5057,14 @@ dependencies = [
 
 [[package]]
 name = "sentrix-rpc-types"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "sentrix-staking"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "sentrix-primitives",
  "serde",
@@ -5074,7 +5074,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-storage"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "bincode",
  "libmdbx",
@@ -5089,7 +5089,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-trie"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "bincode",
  "blake3",
@@ -5105,7 +5105,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-wallet"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -5124,7 +5124,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-wire"
-version = "2.1.44"
+version = "2.1.47"
 dependencies = [
  "bincode",
  "secp256k1 0.31.1",
