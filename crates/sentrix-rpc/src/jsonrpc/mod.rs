@@ -74,6 +74,21 @@ pub async fn jsonrpc_handler(
     State(state): State<SharedState>,
     Json(req): Json<JsonRpcRequest>,
 ) -> Json<JsonRpcResponse> {
+    Json(dispatch_request(&state, req).await)
+}
+
+/// Dispatch a parsed JSON-RPC request to the right namespace and
+/// return a `JsonRpcResponse`. Extracted from `jsonrpc_handler` so the
+/// WebSocket transport (`crates/sentrix-rpc/src/ws/mod.rs`) can reuse
+/// the exact same dispatch logic without going through axum's `State`
+/// + `Json` extractors.
+///
+/// HTTP and WS share this single dispatch path → 100% method parity
+/// across transports without duplicate code or drift risk.
+pub(crate) async fn dispatch_request(
+    state: &SharedState,
+    req: JsonRpcRequest,
+) -> JsonRpcResponse {
     let id = req.id.clone();
     let params = req.params.unwrap_or(json!([]));
     let method = req.method.as_str();
@@ -82,21 +97,21 @@ pub async fn jsonrpc_handler(
     // match over their method names and return a `DispatchResult` that
     // we wrap into the JSON-RPC envelope.
     let result = if method.starts_with("eth_") {
-        eth::dispatch(method, &params, &state).await
+        eth::dispatch(method, &params, state).await
     } else if method.starts_with("net_") {
-        net::dispatch(method, &params, &state).await
+        net::dispatch(method, &params, state).await
     } else if method.starts_with("web3_") {
-        web3::dispatch(method, &params, &state).await
+        web3::dispatch(method, &params, state).await
     } else if method.starts_with("sentrix_") {
-        sentrix::dispatch(method, &params, &state).await
+        sentrix::dispatch(method, &params, state).await
     } else {
         Err((-32601, format!("method not found: {}", method)))
     };
 
-    Json(match result {
+    match result {
         Ok(val) => JsonRpcResponse::ok(id, val),
         Err((code, msg)) => JsonRpcResponse::err(id, code, &msg),
-    })
+    }
 }
 
 // Hard cap on batch size to prevent CPU saturation from oversized batch requests

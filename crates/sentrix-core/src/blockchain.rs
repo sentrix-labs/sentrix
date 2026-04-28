@@ -359,6 +359,15 @@ pub struct Blockchain {
     /// every restart post-fork.
     #[serde(default)]
     pub evm_activated: bool,
+
+    /// Optional event emitter for WebSocket / SSE subscribers. Set at
+    /// startup by `bin/sentrix/main.rs` after the RPC layer constructs
+    /// its `EventBus`. Default `None` means no event emission (tests,
+    /// CLI tools that don't expose RPC). Block production must NEVER
+    /// depend on subscriber liveness — `emit_new_head` is non-blocking
+    /// and infallible by trait contract. See `sentrix-primitives::events`.
+    #[serde(skip, default)]
+    pub event_emitter: Option<sentrix_primitives::SharedEmitter>,
 }
 
 /// Rate-threshold detector for "this validator has diverged from peers".
@@ -492,9 +501,19 @@ impl Blockchain {
             divergence_tracker: DivergenceTracker::default(),
             voyager_activated: false,
             evm_activated: false,
+            event_emitter: None,
         };
         bc.initialize_genesis(genesis);
         bc
+    }
+
+    /// Wire a WebSocket / SSE event emitter into this blockchain. Called
+    /// once at startup by `bin/sentrix/main.rs` after the RPC layer
+    /// constructs its `EventBus`. After this returns, every successful
+    /// `add_block` / `add_block_from_peer` call will fire `emit_new_head`
+    /// against the supplied emitter. Pass `None` to detach (rare).
+    pub fn set_event_emitter(&mut self, emitter: Option<sentrix_primitives::SharedEmitter>) {
+        self.event_emitter = emitter;
     }
 
     /// Credit premine balances and seat block 0 on the chain. Staking

@@ -1292,6 +1292,15 @@ impl Blockchain {
         // Append block to chain
         self.chain.push(block);
 
+        // Notify WebSocket / SSE subscribers (newHeads) — non-blocking,
+        // infallible by trait contract. See sentrix-primitives::events.
+        // The chain.last() is guaranteed Some here since we just pushed.
+        if let Some(emitter) = &self.event_emitter
+            && let Some(latest) = self.chain.last()
+        {
+            emitter.emit_new_head(latest);
+        }
+
         // Sliding window: evict oldest blocks beyond CHAIN_WINDOW_SIZE; evicted blocks stay in MDBX
         // Only the in-memory window shrinks — full history is always available on disk
         if self.chain.len() > CHAIN_WINDOW_SIZE {
