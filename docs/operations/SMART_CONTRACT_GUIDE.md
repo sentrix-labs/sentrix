@@ -126,6 +126,31 @@ Sentrix uses EIP-1559:
 | `replacement transaction underpriced` | Increase gas price slightly when re-sending |
 | Tx stuck "pending" | Reset MetaMask account; resend with same nonce + higher gas |
 
+## Canonical Contracts (deployed on both chains)
+
+For most dApp use cases, you don't need to deploy your own infrastructure contracts — Sentrix has a canonical set already live:
+
+| Contract | Mainnet (7119) | Testnet (7120) | Use case |
+|---|---|---|---|
+| **WSRX** (wrapped SRX, ERC-20) | `0x4693b113e523A196d9579333c4ab8358e2656553` | `0x85d5E7694AF31C2Edd0a7e66b7c6c92C59fF949A` | DEX integration, ERC-20-only protocols |
+| **Multicall3** (batch read calls) | `0xFd4b34b5763f54a580a0d9f7997A2A993ef9ceE9` | `0x7900826De548425c6BE56caEbD4760AB0155Cd54` | Efficient frontend reads (used by ethers.js, viem, wagmi out of the box) |
+| **TokenFactory** (one-tx SRC-20 deploy) | `0xc753199b723649ab92c6db8A45F158921CFDEe49` | `0x7A2992af0d4979aDD076347666023d66d29276Fc` | Deploy minimal ERC-20 tokens without writing/auditing code yourself |
+| **SentrixSafe** (multisig wallet contract) | `0x6272dC0C842F05542f9fF7B5443E93C0642a3b26` | `0xc9D7a61D7C2F428F6A055916488041fD00532110` | Multi-party treasury for your dApp / DAO |
+
+**Source code, ABIs, and integration examples:** [`sentrix-labs/canonical-contracts`](https://github.com/sentrix-labs/canonical-contracts) (BUSL-1.1 / MIT mix; see repo for per-contract licensing).
+
+**Why use the canonical set?**
+- **WSRX** is required if you're building or integrating with DEX/lending — most protocols only accept ERC-20 tokens, not native SRX
+- **Multicall3** address matches the well-known `mds1/multicall` deployment on other chains (the JS libraries auto-detect it)
+- **TokenFactory** lets non-Solidity-experts deploy a token in one transaction, no copy-paste-deploy ritual needed
+- **SentrixSafe** is the same contract Sentrix's own treasury uses (1-of-1 today, 3-of-5 Q3 2026)
+
+For complete walkthrough — deploying via Hardhat / Foundry / wagmi / viem — see [`canonical-contracts/docs/INTEGRATION.md`](https://github.com/sentrix-labs/canonical-contracts/blob/main/docs/INTEGRATION.md).
+
+## Decimal Note
+
+Native SRX uses **8 decimals** (1 SRX = 100,000,000 sentri). WSRX uses **18 decimals** to match ERC-20 convention. The `wrap()` and `unwrap()` functions on WSRX handle the 1 SRX → 10^10 wSRX conversion automatically — but if you're reading raw chain state or building integrations directly, divide native SRX values by 1e8 (not 1e18).
+
 ## Architecture
 
 For implementation details (revm version, account model, base fee burn, fork heights), see [docs/architecture/EVM.md](../architecture/EVM.md).

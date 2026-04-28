@@ -17,7 +17,7 @@ Thank you for considering contributing to Sentrix! We welcome contributions from
 ```bash
 # Clone the repository
 git clone https://github.com/sentrix-labs/sentrix.git
-cd sentrix-chain
+cd sentrix
 
 # Build
 cargo build

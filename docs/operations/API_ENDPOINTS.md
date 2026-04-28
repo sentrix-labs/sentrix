@@ -53,7 +53,7 @@ Auth: most endpoints are public. Handlers tagged with `_auth: ApiKey` check the 
 | GET | `/chain/state-root/{height}` | State root at given height. |
 | GET | `/chain/performance` | `{ blocks, avg_block_time_ms, tps_1h, tps_24h, last_block_time }`. |
 
-**`GET /chain/info`** response (`max_supply_srx` is fork-aware: 210M pre tokenomics-v2 fork, 315M post-fork):
+**`GET /chain/info`** response (`max_supply_srx` is fork-aware — `TOKENOMICS_V2_HEIGHT=640800` activated 2026-04-26 on mainnet, so all current responses return 315M; pre-fork value 210M is historical only):
 ```json
 {
   "chain_id": 7119,
