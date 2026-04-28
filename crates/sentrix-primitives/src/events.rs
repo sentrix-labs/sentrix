@@ -18,6 +18,22 @@
 use crate::block::Block;
 use std::sync::Arc;
 
+/// Minimal log payload — passed across the trait boundary so
+/// `sentrix-primitives` doesn't need to depend on `sentrix-evm`.
+/// The concrete bus converts `StoredLog` (in sentrix-evm) into this
+/// shape at the emit site.
+#[derive(Debug, Clone)]
+pub struct LogData {
+    pub block_height: u64,
+    pub block_hash: String,
+    pub tx_hash: String,
+    pub tx_index: u32,
+    pub log_index: u32,
+    pub address: [u8; 20],
+    pub topics: Vec<[u8; 32]>,
+    pub data: Vec<u8>,
+}
+
 /// Trait implemented by the WebSocket / SSE event-bus to receive
 /// notifications from consensus on chain events. Held as
 /// `Option<Arc<dyn EventEmitter>>` on `Blockchain`; default `None`
@@ -28,12 +44,40 @@ use std::sync::Arc;
 /// participate in that derive. Send + Sync because the bus is
 /// shared across async tasks. tokio::sync::broadcast::Sender
 /// already satisfies all three.
+///
+/// All emit_* methods MUST be non-blocking + infallible. Block
+/// production must NEVER depend on subscriber liveness — a failed
+/// broadcast (no receivers) is silently dropped.
+///
+/// All methods except `emit_new_head` have empty default impls so
+/// implementors can ship channels incrementally without breaking
+/// older callers. Phase 1 (newHeads) shipped 2026-04-28; Phase 2
+/// (logs + pending_tx) + Phase 3 (sentrix_*) follow.
 pub trait EventEmitter: Send + Sync + std::fmt::Debug {
     /// Called after every successfully-applied block (post chain.push).
-    /// Subscribers to `newHeads` get a notification with the block
-    /// header. The full block is passed for flexibility — the bus
-    /// decides which fields to project into the event payload.
+    /// Subscribers to `eth_subscribe(newHeads)` get a notification
+    /// with the block header.
     fn emit_new_head(&self, block: &Block);
+
+    /// Called once per EVM log emitted within a block. Subscribers
+    /// to `eth_subscribe(logs)` filter by address + topics and
+    /// forward matching logs.
+    fn emit_log(&self, _log: &LogData) {}
+
+    /// Called when a tx is admitted to the mempool. Subscribers to
+    /// `eth_subscribe(newPendingTransactions)` get the txid string.
+    /// Note: this fires on admission only, NOT on rejection.
+    fn emit_pending_tx(&self, _txid: &str) {}
+
+    /// Sentrix-native: called after every BFT-finalized block.
+    /// Equivalent to `emit_new_head` on the protocol-native side
+    /// but exposes finalization-specific fields (justification
+    /// signer count) that aren't in the EVM-compat header.
+    fn emit_finalized(&self, _height: u64, _hash: &str, _justification_signers: usize) {}
+
+    /// Sentrix-native: called at epoch boundary when the validator
+    /// set rotates. Subscribers see the new active set.
+    fn emit_validator_set(&self, _epoch: u64, _validators: &[String]) {}
 }
 
 /// No-op emitter used as the default — useful for tests and any

@@ -154,7 +154,19 @@ impl Blockchain {
             Some(min_pos) => fee_pos.max(min_pos),
             None => fee_pos,
         };
+        // Capture txid BEFORE the move so we can emit the event after.
+        // The vec mutation borrows tx; emitting after the borrow ends
+        // keeps the lifetime simple.
+        let txid_for_event = tx.txid.clone();
         self.mempool.insert(pos, tx);
+
+        // Notify WebSocket subscribers — eth_subscribe(newPendingTransactions).
+        // Non-blocking, infallible by trait contract. Fires only on
+        // successful admission; rejections above already returned Err.
+        if let Some(emitter) = &self.event_emitter {
+            emitter.emit_pending_tx(&txid_for_event);
+        }
+
         Ok(())
     }
 
