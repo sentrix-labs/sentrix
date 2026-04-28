@@ -17,7 +17,7 @@
 //!
 //! What it does NOT prove: the actual stale-snapshot rsync reproducer. That
 //! requires a real source chain.db (large, off-repo) and is exercised by
-//! `rca_vps3_env_repro.rs` operator-driven harness. These tests are CI
+//! `rca_env_repro.rs` operator-driven harness. These tests are CI
 //! regression guards: any future change that breaks them is *guaranteed*
 //! to break #1e on the live network.
 
@@ -804,7 +804,7 @@ fn test_voyager_active_stale_snapshot_peer_sync() {
 /// `block_executor.rs` only fires for blocks at height ≥ 100,000. This
 /// test is `#[ignore]`'d because producing 100,000+ blocks in a unit
 /// test is impractical. Operator-driven manual verification via the
-/// `apply_canonical_block_to_forensic` harness in `rca_vps3_env_repro.rs`
+/// `apply_canonical_block_to_forensic` harness in `rca_env_repro.rs`
 /// is the recommended integration-level test:
 ///
 ///   1. With env unset: confirm forensic+507499 produces APPLY_RESULT=Err

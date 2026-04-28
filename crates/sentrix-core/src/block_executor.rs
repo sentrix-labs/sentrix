@@ -412,7 +412,7 @@ impl Blockchain {
         // Offline replay bypass (SENTRIX_REPLAY_BYPASS_AUTHZ=1): skip the
         // round-robin slot check so genesis-to-tip replay can apply blocks
         // without reconstructing the full historical authority state. Used
-        // by the rca_vps3_env_repro::replay_and_compare diagnostic harness.
+        // by the rca_env_repro::replay_and_compare diagnostic harness.
         // Production validators MUST NOT set this (would let any address
         // produce blocks at any height — only safe when chain.db is offline
         // and we're rederiving state from authoritative block history).

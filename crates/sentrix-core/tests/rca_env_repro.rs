@@ -24,7 +24,7 @@
 //!    SENTRIX_ALLOW_UNENCRYPTED_DISK=true \
 //!    TEST_CHAIN_DB=/path/to/chain.db \
 //!    TEST_HEIGHT_FROM=1 TEST_HEIGHT_TO=1000 \
-//!    cargo test -p sentrix-core --test rca_vps3_env_repro \
+//!    cargo test -p sentrix-core --test rca_env_repro \
 //!      replay_and_compare -- --ignored --nocapture
 //!    ```
 //! 3. Compare the `CUMULATIVE_OK` / `MISMATCH …` output across hosts.
@@ -168,7 +168,7 @@ fn read_committed_trie_root() {
 ///      SENTRIX_ALLOW_UNENCRYPTED_DISK=true \
 ///      TEST_CHAIN_DB=/path/to/forensic/chain.db \
 ///      TEST_BLOCK_FILE=/path/to/canonical-block-N.json \
-///      cargo test -p sentrix-core --test rca_vps3_env_repro \
+///      cargo test -p sentrix-core --test rca_env_repro \
 ///        apply_canonical_block_to_forensic -- --ignored --nocapture
 ///      ```
 ///   4. Output reports:
@@ -584,7 +584,7 @@ fn replay_and_compare() {
 ///      TEST_STATE_DB=/path/to/state.db \
 ///      TEST_BLOCK_SOURCE_DB=/path/to/live-chain.db \
 ///      TEST_HEIGHT_FROM=388340 TEST_HEIGHT_TO=388400 \
-///      cargo test --release -p sentrix-core --test rca_vps3_env_repro \
+///      cargo test --release -p sentrix-core --test rca_env_repro \
 ///        snapshot_seed_env_repro -- --ignored --nocapture
 ///      ```
 ///   5. Diff the per-block MISMATCH / CUMULATIVE_OK lines across hosts.
