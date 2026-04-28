@@ -124,6 +124,23 @@ const JAIL_CONSENSUS_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// u64::MAX = disabled (safe default; wire format stable from this PR).
 const NFT_TOKENOP_HEIGHT_DEFAULT: u64 = u64::MAX;
 
+/// Activation height for `StakingOp::AddSelfStake` dispatch. Lets a
+/// validator's wallet bond real SRX into its own `self_stake` without
+/// the phantom-mint that `force-unjail` produces. Designed as the
+/// proper recovery path for slashed validators whose `self_stake <
+/// MIN_SELF_STAKE` (the 2026-04-27 self-stake-shortfall incident).
+///
+/// Pre-fork: dispatch rejects (wire format stable, dispatch gated).
+/// Post-fork: tx.amount transferred validator → treasury via the
+/// outer apply-Pass-2 transfer; `self_stake` incremented in registry.
+/// Supply-invariant preserving — no mint.
+///
+/// CONSENSUS CHANGE — every validator must set the same value;
+/// mismatch produces a fork. Operator activates with halt-all +
+/// simultaneous-start after testnet bake.
+/// u64::MAX = disabled (safe default; wire format stable from this PR).
+const ADD_SELF_STAKE_HEIGHT_DEFAULT: u64 = u64::MAX;
+
 /// Read Voyager fork height from env, default u64::MAX (mainnet safe).
 /// Testnet sets VOYAGER_FORK_HEIGHT=<height> in systemd service.
 pub fn get_voyager_fork_height() -> u64 {
@@ -193,6 +210,17 @@ pub fn get_nft_tokenop_height() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(NFT_TOKENOP_HEIGHT_DEFAULT)
+}
+
+/// Read AddSelfStake fork height from env, default `u64::MAX` (disabled).
+/// Post-fork: `StakingOp::AddSelfStake` dispatch active — validators can
+/// top up their own `self_stake` with real SRX. Operators activate via
+/// halt-all + simultaneous-start with `ADD_SELF_STAKE_HEIGHT=<height>`.
+pub fn get_add_self_stake_height() -> u64 {
+    std::env::var("ADD_SELF_STAKE_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(ADD_SELF_STAKE_HEIGHT_DEFAULT)
 }
 
 /// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
@@ -777,6 +805,16 @@ impl Blockchain {
     /// + REST handlers gated until activation).
     pub fn is_nft_tokenop_height(height: u64) -> bool {
         let fork = get_nft_tokenop_height();
+        fork != u64::MAX && height >= fork
+    }
+
+    /// Is the given height at or after the AddSelfStake fork?
+    /// Post-fork: `StakingOp::AddSelfStake` dispatch is consensus-valid —
+    /// validators can bond real SRX into their own self_stake without
+    /// phantom-mint. Pre-fork: dispatch rejects (wire format stable from
+    /// the activation PR; gate keeps it dormant until operator rollout).
+    pub fn is_add_self_stake_height(height: u64) -> bool {
+        let fork = get_add_self_stake_height();
         fork != u64::MAX && height >= fork
     }
 

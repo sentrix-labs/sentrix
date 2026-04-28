@@ -254,6 +254,26 @@ pub enum StakingOp {
         epoch_end_block: u64,
         evidence: Vec<JailEvidence>,
     },
+    /// Add real SRX to an existing validator's self_stake without
+    /// phantom-mint. Only the validator itself (`tx.from_address ==
+    /// validator address`) may execute. The outer `accounts.transfer`
+    /// in apply-Pass-2 routes `tx.amount` from validator → treasury
+    /// as the escrow move; dispatch then increments `self_stake` by
+    /// the same amount. Supply-invariant preserving: SRX moves from
+    /// circulating balance into bonded stake, no mint.
+    ///
+    /// Designed as the proper recovery path for slashed validators
+    /// whose `self_stake < MIN_SELF_STAKE`, replacing the break-glass
+    /// `force-unjail` (which mints phantom SRX). After AddSelfStake
+    /// brings self_stake back ≥ MIN_SELF_STAKE, the standard
+    /// `validator unjail` admin op (or the future `StakingOp::Unjail`
+    /// tx-form once dispatched) clears the jail flag without supply
+    /// damage.
+    ///
+    /// Fork-gated by `ADD_SELF_STAKE_HEIGHT` (env-controlled, default
+    /// `u64::MAX` = disabled). Wire format stable on enum-add; gate
+    /// check happens in dispatch.
+    AddSelfStake { amount: u64 },
 }
 
 /// Phase A data type: per-validator missed-block evidence for an epoch.
@@ -935,6 +955,42 @@ mod tests {
             evidence: vec![],
         };
         let encoded = bundle.encode().expect("encode");
+        assert!(StakingOp::is_staking_op(&encoded));
+    }
+
+    #[test]
+    fn test_add_self_stake_encode_decode_roundtrip() {
+        let op = StakingOp::AddSelfStake { amount: 1_500_000_000 };
+        let encoded = op.encode().expect("encode");
+        let decoded = StakingOp::decode(&encoded).expect("decode");
+        match decoded {
+            StakingOp::AddSelfStake { amount } => {
+                assert_eq!(amount, 1_500_000_000);
+            }
+            other => panic!("expected AddSelfStake, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_add_self_stake_serialization_uses_snake_case_op_tag() {
+        let op = StakingOp::AddSelfStake { amount: 42 };
+        let encoded = op.encode().expect("encode");
+        // Per #[serde(tag = "op", rename_all = "snake_case")] the variant
+        // tag must be "add_self_stake" — wire format is consensus-load-bearing.
+        assert!(
+            encoded.contains("\"op\":\"add_self_stake\""),
+            "expected snake_case op tag, got: {encoded}"
+        );
+        assert!(
+            encoded.contains("\"amount\":42"),
+            "expected amount field present, got: {encoded}"
+        );
+    }
+
+    #[test]
+    fn test_add_self_stake_is_staking_op() {
+        let op = StakingOp::AddSelfStake { amount: 100 };
+        let encoded = op.encode().expect("encode");
         assert!(StakingOp::is_staking_op(&encoded));
     }
 

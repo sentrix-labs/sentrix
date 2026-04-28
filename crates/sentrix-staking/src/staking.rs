@@ -191,6 +191,44 @@ impl StakeRegistry {
         Ok(())
     }
 
+    // ── Self-stake top-up ────────────────────────────────────
+
+    /// Add real SRX to an existing validator's `self_stake`. Caller is
+    /// the validator itself (authorization enforced by the dispatch
+    /// site at `block_executor.rs`, which checks `tx.from_address ==
+    /// validator_address`). The corresponding SRX has already been
+    /// transferred from the validator's balance into PROTOCOL_TREASURY
+    /// by the outer `accounts.transfer` in apply-Pass-2; this fn only
+    /// updates the staking registry.
+    ///
+    /// Supply-invariant preserving — no mint, no phantom. SRX moves
+    /// from circulating balance into bonded stake. Designed as the
+    /// proper recovery path for slashed validators whose `self_stake
+    /// < MIN_SELF_STAKE`, replacing the break-glass `force_unjail`
+    /// (which mints phantom SRX). After this call brings self_stake
+    /// back ≥ MIN_SELF_STAKE, the validator can run the standard
+    /// `unjail` op without supply damage.
+    pub fn add_self_stake(&mut self, validator: &str, amount: u64) -> SentrixResult<()> {
+        if amount == 0 {
+            return Err(SentrixError::InvalidTransaction(
+                "AddSelfStake: amount must be > 0".into(),
+            ));
+        }
+        let val = self
+            .validators
+            .get_mut(validator)
+            .ok_or_else(|| SentrixError::InvalidTransaction("validator not found".into()))?;
+        if val.is_tombstoned {
+            return Err(SentrixError::InvalidTransaction(
+                "AddSelfStake: tombstoned validators cannot add self_stake".into(),
+            ));
+        }
+        val.self_stake = val.self_stake.checked_add(amount).ok_or_else(|| {
+            SentrixError::InvalidTransaction("AddSelfStake: self_stake overflow".into())
+        })?;
+        Ok(())
+    }
+
     // ── Delegation ───────────────────────────────────────────
 
     pub fn delegate(
@@ -1804,6 +1842,94 @@ mod tests {
         assert!(!v.is_jailed);
         assert_eq!(v.jail_until, 0);
         assert_eq!(v.self_stake, bigger, "stake should not be touched");
+    }
+
+    // ── add_self_stake ────────────────────────────────────────
+
+    #[test]
+    fn test_add_self_stake_bumps_existing_validator() {
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        let initial = reg.validators["0xval1"].self_stake;
+
+        reg.add_self_stake("0xval1", 50_000).unwrap();
+
+        let after = &reg.validators["0xval1"];
+        assert_eq!(after.self_stake, initial + 50_000);
+        // total_delegated must NOT move — that's the whole point vs
+        // ordinary Delegate from the validator's own wallet.
+        assert_eq!(after.total_delegated, 0);
+    }
+
+    #[test]
+    fn test_add_self_stake_can_lift_below_min_to_above_min() {
+        // The 2026-04-27 self-stake-shortfall scenario: slashing
+        // dropped self_stake below MIN_SELF_STAKE; AddSelfStake is
+        // the supply-invariant-preserving recovery path that gets
+        // it back over the floor so plain `unjail` becomes viable.
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        reg.slash("0xval1", 100).unwrap(); // 1% slash drops below min
+        assert!(reg.validators["0xval1"].self_stake < MIN_SELF_STAKE);
+        let shortfall = MIN_SELF_STAKE - reg.validators["0xval1"].self_stake;
+
+        reg.add_self_stake("0xval1", shortfall).unwrap();
+
+        assert_eq!(reg.validators["0xval1"].self_stake, MIN_SELF_STAKE);
+        // Now the standard unjail path works (after jail cooldown).
+    }
+
+    #[test]
+    fn test_add_self_stake_rejects_zero_amount() {
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        let result = reg.add_self_stake("0xval1", 0);
+        assert!(matches!(
+            result,
+            Err(SentrixError::InvalidTransaction(ref m)) if m.contains("must be > 0")
+        ));
+    }
+
+    #[test]
+    fn test_add_self_stake_rejects_unknown_validator() {
+        let mut reg = new_registry();
+        let result = reg.add_self_stake("0xnobody", 1_000);
+        assert!(matches!(
+            result,
+            Err(SentrixError::InvalidTransaction(ref m)) if m.contains("validator not found")
+        ));
+    }
+
+    #[test]
+    fn test_add_self_stake_rejects_tombstoned() {
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        reg.validators.get_mut("0xval1").unwrap().is_tombstoned = true;
+        let result = reg.add_self_stake("0xval1", 50_000);
+        assert!(matches!(
+            result,
+            Err(SentrixError::InvalidTransaction(ref m)) if m.contains("tombstoned")
+        ));
+    }
+
+    #[test]
+    fn test_add_self_stake_does_not_overflow() {
+        // Defensive: u64 self_stake + amount must not silently wrap.
+        let mut reg = new_registry();
+        register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
+        // Force self_stake near u64 max so the next add overflows.
+        reg.validators.get_mut("0xval1").unwrap().self_stake = u64::MAX - 100;
+        let result = reg.add_self_stake("0xval1", 1_000);
+        assert!(matches!(
+            result,
+            Err(SentrixError::InvalidTransaction(ref m)) if m.contains("overflow")
+        ));
+        // State unchanged on rejection.
+        assert_eq!(
+            reg.validators["0xval1"].self_stake,
+            u64::MAX - 100,
+            "overflow path must not partially mutate"
+        );
     }
 
     #[test]
