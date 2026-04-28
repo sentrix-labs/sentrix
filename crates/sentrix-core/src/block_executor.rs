@@ -1292,13 +1292,22 @@ impl Blockchain {
         // Append block to chain
         self.chain.push(block);
 
-        // Notify WebSocket / SSE subscribers (newHeads) — non-blocking,
-        // infallible by trait contract. See sentrix-primitives::events.
+        // Notify WebSocket / SSE subscribers — non-blocking, infallible
+        // by trait contract. See sentrix-primitives::events.
         // The chain.last() is guaranteed Some here since we just pushed.
         if let Some(emitter) = &self.event_emitter
             && let Some(latest) = self.chain.last()
         {
+            // EVM-compat: eth_subscribe(newHeads)
             emitter.emit_new_head(latest);
+            // Sentrix-native: sentrix_subscribe(finalized)
+            // BFT supplies the justification — count signers if present.
+            let signers = latest
+                .justification
+                .as_ref()
+                .map(|j| j.precommits.len())
+                .unwrap_or(0);
+            emitter.emit_finalized(latest.index, &latest.hash, signers);
         }
 
         // Sliding window: evict oldest blocks beyond CHAIN_WINDOW_SIZE; evicted blocks stay in MDBX
@@ -1632,6 +1641,25 @@ impl Blockchain {
                         let key = log_key(block_height, tx_index, log_idx as u32);
                         let _ =
                             storage.put_bincode(sentrix_storage::tables::TABLE_LOGS, &key, &stored);
+
+                        // Notify WebSocket subscribers — eth_subscribe(logs).
+                        // Convert StoredLog to the trait-friendly LogData
+                        // shape (sentrix-primitives doesn't depend on
+                        // sentrix-evm so the trait can't take StoredLog
+                        // directly). Non-blocking, infallible.
+                        if let Some(emitter) = &self.event_emitter {
+                            let log_data = sentrix_primitives::events::LogData {
+                                block_height,
+                                block_hash: block_hash_hex.to_string(),
+                                tx_hash: tx.txid.clone(),
+                                tx_index,
+                                log_index: log_idx as u32,
+                                address: stored.address,
+                                topics: stored.topics.clone(),
+                                data: stored.data.clone(),
+                            };
+                            emitter.emit_log(&log_data);
+                        }
                     }
                 }
                 // Store contract RUNTIME code (not init code) if CREATE succeeded.

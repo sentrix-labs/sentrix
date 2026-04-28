@@ -262,17 +262,20 @@ pub fn create_router_with_bus(
         .merge(write_router)
         // ── WebSocket subscriptions (eth_subscribe / eth_unsubscribe) ──
         // Mounted at /ws. The WS sub-router carries its own compound
-        // state (Blockchain handle + EventBus) so the subscription
-        // tasks can both query the chain (HTTP fall-through) and
-        // listen to event broadcasts. The bus is the SAME instance
-        // the consensus path emits to, so subscribers see real
-        // block events.
+        // state (Blockchain handle + EventBus + per-IP limiter) so
+        // subscription tasks can both query the chain (HTTP fall-
+        // through) and listen to event broadcasts. The bus is the
+        // SAME instance the consensus path emits to, so subscribers
+        // see real block events. The ip_limiter caps per-source
+        // concurrent WS connections (defense — guards against fd
+        // exhaustion from a single abusive client).
         .merge(
             Router::new()
                 .route("/ws", get(crate::ws::ws_handler))
                 .with_state(crate::ws::WsState {
                     state: state.clone(),
                     bus,
+                    ip_limiter: crate::ws::WsIpLimiter::default(),
                 }),
         )
         // Axum layer order: LAST `.layer()` call is OUTERMOST

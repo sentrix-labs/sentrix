@@ -14,7 +14,7 @@
 //! events behind is no longer "real-time" anyway.
 
 use sentrix_primitives::block::Block;
-use sentrix_primitives::events::EventEmitter;
+use sentrix_primitives::events::{EventEmitter, LogData};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -88,13 +88,93 @@ impl NewHeadEvent {
     }
 }
 
+/// Filterable EVM log event emitted on `eth_subscribe(logs)`. Mirrors
+/// Ethereum's standard `eth_subscription` log payload — address,
+/// topics, data, plus block + tx context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogEvent {
+    pub address: String, // 0x + 40 hex
+    pub topics: Vec<String>, // 0x + 64 hex each
+    pub data: String, // 0x + hex
+    #[serde(rename = "blockNumber")]
+    pub block_number: String, // hex u64
+    #[serde(rename = "blockHash")]
+    pub block_hash: String,
+    #[serde(rename = "transactionHash")]
+    pub transaction_hash: String,
+    #[serde(rename = "transactionIndex")]
+    pub transaction_index: String, // hex u32
+    #[serde(rename = "logIndex")]
+    pub log_index: String, // hex u32
+    pub removed: bool,
+}
+
+impl LogEvent {
+    pub fn from_log_data(log: &LogData) -> Self {
+        let with_0x = |s: &str| {
+            if s.starts_with("0x") {
+                s.to_string()
+            } else {
+                format!("0x{}", s)
+            }
+        };
+        Self {
+            address: format!("0x{}", hex::encode(log.address)),
+            topics: log
+                .topics
+                .iter()
+                .map(|t| format!("0x{}", hex::encode(t)))
+                .collect(),
+            data: format!("0x{}", hex::encode(&log.data)),
+            block_number: format!("0x{:x}", log.block_height),
+            block_hash: with_0x(&log.block_hash),
+            transaction_hash: with_0x(&log.tx_hash),
+            transaction_index: format!("0x{:x}", log.tx_index),
+            log_index: format!("0x{:x}", log.log_index),
+            removed: false,
+        }
+    }
+}
+
+/// Pending-transaction event emitted on `eth_subscribe(newPendingTransactions)`.
+/// Standard Ethereum payload is just the txid string; we keep that exact
+/// shape so dApp tooling consumes without special-casing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingTxEvent {
+    pub txid: String,
+}
+
+/// Sentrix-native: emitted on `sentrix_subscribe(finalized)`. Reports
+/// BFT finalization with justification signer count. Distinct from
+/// `newHeads` because Sentrix has instant BFT finality — every new
+/// block is finalized at the same moment it's produced.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FinalizedEvent {
+    pub height: u64,
+    pub hash: String,
+    #[serde(rename = "justificationSigners")]
+    pub justification_signers: usize,
+}
+
+/// Sentrix-native: emitted on `sentrix_subscribe(validatorSet)`.
+/// Fires at epoch boundary when the validator set rotates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidatorSetEvent {
+    pub epoch: u64,
+    pub validators: Vec<String>,
+}
+
 /// Concrete event bus. Held as `Arc<EventBus>` and shared between
-/// the consensus path (which calls `emit_new_head`) and the
-/// WebSocket subscription handlers (which call `new_heads.subscribe()`
+/// the consensus path (which calls `emit_*` methods) and the
+/// WebSocket subscription handlers (which call `<channel>.subscribe()`
 /// to obtain a Receiver).
 #[derive(Debug, Clone)]
 pub struct EventBus {
     pub new_heads: broadcast::Sender<NewHeadEvent>,
+    pub logs: broadcast::Sender<LogEvent>,
+    pub pending_txs: broadcast::Sender<PendingTxEvent>,
+    pub finalized: broadcast::Sender<FinalizedEvent>,
+    pub validator_set: broadcast::Sender<ValidatorSetEvent>,
 }
 
 impl EventBus {
@@ -108,6 +188,10 @@ impl EventBus {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             new_heads: broadcast::channel(capacity).0,
+            logs: broadcast::channel(capacity).0,
+            pending_txs: broadcast::channel(capacity).0,
+            finalized: broadcast::channel(capacity).0,
+            validator_set: broadcast::channel(capacity).0,
         }
     }
 }
@@ -124,6 +208,40 @@ impl EventEmitter for EventBus {
         // which is fine — we don't want consensus to depend on whether
         // a websocket client is connected. Drop the result.
         let _ = self.new_heads.send(NewHeadEvent::from_block(block));
+    }
+
+    fn emit_log(&self, log: &LogData) {
+        let _ = self.logs.send(LogEvent::from_log_data(log));
+    }
+
+    fn emit_pending_tx(&self, txid: &str) {
+        let _ = self.pending_txs.send(PendingTxEvent {
+            txid: if txid.starts_with("0x") {
+                txid.to_string()
+            } else {
+                format!("0x{}", txid)
+            },
+        });
+    }
+
+    fn emit_finalized(&self, height: u64, hash: &str, justification_signers: usize) {
+        let with_0x = if hash.starts_with("0x") {
+            hash.to_string()
+        } else {
+            format!("0x{}", hash)
+        };
+        let _ = self.finalized.send(FinalizedEvent {
+            height,
+            hash: with_0x,
+            justification_signers,
+        });
+    }
+
+    fn emit_validator_set(&self, epoch: u64, validators: &[String]) {
+        let _ = self.validator_set.send(ValidatorSetEvent {
+            epoch,
+            validators: validators.to_vec(),
+        });
     }
 }
 
