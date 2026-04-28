@@ -84,8 +84,52 @@ The contract surface (1-of-1 today, expansion-ready) is the right signal to list
 
 The existing canonical contracts (WSRX, Multicall3, TokenFactory) have **no owner role** — they're immutable after deployment. Only SentrixSafe has owner-set governance. If future contracts gain owner roles (e.g., upgradeable proxies, pausable factories), `script/TransferOwnership.s.sol` will document the hand-off path.
 
+## Strategic Reserve migration plan (StrategicReserveTimelock)
+
+The Strategic Reserve (10.5M SRX, allocated for airdrop campaign + CEX listing fees + DEX bootstrap + emergency) currently sits in an EOA wallet (`0x2578cad17e3e...`). The Authority key holder controls direct spending — social custody, not on-chain enforcement.
+
+**Active migration path:** transfer Reserve into `StrategicReserveTimelock` — a thin wrapper over OpenZeppelin TimelockController v5.6.0, controlled by SentrixSafe with a hardcoded 24-hour delay.
+
+### Contract design
+
+- **Source:** [`canonical-contracts/contracts/StrategicReserveTimelock.sol`](https://github.com/sentrix-labs/canonical-contracts/blob/main/contracts/StrategicReserveTimelock.sol)
+- **Pattern:** OZ TimelockController (battle-tested in Compound governance, holds $billions across multiple deployments)
+- **Constructor (immutable post-deploy):**
+  - `minDelay = 86400` (24 hours)
+  - `proposers = [SentrixSafe]` — only SentrixSafe Authority can schedule spends
+  - `executors = [SentrixSafe]` — only SentrixSafe Authority can execute post-delay
+  - `cancellers = [SentrixSafe]` — can cancel pending operations during the window
+  - `admin = address(0)` — fully self-administered, role changes themselves go through the timelock
+
+### Spend flow (post-migration)
+
+1. **Schedule** — SentrixSafe calls `schedule(target, value, data, predecessor, salt, 86400)` → operation queued, visible on-chain
+2. **Wait 24h** — anyone can audit the pending operation via `getOperationState(id)` and (if SentrixSafe-authorized) cancel
+3. **Execute** — SentrixSafe calls `execute(...)` → operation runs
+
+### Cancel flow (operator safety)
+
+If an operator notices a wrong amount, wrong recipient, or proposed-under-coercion spend during the 24h window, SentrixSafe calls `cancel(id)` to abort the operation before damage.
+
+### Trade-off (why not migrated yet)
+
+- **Pro:** on-chain enforcement of "SentrixSafe-governed" claim becomes literally true; 24h cancel-window catches mistakes/coercion; future N-of-M expansion of SentrixSafe inherits all timelock protection
+- **Con:** every Reserve spend takes 24 hours to settle, vs instant in EOA model
+- **Mitigation:** day-to-day operational spending (faucet refill, marketing, bounties, dev grants) stays in Ecosystem Fund EOA (separate wallet, fast access). Reserve is only used for big planned events (CEX listings, DEX bootstrap, airdrop pre-fund, emergency) where 24h notice is practical.
+
+### Migration sequence (one-time, when operator decides)
+
+1. Deploy `StrategicReserveTimelock` contract on chain (mainnet first or testnet drill first — operator's call)
+2. Verify on Sourcify (`verify.sentrixchain.com`)
+3. Reserve EOA → transfer 10.5M SRX to deployed contract address
+4. Retire Reserve EOA private key (zero out, never reuse)
+5. Update governance/tokenomics docs to point Reserve at contract address
+
+**No timeline committed.** Migration is opt-in operator decision when ready.
+
 ## See also
 
 - [`canonical-contracts/docs/ADDRESSES.md`](https://github.com/sentrix-labs/canonical-contracts/blob/main/docs/ADDRESSES.md) — deployed addresses + ownership migration tx hashes
-- [`canonical-contracts/contracts/SentrixSafe.sol`](https://github.com/sentrix-labs/canonical-contracts/blob/main/contracts/SentrixSafe.sol) — contract source
+- [`canonical-contracts/contracts/SentrixSafe.sol`](https://github.com/sentrix-labs/canonical-contracts/blob/main/contracts/SentrixSafe.sol) — multisig contract source
+- [`canonical-contracts/contracts/StrategicReserveTimelock.sol`](https://github.com/sentrix-labs/canonical-contracts/blob/main/contracts/StrategicReserveTimelock.sol) — timelock contract source (Reserve migration target)
 - [Tokenomics > Governance](../tokenomics/OVERVIEW#8-governance) — broader governance roadmap

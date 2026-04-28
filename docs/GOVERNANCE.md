@@ -18,7 +18,7 @@ Two main pools hold protocol-level capital:
 
 | Pool | Allocation | Purpose | Control mechanism |
 |---|---|---|---|
-| Strategic Reserve | 10,500,000 SRX | Airdrop campaign (5M), CEX listing fees (3M), DEX bootstrap liquidity (1.5M), emergency (1M) | EOA wallet, key held by Authority (same operator who controls SentrixSafe). Social custody — on-chain enforcement (Reserve owned by SentrixSafe contract) is acknowledged as a roadmap item without committed timeline. |
+| Strategic Reserve | 10,500,000 SRX | Airdrop campaign (5M), CEX listing fees (3M), DEX bootstrap liquidity (1.5M), emergency (1M) | EOA today, key held by Authority. **Migration to `StrategicReserveTimelock` contract is the active path** — contract code ready in [`sentrix-labs/canonical-contracts`](https://github.com/sentrix-labs/canonical-contracts/blob/main/contracts/StrategicReserveTimelock.sol) (24h timelock, SentrixSafe-controlled). Deploy + transfer is operator-decision when ready; no committed timeline. Until migrated: claim "SentrixSafe-governed" is social custody only. |
 | Ecosystem Fund | 21,000,000 SRX | Operational ops: faucet refill, marketing, bounties, dev grants | EOA wallet, key held by Authority. Same custody model as Strategic Reserve. |
 
 Sub-bucket targets are **policy-level commitments** (documented in this repo and on `sentrixchain.com/docs/tokenomics`). They are **not on-chain enforced** — they are auditable via on-chain transaction history.
@@ -171,6 +171,7 @@ There is no governance vote for emergency response; the operator coordinates. On
 | Q2 2026 | Foundation-operated 1-of-1 SentrixSafe, hardcoded fork gating, off-chain operator coordination |
 | Q3 2026 | Founder-vesting contract deploy (locks §2a on-chain) per tokenomics §9 |
 | Future (no committed timing) | SentrixSafe multi-sig expansion — when independent signers are recruited |
+| Future (no committed timing) | Strategic Reserve migration to `StrategicReserveTimelock` contract — code ready, operator-decision when ready (24h delay trade-off accepted) |
 | Future (no committed timing) | External validator onboarding — current 4 validators are Foundation-operated; criteria, cadence, and timing all TBD when operator-readiness framework is finalized |
 | Future (no committed timing) | On-chain governance for protocol upgrades — proposal + voting framework, mechanism TBD |
 | Future (no committed timing) | Decentralized treasury governance (DAO-style), replacing Foundation-coordinated multisig |
