@@ -2202,6 +2202,13 @@ async fn cmd_start(
                                                                 total_rewards: 0,
                                                                 total_blocks_produced: 0,
                                                             };
+                                                            // Phase 3 WS: notify sentrix_subscribe(validatorSet)
+                                                            // — full epoch-advance wire-up. Subscribers see
+                                                            // the new active set on every epoch boundary,
+                                                            // not just AddSelfStake re-entry.
+                                                            if let Some(emitter) = &bc.event_emitter {
+                                                                emitter.emit_validator_set(next_num, &active_set);
+                                                            }
                                                             tracing::info!("Epoch {} started — {} validators, {} staked",
                                                                 next_num, active_set.len(), total_staked);
 
@@ -2605,6 +2612,14 @@ async fn cmd_start(
                                                         total_rewards: 0,
                                                         total_blocks_produced: 0,
                                                     };
+                                                    // Phase 3 WS: notify sentrix_subscribe(validatorSet) —
+                                                    // libp2p-applied path mirror of the validator-finalize
+                                                    // emit above. Both call sites must emit so subscribers
+                                                    // see the rotation regardless of which path applied
+                                                    // the boundary block.
+                                                    if let Some(emitter) = &bc.event_emitter {
+                                                        emitter.emit_validator_set(next_num, &active_set);
+                                                    }
                                                     tracing::info!("Epoch {} started — {} validators, {} staked",
                                                         next_num, active_set.len(), total_staked);
 

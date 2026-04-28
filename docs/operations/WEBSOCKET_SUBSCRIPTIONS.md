@@ -30,7 +30,10 @@ Shipped 2026-04-28 in PR #398 (Phase 1) + PR #399 (Phase 2+3).
 | Channel | Payload | Trigger |
 |---|---|---|
 | `sentrix_finalized` | `{ height, hash, justificationSigners }` | every BFT-finalized block — distinct from `newHeads` because Sentrix has instant BFT finality |
-| `sentrix_validatorSet` | `{ epoch, validators[] }` | epoch boundary when validator set rotates (channel live, emit_validator_set hook in staking-epoch-advance pending) |
+| `sentrix_validatorSet` | `{ epoch, validators[] }` | every epoch-advance (active set rotation) |
+| `sentrix_tokenOps` | `{ op, contract, from, to, amount, txid, blockHeight }` | every native TokenOp dispatched (Deploy, Transfer, Burn, Mint, Approve) |
+| `sentrix_stakingOps` | `{ op, validator, delegator, amount, txid, blockHeight }` | every StakingOp dispatched (RegisterValidator, Delegate, Redelegate, Undelegate, ClaimRewards, Unjail, AddSelfStake, SubmitEvidence, JailEvidenceBundle) |
+| `sentrix_jail` | `{ validator, epoch, missedBlocks, blockHeight }` | per-validator inside a JailEvidenceBundle dispatch (post-JAIL_CONSENSUS_HEIGHT) |
 
 ## Quick start
 
