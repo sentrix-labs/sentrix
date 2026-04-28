@@ -62,7 +62,24 @@ use tower_http::cors::{Any, CorsLayer};
 pub type SharedState = Arc<RwLock<Blockchain>>;
 
 // ── Router ───────────────────────────────────────────────
+/// Backward-compat constructor that creates an event bus internally.
+/// New callers (e.g., `bin/sentrix/main.rs` post-WebSocket support)
+/// should use `create_router_with_bus` so the bus they pass in is
+/// the same one the consensus path emits to.
 pub fn create_router(state: SharedState) -> Router {
+    create_router_with_bus(state, Arc::new(crate::events::EventBus::new()))
+}
+
+/// Build the full router including the `/ws` WebSocket subscription
+/// endpoint. The supplied `bus` should be the same instance the
+/// consensus path emits to via `Blockchain::set_event_emitter`, so
+/// subscribers see live block events. Tests + lightweight CLI builds
+/// can use `create_router` which constructs an isolated bus the
+/// caller can ignore.
+pub fn create_router_with_bus(
+    state: SharedState,
+    bus: Arc<crate::events::EventBus>,
+) -> Router {
     // Eagerly pin the process start time so /sentrix_status and /metrics
     // report uptime relative to boot, not to the first handler call that
     // happened to trigger the OnceLock. Without this, uptime_seconds was
@@ -243,6 +260,21 @@ pub fn create_router(state: SharedState) -> Router {
         .nest("/explorer", explorer_router(state.clone()))
         // ── Write endpoints (stricter rate limit) ────────────────
         .merge(write_router)
+        // ── WebSocket subscriptions (eth_subscribe / eth_unsubscribe) ──
+        // Mounted at /ws. The WS sub-router carries its own compound
+        // state (Blockchain handle + EventBus) so the subscription
+        // tasks can both query the chain (HTTP fall-through) and
+        // listen to event broadcasts. The bus is the SAME instance
+        // the consensus path emits to, so subscribers see real
+        // block events.
+        .merge(
+            Router::new()
+                .route("/ws", get(crate::ws::ws_handler))
+                .with_state(crate::ws::WsState {
+                    state: state.clone(),
+                    bus,
+                }),
+        )
         // Axum layer order: LAST `.layer()` call is OUTERMOST
         // (sees request first, response last). We want:
         //   cors           (outermost — 429/4xx/5xx responses MUST carry

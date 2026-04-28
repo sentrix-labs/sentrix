@@ -62,6 +62,13 @@ pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) 
         "eth_accounts" => Ok(json!([])),
         "eth_getCode" => eth_get_code(params, state).await,
         "eth_getStorageAt" => eth_get_storage_at(params, state).await,
+        // Subscriptions only make sense on a long-lived connection. HTTP is
+        // request/response; clients that try to subscribe over HTTP get a
+        // pointer to the right transport instead of a silent error.
+        "eth_subscribe" | "eth_unsubscribe" => Err((
+            -32601,
+            "subscriptions only available on the WebSocket endpoint at /ws".into(),
+        )),
         _ => Err((-32601, format!("method not found: {}", method))),
     }
 }

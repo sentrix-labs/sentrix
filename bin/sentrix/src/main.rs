@@ -3,7 +3,8 @@
 
 use clap::{Parser, Subcommand};
 use libp2p::Multiaddr;
-use sentrix::api::routes::{SharedState, create_router};
+use sentrix::api::events::EventBus;
+use sentrix::api::routes::{SharedState, create_router_with_bus};
 use sentrix::core::blockchain::{BLOCK_TIME_SECS, Blockchain};
 use sentrix::core::transaction::{PROTOCOL_TREASURY, TOKEN_OP_ADDRESS, TokenOp, Transaction};
 use sentrix::network::libp2p_node::{LibP2pNode, make_multiaddr};
@@ -3117,7 +3118,17 @@ async fn cmd_start(
     }
 
     // ── Shared: REST API (always started) ───────────────
-    let app = create_router(shared.clone());
+    // Construct the event bus FIRST so the same instance is wired into
+    // both the consensus path (Blockchain emits via set_event_emitter)
+    // and the WebSocket subscription handler (subscribers .subscribe()
+    // on the broadcast channels). Without sharing, WebSocket clients
+    // would never receive newHeads events.
+    let event_bus = std::sync::Arc::new(EventBus::new());
+    {
+        let mut bc = shared.write().await;
+        bc.set_event_emitter(Some(event_bus.clone()));
+    }
+    let app = create_router_with_bus(shared.clone(), event_bus.clone());
     let api_addr = format!("{}:{}", get_api_host(), get_api_port());
     println!("REST API listening on http://{}", api_addr);
     let listener = tokio::net::TcpListener::bind(&api_addr).await?;
