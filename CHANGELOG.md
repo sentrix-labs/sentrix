@@ -9,17 +9,27 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-> Tonight's post-v2.1.46 work. Will land in v2.1.47 once tagged.
+> Empty placeholder — next release will land on this branch.
+
+---
+
+## [2.1.47] — 2026-04-28 — eth_call → revm wiring + EIP-7825 gas cap fix + version bump
+
+> **Mainnet `eth_call` now actually executes against revm + live chain state.** Previously stubbed; canonical-contract reads (`WSRX.name()`, `Multicall3.getCurrentBlockTimestamp()`, etc) returned `0x` empty. Two PRs land the full fix: #389 wires the revm dispatch path, #391 caps the dry-run gas at the EIP-7825 limit so revm doesn't reject every call.
 
 ### Added / Fixed
 
 - **`crates/sentrix-rpc/src/jsonrpc/eth.rs`** (#389) — `eth_call` and `eth_estimateGas` now route through revm execution against the live chain state via `SentrixEvmDb::from_account_db(&bc.accounts)` (was `InMemoryDB` which only pre-loaded contract code, leaving every storage slot zero). Address normalization added so EIP-55 checksummed addresses resolve correctly against the lowercase `AccountDB` keys.
-- **`crates/sentrix-rpc/src/jsonrpc/eth.rs`** (#391) — cap eth_call dry-run gas at `TX_GAS_LIMIT_CAP` (16,777,216, EIP-7825) instead of `BLOCK_GAS_LIMIT` (30M). revm with SpecId ≥ Osaka rejects gas_limit > cap with `TxGasLimitGreaterThanCap` even for read-only dry-runs; pre-fix every eth_call returned `0x` empty. Live-discovered after #389 deploy.
+- **`crates/sentrix-rpc/src/jsonrpc/eth.rs` + `crates/sentrix-evm/src/gas.rs`** (#391) — add `TX_GAS_LIMIT_CAP = 16_777_216` constant (EIP-7825) and clamp eth_call dry-run gas at this value instead of `BLOCK_GAS_LIMIT` (30M). revm with SpecId ≥ Osaka rejects `gas_limit > cap` with `TxGasLimitGreaterThanCap` even for read-only dry-runs; pre-fix every eth_call returned `0x` empty. Live-discovered after #389 deploy when `cast call <WSRX> "name()(string)"` still returned the ABI-decode error.
 
 ### Documentation
 
 - **`genesis/mainnet.toml`** (#390) — clarifying comment block explains the v2 → v3 founder admin transfer history (block 444070, 2026-04-24). Comment-only; genesis hash regression test continues to pass.
-- **`README.md`** + **`CHANGELOG.md`** + **`docs/operations/NETWORKS.md`** (#392) — bump v2.1.44 references to v2.1.46 across public docs after the mainnet redeploy.
+- **`README.md`** + **`docs/operations/NETWORKS.md`** + **`CHANGELOG.md`** (#392, #394) — bump v2.1.44 references to v2.1.46 across public docs after the mainnet redeploy; correct stale `[2.1.42]` CHANGELOG label to `[2.1.45]` to match git tag history.
+
+### Internal
+
+- **Workspace `Cargo.toml`** — bumped `version = "2.1.46" → "2.1.47"` across root + every internal crate + bin (uniform). `tools/*` keep their independent `0.1.0`.
 
 ---
 
