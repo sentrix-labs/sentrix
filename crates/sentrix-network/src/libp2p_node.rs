@@ -37,22 +37,25 @@ use crate::behaviour::{
     SentrixRequest, SentrixResponse, TXS_TOPIC, VALIDATOR_ADVERTS_TOPIC,
 };
 use crate::node::{NodeEvent, SharedBlockchain};
-use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
+use sentrix_primitives::block::Block;
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::transaction::Transaction;
 use sentrix_wire::MultiaddrAdvertisement;
 
 // The rate-limit + multiaddr-helper bits used to live inline below;
 // they were independent of the swarm logic and just bulked up the
-// review surface, so they got their own files. Re-export the public
+// review surface, so they got their own files. Same story for the
+// boundary-reject predicates in `validators.rs`. Re-export the public
 // `make_multiaddr` so existing downstream callers still find it at
 // the same path (`sentrix_network::libp2p_node::make_multiaddr`).
 mod multiaddr;
 mod ratelimit;
+mod validators;
 
 pub use multiaddr::make_multiaddr;
 use multiaddr::extract_ip;
 use ratelimit::IpRateLimiter;
+use validators::{block_boundary_reject_reason, is_active_bft_signer};
 
 // ── P2P protection constants ────────────────────────────
 /// Maximum number of verified (handshaked) peers.
@@ -1391,60 +1394,6 @@ async fn on_inbound_request(
     }
 }
 
-/// Check if `addr` is a current BFT-authorised validator. Consults the
-/// DPoS stake registry first (post-Voyager), then falls back to the PoA
-/// authority roster (Pioneer). Matches the helper in `bin/sentrix/main.rs`
-/// — the two live on opposite sides of the channel and both sides harden
-/// for defence in depth.
-async fn is_active_bft_signer(blockchain: &SharedBlockchain, addr: &str) -> bool {
-    let bc = blockchain.read().await;
-    if bc.stake_registry.is_active(addr) {
-        return true;
-    }
-    bc.authority.is_active_validator(addr)
-}
-
-/// Fast-reject a block at the network boundary if it fails cheap sanity
-/// checks that don't need the chain write lock. Returns `Some(reason)` if the
-/// block should be dropped on the floor, `None` if it's worth forwarding to
-/// `add_block_from_peer`.
-///
-/// Cheap checks only — expensive ones (signature, state-root math, trie
-/// apply) still run inside `add_block_from_peer` under the write lock.
-/// The purpose here is to kill the obvious-bad blocks before they
-/// contend for the lock or spawn a doomed apply task.
-///
-/// Added 2026-04-22 after the 3-way state_root fork: a validator running on
-/// a damaged chain.db was producing blocks with `state_root=None` above
-/// `STATE_ROOT_FORK_HEIGHT`, and peers were accepting them into the ingest
-/// pipeline before the execution-time guard caught and rejected them. With
-/// this check, bad blocks are rejected *before* propagation/apply so the
-/// signal reaches operators ~instantly instead of waiting for an execution
-/// failure that may be hidden by log noise.
-fn block_boundary_reject_reason(block: &Block, our_chain_id: u64) -> Option<&'static str> {
-    // H-01: cross-chain block. find the first non-coinbase tx and check its
-    // chain_id. (If every tx is coinbase, skip this check — coinbase has
-    // no chain_id-bound semantics.)
-    if let Some(tx) = block.transactions.iter().find(|t| !t.is_coinbase())
-        && tx.chain_id != our_chain_id
-    {
-        return Some("chain_id mismatch");
-    }
-
-    // 2026-04-21 3-way fork guard: past STATE_ROOT_FORK_HEIGHT, every valid
-    // block must carry a state_root; missing = producer's trie is broken.
-    // The execution-time guard in block_executor.rs also catches this, but
-    // gating at the network boundary means we never spend a write lock or
-    // apply-task on the bad block — and, more importantly, we don't log it
-    // at ERROR from every peer's execution path. One clean WARN at ingest
-    // is easier to spot than a flood of mismatches.
-    if block.index >= STATE_ROOT_FORK_HEIGHT && block.state_root.is_none() {
-        return Some("missing state_root past STATE_ROOT_FORK_HEIGHT (sender's trie is broken)");
-    }
-
-    None
-}
-
 // ── Inbound response handler ─────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -1645,6 +1594,7 @@ mod tests {
     use super::*;
     use libp2p::core::ConnectedPoint;
     use sentrix_core::blockchain::Blockchain;
+    use sentrix_primitives::block::STATE_ROOT_FORK_HEIGHT;
     use std::net::IpAddr;
     use std::sync::Arc;
     use tokio::sync::RwLock;
