@@ -9,7 +9,6 @@
 // SwarmTask is spawned once in `LibP2pNode::new()`.  All swarm mutations go
 // through the `SwarmCommand` channel so callers never need to hold the swarm.
 
-#![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -126,6 +125,9 @@ pub struct LibP2pNode {
     /// This node's libp2p identity.
     pub local_peer_id: PeerId,
     cmd_tx: mpsc::Sender<SwarmCommand>,
+    /// Held so the swarm task's strong reference outlives the node handle.
+    /// Not read directly; access goes through SwarmCommand.
+    #[allow(dead_code)]
     blockchain: SharedBlockchain,
 }
 

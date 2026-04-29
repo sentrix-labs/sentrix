@@ -49,6 +49,20 @@ pub(super) fn write_rate_limit_max() -> u32 {
         .unwrap_or(10)
 }
 
+/// Comma-separated list of IPs that bypass both rate limiters. Set via
+/// `SENTRIX_RATE_LIMIT_WHITELIST` env. Used so trusted infrastructure
+/// (block-explorer indexers, monitoring exporters, internal mesh peers)
+/// can drive the RPC at full speed without lifting the per-IP cap for
+/// the public internet. Reads the env var per request so operator
+/// changes take effect on next call without restart.
+fn rate_limit_whitelist_contains(ip: &str) -> bool {
+    let raw = match std::env::var("SENTRIX_RATE_LIMIT_WHITELIST") {
+        Ok(v) if !v.is_empty() => v,
+        _ => return false,
+    };
+    raw.split(',').any(|entry| entry.trim() == ip)
+}
+
 /// A7: distinct limiter newtypes so write + read counters do not alias
 /// each other. Both are registered as separate `Extension<T>` entries on
 /// requests.
@@ -128,6 +142,9 @@ pub(super) async fn ip_rate_limit_middleware(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let ip = extract_client_ip(&request);
+    if rate_limit_whitelist_contains(&ip) {
+        return next.run(request).await;
+    }
     let allowed = if let Some(limiter) = request.extensions().get::<GlobalIpLimiter>().cloned() {
         check_rate_limit(
             limiter.0,
@@ -156,6 +173,9 @@ pub(super) async fn write_rate_limit_middleware(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let ip = extract_client_ip(&request);
+    if rate_limit_whitelist_contains(&ip) {
+        return next.run(request).await;
+    }
     let allowed = if let Some(limiter) = request.extensions().get::<WriteIpLimiter>().cloned() {
         check_rate_limit(
             limiter.0,

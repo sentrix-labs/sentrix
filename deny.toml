@@ -7,31 +7,6 @@
 # All advisories are denied by default; use ignore[] for known exceptions.
 [advisories]
 ignore = [
-    # RUSTSEC-2020-0105 (net2) — cargo-deny v0.19.x has a parse bug on this
-    # advisory file. The crate is not in our dependency tree; safe to ignore.
-    "RUSTSEC-2020-0105",
-
-    # GHSA-vxx9-2994-q338 / CVE-2026-32314 — yamux 0.12.1 remote-panic via
-    # malformed Data frame (SYN, len=262145). Fix is in yamux 0.13.10,
-    # which IS in our tree — `libp2p-yamux 0.47` pulls both 0.12.1 and
-    # 0.13.10 unconditionally and the default `yamux::Config::default()`
-    # constructs the `Config013` variant at connection setup, so the
-    # vulnerable 0.12 decoder is never wired to a live socket at runtime.
-    # Remove this ignore once libp2p-yamux 0.48+ drops v0.12 compat and
-    # the 0.12.1 package disappears from Cargo.lock.
-    # Dependabot alert: https://github.com/sentrix-labs/sentrix/security/dependabot/3
-    "GHSA-vxx9-2994-q338",
-
-    # RUSTSEC-2026-0097 — `rand 0.8.5` unsound with a custom logger when
-    # `rand::rng()` is called from inside a `log!()` macro. Reaches us
-    # only transitively via `yamux 0.12.1` → `libp2p-yamux 0.47.0`, the
-    # same crate path whose 0.12 decoder we've already demonstrated is
-    # never wired up at runtime (see GHSA-vxx9-2994-q338 note above).
-    # We don't call into yamux 0.12 at all, so the advisory code path is
-    # unreachable. Remove this ignore together with the GHSA one once
-    # libp2p-yamux 0.48+ drops v0.12 compat.
-    "RUSTSEC-2026-0097",
-
     # ── Unmaintained transitive deps (informational advisories) ─────────
     # 2026-04-22 sweep — these crates are functionally fine today but
     # upstream has stopped maintaining them. Pinned transitively by our
@@ -50,25 +25,12 @@ ignore = [
     # automatically when multihash 0.20+ releases with core2 removed.
     "RUSTSEC-2026-0105",
 
-    # RUSTSEC-2024-0388 — `derivative 2.2.0` unmaintained (informational).
-    # Pulled transitively via arkworks ecosystem (ark-relations / ark-ff).
-    # Proc-macro only, compile-time expansion — no runtime code.
-    "RUSTSEC-2024-0388",
-
     # RUSTSEC-2024-0436 — `paste 1.0.15` unmaintained (informational).
     # Pulled transitively by too many crates to enumerate (revm, libp2p,
     # arkworks all use it for name concatenation in proc-macros).
     # Proc-macro only, compile-time expansion.
     "RUSTSEC-2024-0436",
 
-    # RUSTSEC-2025-0055 — `tracing-subscriber 0.2.25` ANSI-escape log
-    # poisoning on user-controlled input. Pulled only by `ark-relations
-    # 0.5.1` (arkworks proof system). Our Sentrix binary initializes
-    # tracing-subscriber 0.3.23 (see bin/sentrix/Cargo.toml); the 0.2.25
-    # instance never gets `.init()` called on it, so the vulnerable
-    # formatter path is unreachable at runtime. Drops when ark-relations
-    # migrates to 0.3.x.
-    "RUSTSEC-2025-0055",
 ]
 
 # ── Licenses ────────────────────────────────────────────────
