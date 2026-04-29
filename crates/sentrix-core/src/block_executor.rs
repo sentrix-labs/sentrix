@@ -195,6 +195,52 @@ impl Blockchain {
             ));
         }
 
+        // 2026-04-30: peer-broadcast finalization justification check.
+        // Pins the receiver-side gap from
+        // `audits/2026-04-28-vps5-block-773012-divergence.md`: every
+        // post-Voyager peer block ships the proposer's
+        // BlockJustification with the precommits that finalized it.
+        // Trusting that blob unconditionally lets a peer with stake-
+        // registry drift (or a Byzantine peer) ship a block whose
+        // precommits do NOT reach 2/3+ on our view of the active set —
+        // we'd then silently apply a fork. Verify the precommit stake
+        // weights sum to our local supermajority threshold before
+        // accepting. Self-produced blocks skip the check because their
+        // justification was just built locally from votes we collected
+        // ourselves; bypass-authz replay also skips so genesis-to-tip
+        // replay can apply historical blocks even after the active
+        // set has drifted past their original finalization view.
+        if !bypass_authz
+            && self.source_for_current_add == BlockSource::Peer
+            && self.voyager_mode_for(expected_index)
+            && let Some(j) = block.justification.as_ref()
+        {
+            let total_active_stake: u64 = self
+                .stake_registry
+                .active_set
+                .iter()
+                .filter_map(|a| self.stake_registry.get_validator(a))
+                .map(|v| v.total_stake())
+                .sum();
+            // total_active_stake==0 means the registry hasn't been
+            // initialised on this node yet (cold-start syncing from
+            // genesis before staking state has been replayed). Skip
+            // rather than reject — the apply path for staking ops
+            // earlier in the catch-up sequence brings the registry up.
+            if total_active_stake > 0 && !j.has_supermajority(total_active_stake) {
+                return Err(SentrixError::InvalidBlock(format!(
+                    "block {} justification stake {} is below the local supermajority \
+                     threshold {} (total_active_stake={}, signers={}) — peer-finalised \
+                     view diverges from ours, refusing to apply",
+                    expected_index,
+                    j.total_stake(),
+                    sentrix_primitives::supermajority_threshold(total_active_stake),
+                    total_active_stake,
+                    j.signer_count(),
+                )));
+            }
+        }
+
         // C-04: validate coinbase amount AND recipient. Amount must equal the
         // current era's block reward exactly (no silent underpay, no inflation).
         // Recipient must equal block.validator so that if credit() is ever
@@ -1397,6 +1443,7 @@ impl Blockchain {
 // ── Tests ─────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {
+    use crate::block_executor::BlockSource;
     use crate::blockchain::{Blockchain, CHAIN_ID};
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
     use sentrix_primitives::transaction::{MIN_TX_FEE, TOKEN_OP_ADDRESS, TokenOp, Transaction};
@@ -1945,6 +1992,148 @@ mod tests {
         unsafe {
             std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
             std::env::remove_var("VOYAGER_REWARD_V2_HEIGHT");
+        }
+    }
+
+    /// 2026-04-30 regression for the receiver-side eager-write
+    /// artifact pinned in
+    /// `audits/2026-04-28-vps5-block-773012-divergence.md`. A peer
+    /// broadcasts a block whose `BlockJustification` claims
+    /// finalization but the precommit stake doesn't actually reach
+    /// our local supermajority threshold. Pre-fix: silently applied
+    /// → divergent chain.db, livelock at the next height. Post-fix:
+    /// rejected with InvalidBlock so the chain stays canonical.
+    #[test]
+    fn test_peer_block_with_weak_justification_rejected() {
+        use sentrix_primitives::justification::BlockJustification;
+        use sentrix_staking::staking::ValidatorStake;
+
+        let mut bc = setup();
+        bc.voyager_activated = true;
+
+        // 4 validators each at stake 1000 → total 4000, supermajority
+        // threshold = 4000 * 2/3 + 1 = 2667. A justification with
+        // precommit stake of 1000 (one signer) is well under that.
+        for addr in ["v1", "v2", "v3", "v4"] {
+            bc.stake_registry.validators.insert(
+                addr.to_string(),
+                ValidatorStake {
+                    address: addr.to_string(),
+                    self_stake: 1000,
+                    total_delegated: 0,
+                    commission_rate: 1000,
+                    max_commission_rate: 2000,
+                    is_jailed: false,
+                    jail_until: 0,
+                    is_tombstoned: false,
+                    blocks_signed: 0,
+                    blocks_missed: 0,
+                    pending_rewards: 0,
+                    registration_height: 0,
+                    last_commission_change_height: 0,
+                },
+            );
+        }
+        bc.stake_registry.active_set = vec![
+            "v1".into(),
+            "v2".into(),
+            "v3".into(),
+            "v4".into(),
+        ];
+
+        let prev_hash = bc.latest_block().unwrap().hash.clone();
+        let height = bc.height() + 1;
+        let reward = bc.get_block_reward();
+        let coinbase = Transaction::new_coinbase("v1".into(), reward, height, 1_777_000_000);
+        let mut block = sentrix_primitives::block::Block::new(
+            height,
+            prev_hash,
+            vec![coinbase],
+            "v1".into(),
+        );
+        block.timestamp = 1_777_000_000;
+        block.hash = block.calculate_hash();
+        let mut just = BlockJustification::new(height, 0, block.hash.clone());
+        // Single weak precommit — well under 2/3+1 of 4000.
+        just.add_precommit("v1".into(), vec![], 1000);
+        block.justification = Some(just);
+
+        let err = bc
+            .add_block_with_source(block, BlockSource::Peer)
+            .expect_err("peer block with weak justification must be rejected");
+        assert!(
+            format!("{err:?}").contains("below the local supermajority threshold"),
+            "expected supermajority-threshold rejection; got: {err:?}"
+        );
+    }
+
+    /// Inverse of the above: a peer block whose justification meets
+    /// supermajority on our local active set must be accepted (modulo
+    /// the rest of Pass 1 / Pass 2 validation). Pins that the new
+    /// guard does not regress legitimate finalised broadcasts.
+    #[test]
+    fn test_peer_block_with_strong_justification_passes_check() {
+        use sentrix_primitives::justification::BlockJustification;
+        use sentrix_staking::staking::ValidatorStake;
+
+        let mut bc = setup();
+        bc.voyager_activated = true;
+        for addr in ["v1", "v2", "v3", "v4"] {
+            bc.stake_registry.validators.insert(
+                addr.to_string(),
+                ValidatorStake {
+                    address: addr.to_string(),
+                    self_stake: 1000,
+                    total_delegated: 0,
+                    commission_rate: 1000,
+                    max_commission_rate: 2000,
+                    is_jailed: false,
+                    jail_until: 0,
+                    is_tombstoned: false,
+                    blocks_signed: 0,
+                    blocks_missed: 0,
+                    pending_rewards: 0,
+                    registration_height: 0,
+                    last_commission_change_height: 0,
+                },
+            );
+        }
+        bc.stake_registry.active_set = vec![
+            "v1".into(),
+            "v2".into(),
+            "v3".into(),
+            "v4".into(),
+        ];
+
+        let prev_hash = bc.latest_block().unwrap().hash.clone();
+        let height = bc.height() + 1;
+        let reward = bc.get_block_reward();
+        let coinbase = Transaction::new_coinbase("v1".into(), reward, height, 1_777_000_000);
+        let mut block = sentrix_primitives::block::Block::new(
+            height,
+            prev_hash,
+            vec![coinbase],
+            "v1".into(),
+        );
+        block.timestamp = 1_777_000_000;
+        block.hash = block.calculate_hash();
+        let mut just = BlockJustification::new(height, 0, block.hash.clone());
+        // Three precommits at stake 1000 each = 3000 ≥ supermajority
+        // threshold (2667) on a 4000-total active set.
+        just.add_precommit("v1".into(), vec![], 1000);
+        just.add_precommit("v2".into(), vec![], 1000);
+        just.add_precommit("v3".into(), vec![], 1000);
+        block.justification = Some(just);
+
+        // Result may still error on later Pass-1 / Pass-2 checks (we
+        // didn't bother to forge a valid state_root etc.), but the
+        // error MUST NOT be the new supermajority-threshold one.
+        let result = bc.add_block_with_source(block, BlockSource::Peer);
+        if let Err(ref err) = result {
+            assert!(
+                !format!("{err:?}").contains("below the local supermajority threshold"),
+                "supermajority guard incorrectly tripped on a strong justification: {err:?}"
+            );
         }
     }
 
