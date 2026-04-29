@@ -114,6 +114,45 @@ impl SentrixEvmDb {
                 );
             }
         }
+
+        // ── Storage slots ──────────────────────────────────────────
+        // 2026-04-29 fix: missed-call from-the-start. Without loading
+        // storage here, every SLOAD inside an `eth_call` returned zero
+        // — meaning every ERC-20 `balanceOf()` / `totalSupply()` / etc.
+        // surfaced the wrong value on every wallet, dApp, and explorer
+        // that read state via JSON-RPC. State writes were always
+        // committed correctly (writeback.rs::commit_state_to_account_db
+        // populates account_db.contract_storage on every CREATE/CALL),
+        // so eth_getStorageAt at the same slot returned the right
+        // bytes — but the eth_call dry-run path didn't see any of it.
+        //
+        // Format mirror: writeback writes keys as "{addr}:{slot_64char_hex}"
+        // with 32-byte big-endian values. Parse the same way to
+        // reconstruct the (Address, U256) → U256 map revm wants.
+        for (key, value_bytes) in &account_db.contract_storage {
+            let Some((addr_part, slot_part)) = key.split_once(':') else {
+                continue;
+            };
+            let Some(addr) = parse_sentrix_address(addr_part) else {
+                continue;
+            };
+            if slot_part.len() != 64 {
+                continue;
+            }
+            let Ok(slot_bytes) = hex::decode(slot_part) else {
+                continue;
+            };
+            if slot_bytes.len() != 32 || value_bytes.len() != 32 {
+                continue;
+            }
+            let mut slot_arr = [0u8; 32];
+            slot_arr.copy_from_slice(&slot_bytes);
+            let mut value_arr = [0u8; 32];
+            value_arr.copy_from_slice(value_bytes);
+            let slot = U256::from_be_bytes(slot_arr);
+            let value = U256::from_be_bytes(value_arr);
+            db.storage.insert((addr, slot), value);
+        }
         db
     }
 
@@ -238,6 +277,31 @@ mod tests {
         let result = db.basic(addr);
         assert!(result.is_ok());
         assert!(result.ok().flatten().is_none());
+    }
+
+    /// 2026-04-29 regression: from_account_db must hydrate every
+    /// contract_storage entry into db.storage. Previously this loop
+    /// was missing, so every SLOAD inside an eth_call returned zero
+    /// — which broke balanceOf / totalSupply / any storage-backed
+    /// view function on every ERC-20 deployed to mainnet + testnet.
+    #[test]
+    fn test_from_account_db_hydrates_storage() {
+        use sentrix_primitives::AccountDB;
+
+        let mut acct_db = AccountDB::new();
+        let contract_addr = "0x2d00cd60f0a3a1e578a9fdc07bdac16a9b6df82c";
+        // Slot 0 = totalSupply; arbitrary 32-byte value.
+        let value = U256::from(1_000_000u64);
+        let slot_hex = format!("{:064x}", U256::ZERO);
+        acct_db.store_contract_storage(contract_addr, &slot_hex, value.to_be_bytes::<32>().to_vec());
+
+        let mut db = SentrixEvmDb::from_account_db(&acct_db);
+        let addr = parse_sentrix_address(contract_addr).expect("valid addr");
+        let stored = db.storage(addr, U256::ZERO).expect("storage read ok");
+        assert_eq!(
+            stored, value,
+            "from_account_db must hydrate db.storage from account_db.contract_storage"
+        );
     }
 
     #[test]
