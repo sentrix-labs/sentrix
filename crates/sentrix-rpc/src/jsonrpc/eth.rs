@@ -108,7 +108,7 @@ async fn eth_get_block_by_hash(params: &Value, state: &SharedState) -> DispatchR
         .to_string();
     let bc = state.read().await;
     match bc.get_block_by_hash(&hash) {
-        Some(block) => Ok(build_block_json(&block)),
+        Some(block) => Ok(build_block_json(block)),
         None => Ok(json!(null)),
     }
 }
