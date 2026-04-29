@@ -1,0 +1,11 @@
+# Consolidate the multiple identities Satya Kwok has used across the
+# repo's history. GitHub renders display names from .mailmap, so this
+# fixes how the contributor list shows up on the repo home page +
+# `git shortlog` without rewriting commit history.
+#
+# Canonical: noreply form of @satyakwok (current GH login).
+Satya Kwok <satyakwok@users.noreply.github.com> <satyakwik@gmail.com>
+Satya Kwok <satyakwok@users.noreply.github.com> <satyakwikp77@gmail.com>
+Satya Kwok <satyakwok@users.noreply.github.com> <satyakwik@users.noreply.github.com>
+Satya Kwok <satyakwok@users.noreply.github.com> <satyakwok@users.noreply.github.com>
+Satya Kwok <satyakwok@users.noreply.github.com> <119509589+satyakwok@users.noreply.github.com>
