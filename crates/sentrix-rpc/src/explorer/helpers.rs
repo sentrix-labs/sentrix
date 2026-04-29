@@ -1,8 +1,6 @@
-// explorer/helpers.rs — small formatting + escaping helpers shared
-// across the explorer page renderers.
-//
-// Pulled out of `explorer.rs` to separate the pure-fn utility layer
-// from the larger HTML-rendering handlers. No behaviour change.
+// The little formatting + escaping helpers every explorer page reaches
+// for. Lives over here so the per-page handlers in explorer.rs aren't
+// 30% string-massaging boilerplate.
 
 use sentrix_core::blockchain::Blockchain;
 

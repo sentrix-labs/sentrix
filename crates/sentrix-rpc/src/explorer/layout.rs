@@ -1,6 +1,7 @@
-// explorer/layout.rs — shared chrome (CSS, page wrapper, nav tabs,
-// embedded chart-section script). Pulled out of `explorer.rs` so the
-// per-page handlers don't carry inline page boilerplate.
+// All the page-shell bits — site CSS, the <html>/<head>/<header> wrapper
+// every explorer route returns, the tabs bar, and the JS that draws the
+// two homepage charts. None of it is per-page logic, so it sits here
+// instead of cluttering each handler in explorer.rs.
 
 use axum::response::Html;
 
