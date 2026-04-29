@@ -226,7 +226,66 @@ impl BftEngine {
         self.accept_proposal(block_hash)
     }
 
+    /// Stale-lock relaxation threshold — see `accept_proposal` notes.
+    /// 16 was chosen empirically: it is far past the propose+prevote+
+    /// precommit timeouts at any tolerable backoff, so by the time a
+    /// validator has spent 16 rounds locked without anyone re-proving
+    /// the lock, the network has manifestly moved on.
+    const STALE_LOCK_ROUND_GAP: u32 = 16;
+
     fn accept_proposal(&mut self, block_hash: &str) -> BftAction {
+        // 2026-04-30 fix for the eager-lock livelock pinned in
+        // `audits/2026-04-28-vps5-block-773012-divergence.md`. The
+        // engine locks on `prevote_supermajority(h)` but doesn't always
+        // stash the block bytes (gap 3 documented below) — and once
+        // locked-without-bytes, it prevotes nil on every subsequent
+        // round's proposal because `locked_hash != block_hash`. With
+        // a small validator set the conflicting prevote never reaches
+        // the unlock supermajority either, so the chain spins skip
+        // rounds forever (live mainnet 2026-04-29 stall at h=921606).
+        //
+        // The relaxation: if we have a stale lock (no bytes AND many
+        // rounds have elapsed since we acquired it), drop the lock so
+        // we can prevote the current proposal. "No bytes" means the
+        // network never re-presented the locked block to us, so any
+        // commitment we hold is a phantom — no peer can verify the
+        // signed prevote we'd cast for it. Discarding it is safer than
+        // the perpetual liveness loss.
+        //
+        // Safety reasoning for a 4-validator chain: a real prevote-
+        // supermajority for the locked hash would need 3/4. If 3
+        // validators actually committed the locked block they'd be at
+        // height h+1 by now, and they don't vote at height h's later
+        // rounds — so a STALE_LOCK_ROUND_GAP-old lock with no bytes
+        // and no observable progress means at most 2 peers ever saw
+        // that hash, well under quorum. Releasing the lock cannot fork.
+        if let (Some(locked_hash), Some(locked_round)) =
+            (&self.state.locked_hash, self.state.locked_round)
+            && locked_hash != block_hash
+            && self.state.locked_block.is_none()
+            && self
+                .state
+                .round
+                .saturating_sub(locked_round)
+                >= Self::STALE_LOCK_ROUND_GAP
+        {
+            tracing::warn!(
+                "BFT stale-lock relax: dropping lock on {} acquired at round {} \
+                 (current round {} at height {}, no cached bytes) — prevote will \
+                 follow the current proposal {}",
+                &locked_hash[..locked_hash.len().min(12)],
+                locked_round,
+                self.state.round,
+                self.state.height,
+                &block_hash[..block_hash.len().min(12)],
+            );
+            self.state.locked_hash = None;
+            self.state.locked_round = None;
+            // locked_block is already None by the guard above; clear
+            // staging too so a stale staged-but-never-promoted entry
+            // can't bleed into the relaxed prevote.
+            self.state.staging_block = None;
+        }
         // M-15: semantic reference for the lock state machine.
         //
         // Sentrix's BFT lock is set in `on_prevote_weighted` when a
@@ -1940,6 +1999,85 @@ mod tests {
             !matches!(action, BftAction::Wait),
             "active-set proposer should be accepted even if not in registry.validators (post-#247 bisect); got {:?}",
             action
+        );
+    }
+
+    /// 2026-04-30 regression for the eager-lock livelock pinned in
+    /// `audits/2026-04-28-vps5-block-773012-divergence.md`.
+    ///
+    /// Setup: validator is locked on hash A acquired at round 0 with
+    /// no cached block bytes. Round advances 16+ times (the threshold)
+    /// without anyone re-presenting A. A fresh proposal for hash B
+    /// arrives. Without the relax the validator prevotes nil forever;
+    /// with the relax it drops the stale lock and prevotes B so the
+    /// chain can finalize.
+    #[test]
+    fn test_stale_lock_with_missing_bytes_relaxes_to_current_proposal() {
+        let (mut engine, reg) = setup();
+        engine.state.locked_hash = Some("hash_a".to_string());
+        engine.state.locked_round = Some(0);
+        engine.state.locked_block = None; // the gap-3 condition
+        // Advance to round 17 (one past STALE_LOCK_ROUND_GAP=16).
+        engine.state.round = 17;
+        engine.state.phase = BftPhase::Propose;
+        engine.state.our_prevote_cast = false;
+
+        let proposer = reg
+            .weighted_proposer(engine.state.height, engine.state.round)
+            .expect("weighted_proposer must resolve for the test height/round");
+
+        let action = engine.on_proposal("hash_b", &proposer, &reg);
+
+        match action {
+            BftAction::BroadcastPrevote(pv) => {
+                assert_eq!(
+                    pv.block_hash.as_deref(),
+                    Some("hash_b"),
+                    "stale-lock relax must prevote the current proposal, not nil"
+                );
+            }
+            other => panic!("expected BroadcastPrevote(hash_b); got {:?}", other),
+        }
+        assert!(
+            engine.state.locked_hash.is_none(),
+            "stale lock must be cleared so a fresh polka can re-acquire it"
+        );
+    }
+
+    /// Inverse of the above — a FRESH lock (within the gap) must keep
+    /// prevoting nil on a conflicting proposal. Pins the safety side
+    /// of the relax: we only drop the lock when it has been stale for
+    /// the full `STALE_LOCK_ROUND_GAP` window.
+    #[test]
+    fn test_fresh_lock_still_prevotes_nil_on_conflict() {
+        let (mut engine, reg) = setup();
+        engine.state.locked_hash = Some("hash_a".to_string());
+        engine.state.locked_round = Some(5);
+        engine.state.locked_block = None;
+        // Round 6 is well within the 16-round freshness window.
+        engine.state.round = 6;
+        engine.state.phase = BftPhase::Propose;
+        engine.state.our_prevote_cast = false;
+
+        let proposer = reg
+            .weighted_proposer(engine.state.height, engine.state.round)
+            .expect("weighted_proposer must resolve for the test height/round");
+
+        let action = engine.on_proposal("hash_b", &proposer, &reg);
+
+        match action {
+            BftAction::BroadcastPrevote(pv) => {
+                assert_eq!(
+                    pv.block_hash, None,
+                    "fresh lock on a different hash must still prevote nil"
+                );
+            }
+            other => panic!("expected BroadcastPrevote(nil); got {:?}", other),
+        }
+        assert_eq!(
+            engine.state.locked_hash.as_deref(),
+            Some("hash_a"),
+            "fresh lock must NOT be cleared by the stale-lock relax"
         );
     }
 }
