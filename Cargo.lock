@@ -4871,7 +4871,7 @@ dependencies = [
  "sha3 0.11.0",
  "subtle",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tower 0.4.13",
  "tower-http",
@@ -5025,7 +5025,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sha3 0.11.0",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -5086,7 +5086,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
  "uuid",
 ]
