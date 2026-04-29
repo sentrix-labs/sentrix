@@ -80,6 +80,17 @@ pub struct LivenessTracker {
     /// Per-validator sliding window: height → signed (true/false)
     /// We store only the last LIVENESS_WINDOW entries per validator.
     records: HashMap<String, Vec<LivenessRecord>>,
+
+    /// First height each validator was observed signing. Survives the
+    /// sliding-window trim above so `is_downtime_at` can still tell
+    /// "this validator has been around long enough to evaluate" from
+    /// "this validator just registered, give them grace".
+    ///
+    /// `#[serde(default)]` so a chain.db dumped pre-2026-04-29 (when
+    /// this field didn't exist) deserializes cleanly with an empty
+    /// map; subsequent `record_signed` calls populate it.
+    #[serde(default)]
+    first_seen: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,8 +104,54 @@ impl LivenessTracker {
         Self::default()
     }
 
-    /// Record that a validator signed (or missed) a block at this height
+    /// Canonical recording path: write a signed=true entry whenever a
+    /// validator's address shows up in the finalized block's precommits.
+    ///
+    /// This is what `record_block_signatures` calls in production. We
+    /// deliberately do NOT track explicit "missed" entries — every node
+    /// can see exactly the same set of signers from `block.justification`,
+    /// so the LivenessTracker built from those events ends up identical
+    /// across the fleet. That's the determinism property the consensus-
+    /// jail dispatch needs.
+    ///
+    /// 2026-04-29 fix: the old `record(_, height, signed)` API took an
+    /// explicit `signed: bool`, and callers in `record_block_signatures`
+    /// derived it from each node's CURRENT `active_set`. When the
+    /// active_set diverged across validators (post-jail/unjail, mid-
+    /// catchup, freshly-restarted node), nodes recorded different
+    /// `signed=false` entries → different LivenessTracker contents →
+    /// different `compute_jail_evidence` outputs → JailEvidenceBundle
+    /// verification mismatch → mainnet halt. This path doesn't depend
+    /// on active_set at all.
+    pub fn record_signed(&mut self, validator: &str, height: u64) {
+        // Anchor the first-seen height so the grace-period check in
+        // is_downtime_at survives sliding-window trimming.
+        self.first_seen
+            .entry(validator.to_string())
+            .or_insert(height);
+        let entries = self.records.entry(validator.to_string()).or_default();
+        entries.push(LivenessRecord {
+            height,
+            signed: true,
+        });
+        // Same sliding-window trim as the old `record` path — keep at
+        // most LIVENESS_WINDOW entries per validator.
+        if entries.len() > LIVENESS_WINDOW as usize {
+            let excess = entries.len() - LIVENESS_WINDOW as usize;
+            entries.drain(..excess);
+        }
+    }
+
+    /// Old recording path — kept for tests + migration. Production code
+    /// should call `record_signed` instead. Records exactly what was
+    /// asked for (including signed=false), which is non-deterministic
+    /// across nodes when callers derive `signed` from a per-node view.
     pub fn record(&mut self, validator: &str, height: u64, signed: bool) {
+        if signed {
+            self.first_seen
+                .entry(validator.to_string())
+                .or_insert(height);
+        }
         let entries = self.records.entry(validator.to_string()).or_default();
         entries.push(LivenessRecord { height, signed });
 
@@ -105,7 +162,58 @@ impl LivenessTracker {
         }
     }
 
-    /// Check if validator has fallen below the minimum signed threshold
+    /// Deterministic downtime check used by the consensus-jail path.
+    ///
+    /// Returns true when the validator has signed fewer than
+    /// MIN_SIGNED_PER_WINDOW blocks in the LIVENESS_WINDOW heights
+    /// ending at `current_height`. Two safety gates protect against
+    /// false positives:
+    ///
+    /// 1. Chain too young (current_height < LIVENESS_WINDOW): we
+    ///    haven't had enough blocks for any validator to be downtime-
+    ///    eligible yet.
+    /// 2. Validator first observed too recently: if the earliest entry
+    ///    we have for them is newer than `current_height - LIVENESS_WINDOW`,
+    ///    they haven't been around long enough to evaluate. Newly-added
+    ///    validators get a grace period equal to the full window.
+    ///
+    /// Determinism: identical chain history → identical LivenessTracker
+    /// contents (because record_signed only records canonical block
+    /// signatures) → identical is_downtime_at output. That's the
+    /// property that lets multiple validators agree on a JailEvidence
+    /// bundle.
+    pub fn is_downtime_at(&self, validator: &str, current_height: u64) -> bool {
+        if current_height < LIVENESS_WINDOW {
+            return false;
+        }
+        let first = match self.first_seen.get(validator) {
+            Some(h) => *h,
+            None => return false,
+        };
+        if first > current_height - LIVENESS_WINDOW {
+            return false;
+        }
+        let cutoff = current_height - LIVENESS_WINDOW;
+        let signed_in_window = self
+            .records
+            .get(validator)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|r| r.signed && r.height > cutoff)
+                    .count() as u64
+            })
+            .unwrap_or(0);
+        signed_in_window < MIN_SIGNED_PER_WINDOW
+    }
+
+    /// Best-effort downtime check for callers that don't have a
+    /// `current_height` handy (notably the legacy `check_liveness`
+    /// auto-jail path that pre-dates the consensus-jail design).
+    /// Behavior unchanged from v2.1.x — entry-count windowed, not
+    /// height-windowed. Migration target: switch callers to
+    /// `is_downtime_at` so the determinism property holds across all
+    /// jail paths.
     pub fn is_downtime(&self, validator: &str) -> bool {
         let entries = match self.records.get(validator) {
             Some(e) => e,

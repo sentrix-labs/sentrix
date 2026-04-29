@@ -169,7 +169,11 @@ impl Blockchain {
             && sentrix_staking::epoch::EpochManager::is_epoch_boundary(expected_index)
         {
             let active_set = self.stake_registry.active_set.clone();
-            let local_evidence = self.slashing.compute_jail_evidence(&active_set);
+            // 2026-04-29: pass current_height so the deterministic
+            // is_downtime_at check has the window cutoff it needs.
+            let local_evidence = self
+                .slashing
+                .compute_jail_evidence(&active_set, expected_index);
             if !local_evidence.is_empty()
                 && !block.transactions.iter().any(|tx| tx.is_system_tx())
             {
@@ -1259,8 +1263,9 @@ impl Blockchain {
                         // mechanism (block can't finalize unless 2/3+ of
                         // stake-weighted validators agree on evidence).
                         let active_set = self.stake_registry.active_set.clone();
-                        let local_evidence =
-                            self.slashing.compute_jail_evidence(&active_set);
+                        let local_evidence = self
+                            .slashing
+                            .compute_jail_evidence(&active_set, self.height());
 
                         if local_evidence != *claimed_evidence {
                             return Err(SentrixError::InvalidTransaction(format!(
@@ -2397,10 +2402,14 @@ mod tests {
         bc.stake_registry
             .register_validator(&downer, sentrix_staking::staking::MIN_SELF_STAKE, 1000, 0)
             .expect("register downer");
-        let window = sentrix_staking::slashing::LIVENESS_WINDOW;
-        for h in 0..window {
-            bc.slashing.liveness.record(&downer, h, false);
-        }
+        let _window = sentrix_staking::slashing::LIVENESS_WINDOW;
+        // 2026-04-29 fix: under the new canonical-only LivenessTracker
+        // recording, "downtime" is the absence of recent signed entries,
+        // not a wall of explicit signed=false. Anchor the downer with
+        // ONE signed entry at h=0 (proves "we've been watching them"),
+        // then leave them silent. By the time we reach the epoch boundary
+        // their window is empty → is_downtime_at fires.
+        bc.slashing.liveness.record_signed(&downer, 0);
 
         // Pad chain to (boundary - 1) so next produced block lands on boundary.
         let target_height = sentrix_staking::epoch::EPOCH_LENGTH - 2;
@@ -2470,10 +2479,14 @@ mod tests {
         bc.stake_registry
             .register_validator(&downer, sentrix_staking::staking::MIN_SELF_STAKE, 1000, 0)
             .unwrap();
-        let window = sentrix_staking::slashing::LIVENESS_WINDOW;
-        for h in 0..window {
-            bc.slashing.liveness.record(&downer, h, false);
-        }
+        let _window = sentrix_staking::slashing::LIVENESS_WINDOW;
+        // 2026-04-29 fix: under the new canonical-only LivenessTracker
+        // recording, "downtime" is the absence of recent signed entries,
+        // not a wall of explicit signed=false. Anchor the downer with
+        // ONE signed entry at h=0 (proves "we've been watching them"),
+        // then leave them silent. By the time we reach the epoch boundary
+        // their window is empty → is_downtime_at fires.
+        bc.slashing.liveness.record_signed(&downer, 0);
 
         // Pad to boundary - 1
         let target_height = sentrix_staking::epoch::EPOCH_LENGTH - 2;

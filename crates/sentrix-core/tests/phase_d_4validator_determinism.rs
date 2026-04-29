@@ -67,13 +67,14 @@ fn setup_validator_chain() -> Blockchain {
     // Same active_set on every validator (consensus invariant)
     bc.stake_registry.active_set = vec![downer.clone()];
 
-    // Identical liveness state across all validators: full window of misses.
-    // This is what makes compute_jail_evidence deterministic across peers
-    // (post asymmetric-record fix in PR #356 + #362).
-    let window = sentrix_staking::slashing::LIVENESS_WINDOW;
-    for h in 0..window {
-        bc.slashing.liveness.record(&downer, h, false);
-    }
+    // 2026-04-29 fix: under the new canonical-only LivenessTracker, we
+    // anchor the downer with one signed entry at h=0 (proves we've been
+    // watching them) and leave them silent thereafter. By the boundary
+    // block their window contains zero signed entries → is_downtime_at
+    // fires. Identical state across all four validators is what gives
+    // compute_jail_evidence its determinism.
+    let _window = sentrix_staking::slashing::LIVENESS_WINDOW;
+    bc.slashing.liveness.record_signed(&downer, 0);
 
     // Pad to (boundary - 1) so the next block lands on epoch boundary.
     // Block::new stamps the timestamp from SystemTime::now(); two
@@ -220,7 +221,16 @@ fn phase_d_4validator_diverging_evidence_rejected() {
     // get_stats(DOWNER) returns different signed/missed counts than
     // the proposer's. compute_jail_evidence will then produce a
     // different evidence list → dispatch rejects the block.
-    diverging_peer.slashing.liveness.record(&downer_addr(), 0, true);
+    //
+    // 2026-04-29: the proposer's tracker only has the h=0 anchor; we
+    // need to add a SIGNED entry within the downtime window to flip
+    // the downer's signed_in_window count above the threshold and
+    // produce a divergent evidence list (zero entries vs one entry).
+    let boundary = sentrix_staking::epoch::EPOCH_LENGTH - 1;
+    diverging_peer
+        .slashing
+        .liveness
+        .record_signed(&downer_addr(), boundary - 1);
 
     let block = proposer
         .create_block_voyager(&validator_addr())
