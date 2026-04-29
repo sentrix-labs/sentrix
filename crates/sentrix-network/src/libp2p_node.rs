@@ -11,9 +11,7 @@
 
 
 use std::collections::{HashMap, HashSet};
-use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 /// Cumulative count of "already-applied" blocks skipped in libp2p sync
 /// BlocksResponse handler. Crosses a power-of-ten threshold → WARN log
@@ -24,11 +22,9 @@ static SYNC_SKIPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 use futures::StreamExt;
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder,
-    core::ConnectedPoint,
     gossipsub,
     identity::Keypair,
     kad,
-    multiaddr::Protocol,
     noise,
     request_response::{self, OutboundRequestId},
     swarm::SwarmEvent,
@@ -41,10 +37,25 @@ use crate::behaviour::{
     SentrixRequest, SentrixResponse, TXS_TOPIC, VALIDATOR_ADVERTS_TOPIC,
 };
 use crate::node::{NodeEvent, SharedBlockchain};
-use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
+use sentrix_primitives::block::Block;
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::transaction::Transaction;
 use sentrix_wire::MultiaddrAdvertisement;
+
+// The rate-limit + multiaddr-helper bits used to live inline below;
+// they were independent of the swarm logic and just bulked up the
+// review surface, so they got their own files. Same story for the
+// boundary-reject predicates in `validators.rs`. Re-export the public
+// `make_multiaddr` so existing downstream callers still find it at
+// the same path (`sentrix_network::libp2p_node::make_multiaddr`).
+mod multiaddr;
+mod ratelimit;
+mod validators;
+
+pub use multiaddr::make_multiaddr;
+use multiaddr::extract_ip;
+use ratelimit::IpRateLimiter;
+use validators::{block_boundary_reject_reason, is_active_bft_signer};
 
 // ── P2P protection constants ────────────────────────────
 /// Maximum number of verified (handshaked) peers.
@@ -369,93 +380,6 @@ impl LibP2pNode {
     }
 }
 
-// ── Multiaddr helper ─────────────────────────────────────
-
-/// Build a `/ip4/<host>/tcp/<port>` multiaddr from a host string and port.
-///
-/// Used to convert legacy `host:port` bootstrap peers into the libp2p format.
-pub fn make_multiaddr(host: &str, port: u16) -> SentrixResult<Multiaddr> {
-    let s = format!("/ip4/{}/tcp/{}", host, port);
-    s.parse::<Multiaddr>()
-        .map_err(|e| SentrixError::NetworkError(format!("invalid multiaddr '{}': {}", s, e)))
-}
-
-// ── IP extraction helper ────────────────────────────────
-
-/// Extract IP address from a libp2p `ConnectedPoint`.
-fn extract_ip(endpoint: &ConnectedPoint) -> Option<IpAddr> {
-    let addr = match endpoint {
-        ConnectedPoint::Dialer { address, .. } => address,
-        ConnectedPoint::Listener { send_back_addr, .. } => send_back_addr,
-    };
-    for protocol in addr.iter() {
-        match protocol {
-            Protocol::Ip4(ip) => return Some(IpAddr::V4(ip)),
-            Protocol::Ip6(ip) => return Some(IpAddr::V6(ip)),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Per-IP connection rate limiter with temporary bans.
-struct IpRateLimiter {
-    /// Connection count + window start per IP.
-    counts: HashMap<IpAddr, (u32, Instant)>,
-    /// Banned IPs with ban start time.
-    bans: HashMap<IpAddr, Instant>,
-}
-
-impl IpRateLimiter {
-    fn new() -> Self {
-        Self {
-            counts: HashMap::new(),
-            bans: HashMap::new(),
-        }
-    }
-
-    /// Check if an IP is allowed to connect. Returns `false` if banned or rate-limited.
-    fn check_and_track(&mut self, ip: IpAddr) -> bool {
-        // Check active ban
-        if let Some(ban_time) = self.bans.get(&ip) {
-            if ban_time.elapsed() < std::time::Duration::from_secs(BAN_DURATION_SECS) {
-                return false;
-            }
-            // Ban expired
-            self.bans.remove(&ip);
-        }
-
-        // Track connection rate
-        let now = Instant::now();
-        let entry = self.counts.entry(ip).or_insert((0, now));
-        if entry.1.elapsed() > std::time::Duration::from_secs(RATE_LIMIT_WINDOW_SECS) {
-            *entry = (1, now);
-        } else {
-            entry.0 += 1;
-            if entry.0 > MAX_CONN_PER_IP {
-                tracing::warn!(
-                    "libp2p: IP {} exceeded rate limit ({} connections in {}s), banning for {}s",
-                    ip,
-                    entry.0,
-                    RATE_LIMIT_WINDOW_SECS,
-                    BAN_DURATION_SECS
-                );
-                self.bans.insert(ip, now);
-                return false;
-            }
-        }
-
-        true
-    }
-
-    /// Prune stale entries to prevent unbounded growth.
-    fn prune_stale(&mut self) {
-        let window = std::time::Duration::from_secs(RATE_LIMIT_WINDOW_SECS);
-        let ban_dur = std::time::Duration::from_secs(BAN_DURATION_SECS);
-        self.counts.retain(|_, (_, start)| start.elapsed() < window);
-        self.bans.retain(|_, start| start.elapsed() < ban_dur);
-    }
-}
 
 // ── Swarm event loop ─────────────────────────────────────
 
@@ -1470,60 +1394,6 @@ async fn on_inbound_request(
     }
 }
 
-/// Check if `addr` is a current BFT-authorised validator. Consults the
-/// DPoS stake registry first (post-Voyager), then falls back to the PoA
-/// authority roster (Pioneer). Matches the helper in `bin/sentrix/main.rs`
-/// — the two live on opposite sides of the channel and both sides harden
-/// for defence in depth.
-async fn is_active_bft_signer(blockchain: &SharedBlockchain, addr: &str) -> bool {
-    let bc = blockchain.read().await;
-    if bc.stake_registry.is_active(addr) {
-        return true;
-    }
-    bc.authority.is_active_validator(addr)
-}
-
-/// Fast-reject a block at the network boundary if it fails cheap sanity
-/// checks that don't need the chain write lock. Returns `Some(reason)` if the
-/// block should be dropped on the floor, `None` if it's worth forwarding to
-/// `add_block_from_peer`.
-///
-/// Cheap checks only — expensive ones (signature, state-root math, trie
-/// apply) still run inside `add_block_from_peer` under the write lock.
-/// The purpose here is to kill the obvious-bad blocks before they
-/// contend for the lock or spawn a doomed apply task.
-///
-/// Added 2026-04-22 after the 3-way state_root fork: a validator running on
-/// a damaged chain.db was producing blocks with `state_root=None` above
-/// `STATE_ROOT_FORK_HEIGHT`, and peers were accepting them into the ingest
-/// pipeline before the execution-time guard caught and rejected them. With
-/// this check, bad blocks are rejected *before* propagation/apply so the
-/// signal reaches operators ~instantly instead of waiting for an execution
-/// failure that may be hidden by log noise.
-fn block_boundary_reject_reason(block: &Block, our_chain_id: u64) -> Option<&'static str> {
-    // H-01: cross-chain block. find the first non-coinbase tx and check its
-    // chain_id. (If every tx is coinbase, skip this check — coinbase has
-    // no chain_id-bound semantics.)
-    if let Some(tx) = block.transactions.iter().find(|t| !t.is_coinbase())
-        && tx.chain_id != our_chain_id
-    {
-        return Some("chain_id mismatch");
-    }
-
-    // 2026-04-21 3-way fork guard: past STATE_ROOT_FORK_HEIGHT, every valid
-    // block must carry a state_root; missing = producer's trie is broken.
-    // The execution-time guard in block_executor.rs also catches this, but
-    // gating at the network boundary means we never spend a write lock or
-    // apply-task on the bad block — and, more importantly, we don't log it
-    // at ERROR from every peer's execution path. One clean WARN at ingest
-    // is easier to spot than a flood of mismatches.
-    if block.index >= STATE_ROOT_FORK_HEIGHT && block.state_root.is_none() {
-        return Some("missing state_root past STATE_ROOT_FORK_HEIGHT (sender's trie is broken)");
-    }
-
-    None
-}
-
 // ── Inbound response handler ─────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -1722,7 +1592,10 @@ async fn on_inbound_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libp2p::core::ConnectedPoint;
     use sentrix_core::blockchain::Blockchain;
+    use sentrix_primitives::block::STATE_ROOT_FORK_HEIGHT;
+    use std::net::IpAddr;
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -1942,10 +1815,10 @@ mod tests {
         let ip: IpAddr = "1.2.3.4".parse().expect("valid");
 
         limiter.check_and_track(ip);
-        assert_eq!(limiter.counts.len(), 1);
+        assert_eq!(limiter.tracked_count(), 1);
         // Entries within window should survive prune
         limiter.prune_stale();
-        assert_eq!(limiter.counts.len(), 1);
+        assert_eq!(limiter.tracked_count(), 1);
     }
 
     #[test]
