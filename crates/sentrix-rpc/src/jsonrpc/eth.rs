@@ -197,10 +197,89 @@ async fn eth_get_transaction_receipt(params: &Value, state: &SharedState) -> Dis
             } else {
                 "0x0".to_string()
             };
+
+            // 2026-04-29: pull the originating tx + transaction index out
+            // of the same get_transaction lookup so receipts include
+            // from / to / transactionIndex / contractAddress. Off-the-
+            // shelf indexers (Blockscout, etherscan-style tooling) need
+            // these to wire up address history and detect contract
+            // creations — without them eth_getTransactionReceipt is just
+            // a txid → gas/status echo and the indexer can't populate
+            // its smart_contracts table.
+            let from = tx_data["transaction"]["from_address"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            let to_raw = tx_data["transaction"]["to_address"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            // EVM contract creations carry to=null. In the Sentrix
+            // primitive Tx model that surfaces as the zero address; map
+            // that back to null so off-the-shelf indexers can spot
+            // creations the way they expect.
+            let to_value: Value = if to_raw.is_empty()
+                || to_raw == "0x0000000000000000000000000000000000000000"
+                || to_raw == "0000000000000000000000000000000000000000"
+            {
+                Value::Null
+            } else {
+                Value::String(if to_raw.starts_with("0x") {
+                    to_raw.clone()
+                } else {
+                    format!("0x{to_raw}")
+                })
+            };
+            // Resolve transactionIndex by scanning the txs in the block.
+            // Most blocks carry a handful of txs so this is cheap; if it
+            // ever becomes a hotspot we should index txid → idx alongside
+            // the txid → block lookup that already exists.
+            let tx_index = bc
+                .get_block_any(block_index)
+                .and_then(|b| b.transactions.iter().position(|t| t.txid == txid))
+                .map(|i| to_hex(i as u64))
+                .unwrap_or_else(|| "0x0".to_string());
+            // Re-stamp blockHash with the 0x prefix that EVM tooling
+            // expects. The stored `block_hash` is bare hex.
+            let block_hash = tx_data["block_hash"]
+                .as_str()
+                .map(|h| {
+                    if h.starts_with("0x") {
+                        h.to_string()
+                    } else {
+                        format!("0x{h}")
+                    }
+                })
+                .unwrap_or_default();
+            // contractAddress: only meaningful for CREATE-style EVM txs.
+            // Sentrix doesn't currently track the deployed address per
+            // creation tx, so we report null here. Follow-up work would
+            // either persist it on the Tx struct or recompute it
+            // post-hoc from tx.from + tx.nonce.
+            let contract_address = Value::Null;
+
+            // Pull the from address through the same 0x-prefix
+            // normaliser so receipt consumers don't have to special-case
+            // either form. Coinbase txs carry the literal string
+            // "COINBASE" in tx.from_address; surface that as the EVM
+            // zero address (which is the convention every block explorer
+            // expects for the block-reward minter).
+            let from_value: Value = if from.is_empty() || from == "COINBASE" {
+                Value::String(ZERO_HASH_HEX[..42].to_string())
+            } else if from.starts_with("0x") {
+                Value::String(from)
+            } else {
+                Value::String(format!("0x{from}"))
+            };
+
             Ok(json!({
                 "transactionHash": format!("0x{}", txid),
+                "transactionIndex": tx_index,
                 "blockNumber": to_hex(block_index),
-                "blockHash": tx_data["block_hash"],
+                "blockHash": block_hash,
+                "from": from_value,
+                "to": to_value,
+                "contractAddress": contract_address,
                 "status": status,
                 "gasUsed": to_hex(21_000),
                 "cumulativeGasUsed": to_hex(21_000),
