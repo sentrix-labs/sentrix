@@ -23,9 +23,11 @@
 //
 // Rationale for each constant inline below.
 
-// LivenessTracker + DoubleSignDetector live in `slashing/liveness.rs`
-// and `slashing/double_sign.rs` respectively. Re-exported here so
-// downstream crates' `use sentrix_staking::slashing::*` keeps working.
+// The two pieces of state this engine keeps — the sliding-window
+// liveness tracker and the double-sign detector — live in their own
+// files (everything got too cramped in here once the consensus-jail
+// dispatch landed). Re-export so the rest of the codebase still does
+// `use sentrix_staking::slashing::LivenessTracker` etc.
 mod double_sign;
 mod liveness;
 

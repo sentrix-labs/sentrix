@@ -4,9 +4,11 @@
 // Proposer selected by weighted round-robin from active DPoS validator set.
 // Finality at 2/3+1 stake weight.
 //
-// State, vote tally, and timeout helpers were extracted to focused
-// submodules (`state.rs`, `vote_collector.rs`, `timeouts.rs`) to keep
-// this file focused on the engine itself.
+// The round-state struct, vote tally, and phase timeouts each got
+// their own file — this one was past 2k lines and review surface was
+// getting painful. Everything is re-exported below so downstream code
+// (and the lib.rs umbrella) doesn't have to care where each piece
+// physically lives.
 
 mod state;
 mod timeouts;

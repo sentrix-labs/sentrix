@@ -1,9 +1,11 @@
-// engine/state.rs — BFT round/phase state types.
-//
-// `BftPhase` is the 3-phase Tendermint cycle plus a Finalize sentinel.
-// `BftRoundState` is the per-(height, round) bookkeeping the engine
-// maintains: collected prevotes, collected precommits, locked-block
-// state for the PoLC re-propose path, etc.
+// What "where am I in the BFT round" looks like in memory. The phase
+// enum walks through Propose → Prevote → Precommit → Finalize like any
+// Tendermint-derived engine, and `BftRoundState` is the per-(height,
+// round) scratchpad — collected prevotes, collected precommits, who
+// signed what, plus the locked-block bytes that let a previously-locked
+// validator re-propose its cached block in a later round (the PoLC
+// re-propose path that used to deadlock the engine before V2 M-15
+// landed it).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
