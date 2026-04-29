@@ -11,9 +11,7 @@
 
 
 use std::collections::{HashMap, HashSet};
-use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 /// Cumulative count of "already-applied" blocks skipped in libp2p sync
 /// BlocksResponse handler. Crosses a power-of-ten threshold → WARN log
@@ -24,11 +22,9 @@ static SYNC_SKIPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 use futures::StreamExt;
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder,
-    core::ConnectedPoint,
     gossipsub,
     identity::Keypair,
     kad,
-    multiaddr::Protocol,
     noise,
     request_response::{self, OutboundRequestId},
     swarm::SwarmEvent,
@@ -45,6 +41,18 @@ use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::transaction::Transaction;
 use sentrix_wire::MultiaddrAdvertisement;
+
+// The rate-limit + multiaddr-helper bits used to live inline below;
+// they were independent of the swarm logic and just bulked up the
+// review surface, so they got their own files. Re-export the public
+// `make_multiaddr` so existing downstream callers still find it at
+// the same path (`sentrix_network::libp2p_node::make_multiaddr`).
+mod multiaddr;
+mod ratelimit;
+
+pub use multiaddr::make_multiaddr;
+use multiaddr::extract_ip;
+use ratelimit::IpRateLimiter;
 
 // ── P2P protection constants ────────────────────────────
 /// Maximum number of verified (handshaked) peers.
@@ -369,93 +377,6 @@ impl LibP2pNode {
     }
 }
 
-// ── Multiaddr helper ─────────────────────────────────────
-
-/// Build a `/ip4/<host>/tcp/<port>` multiaddr from a host string and port.
-///
-/// Used to convert legacy `host:port` bootstrap peers into the libp2p format.
-pub fn make_multiaddr(host: &str, port: u16) -> SentrixResult<Multiaddr> {
-    let s = format!("/ip4/{}/tcp/{}", host, port);
-    s.parse::<Multiaddr>()
-        .map_err(|e| SentrixError::NetworkError(format!("invalid multiaddr '{}': {}", s, e)))
-}
-
-// ── IP extraction helper ────────────────────────────────
-
-/// Extract IP address from a libp2p `ConnectedPoint`.
-fn extract_ip(endpoint: &ConnectedPoint) -> Option<IpAddr> {
-    let addr = match endpoint {
-        ConnectedPoint::Dialer { address, .. } => address,
-        ConnectedPoint::Listener { send_back_addr, .. } => send_back_addr,
-    };
-    for protocol in addr.iter() {
-        match protocol {
-            Protocol::Ip4(ip) => return Some(IpAddr::V4(ip)),
-            Protocol::Ip6(ip) => return Some(IpAddr::V6(ip)),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Per-IP connection rate limiter with temporary bans.
-struct IpRateLimiter {
-    /// Connection count + window start per IP.
-    counts: HashMap<IpAddr, (u32, Instant)>,
-    /// Banned IPs with ban start time.
-    bans: HashMap<IpAddr, Instant>,
-}
-
-impl IpRateLimiter {
-    fn new() -> Self {
-        Self {
-            counts: HashMap::new(),
-            bans: HashMap::new(),
-        }
-    }
-
-    /// Check if an IP is allowed to connect. Returns `false` if banned or rate-limited.
-    fn check_and_track(&mut self, ip: IpAddr) -> bool {
-        // Check active ban
-        if let Some(ban_time) = self.bans.get(&ip) {
-            if ban_time.elapsed() < std::time::Duration::from_secs(BAN_DURATION_SECS) {
-                return false;
-            }
-            // Ban expired
-            self.bans.remove(&ip);
-        }
-
-        // Track connection rate
-        let now = Instant::now();
-        let entry = self.counts.entry(ip).or_insert((0, now));
-        if entry.1.elapsed() > std::time::Duration::from_secs(RATE_LIMIT_WINDOW_SECS) {
-            *entry = (1, now);
-        } else {
-            entry.0 += 1;
-            if entry.0 > MAX_CONN_PER_IP {
-                tracing::warn!(
-                    "libp2p: IP {} exceeded rate limit ({} connections in {}s), banning for {}s",
-                    ip,
-                    entry.0,
-                    RATE_LIMIT_WINDOW_SECS,
-                    BAN_DURATION_SECS
-                );
-                self.bans.insert(ip, now);
-                return false;
-            }
-        }
-
-        true
-    }
-
-    /// Prune stale entries to prevent unbounded growth.
-    fn prune_stale(&mut self) {
-        let window = std::time::Duration::from_secs(RATE_LIMIT_WINDOW_SECS);
-        let ban_dur = std::time::Duration::from_secs(BAN_DURATION_SECS);
-        self.counts.retain(|_, (_, start)| start.elapsed() < window);
-        self.bans.retain(|_, start| start.elapsed() < ban_dur);
-    }
-}
 
 // ── Swarm event loop ─────────────────────────────────────
 
@@ -1722,7 +1643,9 @@ async fn on_inbound_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use libp2p::core::ConnectedPoint;
     use sentrix_core::blockchain::Blockchain;
+    use std::net::IpAddr;
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
@@ -1942,10 +1865,10 @@ mod tests {
         let ip: IpAddr = "1.2.3.4".parse().expect("valid");
 
         limiter.check_and_track(ip);
-        assert_eq!(limiter.counts.len(), 1);
+        assert_eq!(limiter.tracked_count(), 1);
         // Entries within window should survive prune
         limiter.prune_stale();
-        assert_eq!(limiter.counts.len(), 1);
+        assert_eq!(limiter.tracked_count(), 1);
     }
 
     #[test]
