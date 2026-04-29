@@ -1,9 +1,8 @@
-// explorer.rs - Sentrix — Block Explorer Web UI
-//
-// Per-page handlers live in this file. Pure helpers (html_escape,
-// truncate, srx, addr_with_label, fmt_ts, fmt_day) are in
-// `explorer/helpers.rs`. Shared chrome (CSS, page wrapper, nav tabs,
-// chart-section script) is in `explorer/layout.rs`.
+// Sentrix block-explorer web UI. The per-page handlers (home, blocks,
+// transactions, the detail pages, etc.) all sit in this file because
+// they share enough HTML-string-building rhythm that splitting them
+// further was hurting more than it helped — see the helpers / layout
+// submodules for the pieces that genuinely WERE shared utility code.
 
 mod helpers;
 mod layout;

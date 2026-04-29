@@ -1,10 +1,11 @@
-// engine/vote_collector.rs — stake-weighted prevote/precommit tally
-// with supermajority detection.
-//
-// The engine's per-round state already records each vote, but supermajority
-// checks need fast aggregate reads keyed by block hash. `VoteCollector`
-// keeps the tallies in sync with the per-validator vote map so the
-// engine can answer "did any single hash cross 2/3+ stake?" in O(1).
+// The supermajority check needs a fast "has any single block hash
+// crossed the 2/3+ stake threshold yet?" answer on every incoming
+// vote. The per-round state already keeps the per-validator vote map,
+// but iterating that map on every vote got expensive once we pushed
+// past 4 validators and started thinking about onboarding more — so
+// the tally lives here, kept in sync as votes arrive, and the
+// supermajority check is O(distinct hashes voted) instead of
+// O(validators).
 
 use crate::messages::supermajority_threshold;
 use std::collections::HashMap;

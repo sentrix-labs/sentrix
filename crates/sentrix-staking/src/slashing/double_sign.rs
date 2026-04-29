@@ -1,10 +1,16 @@
-// slashing/double_sign.rs — equivocation evidence + detector.
+// The equivocation half of the slashing story: spotting validators
+// who signed two different block hashes at the same height. The
+// detector keeps a sliding map of (validator, height) → block_hash
+// and yells if a fresh signature arrives for a height it's already
+// seen with a different hash.
 //
-// `DoubleSignEvidence` is the on-the-wire shape used by
-// `StakingOp::SubmitEvidence`. `DoubleSignDetector` is the per-node
-// observer that flags two distinct block hashes signed by the same
-// validator at the same height — the standard Tendermint-style
-// equivocation predicate.
+// `DoubleSignEvidence` is the on-the-wire shape — same struct that
+// `StakingOp::SubmitEvidence` carries. Anyone watching the gossip
+// stream can construct one from two conflicting signatures and
+// submit it; the chain re-runs the detector check, slashes 20% of
+// stake, and tombstones the offender (permanent ban, no unjail).
+// That's intentionally harsher than the downtime path — equivocation
+// is provably malicious, not negligent.
 
 use super::liveness::LIVENESS_WINDOW;
 use sentrix_primitives::{SentrixError, SentrixResult};

@@ -89,7 +89,7 @@ async-trait = "0.1"
 tracing = "0.1"
 zeroize = "1.7"
 subtle = "2.5"
-blake3 = "1.5"
+blake3 = "1.8"
 lru = "0.17"
 bincode = "1.3"
 

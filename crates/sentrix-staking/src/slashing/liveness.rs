@@ -1,10 +1,16 @@
-// slashing/liveness.rs — sliding-window liveness tracker for downtime
-// detection.
+// Sliding-window record of who-signed-what over the last LIVENESS_WINDOW
+// blocks. The downtime predicate flips once a validator's window is
+// full AND they've signed fewer than MIN_SIGNED_PER_WINDOW of those
+// blocks — at our 1s block time that's the operator-side budget for
+// kernel reboots, fast-deploy restarts, and the occasional 2-hour
+// debugging session before auto-jail kicks in.
 //
-// Each validator gets a per-address Vec<LivenessRecord> sized to the
-// last LIVENESS_WINDOW blocks. `is_downtime` returns true once the
-// window is full AND the validator has signed fewer than
-// MIN_SIGNED_PER_WINDOW of those blocks.
+// 2026-04-29 caveat (P0 known issue): the recording side currently
+// uses each node's CURRENT active_set rather than the historical one
+// at block.index, which makes is_downtime non-deterministic across
+// validators on real-network mainnet. That's why JAIL_CONSENSUS_HEIGHT
+// is parked at u64::MAX until the recording path gets fixed. See
+// `audits/2026-04-28-vps5-block-773012-divergence.md`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
