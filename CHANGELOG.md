@@ -35,7 +35,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [2.1.46] — 2026-04-28 — AddSelfStake activation + reset-trie CLI flag + workspace version bump
 
-> **Mainnet activation of `StakingOp::AddSelfStake`** for non-phantom validator self-bond. vps3 unjailed via real-SRX self-bond. 4-of-4 validators active. Workspace version bumped 2.1.44 → 2.1.46 across root + every internal crate.
+> **Mainnet activation of `StakingOp::AddSelfStake`** for non-phantom validator self-bond. One previously-jailed validator was unjailed via real-SRX self-bond. 4-of-4 validators active. Workspace version bumped 2.1.44 → 2.1.46 across root + every internal crate.
 
 ### Added / Fixed
 

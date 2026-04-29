@@ -196,9 +196,9 @@ impl Blockchain {
         }
 
         // 2026-04-30: peer-broadcast finalization justification check.
-        // Pins the receiver-side gap from
-        // `audits/2026-04-28-vps5-block-773012-divergence.md`: every
-        // post-Voyager peer block ships the proposer's
+        // Pins the receiver-side gap from the 2026-04-28 validator
+        // block-773012 divergence runbook: every post-Voyager peer
+        // block ships the proposer's
         // BlockJustification with the precommits that finalized it.
         // Trusting that blob unconditionally lets a peer with stake-
         // registry drift (or a Byzantine peer) ship a block whose
@@ -1996,9 +1996,9 @@ mod tests {
     }
 
     /// 2026-04-30 regression for the receiver-side eager-write
-    /// artifact pinned in
-    /// `audits/2026-04-28-vps5-block-773012-divergence.md`. A peer
-    /// broadcasts a block whose `BlockJustification` claims
+    /// artifact pinned in the 2026-04-28 validator block-773012
+    /// divergence runbook. A peer broadcasts a block whose
+    /// `BlockJustification` claims
     /// finalization but the precommit stake doesn't actually reach
     /// our local supermajority threshold. Pre-fix: silently applied
     /// → divergent chain.db, livelock at the next height. Post-fix:

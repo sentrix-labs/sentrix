@@ -64,8 +64,8 @@ Proven 2026-04-28: end-to-end recovery in **36 seconds** (vs the 30 min manual M
 
 | Job | Targets | Purpose |
 |---|---|---|
-| `node_exporter` | All 5 VPS at `:9100` | OS metrics (CPU, RAM, disk, network) |
-| `sentrix-mainnet` | 4 mainnet validators at `:8545` (vps2: `:8549`) | Chain metrics (height, mempool, fees, validators) |
+| `node_exporter` | All operator hosts on `:9100` | OS metrics (CPU, RAM, disk, network) |
+| `sentrix-mainnet` | 4 mainnet validators on `:8545` (one shared-host validator on `:8549`) | Chain metrics (height, mempool, fees, validators) |
 | `prometheus` | self at `localhost:9090` | self-scrape |
 
 ### Alert rules (12 total)

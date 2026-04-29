@@ -5,12 +5,13 @@
 // in the ban list and gets ignored for BAN_DURATION_SECS before its
 // counters reset.
 //
-// Why the limit had to be raised to 20: the Treasury validator (vps2)
-// runs a five-validator stack on a single public IP. Every fast-deploy
-// rolling restart triggers ~3 reconnects per validator, so a single
-// deploy window can legitimately produce 15 connection attempts from
-// the same IP in a few seconds. The previous lower cap kept banning
-// us from our own peer.
+// Why the limit had to be raised to 20: an operator may legitimately
+// run multiple validator processes behind a single public IP (NAT,
+// shared host, or a co-tenanted block-producer setup). A rolling
+// deploy on such a host triggers ~3 reconnects per validator, so a
+// single deploy window can produce 15 connection attempts from one
+// IP in a few seconds. The previous lower cap was banning legitimate
+// peers in that shape.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
