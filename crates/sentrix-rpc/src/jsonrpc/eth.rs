@@ -95,22 +95,7 @@ async fn eth_get_block_by_number(params: &Value, state: &SharedState) -> Dispatc
     // in-memory sliding window are served from MDBX, not silently
     // returned as null.
     match bc.get_block_any(index) {
-        Some(block) => Ok(json!({
-            "number": to_hex(block.index),
-            "hash": format!("0x{}", block.hash),
-            "parentHash": format!("0x{}", block.previous_hash),
-            "timestamp": to_hex(block.timestamp),
-            "miner": block.validator,
-            "transactions": block.transactions.iter().map(|tx| format!("0x{}", tx.txid)).collect::<Vec<_>>(),
-            "transactionsRoot": format!("0x{}", block.merkle_root),
-            "gasLimit": to_hex(30_000_000),
-            "gasUsed": to_hex(0),
-            "difficulty": "0x0",
-            "totalDifficulty": "0x0",
-            "size": to_hex(1000),
-            "extraData": "0x",
-            "nonce": "0x0000000000000000",
-        })),
+        Some(block) => Ok(build_block_json(&block)),
         None => Ok(json!(null)),
     }
 }
@@ -123,19 +108,51 @@ async fn eth_get_block_by_hash(params: &Value, state: &SharedState) -> DispatchR
         .to_string();
     let bc = state.read().await;
     match bc.get_block_by_hash(&hash) {
-        Some(block) => Ok(json!({
-            "number": to_hex(block.index),
-            "hash": format!("0x{}", block.hash),
-            "parentHash": format!("0x{}", block.previous_hash),
-            "timestamp": to_hex(block.timestamp),
-            "miner": block.validator,
-            "transactions": block.transactions.iter().map(|tx| format!("0x{}", tx.txid)).collect::<Vec<_>>(),
-            "transactionsRoot": format!("0x{}", block.merkle_root),
-            "gasLimit": to_hex(30_000_000),
-            "gasUsed": to_hex(0),
-        })),
+        Some(block) => Ok(build_block_json(&block)),
         None => Ok(json!(null)),
     }
+}
+
+// Standard EVM block fields beyond what Sentrix natively tracks. Off-the-shelf
+// EVM tooling (Blockscout indexer, etc.) pattern-matches these — missing keys
+// trigger FunctionClauseError on parse. Sentrix has no PoW/uncles, so most are
+// constants; `stateRoot` surfaces the real on-chain commitment when available.
+const ZERO_HASH_HEX: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
+// Keccak256 of empty RLP list — the canonical "no uncles" sentinel every EVM
+// chain emits.
+const EMPTY_SHA3_UNCLES: &str =
+    "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347";
+// Empty 256-byte logs bloom (2 hex chars per byte → 512 zeros after 0x).
+const EMPTY_LOGS_BLOOM: &str = "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+
+fn build_block_json(block: &sentrix_primitives::Block) -> Value {
+    let state_root = match block.state_root {
+        Some(bytes) => format!("0x{}", hex::encode(bytes)),
+        None => ZERO_HASH_HEX.to_string(),
+    };
+    json!({
+        "number": to_hex(block.index),
+        "hash": format!("0x{}", block.hash),
+        "parentHash": format!("0x{}", block.previous_hash),
+        "timestamp": to_hex(block.timestamp),
+        "miner": block.validator,
+        "transactions": block.transactions.iter().map(|tx| format!("0x{}", tx.txid)).collect::<Vec<_>>(),
+        "transactionsRoot": format!("0x{}", block.merkle_root),
+        "stateRoot": state_root,
+        "receiptsRoot": ZERO_HASH_HEX,
+        "logsBloom": EMPTY_LOGS_BLOOM,
+        "sha3Uncles": EMPTY_SHA3_UNCLES,
+        "mixHash": ZERO_HASH_HEX,
+        "uncles": [],
+        "gasLimit": to_hex(30_000_000),
+        "gasUsed": to_hex(0),
+        "difficulty": "0x0",
+        "totalDifficulty": "0x0",
+        "size": to_hex(1000),
+        "extraData": "0x",
+        "nonce": "0x0000000000000000",
+        "baseFeePerGas": to_hex(sentrix_evm::gas::INITIAL_BASE_FEE),
+    })
 }
 
 async fn eth_get_transaction_by_hash(params: &Value, state: &SharedState) -> DispatchResult {
