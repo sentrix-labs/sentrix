@@ -29,7 +29,7 @@ subtle = "2.5"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # EVM deps used in jsonrpc (eth_call, eth_sendRawTransaction)
-revm = { version = "37", default-features = false, features = ["std", "serde", "optional_balance_check", "optional_no_base_fee"] }
+revm = { version = "38", default-features = false, features = ["std", "serde", "optional_balance_check", "optional_no_base_fee"] }
 alloy-primitives = "1.5"
 alloy-consensus = { version = "2.0", default-features = false, features = ["std", "k256"] }
 alloy-eips = { version = "2.0", default-features = false, features = ["std"] }
