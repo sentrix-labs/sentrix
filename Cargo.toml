@@ -83,7 +83,7 @@ uuid = { version = "1.23", features = ["v4"] }
 # `default-features = false` drops the unmaintained `time` 0.1 transitive
 # dep and keeps the build small; only the clock feature is enabled.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-thiserror = "1.0"
+thiserror = "2.0"
 futures = "0.3"
 async-trait = "0.1"
 tracing = "0.1"
