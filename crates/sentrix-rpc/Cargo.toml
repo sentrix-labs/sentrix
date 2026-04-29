@@ -18,7 +18,7 @@ sentrix-storage = { path = "../sentrix-storage" }
 axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
 tokio = { version = "1.52", features = ["full"] }
-tower = { version = "0.4", features = ["limit"] }
+tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["cors"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
