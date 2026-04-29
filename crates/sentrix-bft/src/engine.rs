@@ -234,8 +234,8 @@ impl BftEngine {
     const STALE_LOCK_ROUND_GAP: u32 = 16;
 
     fn accept_proposal(&mut self, block_hash: &str) -> BftAction {
-        // 2026-04-30 fix for the eager-lock livelock pinned in
-        // `audits/2026-04-28-vps5-block-773012-divergence.md`. The
+        // 2026-04-30 fix for the eager-lock livelock pinned in the
+        // 2026-04-28 validator block-773012 divergence runbook. The
         // engine locks on `prevote_supermajority(h)` but doesn't always
         // stash the block bytes (gap 3 documented below) — and once
         // locked-without-bytes, it prevotes nil on every subsequent
@@ -2003,7 +2003,7 @@ mod tests {
     }
 
     /// 2026-04-30 regression for the eager-lock livelock pinned in
-    /// `audits/2026-04-28-vps5-block-773012-divergence.md`.
+    /// the 2026-04-28 validator block-773012 divergence runbook.
     ///
     /// Setup: validator is locked on hash A acquired at round 0 with
     /// no cached block bytes. Round advances 16+ times (the threshold)

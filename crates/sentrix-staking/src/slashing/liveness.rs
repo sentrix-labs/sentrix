@@ -9,8 +9,9 @@
 // uses each node's CURRENT active_set rather than the historical one
 // at block.index, which makes is_downtime non-deterministic across
 // validators on real-network mainnet. That's why JAIL_CONSENSUS_HEIGHT
-// is parked at u64::MAX until the recording path gets fixed. See
-// `audits/2026-04-28-vps5-block-773012-divergence.md`.
+// is parked at u64::MAX until the recording path gets fixed —
+// activating it now would reproduce the LivenessTracker-divergence
+// halt class documented in the operator-side incident runbooks.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
