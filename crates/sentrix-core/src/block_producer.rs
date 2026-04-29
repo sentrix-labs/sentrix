@@ -229,10 +229,14 @@ mod tests {
         // Inject a downer into active_set + populate full liveness window
         let downer = "0xfeedfacefeedfacefeedfacefeedfacefeedface".to_string();
         bc.stake_registry.active_set = vec![downer.clone()];
-        let window = sentrix_staking::slashing::LIVENESS_WINDOW;
-        for h in 0..window {
-            bc.slashing.liveness.record(&downer, h, false);
-        }
+        let _window = sentrix_staking::slashing::LIVENESS_WINDOW;
+        // 2026-04-29 fix: under the new canonical-only LivenessTracker
+        // recording, "downtime" is the absence of recent signed entries,
+        // not a wall of explicit signed=false. Anchor the downer with
+        // ONE signed entry at h=0 (proves "we've been watching them"),
+        // then leave them silent. By the time we reach the epoch boundary
+        // their window is empty → is_downtime_at fires.
+        bc.slashing.liveness.record_signed(&downer, 0);
 
         // Force chain to height (EPOCH_LENGTH - 2) so next block lands at
         // EPOCH_LENGTH - 1 (boundary). We don't actually need to mine —

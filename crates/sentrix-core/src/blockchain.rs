@@ -901,8 +901,12 @@ impl Blockchain {
             return None;
         }
         // Gate 3: must have evidence (Q3-A: skip emission for empty bundles)
+        // 2026-04-29: pass next_height (the boundary block we're building for),
+        // not self.height(). At call time `self.height()` is one less than
+        // the block being constructed, so the deterministic is_downtime_at
+        // window check needs the about-to-be-applied height.
         let active_set = self.stake_registry.active_set.clone();
-        let evidence = self.slashing.compute_jail_evidence(&active_set);
+        let evidence = self.slashing.compute_jail_evidence(&active_set, next_height);
         if evidence.is_empty() {
             return None;
         }
@@ -3202,13 +3206,26 @@ mod tests {
         // entirely with MISSED records → triggers is_downtime predicate.
         let downer = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string();
         bc.stake_registry.active_set = vec![downer.clone()];
-        let window = sentrix_staking::slashing::LIVENESS_WINDOW;
-        for h in 0..window {
-            bc.slashing.liveness.record(&downer, h, false);
-        }
-        assert!(bc.slashing.liveness.is_downtime(&downer));
+        let _window = sentrix_staking::slashing::LIVENESS_WINDOW;
+        // 2026-04-29 fix: under the new canonical-only LivenessTracker
+        // recording, "downtime" is the absence of recent signed entries,
+        // not a wall of explicit signed=false. Anchor the downer with
+        // ONE signed entry at h=0 (proves "we've been watching them"),
+        // then leave them silent. By the time we reach the epoch boundary
+        // their window is empty → is_downtime_at fires.
+        bc.slashing.liveness.record_signed(&downer, 0);
+        // is_downtime_at takes the current_height — at boundary - 1 we're
+        // well past LIVENESS_WINDOW so the grace gate is open and the
+        // empty window is downtime. (The legacy entry-count-based
+        // is_downtime won't fire here because we only have one entry.)
+        let boundary_height = sentrix_staking::epoch::EPOCH_LENGTH - 1;
+        assert!(
+            bc.slashing
+                .liveness
+                .is_downtime_at(&downer, boundary_height)
+        );
 
-        let boundary = sentrix_staking::epoch::EPOCH_LENGTH - 1;
+        let boundary = boundary_height;
         let tx = bc
             .build_jail_evidence_system_tx(boundary, 1_700_000_000)
             .expect("post-fork boundary with downtime must emit");
