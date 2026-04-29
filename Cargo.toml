@@ -67,11 +67,11 @@ libp2p = { version = "0.56", features = ["tcp", "noise", "yamux", "gossipsub", "
 
 # API
 axum = "0.8"
-tower = { version = "0.4", features = ["limit"] }
+tower = { version = "0.5", features = ["limit"] }
 tower-http = { version = "0.6", features = ["cors"] }
 
 # EVM
-revm = { version = "37", default-features = false, features = ["std", "serde", "optional_balance_check", "optional_no_base_fee"] }
+revm = { version = "38", default-features = false, features = ["std", "serde", "optional_balance_check", "optional_no_base_fee"] }
 alloy-primitives = "1.5"
 alloy-consensus = { version = "2.0", default-features = false, features = ["std", "k256"] }
 alloy-eips = { version = "2.0", default-features = false, features = ["std"] }
@@ -83,7 +83,7 @@ uuid = { version = "1.23", features = ["v4"] }
 # `default-features = false` drops the unmaintained `time` 0.1 transitive
 # dep and keeps the build small; only the clock feature is enabled.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-thiserror = "1.0"
+thiserror = "2.0"
 futures = "0.3"
 async-trait = "0.1"
 tracing = "0.1"

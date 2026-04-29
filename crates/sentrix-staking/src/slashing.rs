@@ -118,24 +118,36 @@ impl SlashingEngine {
         Ok(amount)
     }
 
-    /// Record block production for liveness tracking.
-    /// `proposer` signed, everyone else in active_set should also have signed (voted).
+    /// Record liveness from a finalized block's signers.
     ///
-    /// Per-validator signed/missed counts emitted as DEBUG-level tracing every
-    /// EPOCH_LENGTH boundary. Use with `RUST_LOG=sentrix_staking::slashing=debug`
-    /// to detect jail-counter divergence across the fleet (each validator's log
-    /// should show identical signed/missed for any given height — divergence is
-    /// the smoking-gun signature of the 2026-04-26 jail-cascade pattern).
-    /// See `audits/jail-cascade-root-cause-analysis.md`.
+    /// 2026-04-29: rewrote this to ONLY add signed=true entries for the
+    /// addresses in `signers`. Previously we iterated `active_set` and
+    /// derived a signed bool by checking membership — but each node's
+    /// `active_set` view differed in catchup / post-jail / mid-restart
+    /// scenarios, so the LivenessTracker drifted across validators and
+    /// `compute_jail_evidence` produced different bundles → mainnet
+    /// halt at h=892799 on 2026-04-29 with `local=0 vs claimed=1`.
+    /// Recording from `signers` only (which IS canonical — every node
+    /// sees the same `block.justification.precommits`) keeps trackers
+    /// in lockstep across the fleet.
+    ///
+    /// `_active_set` is kept in the signature for compat with the
+    /// existing call sites in main.rs / libp2p_node.rs and only used
+    /// for the periodic snapshot logging below.
+    ///
+    /// Per-validator participation snapshot every 1000 blocks
+    /// (RUST_LOG=info). The point is fleet-wide divergence detection —
+    /// pre-2026-04-29 this metric WAS the smoking gun for jail-counter
+    /// drift; post-fix it should stay monotone across all four
+    /// validators. See `audits/jail-cascade-root-cause-analysis.md`.
     pub fn record_block_signatures(
         &mut self,
         active_set: &[String],
         signers: &[String],
         height: u64,
     ) {
-        for validator in active_set {
-            let signed = signers.contains(validator);
-            self.liveness.record(validator, height, signed);
+        for signer in signers {
+            self.liveness.record_signed(signer, height);
         }
 
         // Periodic per-validator participation snapshot (every 1000 blocks)
@@ -160,31 +172,36 @@ impl SlashingEngine {
         }
     }
 
-    /// Phase B (consensus-jail): compute deterministic JailEvidence list
-    /// from the current LivenessTracker state for the active set.
+    /// Compute the deterministic JailEvidence list for the consensus-jail
+    /// dispatch.
     ///
-    /// Each entry in the returned Vec carries (validator, signed_count,
-    /// missed_count, justification_hashes). Caller (epoch-boundary proposer)
-    /// includes this in `StakingOp::JailEvidenceBundle` for consensus-applied
-    /// jail decisions.
+    /// Caller is the epoch-boundary block proposer. Output goes into a
+    /// `StakingOp::JailEvidenceBundle` transaction; verifiers re-run this
+    /// function and reject the block if the recomputed list doesn't match
+    /// what the proposer claimed (byte-equal). That's the consensus rule
+    /// that lets the chain agree on a single jail decision instead of
+    /// each validator deciding locally.
     ///
-    /// Determinism: peers MUST produce identical evidence given identical
-    /// LivenessTracker state — that's the whole point of the design (consensus
-    /// applies the same jail decision uniformly across all validators).
-    /// This holds because `LivenessTracker.get_stats` is purely a function of
-    /// the records HashMap, no local-only state.
+    /// 2026-04-29: rewrote to take `current_height` and call
+    /// `is_downtime_at` instead of `is_downtime`. The old form depended
+    /// on entry counts in the LivenessTracker, which drifted across
+    /// validators because the recording path used per-node `active_set`
+    /// (see `record_block_signatures` for the matching fix). With both
+    /// halves canonical — recording from `signers`, downtime keyed by
+    /// height — peers produce identical evidence given the same chain
+    /// history.
     ///
-    /// `justification_hashes`: Phase B initial impl returns empty vec. Phase C
-    /// will populate with actual missed-block hashes for selective verification.
-    /// Empty list still allows count-based verification (peer recomputes signed
-    /// + missed count, compares to claim).
-    ///
-    /// Only validators that have FULL window AND fall below MIN_SIGNED_PER_WINDOW
-    /// are included (matches legacy `is_downtime` predicate).
-    pub fn compute_jail_evidence(&self, active_set: &[String]) -> Vec<JailEvidence> {
+    /// `justification_hashes` is still empty here (Phase B initial
+    /// shape); count-based verification is enough for the deterministic
+    /// equality check.
+    pub fn compute_jail_evidence(
+        &self,
+        active_set: &[String],
+        current_height: u64,
+    ) -> Vec<JailEvidence> {
         let mut evidence = Vec::new();
         for validator in active_set {
-            if !self.liveness.is_downtime(validator) {
+            if !self.liveness.is_downtime_at(validator, current_height) {
                 continue;
             }
             let (signed_count, missed_count) = self.liveness.get_stats(validator);
@@ -493,17 +510,25 @@ mod tests {
     fn test_record_block_signatures() {
         let mut engine = SlashingEngine::new();
         let active = vec!["0xval1".into(), "0xval2".into(), "0xval3".into()];
-        let signers = vec!["0xval1".into(), "0xval3".into()]; // val2 missed
+        let signers = vec!["0xval1".into(), "0xval3".into()]; // val2 didn't sign
 
         engine.record_block_signatures(&active, &signers, 100);
 
+        // 2026-04-29 fix: we only record canonical "signed=true" events
+        // for addresses in `signers`. Validators who didn't sign get
+        // no entry — the absence of recent records is what
+        // is_downtime_at uses to flag downtime, not an explicit "missed"
+        // counter.
         let (s1, m1) = engine.liveness.get_stats("0xval1");
         assert_eq!(s1, 1);
         assert_eq!(m1, 0);
 
         let (s2, m2) = engine.liveness.get_stats("0xval2");
-        assert_eq!(s2, 0);
-        assert_eq!(m2, 1);
+        assert_eq!(s2, 0, "val2 didn't sign → no signed entries recorded");
+        assert_eq!(m2, 0, "val2 has no entries at all (not signers, not missed)");
+
+        let (s3, _) = engine.liveness.get_stats("0xval3");
+        assert_eq!(s3, 1);
     }
 
     /// #253 regression: a 4-validator BFT chain where every block's
@@ -568,6 +593,12 @@ mod tests {
         }
 
         // Each validator signed exactly 1/4 of blocks = 25% < 30% threshold.
+        // Under the deterministic is_downtime_at path (which the
+        // consensus-jail dispatch uses), each validator is downtime
+        // because their signed_in_window count falls below the threshold.
+        // current_height = LIVENESS_WINDOW + 4 so the val that first
+        // signed at h=3 is also past the grace boundary.
+        let current_height = LIVENESS_WINDOW + 4;
         for v in &active {
             let (signed, _) = engine.liveness.get_stats(v);
             let expected = LIVENESS_WINDOW / 4;
@@ -580,7 +611,7 @@ mod tests {
                 expected
             );
             assert!(
-                engine.liveness.is_downtime(v),
+                engine.liveness.is_downtime_at(v, current_height),
                 "#253 broken-model pin: {} must be flagged downtime under the old \
                  signers=vec![proposer] scheme (25% signed < 30% threshold)",
                 v
@@ -622,109 +653,117 @@ mod tests {
     #[test]
     fn test_compute_jail_evidence_empty_active_set() {
         let engine = SlashingEngine::new();
-        let evidence = engine.compute_jail_evidence(&[]);
+        let evidence = engine.compute_jail_evidence(&[], LIVENESS_WINDOW * 2);
         assert!(evidence.is_empty());
     }
 
-    /// Healthy validators (no downtime): returns empty evidence.
+    /// Healthy validators (signed every block in window): empty evidence.
     #[test]
     fn test_compute_jail_evidence_healthy_validators_returns_empty() {
         let mut engine = SlashingEngine::new();
-        // Fill window for val1 with all signed (no downtime).
+        // Sign every block from 0 → LIVENESS_WINDOW. At current_height
+        // == LIVENESS_WINDOW, val1's full window is filled with signed
+        // entries → not downtime.
         for h in 0..LIVENESS_WINDOW {
-            engine.liveness.record("0xval1", h, true);
+            engine.liveness.record_signed("0xval1", h);
         }
-        let evidence = engine.compute_jail_evidence(&["0xval1".into()]);
+        let evidence = engine
+            .compute_jail_evidence(&["0xval1".into()], LIVENESS_WINDOW);
         assert!(
             evidence.is_empty(),
             "healthy validator must NOT appear in jail evidence"
         );
     }
 
-    /// Validator below threshold: returns evidence entry with signed/missed counts.
+    /// Validator that signed once a long time ago, then went silent:
+    /// the old anchor entry counts as "we've been watching them"
+    /// (passes the grace gate), but they're past the window with zero
+    /// signed entries inside it → downtime.
     #[test]
     fn test_compute_jail_evidence_downtime_validator_included() {
         let mut engine = SlashingEngine::new();
-        // Fill window with all missed → triggers downtime.
-        for h in 0..LIVENESS_WINDOW {
-            engine.liveness.record("0xval1", h, false);
-        }
-        let evidence = engine.compute_jail_evidence(&["0xval1".into()]);
+        // Anchor: one sign at h=0 so we know they were ever observed.
+        engine.liveness.record_signed("0xval1", 0);
+        // No signatures since. At current_height = LIVENESS_WINDOW + 100,
+        // window is (100, LIVENESS_WINDOW + 100] — anchor at h=0 is
+        // outside it, so signed_in_window = 0 < MIN_SIGNED_PER_WINDOW.
+        let current_height = LIVENESS_WINDOW + 100;
+        let evidence = engine
+            .compute_jail_evidence(&["0xval1".into()], current_height);
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].validator, "0xval1");
-        assert_eq!(evidence[0].signed_count, 0);
-        assert_eq!(evidence[0].missed_count, LIVENESS_WINDOW);
         // Phase B initial impl: justification_hashes empty
         assert!(evidence[0].justification_hashes.is_empty());
     }
 
-    /// Determinism: same LivenessTracker state → same evidence list.
-    /// This is the CRITICAL property — peers MUST agree on evidence to
-    /// reach consensus on jail decision.
+    /// Determinism: same record sequence → same evidence on both engines.
+    /// This is the property the consensus-jail dispatch depends on.
     #[test]
     fn test_compute_jail_evidence_deterministic() {
         let mut engine_a = SlashingEngine::new();
         let mut engine_b = SlashingEngine::new();
 
-        // Apply identical record sequence to both.
+        // val1: signs occasionally (will trip downtime). val2: signs
+        // every block (healthy). Apply the same record sequence to both
+        // engines and confirm they produce byte-identical evidence.
         for h in 0..LIVENESS_WINDOW {
-            // val1 mostly missed (will trigger jail)
-            let val1_signed = h % 10 == 0;
-            engine_a.liveness.record("0xval1", h, val1_signed);
-            engine_b.liveness.record("0xval1", h, val1_signed);
-            // val2 always signed
-            engine_a.liveness.record("0xval2", h, true);
-            engine_b.liveness.record("0xval2", h, true);
+            if h.is_multiple_of(10) {
+                engine_a.liveness.record_signed("0xval1", h);
+                engine_b.liveness.record_signed("0xval1", h);
+            }
+            engine_a.liveness.record_signed("0xval2", h);
+            engine_b.liveness.record_signed("0xval2", h);
         }
 
         let active_set: Vec<String> = vec!["0xval1".into(), "0xval2".into()];
-        let evidence_a = engine_a.compute_jail_evidence(&active_set);
-        let evidence_b = engine_b.compute_jail_evidence(&active_set);
+        let current_height = LIVENESS_WINDOW * 2;
+        let evidence_a = engine_a.compute_jail_evidence(&active_set, current_height);
+        let evidence_b = engine_b.compute_jail_evidence(&active_set, current_height);
         assert_eq!(
             evidence_a, evidence_b,
             "evidence must be byte-deterministic across engines with identical state"
         );
     }
 
-    /// Mixed active_set: only validators below threshold appear in evidence.
+    /// Mixed active_set: only validators below threshold appear.
     #[test]
     fn test_compute_jail_evidence_partial_active_set() {
         let mut engine = SlashingEngine::new();
 
-        // val1: full window all missed → downtime
+        // val1: anchor at h=0, no signs since → downtime once we're past window
+        engine.liveness.record_signed("0xval1", 0);
+        // val2: signs every block → healthy
+        // val3: signs every other block (50%) → above 30% threshold
         for h in 0..LIVENESS_WINDOW {
-            engine.liveness.record("0xval1", h, false);
-        }
-        // val2: full window all signed → healthy
-        for h in 0..LIVENESS_WINDOW {
-            engine.liveness.record("0xval2", h, true);
-        }
-        // val3: full window with 50% signed → above threshold (50% > 30%)
-        for h in 0..LIVENESS_WINDOW {
-            engine.liveness.record("0xval3", h, h % 2 == 0);
+            engine.liveness.record_signed("0xval2", h);
+            if h.is_multiple_of(2) {
+                engine.liveness.record_signed("0xval3", h);
+            }
         }
 
-        let evidence = engine.compute_jail_evidence(&[
-            "0xval1".into(),
-            "0xval2".into(),
-            "0xval3".into(),
-        ]);
+        let current_height = LIVENESS_WINDOW + 100;
+        let evidence = engine.compute_jail_evidence(
+            &["0xval1".into(), "0xval2".into(), "0xval3".into()],
+            current_height,
+        );
         assert_eq!(evidence.len(), 1, "only val1 should be in evidence");
         assert_eq!(evidence[0].validator, "0xval1");
     }
 
-    /// Window not full → not downtime → not in evidence.
+    /// Validator first observed too recently → grace period → no downtime
+    /// even if they only signed once.
     #[test]
     fn test_compute_jail_evidence_partial_window_excluded() {
         let mut engine = SlashingEngine::new();
-        // Half-window all missed — not yet at downtime threshold (window not full)
-        for h in 0..(LIVENESS_WINDOW / 2) {
-            engine.liveness.record("0xval1", h, false);
-        }
-        let evidence = engine.compute_jail_evidence(&["0xval1".into()]);
+        // First observed at h=LIVENESS_WINDOW/2. At current_height ==
+        // LIVENESS_WINDOW, first_seen > current_height - LIVENESS_WINDOW
+        // (grace period still active) → no downtime.
+        engine.liveness.record_signed("0xval1", LIVENESS_WINDOW / 2);
+        let evidence = engine
+            .compute_jail_evidence(&["0xval1".into()], LIVENESS_WINDOW);
         assert!(
             evidence.is_empty(),
-            "partial window must not produce evidence"
+            "validator inside grace period must not produce evidence"
         );
     }
 }

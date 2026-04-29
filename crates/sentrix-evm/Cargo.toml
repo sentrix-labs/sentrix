@@ -9,10 +9,10 @@ repository = "https://github.com/sentrix-labs/sentrix"
 [dependencies]
 sentrix-primitives = { path = "../sentrix-primitives" }
 sentrix-precompiles = { path = "../sentrix-precompiles" }
-revm = { version = "37", default-features = false, features = ["std", "serde", "optional_balance_check", "optional_no_base_fee"] }
+revm = { version = "38", default-features = false, features = ["std", "serde", "optional_balance_check", "optional_no_base_fee"] }
 alloy-primitives = "1.5"
 hex = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sha3 = "0.10"
+sha3 = "0.11"
 tracing = "0.1"
