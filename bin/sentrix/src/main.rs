@@ -2084,7 +2084,7 @@ async fn cmd_start(
                                         BftAction::FinalizeBlock {
                                             height,
                                             round,
-                                            block_hash: _,
+                                            ref block_hash,
                                             ref justification,
                                         } => {
                                             // 2026-04-30 split-brain guard: if 2/3+ peer
@@ -2115,6 +2115,48 @@ async fn cmd_start(
                                                         .await;
                                                 }
                                                 break;
+                                            }
+
+                                            // 2026-04-30 hash-mismatch guard: the bug behind the
+                                            // recurring vps3 / vps5 chain.db divergences (see
+                                            // audits/2026-04-30-eager-write-investigation.md).
+                                            // proposed_block may hold a block from an earlier
+                                            // round that didn't finalise; if no new proposal
+                                            // arrived in this round but the cluster's precommits
+                                            // for this round's actual block cross our local
+                                            // supermajority threshold, the prior code would
+                                            // .take() the stale stashed block, attach this
+                                            // round's justification (pointing at a different
+                                            // hash), and write the wrong block at this height.
+                                            // Next height's parent_hash references the
+                                            // cluster-canonical hash, our local height's hash
+                                            // doesn't match, libp2p sync rejects forward
+                                            // blocks, BFT can't progress: the divergence shape
+                                            // recovered from at h=773012, h=921604, h=932488,
+                                            // h=1014804, h=1015365.
+                                            //
+                                            // The fix is to refuse to write when the stashed
+                                            // block's hash doesn't equal the FinalizeBlock
+                                            // action's block_hash. Instead, log the mismatch
+                                            // and break — the chain advances when a peer
+                                            // gossip ships the canonical finalised block (with
+                                            // its justification), which the libp2p add-block
+                                            // path applies via the same add_block_from_peer
+                                            // entry the recovery rsync target uses.
+                                            if let Some(stashed) = proposed_block.as_ref() {
+                                                if &stashed.hash != block_hash {
+                                                    tracing::warn!(
+                                                        "BFT finalize: stashed proposed_block hash \
+                                                         {:.16}… ≠ FinalizeBlock action hash \
+                                                         {:.16}… at h={} round={}; refusing write \
+                                                         and waiting for peer-gossip canonical \
+                                                         block (prevents chain.db divergence per \
+                                                         audits/2026-04-30-eager-write-investigation.md)",
+                                                        stashed.hash, block_hash, height, round,
+                                                    );
+                                                    proposed_block = None;
+                                                    break;
+                                                }
                                             }
 
                                             if let Some(mut blk) = proposed_block.take() {
@@ -2543,7 +2585,7 @@ async fn cmd_start(
                                 BftAction::FinalizeBlock {
                                     height,
                                     round,
-                                    block_hash: _,
+                                    ref block_hash,
                                     ref justification,
                                 } => {
                                     // 2026-04-30 split-brain guard — same logic as the P1-A
@@ -2567,6 +2609,27 @@ async fn cmd_start(
                                             lp2p_clone.broadcast_bft_prevote(&prevote).await;
                                         }
                                         break;
+                                    }
+
+                                    // 2026-04-30 hash-mismatch guard — sibling to the P1-A
+                                    // arm above. Refuse to write a stashed block whose hash
+                                    // doesn't match the FinalizeBlock action's block_hash;
+                                    // log + drop the stale stash + break so peer-gossip
+                                    // ships us the canonical block. See the long comment in
+                                    // the sibling arm and audits/2026-04-30-eager-write-
+                                    // investigation.md for the divergence shape this closes.
+                                    if let Some(stashed) = proposed_block.as_ref() {
+                                        if &stashed.hash != block_hash {
+                                            tracing::warn!(
+                                                "BFT finalize: stashed proposed_block hash \
+                                                 {:.16}… ≠ FinalizeBlock action hash {:.16}… \
+                                                 at h={} round={}; refusing write and waiting \
+                                                 for peer-gossip canonical block",
+                                                stashed.hash, block_hash, height, round,
+                                            );
+                                            proposed_block = None;
+                                            break;
+                                        }
                                     }
 
                                     if let Some(mut blk) = proposed_block.take() {
