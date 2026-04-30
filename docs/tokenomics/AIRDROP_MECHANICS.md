@@ -24,13 +24,15 @@ Non-goals:
 
 | Phase | Allocation | Audience | Trigger |
 |---|---|---|---|
-| **1 — Testnet Heroes** | 1,000,000 SRX | Validators + power-users on chain 7120 (cumulative tx count ≥ N pre-snapshot) | Q2 2026, post-Chainlist listing |
+| **1 — Testnet Heroes** | 1,000,000 SRX | Validators + power-users on chain 7120 (cumulative tx count ≥ N pre-snapshot) | Q2 2026 — operator-announced |
 | **2 — Quest Campaign** | 1,000,000 SRX | Galxe / Zealy-style task completers (faucet, swap, contract-deploy quests) | Q3 2026 |
 | **3 — Activity Rewards** | 800,000 SRX | Active mainnet wallets (tx velocity + balance retention metrics) | Q3 2026 |
 | **4 — Validator Delegators** | 700,000 SRX | Pro-rata to delegators on active validators (snapshot height TBD) | Q4 2026 |
 | **5 — Retroactive Builders** | 1,500,000 SRX | dApp deployers, audit contributors, ecosystem PRs (committee-reviewed) | Q4 2026 / Q1 2027 |
 
 Each phase has its own snapshot, eligibility filter, and Merkle distribution. Phases run sequentially — completion of one does not gate the next, but earlier phases inform later snapshot designs (e.g., Phase 1 testnet activity may filter Phase 3 mainnet snapshots).
+
+> **On the Phase 1 trigger:** earlier drafts of this doc gated Phase 1 on the upstream Chainlist listing (`ethereum-lists/chains#8266`) merging. That gate has been softened to "operator-announced." Reason: Chainlist listing is a conversion booster (one-click "Add Sentrix" in MetaMask, library-side auto-config in viem/ethers/wagmi), not a technical prerequisite. The claim page kicks `wallet_addEthereumChain` directly when the connected wallet isn't on chain 7119, so a Phase 1 launch before Chainlist merges still works — the recipient experience is two extra prompt clicks instead of one. The trade-off is conversion rate, not feasibility.
 
 ## Phase 1 — Testnet Heroes (design direction)
 
@@ -142,7 +144,7 @@ The Merkle tree leaf list is published openly so anyone can:
 
 | Quarter | Milestone |
 |---|---|
-| Q2 2026 | Phase 1 announcement (post-Chainlist listing); snapshot height locked at announcement |
+| Q2 2026 | Phase 1 announcement (operator-announced; Chainlist listing nice-to-have for conversion but not gating); snapshot height locked at announcement |
 | Q2 2026 | `MerkleAirdrop.sol` deploy + pre-fund (single tx from Strategic Reserve) |
 | Q2 2026 | Phase 1 claim window opens |
 | Q3 2026 | Phase 2 + Phase 3 launch (per tokenomics §6) |
