@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-evm"
-version = "2.1.47"
+version = "2.1.48"
 edition = "2024"
 license = "BUSL-1.1"
 description = "EVM execution layer (revm 37) for Sentrix blockchain"

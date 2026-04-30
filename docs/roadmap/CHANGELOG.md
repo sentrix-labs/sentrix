@@ -242,7 +242,7 @@ Core: PoA round-robin consensus, account model, two-pass atomic block validation
 
 Trie: 256-level Binary SMT (BLAKE3 leaf + SHA-256 internal), sled-backed (4 trees), LRU cache, merkle proofs, state root in block hash (post height 100K), committed root protection, GC.
 
-Tokens: SRC-20 standard — deploy, transfer, burn, mint, approve/transferFrom. Deterministic contract addresses. Max supply enforcement. SNTX deployed (10B).
+Tokens: SRC-20 standard — deploy, transfer, burn, mint, approve/transferFrom. Deterministic contract addresses. Max supply enforcement. (Pioneer-era SNTX deploy was wiped during the v2.0 MDBX migration; the chain ships single-token SRX-only by design and SNTX was not redeployed.)
 
 Network: libp2p (TCP + Noise XX + Yamux). Persistent Ed25519 identity. Auto-reconnect. Per-IP rate limiting (5/60s, 5-min ban). Max 50 peers. Incremental sync with sled persistence. Block processing in spawned tasks.
 

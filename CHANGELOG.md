@@ -13,6 +13,26 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.48] — 2026-04-30 — BFT FinalizeBlock hash-mismatch guard (closes recurring chain.db divergence)
+
+> **Closes the recurring chain.db divergence bug** that produced the ~30-min mainnet halts at h=773012 (vps5, 2026-04-28), h=921604 + h=932488 (2026-04-29), and h=1014804 + h=1015365 (2026-04-30, twice in one day). The audit at `audits/2026-04-30-eager-write-investigation.md` traces the actual mechanism: BFT engine's `FinalizeBlock` action carried the supermajority `block_hash` for the round, but the validator-loop handler discarded it (`block_hash: _`) and `.take()`'d whatever was stashed in `proposed_block`. If the validator missed the actual round-N proposal but the cluster's round-N precommits crossed our local supermajority threshold, we'd write a stale stash (a previous round's block) attached to the current round's justification. Next height's `parent_hash` references the cluster-canonical hash; our local height's hash doesn't match; libp2p sync rejects forward blocks with `Invalid block: invalid previous hash`; BFT can't progress. Recovery required chain.db rsync from a canonical peer + halt-all + simul-start.
+
+### Fixed
+
+- **`bin/sentrix/src/main.rs`** (both FinalizeBlock arms — own-propose path at L2084 and peer-propose path at L2585) — bind the action's `block_hash` and refuse to write when `proposed_block.as_ref().hash != block_hash`. On mismatch: log the divergence at WARN, drop the stash, and break out of the round handler. The chain advances when peer-gossip ships the canonical finalised block (with its justification), which the libp2p add-block path applies via the same `add_block_from_peer` entry the recovery rsync target uses. Net effect: previously-divergent validators now stay LAGGED instead — chain liveness gap closes via the existing gossip path instead of requiring operator rsync.
+
+### Internal
+
+- **Workspace `Cargo.toml` + every internal crate + bin** — bumped `version = "2.1.47" → "2.1.48"` uniformly. `tools/*` keep their independent `0.1.0`.
+- **Build via Docker `rust:1.95-bullseye`** to target glibc 2.31 (Debian Bullseye baseline). Building on the local host (Ubuntu 24.04 / glibc 2.39) produces a binary that requires GLIBC_2.38, which the older mainnet validator hosts don't ship.
+
+### Operational notes
+
+- Deployed via halt-all + scp + simul-start. vps2's `chain.db` was corrupted during the failed glibc-2.38 attempt and recovered via tar-pipe rsync from vps1 canonical (`05b6b374ce01857e8556058d2688ab05`).
+- All four mainnet validators on `v2.1.48`, advancing in lockstep at h≈1019300+ post-deploy.
+
+---
+
 ## [2.1.47] — 2026-04-28 — eth_call → revm wiring + EIP-7825 gas cap fix + version bump
 
 > **Mainnet `eth_call` now actually executes against revm + live chain state.** Previously stubbed; canonical-contract reads (`WSRX.name()`, `Multicall3.getCurrentBlockTimestamp()`, etc) returned `0x` empty. Two PRs land the full fix: #389 wires the revm dispatch path, #391 caps the dry-run gas at the EIP-7825 limit so revm doesn't reject every call.

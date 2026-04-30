@@ -47,23 +47,8 @@ Explorer: `/explorer/tokens` and `/explorer/token/{contract}`.
 | Max supply | Optional | Built-in, enforced in mint() |
 | VM | EVM | Native engine (Pioneer), revm (Voyager) |
 
-## SNTX
+## SRC-20 (Voyager)
 
-First **native** SRC-20 token on Sentrix (deployed via the Pioneer-era
-native SRC-20 engine, not the EVM). Sentrix Utility.
+EVM-compatible via revm. Solidity ABI, gas metering, events. Deploy via the `TokenFactory` canonical contract, via `TokenOp::Deploy`, or via any standard Solidity ERC-20 deployment — all three paths land in the same canonical state trie alongside account balances, and gas is always paid in SRX.
 
-| | |
-|-|-|
-| Supply | 10,000,000,000 |
-| Ecosystem | 5B |
-| Founder | 2B |
-| Early Validator | 1.5B |
-| Reserve | 1.5B |
-
-Planned uses: governance, fee discounts, staking boosts.
-
-## Planned
-
-**SRC-20 (Voyager):** EVM-compatible via revm. Solidity ABI, gas metering, events.
-
-**SRTX (Future):** USD-pegged stablecoin. SRX-collateralized.
+> **No protocol-issued SRC-20 token exists.** Earlier drafts proposed a chain-native utility token (SNTX) and stablecoin (SRTX) alongside SRX; that 3-token model was dropped before Voyager activation. Sentrix ships single-token (SRX-only) by design. Third-party tokens deployed on the chain are application-layer assets, the same way ERC-20s are application-layer on Ethereum.
