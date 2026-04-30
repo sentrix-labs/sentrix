@@ -1281,6 +1281,13 @@ async fn cmd_start(
     port: u16,
     peers_str: String,
 ) -> anyhow::Result<()> {
+    // Loud warning if any consensus-touching env var is armed in a known-
+    // dangerous state. Currently covers JAIL_CONSENSUS_HEIGHT (the
+    // LivenessTracker non-determinism halt class). Fires before the chain
+    // even loads so an operator catching it can ctrl-C and reconfigure
+    // without partially booting into a halt-bound state.
+    sentrix::core::blockchain::warn_if_jail_consensus_armed();
+
     let storage = Arc::new(Storage::open(&get_db_path())?);
     let bc = storage
         .load_blockchain()?
