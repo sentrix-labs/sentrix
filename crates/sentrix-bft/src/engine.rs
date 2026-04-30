@@ -682,6 +682,46 @@ impl BftEngine {
         BftAction::Wait
     }
 
+    /// True when 2/3+ stake-weighted of peers report being at a higher
+    /// round than ours. The cluster has moved on; finalising on our
+    /// local view risks split-brain because two disjoint subsets at
+    /// different rounds can each reach precommit-supermajority for
+    /// different blocks at the same height.
+    ///
+    /// Validator-count-agnostic by design: uses the same
+    /// `supermajority_threshold` math that gates everything else,
+    /// so it works identically with N=4 or N=100.
+    ///
+    /// Returns the round to catch up to (the highest round at which
+    /// 2/3+ stake-weight of peers are present). The caller should
+    /// abort whatever finalise/precommit they were about to commit
+    /// and call `catch_up_round(round)` instead.
+    pub fn peer_supermajority_higher_round(&self) -> Option<u32> {
+        if self.state.total_active_stake == 0 {
+            return None;
+        }
+        let threshold = supermajority_threshold(self.state.total_active_stake);
+        let mut peers: Vec<(u32, u64)> = self
+            .peer_rounds
+            .values()
+            .filter(|(r, _)| *r > self.state.round)
+            .copied()
+            .collect();
+        // Highest round first — we want the largest round at which
+        // cumulative stake crosses the supermajority threshold, so
+        // scanning from the top guarantees we report the right target.
+        peers.sort_by_key(|p| std::cmp::Reverse(p.0));
+
+        let mut accumulated: u64 = 0;
+        for (round, stake) in peers {
+            accumulated = accumulated.saturating_add(stake);
+            if accumulated >= threshold {
+                return Some(round);
+            }
+        }
+        None
+    }
+
     /// Largest round R such that f+1 stake of distinct peers are at round >= R,
     /// where f+1 is the minimum stake strictly exceeding one third of
     /// `total_active_stake`. Returns None if no such R exists or if
@@ -2078,6 +2118,66 @@ mod tests {
             engine.state.locked_hash.as_deref(),
             Some("hash_a"),
             "fresh lock must NOT be cleared by the stale-lock relax"
+        );
+    }
+
+    /// 2026-04-30 regression for `peer_supermajority_higher_round()` — the
+    /// validator-count-agnostic split-brain guard. Pins both directions:
+    ///   - empty peer_rounds → None (engine alone can't be split)
+    ///   - 2/3+ stake at higher round → Some(target_round)
+    ///   - exactly 1/3+ stake at higher round (NOT 2/3+) → None (below
+    ///     the supermajority threshold; we should not abort our finalise)
+    #[test]
+    fn test_peer_supermajority_higher_round_returns_target_when_majority_moved_on() {
+        let (mut engine, _reg) = setup();
+        // 4 equal-stake validators. total=4_000_000. supermajority threshold
+        // = 4_000_000 * 2/3 + 1 = 2_666_667. Three peers at one stake unit
+        // each is 3_000_000 — well above the threshold.
+        engine.state.total_active_stake = 4_000_000;
+        engine.state.round = 5;
+        engine.peer_rounds.insert("peer_a".into(), (10, 1_000_000));
+        engine.peer_rounds.insert("peer_b".into(), (10, 1_000_000));
+        engine.peer_rounds.insert("peer_c".into(), (10, 1_000_000));
+
+        let target = engine.peer_supermajority_higher_round();
+        assert_eq!(
+            target,
+            Some(10),
+            "3-of-4 stake at round 10 must trip the guard; got {:?}",
+            target
+        );
+    }
+
+    #[test]
+    fn test_peer_supermajority_higher_round_silent_below_threshold() {
+        let (mut engine, _reg) = setup();
+        engine.state.total_active_stake = 4_000_000;
+        engine.state.round = 5;
+        // Only 1 peer at higher round → 1_000_000 stake → 25% → below 2/3.
+        engine.peer_rounds.insert("peer_a".into(), (10, 1_000_000));
+
+        assert_eq!(
+            engine.peer_supermajority_higher_round(),
+            None,
+            "single peer below supermajority threshold must NOT trip the guard",
+        );
+    }
+
+    #[test]
+    fn test_peer_supermajority_higher_round_silent_when_peers_at_our_round() {
+        let (mut engine, _reg) = setup();
+        engine.state.total_active_stake = 4_000_000;
+        engine.state.round = 5;
+        // Three peers at the SAME round as us — not "ahead", so the guard
+        // must stay silent. We're not stale.
+        engine.peer_rounds.insert("peer_a".into(), (5, 1_000_000));
+        engine.peer_rounds.insert("peer_b".into(), (5, 1_000_000));
+        engine.peer_rounds.insert("peer_c".into(), (5, 1_000_000));
+
+        assert_eq!(
+            engine.peer_supermajority_higher_round(),
+            None,
+            "peers at our own round must NOT trip the guard",
         );
     }
 }
