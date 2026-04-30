@@ -294,17 +294,15 @@ Any token holder can burn their tokens, permanently removing them from circulati
 - Reduces total supply by the burned amount
 - Requires SRX gas fee (50/50 split)
 
-### 7.5 Three-Token Economy
+### 7.5 Single-Token Economy
 
-Sentrix operates a three-token model:
+Sentrix operates with **SRX as the sole protocol token**:
 
 | Token | Type | Supply | Role |
 |---|---|---|---|
-| **SRX** | Native coin | 315,000,000 (fixed, post tokenomics-v2 fork) | Gas fees, validator rewards, base currency, store of value |
-| **SNTX** | SRC-20 | 10,000,000,000 | Utility — ecosystem rewards, governance voting, staking incentives |
-| **SRTX** | SRC-20 | TBD | Payment — stablecoin for daily transactions |
+| **SRX** | Native coin | 315,000,000 (fixed, post tokenomics-v2 fork) | Gas fees, validator rewards, staking, governance, all base-layer settlement |
 
-**Flywheel effect:** Every SNTX and SRTX transaction requires SRX for gas. As token usage grows, more SRX is burned, increasing scarcity and value of SRX. This creates a positive feedback loop where ecosystem growth directly benefits the native coin holders.
+Third-party SRC-20 tokens deployed on Sentrix (via `TokenOp::Deploy` or the `TokenFactory` EVM contract) coexist with SRX but are not protocol tokens — they're application-layer assets, the same way ERC-20s are application-layer on Ethereum. Every SRC-20 transfer or contract call still pays its gas fee in SRX, which keeps the deflationary flywheel (50% fee burn) tied directly to ecosystem activity. (An earlier 3-token model — SRX as store of value, SNTX as utility, SRTX as stablecoin — was considered and dropped; the chain ships single-token by design.)
 
 ---
 
