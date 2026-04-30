@@ -202,6 +202,43 @@ pub fn get_jail_consensus_height() -> u64 {
         .unwrap_or(JAIL_CONSENSUS_HEIGHT_DEFAULT)
 }
 
+/// Startup-time guardrail: if `JAIL_CONSENSUS_HEIGHT` is set to anything
+/// other than `u64::MAX`, log a loud warning explaining what's at stake.
+///
+/// Why this exists: the consensus-jail dispatch has a known LivenessTracker
+/// non-determinism bug that has halted mainnet twice (h=892799 on 2026-04-29,
+/// h=979199 on 2026-04-30). Each incident the recovery loop ends with
+/// "set JAIL_CONSENSUS_HEIGHT=u64::MAX in env" — but env files are easy to
+/// forget about and easy to revert by accident. This warning fires loudly
+/// at every startup so the operator can catch a misconfig BEFORE the next
+/// epoch boundary triggers the divergence.
+///
+/// Removing this warning is tied to landing the actual canonical-only
+/// LivenessTracker fix (see `audits/AUDIT_REPORT_2026_04_29.md` Phase 3).
+/// Until then, any value other than u64::MAX is operator risk.
+pub fn warn_if_jail_consensus_armed() {
+    let height = get_jail_consensus_height();
+    if height < u64::MAX {
+        tracing::warn!(
+            "⚠️  JAIL_CONSENSUS_HEIGHT={} (NOT u64::MAX) — consensus-jail \
+             dispatch ARMED. Known to halt mainnet via LivenessTracker \
+             non-determinism (incidents: h=892799 / 2026-04-29, h=979199 / \
+             2026-04-30). Set env to 18446744073709551615 unless you have \
+             explicitly verified the canonical-only LivenessTracker fix \
+             has shipped. See founder-private/AUDIT_REPORT_2026_04_29.md.",
+            height
+        );
+        // Eprintln backup so the warning is also visible without RUST_LOG
+        // wired to WARN — defensive against ops accidentally running with
+        // info-only logging.
+        eprintln!(
+            "⚠️  JAIL_CONSENSUS_HEIGHT={} — see warn log above. This is a \
+             KNOWN HALT CONDITION. Confirm intent before continuing.",
+            height
+        );
+    }
+}
+
 /// Read NFT TokenOp fork height from env, default `u64::MAX` (disabled).
 /// Post-fork: SRC-721 + SRC-1155 dispatch active. Operators activate via
 /// halt-all + simultaneous-start with `NFT_TOKENOP_HEIGHT=<height>`.
