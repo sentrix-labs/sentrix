@@ -6,8 +6,7 @@
 |-|-|
 | Chain ID | 7119 (0x1bcf) |
 | RPC | https://rpc.sentrixchain.com |
-| Explorer (custom) | https://scan.sentrixchain.com — native TokenOps + StakingOps + validator UX |
-| Explorer (Blockscout) | https://blockscout.sentrixchain.com — EVM-standard UX (ERC-20 transfers, source verification) |
+| Explorer | https://scan.sentrixchain.com — native TokenOps + StakingOps + validator UX, EIP-3091 compliant, ERC-20 transfers, source verification |
 | P2P port | 30303 |
 | API port | 8545 |
 | Block time | 1s |
@@ -62,12 +61,13 @@ Add network manually:
 | Symbol | SRX | SRX |
 | Explorer | https://scan.sentrixchain.com | https://scan.sentrixchain.com (toggle Testnet) |
 
-> Sentrix runs **two parallel explorers**. `scan.sentrixchain.com` (custom) is the
-> primary UX for native protocol features — TokenOp / StakingOp events, validator
-> pages, label system. `blockscout.sentrixchain.com` (Blockscout v8) is the
-> EVM-standard sidecar for ERC-20 holders, contract source verification, and
-> EIP-3091-style URLs that wallets and listing sites expect. Either URL works in
-> the explorer field; pick by the feature you need.
+> Sentrix uses a single block explorer: `scan.sentrixchain.com`. It covers both
+> the native protocol surface (TokenOp / StakingOp events, validator pages,
+> label system) and the EVM-standard surface (ERC-20 holders, source
+> verification, EIP-3091-style URLs that wallets and listing sites expect).
+> Use this URL in MetaMask's "Block Explorer URL" field, in CoinGecko /
+> CoinMarketCap listings, and as the deeplink target for any wallet that
+> follows EIP-3091.
 
 ### ethers.js
 
