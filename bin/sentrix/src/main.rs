@@ -2080,6 +2080,36 @@ async fn cmd_start(
                                             block_hash: _,
                                             ref justification,
                                         } => {
+                                            // 2026-04-30 split-brain guard: if 2/3+ peer
+                                            // stake-weight reports being at a higher round
+                                            // than ours, the cluster has moved on. Finalising
+                                            // on our local view risks landing a block that
+                                            // conflicts with whatever the cluster finalised
+                                            // next round (the chain.db divergence shape we
+                                            // recovered from at h=921604 + h=932488). Catch
+                                            // up + skip the local finalize. Validator-count-
+                                            // agnostic — same supermajority math drives both
+                                            // sides of the check.
+                                            if let Some(target_round) =
+                                                bft.peer_supermajority_higher_round()
+                                            {
+                                                tracing::warn!(
+                                                    "BFT split-brain guard: aborting local \
+                                                     finalise at h={} round={} — supermajority \
+                                                     of peer stake at round {}+; catching up",
+                                                    height, round, target_round,
+                                                );
+                                                if let Some(mut prevote) =
+                                                    bft.catch_up_round(target_round)
+                                                {
+                                                    prevote.sign(&validator_secret_key);
+                                                    lp2p_clone
+                                                        .broadcast_bft_prevote(&prevote)
+                                                        .await;
+                                                }
+                                                break;
+                                            }
+
                                             if let Some(mut blk) = proposed_block.take() {
                                                 blk.round = round;
                                                 blk.justification = Some(justification.clone());
@@ -2509,6 +2539,29 @@ async fn cmd_start(
                                     block_hash: _,
                                     ref justification,
                                 } => {
+                                    // 2026-04-30 split-brain guard — same logic as the P1-A
+                                    // FinalizeBlock arm (see comment up there for the full
+                                    // rationale). Both round-driven finalize entry points have
+                                    // to share the gate; otherwise a vote arriving via the
+                                    // gossip path can race past it.
+                                    if let Some(target_round) =
+                                        bft.peer_supermajority_higher_round()
+                                    {
+                                        tracing::warn!(
+                                            "BFT split-brain guard: aborting local finalise at \
+                                             h={} round={} — supermajority of peer stake at \
+                                             round {}+; catching up",
+                                            height, round, target_round,
+                                        );
+                                        if let Some(mut prevote) =
+                                            bft.catch_up_round(target_round)
+                                        {
+                                            prevote.sign(&validator_secret_key);
+                                            lp2p_clone.broadcast_bft_prevote(&prevote).await;
+                                        }
+                                        break;
+                                    }
+
                                     if let Some(mut blk) = proposed_block.take() {
                                         blk.round = round;
                                         blk.justification = Some(justification.clone());
