@@ -11,7 +11,7 @@ Sentrix is the financial infrastructure for the real economy — starting with I
 [![Rust](https://img.shields.io/badge/rust-stable-orange)](Cargo.toml)
 [![Chain ID](https://img.shields.io/badge/chain%20ID-7119-blue)](docs/operations/NETWORKS.md)
 [![License](https://img.shields.io/badge/license-BUSL--1.1-purple)](LICENSE)
-[![Whitepaper](https://img.shields.io/badge/whitepaper-v1.1-8A5A11)](https://github.com/sentrix-labs/whitepaper)
+[![Whitepaper](https://img.shields.io/badge/whitepaper-v1.2.1-8A5A11)](https://github.com/sentrix-labs/whitepaper)
 
 ---
 
