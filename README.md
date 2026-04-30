@@ -7,10 +7,11 @@ Sentrix is the financial infrastructure for the real economy — starting with I
 [![Website](https://img.shields.io/badge/website-sentrixchain.com-8A5A11)](https://sentrixchain.com)
 [![CI/CD](https://github.com/sentrix-labs/sentrix/actions/workflows/ci.yml/badge.svg)](https://github.com/sentrix-labs/sentrix/actions)
 [![Release](https://img.shields.io/github/v/release/sentrix-labs/sentrix)](https://github.com/sentrix-labs/sentrix/releases/latest)
-[![Tests](https://img.shields.io/badge/tests-551%2B%20passing-brightgreen)](https://github.com/sentrix-labs/sentrix/actions)
+[![Tests](https://img.shields.io/badge/tests-700%2B%20passing-brightgreen)](https://github.com/sentrix-labs/sentrix/actions)
 [![Rust](https://img.shields.io/badge/rust-stable-orange)](Cargo.toml)
 [![Chain ID](https://img.shields.io/badge/chain%20ID-7119-blue)](docs/operations/NETWORKS.md)
 [![License](https://img.shields.io/badge/license-BUSL--1.1-purple)](LICENSE)
+[![Whitepaper](https://img.shields.io/badge/whitepaper-v1.1-8A5A11)](https://github.com/sentrix-labs/whitepaper)
 
 ---
 
@@ -18,8 +19,8 @@ Sentrix is the financial infrastructure for the real economy — starting with I
 
 Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, instant finality, and Ethereum-compatible tooling. MetaMask, ethers.js, and web3.js connect natively. The chain serves as a settlement and tokenization layer for real-world assets — designed to bring institutional-grade financial primitives on-chain with the monetary discipline of Bitcoin and the programmability of Ethereum.
 
-- **v2.1.47** — MDBX storage, 1s blocks, 5000 tx/block capacity, Voyager DPoS+BFT live on mainnet, EVM (revm 37) with `eth_call` wired to revm execution against real chain state, V4 reward distribution v2 active, **tokenomics v2 fork ACTIVE on mainnet since h=640800** (BTC-parity 4-year halving + 315M cap), `StakingOp::AddSelfStake` ACTIVE since h=731245, libp2p sync race-safe
-- **551+ tests**, clippy clean, 11 security audit rounds
+- **v2.1.47** — MDBX storage, 1s blocks, 5000 tx/block capacity, Voyager DPoS+BFT live on mainnet, EVM (revm 38) with `eth_call` wired to revm execution against real chain state, V4 reward distribution v2 active, **tokenomics v2 fork ACTIVE on mainnet since h=640800** (BTC-parity 4-year halving + 315M cap), `StakingOp::AddSelfStake` ACTIVE since h=731245, libp2p sync race-safe
+- **700+ tests**, clippy clean, 11 security audit rounds
 - **4 validators** across 4 nodes (Foundation, Treasury, Core, Beacon) on the maintainer fleet
 
 ## Features
@@ -29,7 +30,7 @@ Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, i
 | **Consensus** | DPoS + BFT (mainnet & testnet) — Voyager active |
 | **Finality** | Instant — BFT 2/3+1 vote-based |
 | **Storage** | libmdbx — memory-mapped B+ tree (used by Reth/Erigon) |
-| **EVM** | revm 37 — Solidity contracts, MetaMask compatible (mainnet & testnet) |
+| **EVM** | revm 38 — Solidity contracts, MetaMask compatible (mainnet & testnet) |
 | **State** | Binary Sparse Merkle Tree (BLAKE3 + SHA-256) with proofs |
 | **Tokens** | SRC-20 native + SRC-20 (ERC-20 via EVM) |
 | **Network** | libp2p + Noise XX + Kademlia + Gossipsub |
@@ -47,7 +48,7 @@ cd sentrix
 cargo build --release
 
 # Test
-cargo test    # 551+ tests
+cargo test    # 700+ tests
 
 # Run a node
 SENTRIX_VALIDATOR_KEY=<key> ./target/release/sentrix start --port 30303
@@ -78,7 +79,7 @@ crates/
 ├── sentrix-wallet/       Keystore (Argon2id), wallet ops
 ├── sentrix-trie/         Binary Sparse Merkle Tree (MDBX backend)
 ├── sentrix-staking/      DPoS, epoch, slashing
-├── sentrix-evm/          revm 37 adapter
+├── sentrix-evm/          revm 38 adapter
 ├── sentrix-precompiles/  EVM precompiles
 ├── sentrix-bft/          BFT consensus (timeout-only round advance)
 ├── sentrix-core/         Blockchain, authority, executor, mempool, storage
@@ -113,12 +114,13 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 | Phase | Status | Focus |
 |-------|--------|-------|
 | **Pioneer** | Completed (mainnet h=0…579058) | PoA round-robin, MDBX storage, 1s blocks, SRC-20 tokens — succeeded by Voyager 2026-04-25 |
-| **Voyager** | **Live on mainnet (v2.1.47)** | DPoS proposer rotation + BFT finality, EVM (revm 37) with `eth_call` against real chain state, `eth_sendRawTransaction`, L1 peer auto-discovery + connection-limits hardening, V4 reward distribution v2 (treasury escrow + ClaimRewards), runtime-aware Voyager dispatch, race-safe block sync, tokenomics v2 fork (315M cap + 4-year halving), `StakingOp::AddSelfStake` for non-phantom validator self-bond |
+| **Voyager** | **Live on mainnet (v2.1.47)** | DPoS proposer rotation + BFT finality, EVM (revm 38) with `eth_call` against real chain state, `eth_sendRawTransaction`, L1 peer auto-discovery + connection-limits hardening, V4 reward distribution v2 (treasury escrow + ClaimRewards), runtime-aware Voyager dispatch, race-safe block sync, tokenomics v2 fork (315M cap + 4-year halving), `StakingOp::AddSelfStake` for non-phantom validator self-bond |
 | **Frontier** | Phase F-1 scaffold landed; F-2…F-10 planned | Parallel transaction execution, sub-1s block time, mainnet hard fork |
 | **Odyssey** | Future | Cross-chain bridges, mature ecosystem, light clients |
 
 ## Documentation
 
+- **[Whitepaper](https://github.com/sentrix-labs/whitepaper)** — foundational paper (vision, mission, design philosophy, protocol depth). Available in English and Bahasa Indonesia.
 - [Architecture](docs/architecture/) — consensus, state, networking, transactions
 - [Operations](docs/operations/) — deployment, CI/CD, monitoring, validators
 - [Claim Rewards](docs/operations/CLAIM_REWARDS.md) — how validators + delegators claim escrowed rewards from `PROTOCOL_TREASURY`
