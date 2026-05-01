@@ -46,15 +46,22 @@ impl Blockchain {
         };
         let _sender = envelope.recover_signer().ok();
 
-        // Pull native-value out of the envelope. Pre-fix this was dropped on
-        // the floor — TxEnv defaulted to U256::ZERO so revm never moved any
-        // SRX between EOAs even when the user signed a `value > 0` tx.
-        // Symptom: `WSRX.deposit{value: 1ether}()` and pure `cast send
-        // --value Nether <addr>` both reported status=1 + recipient balance
-        // unchanged. Native fee debit happens in the Pass-1 path
-        // (`charge_fee_only`) so we only need value-of-tx here, not fee.
-        // See `audits/2026-05-01-evm-value-transfer-bug.md`.
-        let tx_value: alloy_primitives::U256 = envelope.value();
+        // Pull native-value out of the envelope, but gate it. Flat-shipping
+        // the `.value()` plumbing in v2.1.49 produced 3 same-day mainnet
+        // halts on 2026-05-01 (2v2 split-brain at h≈1180k / 1191k / 1192k) —
+        // the apply path produces validator-specific state divergence on
+        // any value-bearing EVM tx. Until the RCA lands and a regression
+        // test pins the invariant, default `u64::MAX` keeps Pass-2 running
+        // with `TxEnv.value = ZERO` (v2.1.48-equivalent behaviour: value-
+        // bearing EVM txs no-op their transfer, native fee still debits via
+        // Pass-1 `charge_fee_only`). See
+        // `audits/2026-05-01-evm-value-transfer-divergence.md`.
+        let tx_value: alloy_primitives::U256 =
+            if Blockchain::is_evm_value_transfer_height(block_height) {
+                envelope.value()
+            } else {
+                alloy_primitives::U256::ZERO
+            };
 
         // Build EVM tx
         use alloy_primitives::{B256, U256};

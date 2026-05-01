@@ -141,6 +141,27 @@ const NFT_TOKENOP_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// u64::MAX = disabled (safe default; wire format stable from this PR).
 const ADD_SELF_STAKE_HEIGHT_DEFAULT: u64 = u64::MAX;
 
+/// EVM value-transfer activation height. Pre-fork: Pass-2 EVM apply path
+/// runs every tx with `TxEnv.value = U256::ZERO` regardless of envelope
+/// value (matches v2.1.48 behaviour — value-bearing EVM txs no-op the
+/// transfer but native fee still debits via Pass-1 `charge_fee_only`).
+/// Post-fork: revm sees the real envelope value and moves SRX between
+/// EOAs / forwards into payable contract calls.
+///
+/// Why gated: shipped flat in v2.1.49, recurred the eager-write divergence
+/// pattern that v2.1.48's FinalizeBlock guard was meant to close. Three
+/// 2v2 split-brain halts on 2026-05-01 (h≈1180k / 1191k / 1192k) all
+/// followed the same shape — vps1+vps5 finalize one hash, vps2+vps3 the
+/// other. Faction split was deterministic across recoveries, suggesting
+/// the value-transfer apply path produces validator-specific divergence
+/// (likely revm/wei-sentri rounding interaction or block-context
+/// non-determinism — RCA pending in `audits/2026-05-01-evm-value-transfer-divergence.md`).
+///
+/// Until that RCA lands, default disabled mirrors v2.1.48 behaviour.
+/// Operator activates with halt-all + simul-start after the bug is
+/// understood + a regression test pins the invariant.
+const EVM_VALUE_TRANSFER_HEIGHT_DEFAULT: u64 = u64::MAX;
+
 /// Read Voyager fork height from env, default u64::MAX (mainnet safe).
 /// Testnet sets VOYAGER_FORK_HEIGHT=<height> in systemd service.
 pub fn get_voyager_fork_height() -> u64 {
@@ -258,6 +279,17 @@ pub fn get_add_self_stake_height() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(ADD_SELF_STAKE_HEIGHT_DEFAULT)
+}
+
+/// Read EVM value-transfer fork height from env, default `u64::MAX`
+/// (disabled — matches v2.1.48 EVM behaviour). Post-fork: Pass-2 EVM
+/// apply path threads envelope value into `TxEnv.value` so revm performs
+/// real SRX transfers between EOAs and into payable contract calls.
+pub fn get_evm_value_transfer_height() -> u64 {
+    std::env::var("EVM_VALUE_TRANSFER_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(EVM_VALUE_TRANSFER_HEIGHT_DEFAULT)
 }
 
 /// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
@@ -871,6 +903,16 @@ impl Blockchain {
     /// the activation PR; gate keeps it dormant until operator rollout).
     pub fn is_add_self_stake_height(height: u64) -> bool {
         let fork = get_add_self_stake_height();
+        fork != u64::MAX && height >= fork
+    }
+
+    /// EVM value-transfer fork-gate. Pre-fork: Pass-2 EVM apply runs every
+    /// tx with `TxEnv.value = U256::ZERO` (v2.1.48 behaviour, divergence-free).
+    /// Post-fork: envelope value flows into revm — value-bearing EVM txs
+    /// move SRX between accounts. See `EVM_VALUE_TRANSFER_HEIGHT_DEFAULT`
+    /// for the regression context this gate manages.
+    pub fn is_evm_value_transfer_height(height: u64) -> bool {
+        let fork = get_evm_value_transfer_height();
         fork != u64::MAX && height >= fork
     }
 
@@ -3169,6 +3211,39 @@ mod tests {
         assert!(!Blockchain::is_bft_gate_relax_height(u64::MAX - 1));
         // Default-disabled gate = pre-fork behavior.
         assert_eq!(Blockchain::min_active_for_bft(1_000_000, 4), 4);
+    }
+
+    /// EVM value-transfer gate: u64::MAX default = pre-fix v2.1.48 EVM
+    /// behaviour (TxEnv.value forced to ZERO). Pins the regression that
+    /// caused 3 mainnet halts on 2026-05-01 — flat-shipping the
+    /// envelope-value plumbing in v2.1.49 produced 2v2 split-brain
+    /// divergence on every value-bearing EVM tx. Default disabled keeps
+    /// chain stable until the divergence RCA lands. Operator activates
+    /// post-RCA via halt-all + simul-start with `EVM_VALUE_TRANSFER_HEIGHT`.
+    #[test]
+    fn test_evm_value_transfer_disabled_by_default() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::remove_var("EVM_VALUE_TRANSFER_HEIGHT");
+        }
+        assert!(!Blockchain::is_evm_value_transfer_height(0));
+        assert!(!Blockchain::is_evm_value_transfer_height(u64::MAX - 1));
+    }
+
+    /// EVM value-transfer gate: when set, activates exactly at the
+    /// configured height and stays active for all subsequent heights.
+    #[test]
+    fn test_evm_value_transfer_activation_boundary() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::set_var("EVM_VALUE_TRANSFER_HEIGHT", "1500000");
+        }
+        assert!(!Blockchain::is_evm_value_transfer_height(1_499_999));
+        assert!(Blockchain::is_evm_value_transfer_height(1_500_000));
+        assert!(Blockchain::is_evm_value_transfer_height(1_500_001));
+        unsafe {
+            std::env::remove_var("EVM_VALUE_TRANSFER_HEIGHT");
+        }
     }
 
     /// Phase D: build_jail_evidence_system_tx returns None pre-fork
