@@ -7,7 +7,7 @@
 
 ## Why this exists
 
-Sentrix Chain's positioning is "financial infrastructure for the real economy." That posture shapes airdrop design: rewards must tie to **real participation** (testnet usage, dApp building, validator delegation, ecosystem contribution), not speculative holding. A "claim if you hold SRX" airdrop is incompatible with that positioning and would create regulatory and reputational drag in target markets.
+Airdrop design ties rewards to **real participation** (testnet usage, dApp building, validator delegation, ecosystem contribution), not speculative holding. A "claim if you hold SRX" airdrop would create regulatory and reputational drag in target markets.
 
 Goals:
 - Reward early builders and validators who took risk before mainnet was proven
