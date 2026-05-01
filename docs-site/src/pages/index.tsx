@@ -18,7 +18,7 @@ function HomepageHeader() {
         </Heading>
         <p className="hero__subtitle">{siteConfig.tagline}</p>
         <p className={styles.heroLead}>
-          Financial infrastructure for the real economy — Indonesia first, then the world.
+          Real chain, real blocks, real code.
         </p>
         <div className={styles.buttons}>
           <Link
@@ -42,7 +42,7 @@ export default function Home(): ReactNode {
   return (
     <Layout
       title={`${siteConfig.title} — ${siteConfig.tagline}`}
-      description="Sentrix Chain — EVM-compatible Layer-1 with Bitcoin's monetary discipline. Financial infrastructure for the real economy. 315M fixed supply, 4-year halving, 1-second blocks.">
+      description="Sentrix Chain — open-source, EVM-compatible Layer-1 built in Rust. 1-second blocks, instant BFT finality, fixed 315M SRX supply, BTC-parity halving. Chain ID 7119.">
       <HomepageHeader />
       <main>
         <HomepageFeatures />

@@ -6,9 +6,7 @@ title: Welcome to Sentrix Chain
 
 # Sentrix Chain
 
-**Where real assets live.**
-
-Sentrix is the financial infrastructure for the real economy — starting with Indonesia. We bring real-world assets on-chain with Bitcoin's monetary discipline (fixed 315M supply, 4-year halving) and Ethereum's programmability (EVM-native, Solidity-ready) — built for Southeast Asia's 600 million people first, then the world.
+Sentrix is an open-source, EVM-compatible Layer-1 built in Rust. Real chain, real blocks, real code. 1-second blocks, instant BFT finality, fixed 315M SRX supply, BTC-parity halving.
 
 ## Quick Links
 
@@ -31,12 +29,12 @@ Sentrix is the financial infrastructure for the real economy — starting with I
 | **Consensus** | Voyager DPoS+BFT (live since April 2026) |
 | **Execution** | EVM-native (revm 37) |
 | **Max Supply** | 315M SRX (post tokenomics-v2 fork) |
-| **Premine** | 20% of cap (industry-leading) |
+| **Premine** | 20% of cap |
 | **Halving** | Every 126M blocks (~4 years, Bitcoin-parity) |
 
 ## Built in Rust. Production since April 2026.
 
-Sentrix runs as a 14-crate Rust workspace with MDBX-backed state, libp2p networking, BFT supermajority finality, and EVM execution via revm. Designed for tokenization of real-world assets — property, trade, fixed-income — without sacrificing the monetary discipline that makes value durable.
+Sentrix runs as a 14-crate Rust workspace with MDBX-backed state, libp2p networking, BFT supermajority finality, and EVM execution via revm.
 
 ## Get involved
 
@@ -44,7 +42,7 @@ Sentrix runs as a 14-crate Rust workspace with MDBX-backed state, libp2p network
 |---|---|
 | **Builders** | [builders@sentrixchain.com](mailto:builders@sentrixchain.com) · [GitHub](https://github.com/sentrix-labs) |
 | **Validators** | [validators@sentrixchain.com](mailto:validators@sentrixchain.com) · [Validator Guide](operations/VALIDATOR_GUIDE) |
-| **RWA Partners** | [partners@sentriscloud.com](mailto:partners@sentriscloud.com) |
+| **Partners** | [partners@sentriscloud.com](mailto:partners@sentriscloud.com) |
 | **Press** | [press@sentriscloud.com](mailto:press@sentriscloud.com) |
 | **Grants** | [grants@sentrixchain.com](mailto:grants@sentrixchain.com) |
 | **Security** | [security@sentrixchain.com](mailto:security@sentrixchain.com) (chain) · [security@sentriscloud.com](mailto:security@sentriscloud.com) (products) |

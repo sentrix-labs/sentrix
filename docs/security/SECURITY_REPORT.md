@@ -1,10 +1,10 @@
 # Security Report v1.0
 
-Score: 8.3/10 — production-ready for Pioneer network.
+Production-ready, mainnet live.
 
-After 10 prior audit rounds (94 findings, 78 fixed), the codebase is in good shape. Zero `unsafe`, no-panic policy enforced via CI, checked arithmetic everywhere, constant-time crypto. Not typical for a project this young.
+The codebase enforces zero `unsafe`, a no-panic policy via CI, checked arithmetic, and constant-time crypto on auth-sensitive paths.
 
-No fund-loss vulnerabilities. No data corruption risks. Main gap is DoS resistance on the network layer (mostly addressed now).
+Main gap is DoS resistance on the network layer (mostly addressed now).
 
 ## Chain
 
@@ -18,16 +18,7 @@ No fund-loss vulnerabilities. No data corruption risks. Main gap is DoS resistan
 
 Full report: [SECURITY_AUDIT_V11.md](SECURITY_AUDIT_V11.md)
 
-0 critical. 2 high (fee tracking split, timestamp non-determinism — neither is fund-loss). 5 medium. 7 low. 8 positive findings.
-
-| Category | Score |
-|----------|-------|
-| Consensus | 8/10 |
-| State | 9/10 |
-| Transactions | 9/10 |
-| Networking | 7/10 |
-| API | 8/10 |
-| Code quality | 9/10 |
+The most recent code review surfaced 2 high-severity findings (fee tracking split, timestamp non-determinism — neither is fund-loss), both since fixed, plus a set of medium / low / informational findings tracked in the linked report.
 
 ## Attack Vectors
 
@@ -41,7 +32,7 @@ Already solid: tx signing, double spend protection, mempool caps, rate limiting,
 
 Full report: [PENTEST_RESULTS.md](PENTEST_RESULTS.md)
 
-6/6 tests passed. RPC flood, P2P flood, tx spam, malformed input, double spend, oversized payloads — all handled correctly.
+Scenarios covered: RPC flood, P2P flood, tx spam, malformed input, double spend, oversized payloads. Methodology, raw output, and per-scenario verdicts in the linked report.
 
 ## What to Fix
 

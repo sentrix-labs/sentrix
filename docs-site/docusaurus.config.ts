@@ -4,7 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'Sentrix Chain',
-  tagline: 'Where real assets live.',
+  tagline: 'Open source, EVM-compatible L1 built in Rust.',
   favicon: 'img/favicon.ico',
 
   future: {
@@ -121,7 +121,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} SentrisCloud. Where real assets live.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Sentrix Labs.`,
     },
     prism: {
       theme: prismThemes.github,

@@ -4,7 +4,7 @@
 
 ## TL;DR
 
-0 critical, 2 high, 5 medium, 7 low, 8 info (positive findings). Overall **8.3/10**. No fund-loss vulnerabilities. Main concerns are fee tracking architecture and timestamp determinism.
+2 high-severity findings, 5 medium, 7 low, 8 info-level positive findings. No fund-loss vulnerabilities. Main concerns are fee tracking architecture and timestamp determinism.
 
 Good stuff found: zero `unsafe`, CI-enforced no-panic (clippy deny unwrap/expect/panic), checked math everywhere, constant-time API key comparison, Argon2id keystore, committed root protection in trie, canonical BTreeMap signing payload, pubkey→address verified on every tx.
 
@@ -69,16 +69,3 @@ Fix: Capture timestamp once, pass to both.
 | I07 | Approve requires reset to 0 first — prevents front-run | Good ✓ |
 | I08 | HTML escaping on all explorer output — no XSS | Good ✓ |
 
----
-
-## Scores
-
-| Category | Score |
-|----------|-------|
-| Consensus | 8/10 |
-| State management | 9/10 |
-| Transactions | 9/10 |
-| Networking | 7/10 |
-| API security | 8/10 |
-| Code quality | 9/10 |
-| **Overall** | **8.3/10** |

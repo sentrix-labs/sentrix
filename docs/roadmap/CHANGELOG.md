@@ -222,7 +222,6 @@ Highlights since 0.1.0:
 - CI/CD pipeline deploying to all 3 VPS with ordered stop/start and health checks
 - P0 security hardening: libp2p peer limits, per-IP rate limiting, legacy TCP deprecated (PR #82)
 - Full documentation suite: 20 files (PR #83)
-- Pentest 6/6 passed on live production node
 - P2P upgrades: bincode wire protocol, Kademlia DHT discovery, gossipsub propagation
 - Disk pruning for trie roots
 - 525+ tests (was 284), protocol `/sentrix/2.0.0`
@@ -254,7 +253,7 @@ Storage: sled embedded DB. Per-block persistence + hash index. 1000-block slidin
 
 Infra: 17 CLI commands. CI/CD (cargo deny → clippy → build → test → 3-VPS deploy). 4-phase deploy with health check. Branch protection.
 
-Security: 11 audit rounds (94 findings, 78 fixed). Zero `unsafe`. No-panic CI enforcement. 6/6 pentest pass.
+Security: zero `unsafe` blocks. No-panic CI enforcement. Checked arithmetic.
 
 ### Major PRs
 

@@ -18,7 +18,6 @@ Done. Live in production.
 - MDBX storage with 1000-block sliding window + disk pruning
 - CI/CD: GitHub Actions → test → build → 3-VPS deploy
 - Branch protection on main (PR + CI required)
-- Pentest 6/6 passed on live production node
 
 ## Numbers
 
@@ -26,9 +25,7 @@ Done. Live in production.
 |-|-|
 | Tests | 551 |
 | PRs merged | #1–#111 |
-| Audit rounds | 11 (116 findings, 78+ fixed) |
 | Chain height | 141,000+ |
-| Pentest | 6/6 passed on live node |
 | `unsafe` blocks | 0 |
 | Clippy warnings | 0 |
 

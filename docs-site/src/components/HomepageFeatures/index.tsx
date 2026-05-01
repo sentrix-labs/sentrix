@@ -50,14 +50,13 @@ const Globe = (
 
 const FeatureList: FeatureItem[] = [
   {
-    title: 'Real Asset Infrastructure',
+    title: 'EVM-Compatible Infrastructure',
     icon: Pillar,
     description: (
       <>
-        EVM-native L1 with Solidity smart contracts (revm 37). Built ground-up
-        for real-world asset use cases. EIP-1559 fee market, ERC-20 / ERC-721 /
-        SRC-721 token standards specified, MetaMask + hardhat + ethers.js ready
-        out of the box.
+        EVM-native L1 with Solidity smart contracts (revm 37). EIP-1559 fee
+        market, ERC-20 / ERC-721 / SRC-721 token standards, MetaMask + Hardhat
+        + ethers.js ready out of the box.
       </>
     ),
   },
@@ -73,13 +72,13 @@ const FeatureList: FeatureItem[] = [
     ),
   },
   {
-    title: 'Indonesia First, Global Next',
+    title: 'Built in Indonesia',
     icon: Globe,
     description: (
       <>
-        Financial infrastructure for the real economy — Indonesia first, then the
-        world. 1-second blocks, 0.0001 SRX min fee, 5,000 tx per block. Built for
-        Southeast Asia&apos;s 600 million people.
+        Solo-built in Indonesia — open source under BUSL-1.1, transitions to
+        permissive after the Change Date. 1-second blocks, 0.0001 SRX min fee,
+        5,000 tx per block.
       </>
     ),
   },
