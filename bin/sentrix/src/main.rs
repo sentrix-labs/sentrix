@@ -2143,20 +2143,20 @@ async fn cmd_start(
                                             // its justification), which the libp2p add-block
                                             // path applies via the same add_block_from_peer
                                             // entry the recovery rsync target uses.
-                                            if let Some(stashed) = proposed_block.as_ref() {
-                                                if &stashed.hash != block_hash {
-                                                    tracing::warn!(
-                                                        "BFT finalize: stashed proposed_block hash \
-                                                         {:.16}… ≠ FinalizeBlock action hash \
-                                                         {:.16}… at h={} round={}; refusing write \
-                                                         and waiting for peer-gossip canonical \
-                                                         block (prevents chain.db divergence per \
-                                                         audits/2026-04-30-eager-write-investigation.md)",
-                                                        stashed.hash, block_hash, height, round,
-                                                    );
-                                                    proposed_block = None;
-                                                    break;
-                                                }
+                                            if let Some(stashed) = proposed_block.as_ref()
+                                                && &stashed.hash != block_hash
+                                            {
+                                                tracing::warn!(
+                                                    "BFT finalize: stashed proposed_block hash \
+                                                     {:.16}… ≠ FinalizeBlock action hash \
+                                                     {:.16}… at h={} round={}; refusing write \
+                                                     and waiting for peer-gossip canonical \
+                                                     block (prevents chain.db divergence per \
+                                                     audits/2026-04-30-eager-write-investigation.md)",
+                                                    stashed.hash, block_hash, height, round,
+                                                );
+                                                proposed_block = None;
+                                                break;
                                             }
 
                                             if let Some(mut blk) = proposed_block.take() {
@@ -2618,18 +2618,18 @@ async fn cmd_start(
                                     // ships us the canonical block. See the long comment in
                                     // the sibling arm and audits/2026-04-30-eager-write-
                                     // investigation.md for the divergence shape this closes.
-                                    if let Some(stashed) = proposed_block.as_ref() {
-                                        if &stashed.hash != block_hash {
-                                            tracing::warn!(
-                                                "BFT finalize: stashed proposed_block hash \
-                                                 {:.16}… ≠ FinalizeBlock action hash {:.16}… \
-                                                 at h={} round={}; refusing write and waiting \
-                                                 for peer-gossip canonical block",
-                                                stashed.hash, block_hash, height, round,
-                                            );
-                                            proposed_block = None;
-                                            break;
-                                        }
+                                    if let Some(stashed) = proposed_block.as_ref()
+                                        && &stashed.hash != block_hash
+                                    {
+                                        tracing::warn!(
+                                            "BFT finalize: stashed proposed_block hash \
+                                             {:.16}… ≠ FinalizeBlock action hash {:.16}… \
+                                             at h={} round={}; refusing write and waiting \
+                                             for peer-gossip canonical block",
+                                            stashed.hash, block_hash, height, round,
+                                        );
+                                        proposed_block = None;
+                                        break;
                                     }
 
                                     if let Some(mut blk) = proposed_block.take() {
