@@ -77,52 +77,22 @@ SentrisCloud — products + infra on Sentrix Chain. RWA for SEA.
 
 ---
 
-## Telegram Channels
+## Telegram
 
-### Announcement channel `t.me/sentrixchain`
+Single canonical channel: **`t.me/SentrixChain`** ([https://t.me/SentrixChain](https://t.me/SentrixChain)) — announcements, community, builder Q&A, grants. We collapsed the prior 3-channel split (announcements / builders / community) into one to keep the funnel simple; specialised channels can spin off later if traffic warrants.
+
+### Channel bio
 
 ```
-📢 Sentrix Chain — official announcements
+📢 Sentrix Chain — official Telegram
 
 Where real assets live. Layer-1 blockchain for the real
 economy. Indonesia first, Southeast Asia next.
 
-Status updates · network events · release notes · ecosystem.
-
-Builders → t.me/sentrixchain_builders
-Discussion → t.me/sentrixchain_chat
+Status updates · builder Q&A · grants · ecosystem.
 
 🌐 sentrixchain.com
-```
-
-### Builders channel `t.me/sentrixchain_builders`
-
-```
-🛠 Sentrix Chain — builders' channel
-
-Devs building on Sentrix. Q&A, grants program, technical
-support, ecosystem coordination.
-
-Mainnet RPC: rpc.sentrixchain.com
-Testnet RPC: testnet-rpc.sentrixchain.com
-Chain ID: 7119 mainnet · 7120 testnet
-EVM: Solidity contracts work natively
-
-📧 builders@sentrixchain.com
-🎁 grants@sentrixchain.com
-```
-
-### Community/discussion channel `t.me/sentrixchain_chat`
-
-```
-💬 Sentrix Chain — community
-
-Where real assets live. Bitcoin's tokenomics, Ethereum's
-programmability, Indonesia's anchor.
-
-For announcements: @sentrixchain
-For builders: @sentrixchain_builders
-For partnerships: partners@sentriscloud.com
+📧 partners@sentriscloud.com · builders@sentrixchain.com
 ```
 
 ---

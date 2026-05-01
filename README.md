@@ -107,7 +107,7 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 **Faucet:** [faucet.sentrixchain.com](https://faucet.sentrixchain.com) (testnet)
 **Wallet:** [solux.sentriscloud.com](https://solux.sentriscloud.com) (Solux web)
 **Docs:** [sentrixchain.com/docs/faucet](https://sentrixchain.com/docs/faucet)
-**Telegram:** [t.me/SentrixCommunity](https://t.me/SentrixCommunity)
+**Telegram:** [t.me/SentrixChain](https://t.me/SentrixChain)
 
 ## Roadmap
 

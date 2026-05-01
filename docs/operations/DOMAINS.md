@@ -64,4 +64,4 @@ Symbol:   SRX
 ## Community
 
 - GitHub: https://github.com/sentrix-labs/sentrix
-- Telegram: https://t.me/SentrixCommunity
+- Telegram: https://t.me/SentrixChain
