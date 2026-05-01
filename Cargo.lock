@@ -4834,7 +4834,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix"
-version = "2.1.49"
+version = "2.1.50"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",
