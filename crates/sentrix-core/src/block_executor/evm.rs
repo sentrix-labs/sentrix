@@ -36,6 +36,7 @@ impl Blockchain {
         };
 
         use alloy_consensus::TxEnvelope;
+        use alloy_consensus::Transaction as AlloyTx; // brings .value() into scope
         use alloy_consensus::transaction::SignerRecoverable;
         use alloy_eips::eip2718::Decodable2718;
 
@@ -44,6 +45,16 @@ impl Blockchain {
             Err(_) => return Ok(()),
         };
         let _sender = envelope.recover_signer().ok();
+
+        // Pull native-value out of the envelope. Pre-fix this was dropped on
+        // the floor — TxEnv defaulted to U256::ZERO so revm never moved any
+        // SRX between EOAs even when the user signed a `value > 0` tx.
+        // Symptom: `WSRX.deposit{value: 1ether}()` and pure `cast send
+        // --value Nether <addr>` both reported status=1 + recipient balance
+        // unchanged. Native fee debit happens in the Pass-1 path
+        // (`charge_fee_only`) so we only need value-of-tx here, not fee.
+        // See `audits/2026-05-01-evm-value-transfer-bug.md`.
+        let tx_value: alloy_primitives::U256 = envelope.value();
 
         // Build EVM tx
         use alloy_primitives::{B256, U256};
@@ -123,6 +134,7 @@ impl Blockchain {
             .caller(from_addr)
             .kind(tx_kind)
             .data(alloy_primitives::Bytes::from(calldata))
+            .value(tx_value)
             .gas_limit(gas_limit)
             .gas_price(INITIAL_BASE_FEE as u128)
             // EVM CREATE/CALL nonce: revm checks `tx.nonce == state.nonce`
