@@ -71,7 +71,37 @@ impl Blockchain {
         // 21_000 so they still participate in the accumulator.
         let take = self.mempool.len().min(MAX_TX_PER_BLOCK - 1);
         let mut current_gas_used: u64 = 0;
+        // Track per-sender expected nonce as we walk the queue so a
+        // sender with multiple txs in flight contributes them in order
+        // (n, n+1, n+2…) without us needing to re-fetch from the
+        // accounts map each time. Starting value is the on-chain
+        // nonce; we bump it as we include each tx from that sender.
+        use std::collections::HashMap;
+        let mut next_nonce_per_sender: HashMap<String, u64> = HashMap::new();
         for tx in self.mempool.iter().take(take) {
+            // Skip stale-nonce txs at proposal time. A tx with nonce
+            // strictly less than the chain's expected nonce will fail
+            // pre-validate (`Invalid nonce: expected N, got M`) and
+            // sink the entire block — every validator rejects, BFT
+            // can't finalize, the chain stalls. Live discovery
+            // 2026-05-02: a single stuck nonce-5 tx (whose sender's
+            // account was already at nonce 7) repeatedly poisoned
+            // proposals until manual `mempool clear` recovery. Pull
+            // expected nonce on first sight, bump as we include
+            // subsequent txs from the same sender.
+            let expected_nonce = *next_nonce_per_sender
+                .entry(tx.from_address.clone())
+                .or_insert_with(|| self.accounts.get_nonce(&tx.from_address));
+            if tx.nonce < expected_nonce {
+                continue;
+            }
+            // Future-nonce gap (tx.nonce > expected) means a same-
+            // sender lower-nonce tx must come first; skip until the
+            // gap closes naturally on a later proposal.
+            if tx.nonce > expected_nonce {
+                continue;
+            }
+
             let tx_gas = if tx.is_evm_tx() {
                 tx.data
                     .split(':')
@@ -86,6 +116,10 @@ impl Blockchain {
                 break;
             }
             current_gas_used = current_gas_used.saturating_add(tx_gas);
+            // Bump per-sender expected nonce so the next tx from the
+            // same sender (already validated to be tx.nonce + 1 by
+            // mempool admission) lines up on inclusion.
+            next_nonce_per_sender.insert(tx.from_address.clone(), expected_nonce + 1);
             transactions.push(tx.clone());
         }
 
