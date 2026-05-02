@@ -83,8 +83,9 @@ Configures GitHub Pages serving from `gh-pages` branch.
 
 ## Brand
 
-- Tagline: **"Where real assets live."**
-- Primary positioning: locked-in 2026-04-26 (internal brand-positioning doc)
+- Tagline: **"Open source, EVM-compatible L1 built in Rust."**
+- Hero lead: "Real chain, real blocks, real code."
+- Indonesia mentioned only as factual origin — no "Indonesia first" framing, no RWA framing until signed partnerships.
 - Logo source: [github.com/sentrix-labs/brand-kit](https://github.com/sentrix-labs/brand-kit)
 
 ## Maintenance

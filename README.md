@@ -1,27 +1,28 @@
 # Sentrix
 
-**Where real assets live.**
+**Open source, EVM-compatible L1 built in Rust.**
 
-Sentrix is the financial infrastructure for the real economy — starting with Indonesia. We bring real-world assets on-chain with Bitcoin's monetary discipline (fixed 315M supply, 4-year halving) and Ethereum's programmability (EVM-native, Solidity-ready) — built for Southeast Asia's 600 million people first, then the world.
+Real chain, real blocks, real code. 1-second blocks, BFT finality, MetaMask-compatible. Built in Indonesia, BUSL-1.1 licensed.
 
 [![Website](https://img.shields.io/badge/website-sentrixchain.com-8A5A11)](https://sentrixchain.com)
 [![CI/CD](https://github.com/sentrix-labs/sentrix/actions/workflows/ci.yml/badge.svg)](https://github.com/sentrix-labs/sentrix/actions)
 [![Release](https://img.shields.io/github/v/release/sentrix-labs/sentrix)](https://github.com/sentrix-labs/sentrix/releases/latest)
-[![Tests](https://img.shields.io/badge/tests-700%2B%20passing-brightgreen)](https://github.com/sentrix-labs/sentrix/actions)
 [![Rust](https://img.shields.io/badge/rust-stable-orange)](Cargo.toml)
 [![Chain ID](https://img.shields.io/badge/chain%20ID-7119-blue)](docs/operations/NETWORKS.md)
 [![License](https://img.shields.io/badge/license-BUSL--1.1-purple)](LICENSE)
-[![Whitepaper](https://img.shields.io/badge/whitepaper-v1.2.4-8A5A11)](https://github.com/sentrix-labs/whitepaper)
+[![Whitepaper](https://img.shields.io/badge/whitepaper-v1.3.0-8A5A11)](https://github.com/sentrix-labs/whitepaper)
 
 ---
 
 ## What is Sentrix?
 
-Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, instant finality, and Ethereum-compatible tooling. MetaMask, ethers.js, and web3.js connect natively. The chain serves as a settlement and tokenization layer for real-world assets — designed to bring institutional-grade financial primitives on-chain with the monetary discipline of Bitcoin and the programmability of Ethereum.
+Sentrix (SRX) is a Layer-1 blockchain with 1-second block times, BFT finality, and Ethereum-compatible tooling. MetaMask, ethers.js, and viem/wagmi connect natively. Solidity contracts deploy via Foundry / Hardhat / Remix. Native staking + slashing live on mainnet. Sentrix is a generic L1 — what gets built on top is up to whoever ships first.
 
-- **v2.1.48** — BFT FinalizeBlock hash-mismatch guard (closes recurring chain.db divergence). Plus the v2.1.47 set: MDBX storage, 1s blocks, 5000 tx/block capacity, Voyager DPoS+BFT live on mainnet, EVM (revm 38) with `eth_call` wired to revm execution against real chain state, V4 reward distribution v2 active, **tokenomics v2 fork ACTIVE on mainnet since h=640800** (BTC-parity 4-year halving + 315M cap), `StakingOp::AddSelfStake` ACTIVE since h=731245, libp2p sync race-safe
-- **700+ tests**, clippy clean, 11 security audit rounds
-- **4 validators** across 4 nodes (Foundation, Treasury, Core, Beacon) on the maintainer fleet
+- **Latest**: `v2.1.56` — per-tx EVM receipt persistence so `eth_getTransactionReceipt` returns real `gasUsed` + `contractAddress` + revert reasons. See [CHANGELOG.md](CHANGELOG.md) for the v2.1.49 → v2.1.56 fix train (EVM value-transfer drop, MDBX geometry, dry-run plumbing).
+- **Consensus**: Voyager DPoS+BFT live on mainnet (4-of-4 validators), 1s blocks, 5000 tx/block capacity, V4 reward v2 + tokenomics v2 forks ACTIVE.
+- **Storage**: MDBX (memory-mapped B+ tree, same as Reth/Erigon). Binary Sparse Merkle Tree (BLAKE3 + SHA-256) for state, with proofs.
+- **EVM**: revm 38, `eth_call` wired to revm execution against real chain state, fork-gated value-threading (post v2.1.50).
+- **Tests**: 700+ unit tests across the workspace, clippy clean.
 
 ## Features
 
@@ -114,7 +115,7 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 | Phase | Status | Focus |
 |-------|--------|-------|
 | **Pioneer** | Completed (mainnet h=0…579058) | PoA round-robin, MDBX storage, 1s blocks, SRC-20 tokens — succeeded by Voyager 2026-04-25 |
-| **Voyager** | **Live on mainnet (v2.1.48)** | DPoS proposer rotation + BFT finality, EVM (revm 38) with `eth_call` against real chain state, `eth_sendRawTransaction`, L1 peer auto-discovery + connection-limits hardening, V4 reward distribution v2 (treasury escrow + ClaimRewards), runtime-aware Voyager dispatch, race-safe block sync, tokenomics v2 fork (315M cap + 4-year halving), `StakingOp::AddSelfStake` for non-phantom validator self-bond |
+| **Voyager** | **Live on mainnet (v2.1.56)** | DPoS proposer rotation + BFT finality, EVM (revm 38) with `eth_call` against real chain state + fork-gated value-threading, `eth_sendRawTransaction`, L1 peer auto-discovery + connection-limits hardening, V4 reward distribution v2 (treasury escrow + ClaimRewards), runtime-aware Voyager dispatch, race-safe block sync, tokenomics v2 fork (315M cap + 4-year halving), `StakingOp::AddSelfStake` for non-phantom validator self-bond, per-tx EVM receipt persistence |
 | **Frontier** | Phase F-1 scaffold landed; F-2…F-10 planned | Parallel transaction execution, sub-1s block time, mainnet hard fork |
 | **Odyssey** | Future | Cross-chain bridges, mature ecosystem, light clients |
 
@@ -132,7 +133,7 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
-11 audit rounds completed (116 findings, 78+ fixed). Pentest 6/6 passed on live network.
+Internal review pass on every release; published audit reports live in [docs/security/](docs/security/). External audits not yet engaged — track real coverage there, no fabricated counts.
 
 ## Contributing
 
