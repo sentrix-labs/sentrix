@@ -37,8 +37,26 @@ pub(super) async fn get_nonce(
 ) -> Json<serde_json::Value> {
     let address = address.to_lowercase();
     let bc = state.read().await;
-    let nonce = bc.accounts.get_nonce(&address);
-    Json(serde_json::json!({ "address": address, "nonce": nonce }))
+    // Return the *pending-aware* nonce — finalized account nonce plus the
+    // number of in-mempool txs from this account. Callers who fetch this
+    // and immediately sign expect it to be the next-usable value; the
+    // pure finalized nonce caused a class of bugs where same-IP back-to-
+    // back claims (faucet, automated dapps) all signed the same nonce,
+    // chain accepted the first and rejected every later one with
+    // "Invalid nonce: expected N+1, got N". Live discovery 2026-05-02.
+    //
+    // `nonce_finalized` is exposed alongside so callers that genuinely
+    // want the finalized value (e.g. block explorers showing tx count)
+    // still have it without an extra round-trip.
+    let nonce_finalized = bc.accounts.get_nonce(&address);
+    let pending = bc.mempool_pending_count(&address);
+    let nonce = nonce_finalized.saturating_add(pending);
+    Json(serde_json::json!({
+        "address": address,
+        "nonce": nonce,
+        "nonce_finalized": nonce_finalized,
+        "pending": pending,
+    }))
 }
 
 pub(super) async fn get_wallet_info(

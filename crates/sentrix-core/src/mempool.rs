@@ -170,7 +170,11 @@ impl Blockchain {
         Ok(())
     }
 
-    fn mempool_pending_count(&self, address: &str) -> u64 {
+    /// Count of pending mempool txs from `address`. Public so the RPC layer
+    /// can surface `eth_getTransactionCount(addr, "pending")` correctly —
+    /// without it, faucets and dapps that need the next-usable nonce keep
+    /// signing with stale values and pile up un-includable txs.
+    pub fn mempool_pending_count(&self, address: &str) -> u64 {
         self.mempool
             .iter()
             .filter(|tx| tx.from_address == address)
