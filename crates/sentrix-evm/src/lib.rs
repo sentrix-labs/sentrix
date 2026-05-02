@@ -14,6 +14,7 @@ pub mod executor;
 pub mod gas;
 pub mod logs;
 pub mod precompiles;
+pub mod receipts;
 pub mod writeback;
 
 pub use database::{SentrixEvmDb, parse_sentrix_address};
@@ -26,3 +27,4 @@ pub use logs::{
     LogsBloom, StoredLog, add_log_to_bloom, bloom_contains, bloom_union, compute_logs_bloom,
     empty_bloom, log_key, log_key_prefix,
 };
+pub use receipts::{StoredReceipt, receipt_key};

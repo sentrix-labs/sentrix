@@ -231,12 +231,16 @@ async fn eth_get_transaction_receipt(params: &Value, state: &SharedState) -> Dis
                 })
             };
             // Resolve transactionIndex by scanning the txs in the block.
-            // Most blocks carry a handful of txs so this is cheap; if it
-            // ever becomes a hotspot we should index txid → idx alongside
-            // the txid → block lookup that already exists.
-            let tx_index = bc
+            // Cheap because blocks carry a handful of txs — if this ever
+            // becomes a hotspot we'd index txid → idx alongside the
+            // txid → block lookup. Also drag the full tx slice up because
+            // we need it for cumulativeGasUsed below.
+            let block_txs: Vec<sentrix_primitives::transaction::Transaction> = bc
                 .get_block_any(block_index)
-                .and_then(|b| b.transactions.iter().position(|t| t.txid == txid))
+                .map(|b| b.transactions.clone())
+                .unwrap_or_default();
+            let tx_idx_opt = block_txs.iter().position(|t| t.txid == txid);
+            let tx_index = tx_idx_opt
                 .map(|i| to_hex(i as u64))
                 .unwrap_or_else(|| "0x0".to_string());
             // Re-stamp blockHash with the 0x prefix that EVM tooling
@@ -251,12 +255,61 @@ async fn eth_get_transaction_receipt(params: &Value, state: &SharedState) -> Dis
                     }
                 })
                 .unwrap_or_default();
-            // contractAddress: only meaningful for CREATE-style EVM txs.
-            // Sentrix doesn't currently track the deployed address per
-            // creation tx, so we report null here. Follow-up work would
-            // either persist it on the Tx struct or recompute it
-            // post-hoc from tx.from + tx.nonce.
-            let contract_address = Value::Null;
+
+            // Look up the persisted EVM receipt — block_executor writes one
+            // per EVM tx (v2.1.56). Pre-fix we returned 21_000 unconditionally;
+            // now we surface the real gas + contractAddress + (post-2026-05-02
+            // backfill) revert reason bytes. Native (non-EVM) txs don't have
+            // a receipt row → 21_000 fallback is the right answer for them.
+            let stored_receipt: Option<sentrix_evm::StoredReceipt> = bc
+                .mdbx_storage
+                .as_ref()
+                .and_then(|s| sentrix_evm::receipt_key(&txid).map(|k| (s, k)))
+                .and_then(|(s, k)| {
+                    s.get_bincode(sentrix_storage::tables::TABLE_RECEIPTS, &k).ok().flatten()
+                });
+
+            let gas_used: u64 = stored_receipt.as_ref().map(|r| r.gas_used).unwrap_or(21_000);
+
+            // cumulativeGasUsed = sum of gas_used for all txs in this block
+            // up to and including this one. We sum from the receipt store
+            // so the number reflects real EVM gas; missing rows fall back
+            // to 21_000 each (native txs).
+            let cumulative_gas_used: u64 = {
+                let upto = tx_idx_opt.unwrap_or(usize::MAX);
+                let mut sum: u64 = 0;
+                for (i, t) in block_txs.iter().enumerate() {
+                    if i > upto {
+                        break;
+                    }
+                    let g = bc
+                        .mdbx_storage
+                        .as_ref()
+                        .and_then(|s| sentrix_evm::receipt_key(&t.txid).map(|k| (s, k)))
+                        .and_then(|(s, k)| {
+                            s.get_bincode::<sentrix_evm::StoredReceipt>(
+                                sentrix_storage::tables::TABLE_RECEIPTS,
+                                &k,
+                            )
+                            .ok()
+                            .flatten()
+                        })
+                        .map(|r| r.gas_used)
+                        .unwrap_or(21_000);
+                    sum = sum.saturating_add(g);
+                }
+                sum
+            };
+
+            // contractAddress: surface from the stored receipt if the EVM tx
+            // was a CREATE. Pre-fix we always returned null; off-the-shelf
+            // indexers (Blockscout, etherscan-style) couldn't detect contract
+            // creations and the smart_contracts table stayed empty.
+            let contract_address: Value = stored_receipt
+                .as_ref()
+                .and_then(|r| r.contract_address)
+                .map(|a| Value::String(format!("0x{}", hex::encode(a))))
+                .unwrap_or(Value::Null);
 
             // Pull the from address through the same 0x-prefix
             // normaliser so receipt consumers don't have to special-case
@@ -281,8 +334,8 @@ async fn eth_get_transaction_receipt(params: &Value, state: &SharedState) -> Dis
                 "to": to_value,
                 "contractAddress": contract_address,
                 "status": status,
-                "gasUsed": to_hex(21_000),
-                "cumulativeGasUsed": to_hex(21_000),
+                "gasUsed": to_hex(gas_used),
+                "cumulativeGasUsed": to_hex(cumulative_gas_used),
                 "effectiveGasPrice": effective_gas_price,
                 "type": tx_type,
                 "logs": logs,
@@ -347,8 +400,22 @@ async fn eth_get_block_receipts(params: &Value, state: &SharedState) -> Dispatch
             "0x1"
         };
         let (logs, bloom_hex) = load_logs_for_tx(&bc, block.index, &tx.txid);
-        let gas_used: u64 = 21_000;
+        // Surface real EVM gas + contractAddress from the receipt store
+        // (v2.1.56). Native txs don't have a row → fall back to 21_000.
+        let stored_receipt: Option<sentrix_evm::StoredReceipt> = bc
+            .mdbx_storage
+            .as_ref()
+            .and_then(|s| sentrix_evm::receipt_key(&tx.txid).map(|k| (s, k)))
+            .and_then(|(s, k)| {
+                s.get_bincode(sentrix_storage::tables::TABLE_RECEIPTS, &k).ok().flatten()
+            });
+        let gas_used: u64 = stored_receipt.as_ref().map(|r| r.gas_used).unwrap_or(21_000);
         cumulative = cumulative.saturating_add(gas_used);
+        let contract_address: Value = stored_receipt
+            .as_ref()
+            .and_then(|r| r.contract_address)
+            .map(|a| Value::String(format!("0x{}", hex::encode(a))))
+            .unwrap_or(Value::Null);
         // See eth_get_transaction_receipt above for the EVM-vs-native
         // `type` + `effectiveGasPrice` rationale.
         let is_evm = tx.is_evm_tx();
@@ -365,6 +432,7 @@ async fn eth_get_block_receipts(params: &Value, state: &SharedState) -> Dispatch
             "blockHash": format!("0x{}", block.hash),
             "from": tx.from_address,
             "to": tx.to_address,
+            "contractAddress": contract_address,
             "status": status,
             "gasUsed": to_hex(gas_used),
             "cumulativeGasUsed": to_hex(cumulative),
