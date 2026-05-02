@@ -162,8 +162,31 @@ where
                     output: revm::context::result::Output::Call(call_bytes),
                     ..
                 } => (None, call_bytes.to_vec()),
+                // Surface revert reason data — this is the 4-byte error
+                // selector + ABI-encoded args for `revert XError(...)` calls.
+                // Pre-fix this path returned an empty Vec, so eth_estimateGas
+                // saw "execution reverted" with no reason and dApps couldn't
+                // distinguish e.g. `ZeroValue()` from `Slippage()`. Wallets +
+                // wagmi rely on this data to display human revert reasons.
+                ExecutionResult::Revert { output: revert_bytes, .. } => {
+                    (None, revert_bytes.to_vec())
+                }
                 _ => (None, Vec::new()),
             };
+            // Distinguish Halt (OOG, InvalidOpcode, StackOverflow, etc) from
+            // Revert. Halt has no `output` bytes — it's the EVM engine refusing
+            // to execute, not a contract `revert ...()`. Pre-fix both paths
+            // surfaced as bare "execution reverted" which masked OOG bugs in
+            // payable contract calls. Returning a typed error here lets the
+            // RPC layer distinguish: revert reason flows through receipt.output,
+            // halt reason flows through this Err so eth_estimateGas surfaces
+            // it as a clearly-different message.
+            if let ExecutionResult::Halt { reason, .. } = &exec_result {
+                return Err(format!(
+                    "EVM halt ({:?}) — gas_used={}; not a contract revert",
+                    reason, exec_result.tx_gas_used()
+                ));
+            }
             let receipt = TxReceipt {
                 success: exec_result.is_success(),
                 gas_used: exec_result.tx_gas_used(),

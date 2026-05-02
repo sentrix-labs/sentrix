@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-precompiles"
-version = "2.1.51"
+version = "2.1.54"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Sentrix-specific EVM precompile addresses (staking, slashing, ...)"

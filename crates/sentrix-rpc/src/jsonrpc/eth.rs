@@ -579,10 +579,28 @@ async fn run_evm_dry_run(
         None => revm::primitives::TxKind::Create,
     };
 
+    // Thread `value` from the call object into TxEnv. Without it, every
+    // dry-run simulates with msg.value=0 regardless of what the dApp
+    // requested — payable functions that gate on `if (msg.value == 0)
+    // revert ZeroValue();` (CoinBlastCurve.buy, WSRX.deposit, etc) always
+    // revert during wagmi's pre-flight eth_estimateGas check, surfacing
+    // as "RPC Request failed" in the user's wallet UI. Block-apply path
+    // (block_executor::evm.rs) was fixed in v2.1.49; this dry-run path
+    // was never updated. Found 2026-05-02 via CBLAST buy() debugging
+    // post-EVM_VALUE_TRANSFER_HEIGHT activation.
+    let tx_value: alloy_primitives::U256 = call_obj
+        .get("value")
+        .and_then(|v| v.as_str())
+        .and_then(|s| alloy_primitives::U256::from_str_radix(
+            s.trim_start_matches("0x"), 16
+        ).ok())
+        .unwrap_or(alloy_primitives::U256::ZERO);
+
     let tx = revm::context::TxEnv::builder()
         .caller(from_addr)
         .kind(tx_kind)
         .data(alloy_primitives::Bytes::from(data_bytes))
+        .value(tx_value)
         .gas_limit(gas_limit)
         .gas_price(0)
         .nonce(bc.accounts.get_nonce(from_str))
