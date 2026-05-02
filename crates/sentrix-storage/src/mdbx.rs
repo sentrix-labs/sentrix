@@ -4,9 +4,30 @@
 
 use crate::error::{StorageError, StorageResult};
 use crate::tables::ALL_TABLES;
-use libmdbx::{Database, DatabaseOptions, NoWriteMap, RW, TableFlags, Transaction, WriteFlags};
+use libmdbx::{
+    Database, DatabaseOptions, Mode, NoWriteMap, RW, ReadWriteOptions, TableFlags, Transaction,
+    WriteFlags,
+};
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
+
+/// MDBX geometry — explicit upper bound + growth step. Default libmdbx
+/// geometry has a small upper_size and grows in tiny increments, which
+/// caused 5 mainnet halts on 2026-05-01 (h≈1.18M / 1.19M / 1.197M):
+/// once the file's geometric ceiling is hit, every trie write fails with
+/// `MDBX_MAP_FULL`. The validators that hit it can't persist new state,
+/// in-memory blockchain advances anyway, they propose blocks with stale
+/// state, peers reject → 2v2 split-brain → BFT halt. Independent write
+/// histories across the fleet (vps1+vps5 vs vps2+vps3) made the failure
+/// deterministically factional even on byte-identical post-rsync chain.db.
+///
+/// 64 GB upper bound covers ~20× current chain.db size at expected growth
+/// rate (3 GB / 1.2M blocks ≈ 2.5 µB / block × 5y projection at 1 block/s
+/// = ~400 GB worst case; conservative 64 GB ceiling for now, lift later
+/// if validators approach it). 256 MB growth step minimises fragmentation
+/// vs the libmdbx default tiny step.
+const MAX_DB_SIZE: isize = 64 * 1024 * 1024 * 1024;
+const GROWTH_STEP: isize = 256 * 1024 * 1024;
 
 /// Sentrix storage backed by libmdbx.
 ///
@@ -32,6 +53,11 @@ impl MdbxStorage {
             path,
             DatabaseOptions {
                 max_tables: Some(16),
+                mode: Mode::ReadWrite(ReadWriteOptions {
+                    max_size: Some(MAX_DB_SIZE),
+                    growth_step: Some(GROWTH_STEP),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
         )
