@@ -9,7 +9,9 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-> Empty placeholder — next release will land on this branch.
+### Documentation
+
+- **Whitepaper v1.3.0 published** at `sentrix-labs/whitepaper@v1.3.0`. Full revision targeting infra-grade protocol-specification rigor — every constant in the paper traces back to a specific module path in this repo at `v2.1.56`. See `sentrix-labs/whitepaper/README.md` for the v1.2.4 → v1.3.0 delta. Notable: the paper now formalises Voyager BFT with proof sketches (Agreement / Validity / Termination), a full STF pseudocode pinned to `crates/sentrix-core/src/block_executor.rs`, real BFT timeouts from `crates/sentrix-bft/src/engine/timeouts.rs`, slashing constants from `crates/sentrix-staking/src/slashing/`, and a comparative analysis against Ethereum / Solana / Monad / Polygon. The Bahasa Indonesia translation lags at v1.2.4; v1.3.0 ID parallel pass is on the operational backlog.
 
 ---
 
