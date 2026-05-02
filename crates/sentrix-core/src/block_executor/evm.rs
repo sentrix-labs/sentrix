@@ -174,6 +174,22 @@ impl Blockchain {
                     // returns status=0x0 instead of the default 0x1.
                     self.accounts.mark_evm_tx_failed(&tx.txid);
                 }
+
+                // Persist the per-tx receipt so eth_getTransactionReceipt
+                // surfaces real gas_used + contract_address + revert reason
+                // bytes — pre-2026-05-02 the receipt builder hardcoded
+                // gasUsed=21_000 because nothing was kept after this point.
+                // See issue #447 for the bug, v2.1.56 for the fix.
+                if let Some(storage) = self.mdbx_storage.as_ref()
+                    && let Some(key) = sentrix_evm::receipt_key(&tx.txid)
+                {
+                    let stored = sentrix_evm::StoredReceipt::from_tx_receipt(&receipt);
+                    let _ = storage.put_bincode(
+                        sentrix_storage::tables::TABLE_RECEIPTS,
+                        &key,
+                        &stored,
+                    );
+                }
                 // Sprint 2: persist every log emitted by this tx. Key is
                 // (height, tx_index, log_index) BE-packed so range scans
                 // return logs in canonical Ethereum order.

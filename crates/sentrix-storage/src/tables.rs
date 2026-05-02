@@ -39,6 +39,12 @@ pub const TABLE_LOGS: &str = "logs";
 /// Prefilter for eth_getLogs so we skip blocks that definitely have no match.
 pub const TABLE_BLOOM: &str = "bloom";
 
+/// EVM tx receipts: key = txid (32 bytes from hex) → StoredReceipt (bincode).
+/// Captures actual gas_used + contract_address per EVM tx so RPC can surface
+/// real receipt data instead of the 21_000 fallback. Native (non-EVM) txs
+/// don't get an entry here — receipt builder falls back to 21_000.
+pub const TABLE_RECEIPTS: &str = "receipts";
+
 /// All table names for pre-creation during environment open.
 pub const ALL_TABLES: &[&str] = &[
     TABLE_BLOCKS,
@@ -52,4 +58,5 @@ pub const ALL_TABLES: &[&str] = &[
     TABLE_META,
     TABLE_LOGS,
     TABLE_BLOOM,
+    TABLE_RECEIPTS,
 ];
