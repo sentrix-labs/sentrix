@@ -506,7 +506,21 @@ async fn eth_estimate_gas(params: &Value, state: &SharedState) -> DispatchResult
                 };
                 return Err((-32000, reason));
             }
-            Ok(json!(to_hex(receipt.gas_used)))
+            // EIP-150 buffer: revm's dry-run uses gas_limit=TX_GAS_LIMIT_CAP (16M),
+            // so sub-calls always get plenty of forwarded gas (63/64 rule). When the
+            // wallet then submits the tx at gas_limit=receipt.gas_used, every sub-call
+            // gets MUCH less forwarded gas — typically ~5000 short of what cold-account
+            // value-transfer CALLs need. CoinBlastCurve.buy() reproduced this exactly:
+            // dry-run returned 319_355, real apply with the same limit OOG'd inside
+            // _safeSendSRX(feeRecipient, fee).call{value:fee}("") and reverted with
+            // TransferFailed(). Geth applies a 1.30× multiplier; we use 1.25× +
+            // 30_000 floor — generous enough to cover cold-access overhead in any
+            // reasonable contract while not waste-billing simple transfers.
+            let buffered = receipt
+                .gas_used
+                .saturating_add(receipt.gas_used / 4)
+                .max(receipt.gas_used.saturating_add(30_000));
+            Ok(json!(to_hex(buffered)))
         }
         Err((code, msg)) => Err((code, msg)),
     }
