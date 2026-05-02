@@ -44,8 +44,20 @@ pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) 
                 Ok(a) => a,
                 Err(e) => return Err((-32602, e.into())),
             };
+            // Standard EVM semantics for the second arg: `latest` returns
+            // the finalized account nonce; `pending` adds count of mempool
+            // entries from this account so the caller can sign the
+            // next-usable nonce. Without this distinction, faucets +
+            // dapps that fetched the nonce, signed, and submitted in
+            // quick succession would all sign the same nonce — chain
+            // accepted only the first, the rest piled up rejected
+            // mid-block. Live discovery 2026-05-02.
+            let block_tag = params[1].as_str().unwrap_or("latest");
             let bc = state.read().await;
-            let nonce = bc.accounts.get_nonce(&address);
+            let mut nonce = bc.accounts.get_nonce(&address);
+            if block_tag == "pending" {
+                nonce = nonce.saturating_add(bc.mempool_pending_count(&address));
+            }
             Ok(json!(to_hex(nonce)))
         }
         "eth_getBlockByNumber" => eth_get_block_by_number(params, state).await,
