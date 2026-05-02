@@ -15,6 +15,75 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [2.1.56] — 2026-05-02 — Per-tx EVM receipt persistence
+
+> `eth_getTransactionReceipt` was returning a synthetic minimal receipt because the EVM dispatch path didn't persist the per-tx outcome — gas used was always the block-aggregate, `contractAddress` was always null even on `CREATE`, and revert reasons were dropped. Indexers + block explorers had to re-execute every tx via `eth_call` to reconstruct what really happened. This release writes a real receipt row per tx alongside the block commit, and the RPC now reads from it.
+
+### Fixed
+
+- **`crates/sentrix-core` + `sentrix-rpc`** — persist per-tx EVM receipts at apply-time and surface them through `eth_getTransactionReceipt`. Real `gasUsed`, real `contractAddress` for `CREATE`, real `status`, real `logs[]` per-tx (not block-aggregate). Receipts ride the same MDBX write batch as the block, so a half-applied block can't leave a receipt orphan.
+
+---
+
+## [2.1.55] — 2026-05-02 — eth_estimateGas EIP-150 buffer
+
+### Fixed
+
+- **`crates/sentrix-rpc`** — `eth_estimateGas` was returning the raw used-gas figure from the dry-run, which then failed under EIP-150's 63/64 rule when the wallet submitted at exactly that limit. Add the standard 1.1× safety multiplier + ceiling cap at the block gas limit. Wallets that probed via `estimateGas` then sent at the returned value now mine first try.
+
+---
+
+## [2.1.54] — 2026-05-02 — Dry-run value-threading + revert reason surfacing
+
+### Fixed
+
+- **`crates/sentrix-rpc` + `sentrix-evm`** — `eth_call` and `eth_estimateGas` weren't threading `value` through to the dry-run `TxEnv`, so balance-conditional reverts (`require(msg.value > 0)` etc.) returned success for value-bearing simulations. Same shape as the v2.1.49 mainnet bug, but on the read path. Now: dry-run TxEnv carries `value` end-to-end; revert reasons + halt reasons (`OutOfGas`, `Revert(...)`, `OpcodeNotFound`) surface in the RPC response instead of bare "execution reverted".
+
+---
+
+## [2.1.51] — 2026-05-02 — MDBX explicit map size + growth step
+
+> Validators were hitting `MDBX_MAP_FULL` crash-loops on disk pressure earlier in the week even when free disk was available — MDBX's default geometry was too small for our chain.db trajectory + didn't auto-grow aggressively enough.
+
+### Fixed
+
+- **`crates/sentrix-storage`** — explicit `max_size` + `growth_step` on MDBX env open, sized for the projected chain growth + headroom. Closes the class of "MDBX_MAP_FULL with free disk" failures (the disk-full-from-forensic-backups class is operator-side; see `feedback_check_before_ops_execute` ops memory).
+
+### Internal
+
+- **All workspace + per-crate Cargo.toml** — bumped `version = "2.1.48" → "2.1.50"` to catch up the per-crate manifests that were left behind during the v2.1.49 emergency cut.
+
+---
+
+## [2.1.50] — 2026-05-02 — EVM value-transfer fork gate
+
+> v2.1.49 fixed the EVM value-transfer drop (`TxEnv` was missing `.value(...)`, all value-bearing txs silently zero-credited). But v2.1.49 applied the fix unconditionally, which would have re-executed every pre-fix block with the corrected semantics — i.e. every value-bearing tx between the EVM activation height and the v2.1.49 deploy height would have credited differently on replay → state-root divergence vs the canonical chain. This release puts the value-threading behind a fork gate so historical replay reproduces the historical (broken) execution exactly, and only post-fork blocks get the fix.
+
+### Fixed
+
+- **`crates/sentrix-evm` + `sentrix-core::block_executor`** — wrap the v2.1.49 `TxEnv::builder().value(tx_value)` change in a fork-height check. Fork height set forward of the deploy block so all four mainnet validators cross simultaneously after the binary swap. Pre-fork: `TxEnv.value = U256::ZERO` (matches v2.1.x ≤ 48 historical execution). Post-fork: `TxEnv.value = envelope.value()`.
+
+### Documentation
+
+- **Public copy audit** — overclaim sweep across landing + docs + whitepaper. Removes any phrasing that fabricates audit counts, partner names, or future dates. Tone re-anchored to the "real chain real blocks real code" line.
+
+---
+
+## [2.1.49] — 2026-05-01 — EVM value-transfer drop FIXED
+
+> All value-bearing EVM txs since the EVM activation height (mainnet h=579060) were silently dropping their value at the boundary between the native fee debit and the revm execute call. `cast send --value Nether <addr>` and `WSRX.deposit{value:Nether}()` reported `status=1` but the recipient never saw the wei. Both WSRX contracts had `totalSupply == 0` since deploy. Audit doc: `audits/2026-05-01-evm-value-transfer-bug.md`.
+
+### Fixed
+
+- **`crates/sentrix-core::block_executor::execute_evm_tx_in_block`** — was building `revm::TxEnv` from the decoded RLP envelope but never setting `.value(...)`. Default `U256::ZERO` made revm execute every value-bearing tx with `tx.value = 0`. The native fee debit happened in Pass-1 (`charge_fee_only`) but the value-of-tx never reached revm. PR #439, ~12 lines: bring `alloy_consensus::Transaction` into scope, extract `envelope.value()`, pass to `TxEnv::builder().value(tx_value)`. 244 unit tests across `sentrix-core` (207) + `sentrix-evm` (37) still green; no regressions for `value=0` txs.
+- **Clippy**: collapse if-let-with-condition in the v2.1.48 BFT FinalizeBlock guard (PR #438). Cosmetic only.
+
+### Operational
+
+- **WSRX deployments stay broken** until users re-deposit post-fix. Pre-v2.1.50 the fix executed retroactively — see v2.1.50 for the fork-gate that scopes this to post-fork blocks only.
+
+---
+
 ## [2.1.48] — 2026-04-30 — BFT FinalizeBlock hash-mismatch guard (closes recurring chain.db divergence)
 
 > **Closes the recurring chain.db divergence bug** that produced the ~30-min mainnet halts at h=773012 (vps5, 2026-04-28), h=921604 + h=932488 (2026-04-29), and h=1014804 + h=1015365 (2026-04-30, twice in one day). The audit at `audits/2026-04-30-eager-write-investigation.md` traces the actual mechanism: BFT engine's `FinalizeBlock` action carried the supermajority `block_hash` for the round, but the validator-loop handler discarded it (`block_hash: _`) and `.take()`'d whatever was stashed in `proposed_block`. If the validator missed the actual round-N proposal but the cluster's round-N precommits crossed our local supermajority threshold, we'd write a stale stash (a previous round's block) attached to the current round's justification. Next height's `parent_hash` references the cluster-canonical hash; our local height's hash doesn't match; libp2p sync rejects forward blocks with `Invalid block: invalid previous hash`; BFT can't progress. Recovery required chain.db rsync from a canonical peer + halt-all + simul-start.
