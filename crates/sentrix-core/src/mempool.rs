@@ -207,15 +207,41 @@ impl Blockchain {
         self.mempool.clear();
     }
 
-    /// Removes transactions older than MEMPOOL_MAX_AGE_SECS.
-    /// Called automatically after each block is added; also callable manually.
+    /// Removes transactions older than MEMPOOL_MAX_AGE_SECS *and* any whose
+    /// nonce has gone stale relative to the sender's current finalized
+    /// nonce. Called automatically after each block is added; also callable
+    /// manually.
+    ///
+    /// Stale-nonce eviction (added 2026-05-02): a tx admitted at insert
+    /// time with the right nonce can become invalid once the same sender's
+    /// account advances past it (e.g. a sibling tx mined first via a
+    /// different mempool entry, or the user resigned with the same nonce
+    /// elsewhere). Without this sweep the tx persists for up to
+    /// MEMPOOL_MAX_AGE_SECS (1h) and any block proposer that includes it
+    /// produces a block that fails pre-validate, which on a 4-validator
+    /// BFT mainnet stalls finality. Live discovery: chain stuck at
+    /// h=1,247,283 for ~3 min on 2026-05-02 because of one such tx.
     pub fn prune_mempool(&mut self) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.mempool
-            .retain(|tx| now <= tx.timestamp.saturating_add(MEMPOOL_MAX_AGE_SECS));
+        self.mempool.retain(|tx| {
+            // Age-expired
+            if now > tx.timestamp.saturating_add(MEMPOOL_MAX_AGE_SECS) {
+                return false;
+            }
+            // Stale-nonce: keep only when tx.nonce >= the account's current
+            // finalized nonce. (We can't track per-sender effective nonce
+            // here without re-scanning the mempool for every tx — the
+            // finalized check is enough to evict the poison-pill case.
+            // A lower-nonce sibling that's still valid will be drained on
+            // its own block.)
+            if tx.nonce < self.accounts.get_nonce(&tx.from_address) {
+                return false;
+            }
+            true
+        });
     }
 }
 
