@@ -1295,7 +1295,17 @@ async fn cmd_start(
 
     let shared: SharedState = Arc::new(RwLock::new(bc));
 
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<NodeEvent>(256);
+    // Capacity 4096 (was 256). Each NodeEvent is at most a few hundred
+    // bytes (BftPrevote/BftPrecommit are tiny, NewBlock is the largest)
+    // so the worst-case memory footprint is on the order of MB, far
+    // cheaper than the cost of a BFT-message backpressure stall. A 4-
+    // validator cluster issuing prevote+precommit per block at 1 block/s
+    // tops out at ~12 messages/s here; 256 slots covered ~20s of stall,
+    // 4096 covers ~5 min — long enough to ride out any reasonable
+    // validator-loop pause without losing the await-based send semantics
+    // that BFT requires (dropped votes destabilise consensus more than
+    // backpressure does).
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<NodeEvent>(4096);
 
     // ── P2P: libp2p TCP + Noise + Yamux ─────────────────
     println!("P2P transport: libp2p (Noise encrypted)");
@@ -1363,8 +1373,15 @@ async fn cmd_start(
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
     // BFT event channel — forwards P2P BFT votes from event handler to validator loop
+    // Same 4096 capacity rationale as event_tx above. This is the
+    // event-handler → validator-loop hop; when validator pauses (e.g.
+    // long write lock during epoch boundary processing), incoming BFT
+    // messages buffer here. 256 slots was tight enough that a slow
+    // finalize would stall the event handler trying to forward;
+    // 4096 gives enough margin that the validator's heartbeat watchdog
+    // catches a truly stuck loop before this channel saturates.
     let (bft_tx, bft_rx) =
-        tokio::sync::mpsc::channel::<sentrix::core::bft_messages::BftMessage>(256);
+        tokio::sync::mpsc::channel::<sentrix::core::bft_messages::BftMessage>(4096);
 
     // BFT engine watchdog — heartbeat counter incremented at the top of
     // every validator-loop iteration; a separate task panics + aborts
@@ -1389,13 +1406,27 @@ async fn cmd_start(
     if validator.is_some() {
         let heartbeat = validator_heartbeat.clone();
         let shutdown = shutdown_flag.clone();
+        // Capture sender handles so the watchdog can also surface channel
+        // depth — `Sender::capacity()` returns free slots, max - free =
+        // depth. If a backpressure stall is what's wedging the validator
+        // loop, this gives us the smoking gun without waiting for the
+        // 60s abort threshold.
+        let event_tx_for_watchdog = event_tx.clone();
+        let bft_tx_for_watchdog = bft_tx.clone();
         tokio::spawn(async move {
             use tokio::time::{Duration, sleep};
             const STALL_THRESHOLD: Duration = Duration::from_secs(60);
             const WARN_THRESHOLD: Duration = Duration::from_secs(20);
             const TICK: Duration = Duration::from_secs(5);
+            // Channel-depth observability: log every CHANNEL_GAUGE_TICK
+            // even on a healthy chain so we have a baseline to diff
+            // against when something goes wrong. Pressure threshold is
+            // 25% — well below saturation but distinct from idle noise.
+            const CHANNEL_GAUGE_TICK: Duration = Duration::from_secs(30);
+            const CHANNEL_PRESSURE_PCT: usize = 25;
             let mut last_seen = heartbeat.load(Ordering::Acquire);
             let mut last_changed = tokio::time::Instant::now();
+            let mut last_gauge = tokio::time::Instant::now();
             loop {
                 sleep(TICK).await;
                 if shutdown.load(Ordering::Acquire) {
@@ -1405,27 +1436,58 @@ async fn cmd_start(
                 if current != last_seen {
                     last_seen = current;
                     last_changed = tokio::time::Instant::now();
-                    continue;
+                } else {
+                    let stale = last_changed.elapsed();
+                    if stale >= STALL_THRESHOLD {
+                        let event_depth = event_tx_for_watchdog.max_capacity()
+                            - event_tx_for_watchdog.capacity();
+                        let bft_depth = bft_tx_for_watchdog.max_capacity()
+                            - bft_tx_for_watchdog.capacity();
+                        tracing::error!(
+                            target: "validator_watchdog",
+                            "FATAL: validator loop heartbeat stale for {}s (counter={}, \
+                             event_tx_depth={}/{}, bft_tx_depth={}/{}) \
+                             — BFT engine wedged. Aborting so systemd restarts cleanly.",
+                            stale.as_secs(), current,
+                            event_depth, event_tx_for_watchdog.max_capacity(),
+                            bft_depth, bft_tx_for_watchdog.max_capacity(),
+                        );
+                        std::process::abort();
+                    } else if stale >= WARN_THRESHOLD {
+                        tracing::warn!(
+                            target: "validator_watchdog",
+                            "validator loop heartbeat stale for {}s (counter={}) — \
+                             abort threshold {}s",
+                            stale.as_secs(), current, STALL_THRESHOLD.as_secs(),
+                        );
+                    }
                 }
-                let stale = last_changed.elapsed();
-                if stale >= STALL_THRESHOLD {
-                    tracing::error!(
-                        target: "validator_watchdog",
-                        "FATAL: validator loop heartbeat stale for {}s (counter={}) \
-                         — BFT engine wedged. Aborting so systemd restarts cleanly.",
-                        stale.as_secs(),
-                        current,
-                    );
-                    std::process::abort();
-                } else if stale >= WARN_THRESHOLD {
-                    tracing::warn!(
-                        target: "validator_watchdog",
-                        "validator loop heartbeat stale for {}s (counter={}) — \
-                         abort threshold {}s",
-                        stale.as_secs(),
-                        current,
-                        STALL_THRESHOLD.as_secs(),
-                    );
+
+                // Channel-depth gauge — independent of heartbeat staleness so
+                // we see backpressure forming even when the loop is still
+                // making progress (just slower than the producer).
+                if last_gauge.elapsed() >= CHANNEL_GAUGE_TICK {
+                    last_gauge = tokio::time::Instant::now();
+                    let event_max = event_tx_for_watchdog.max_capacity();
+                    let bft_max = bft_tx_for_watchdog.max_capacity();
+                    let event_depth = event_max - event_tx_for_watchdog.capacity();
+                    let bft_depth = bft_max - bft_tx_for_watchdog.capacity();
+                    let event_pct = event_depth * 100 / event_max.max(1);
+                    let bft_pct = bft_depth * 100 / bft_max.max(1);
+                    if event_pct >= CHANNEL_PRESSURE_PCT || bft_pct >= CHANNEL_PRESSURE_PCT {
+                        tracing::warn!(
+                            target: "channel_depth",
+                            "backpressure: event_tx={}% ({}/{}) bft_tx={}% ({}/{})",
+                            event_pct, event_depth, event_max,
+                            bft_pct, bft_depth, bft_max,
+                        );
+                    } else {
+                        tracing::debug!(
+                            target: "channel_depth",
+                            "event_tx={}/{} bft_tx={}/{}",
+                            event_depth, event_max, bft_depth, bft_max,
+                        );
+                    }
                 }
             }
         });
