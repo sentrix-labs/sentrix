@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-rpc-types"
-version = "2.1.59"
+version = "2.1.60"
 edition = "2024"
 license = "BUSL-1.1"
 description = "ETH ↔ Sentrix JSON-RPC type conversions + hex/address validation helpers"

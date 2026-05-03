@@ -13,7 +13,7 @@ use sentrix::storage::db::Storage;
 use sentrix::wallet::keystore::Keystore;
 use sentrix::wallet::wallet::Wallet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::RwLock;
 
 const DEFAULT_API_PORT: u16 = 8545;
@@ -1366,6 +1366,71 @@ async fn cmd_start(
     let (bft_tx, bft_rx) =
         tokio::sync::mpsc::channel::<sentrix::core::bft_messages::BftMessage>(256);
 
+    // BFT engine watchdog — heartbeat counter incremented at the top of
+    // every validator-loop iteration; a separate task panics + aborts
+    // the process if the counter stays stale for STALL_THRESHOLD seconds.
+    //
+    // Closes the silent-thread-death class (2026-05-04 incident series):
+    // a tokio task gets wedged on a lock or channel send, the validator
+    // loop stops iterating but the process stays alive (panic supervisor
+    // doesn't fire because nothing panicked). BFT engine emits no logs,
+    // chain stalls cluster-wide because a non-voting validator drops the
+    // others below quorum. The fix-without-RCA pattern: detect liveness
+    // at the loop level + abort on stall + let systemd Restart=always
+    // cycle the process. The next peer-gossip from a healthy validator
+    // re-syncs us via the libp2p add-block path.
+    //
+    // Threshold pick: 60s. BFT round-step timeout is in the seconds, a
+    // healthy iteration runs many times per second, so 60s of zero
+    // increments is unambiguously wedged. False-positive cost is one
+    // restart (~30s of downtime) which is dominated by the cost of
+    // letting a stalled validator sit indefinitely (cluster halt).
+    let validator_heartbeat = Arc::new(AtomicU64::new(0));
+    if validator.is_some() {
+        let heartbeat = validator_heartbeat.clone();
+        let shutdown = shutdown_flag.clone();
+        tokio::spawn(async move {
+            use tokio::time::{Duration, sleep};
+            const STALL_THRESHOLD: Duration = Duration::from_secs(60);
+            const WARN_THRESHOLD: Duration = Duration::from_secs(20);
+            const TICK: Duration = Duration::from_secs(5);
+            let mut last_seen = heartbeat.load(Ordering::Acquire);
+            let mut last_changed = tokio::time::Instant::now();
+            loop {
+                sleep(TICK).await;
+                if shutdown.load(Ordering::Acquire) {
+                    return;
+                }
+                let current = heartbeat.load(Ordering::Acquire);
+                if current != last_seen {
+                    last_seen = current;
+                    last_changed = tokio::time::Instant::now();
+                    continue;
+                }
+                let stale = last_changed.elapsed();
+                if stale >= STALL_THRESHOLD {
+                    tracing::error!(
+                        target: "validator_watchdog",
+                        "FATAL: validator loop heartbeat stale for {}s (counter={}) \
+                         — BFT engine wedged. Aborting so systemd restarts cleanly.",
+                        stale.as_secs(),
+                        current,
+                    );
+                    std::process::abort();
+                } else if stale >= WARN_THRESHOLD {
+                    tracing::warn!(
+                        target: "validator_watchdog",
+                        "validator loop heartbeat stale for {}s (counter={}) — \
+                         abort threshold {}s",
+                        stale.as_secs(),
+                        current,
+                        STALL_THRESHOLD.as_secs(),
+                    );
+                }
+            }
+        });
+    }
+
     // Validator loop — capture the JoinHandle so the graceful-shutdown
     // path (C-08) can await the task's exit before save_blockchain
     // snapshots state. Without the handle the process could exit mid
@@ -1522,7 +1587,18 @@ async fn cmd_start(
             const ADVERT_BROADCAST_INTERVAL: tokio::time::Duration =
                 tokio::time::Duration::from_secs(600); // 10 minutes
 
+            // Move heartbeat counter into the spawned task so the watchdog
+            // task can observe liveness without sharing the validator's
+            // internal state.
+            let heartbeat = validator_heartbeat.clone();
             loop {
+                // Watchdog liveness signal — incremented every iteration.
+                // The watchdog task spawned earlier panics + aborts if this
+                // counter stays still for >60s, catching any wedge that
+                // would otherwise let the process drift on while BFT goes
+                // silent (the silent-thread-death pattern from 2026-05-04).
+                heartbeat.fetch_add(1, Ordering::Release);
+
                 if shutdown_flag_clone.load(Ordering::Acquire) {
                     tracing::info!("Validator loop: shutdown flag set — exiting");
                     break;
@@ -2087,6 +2163,51 @@ async fn cmd_start(
                                             ref block_hash,
                                             ref justification,
                                         } => {
+                                            // 2026-05-04 finalize-entry trace (per
+                                            // audits/2026-04-30-eager-write-investigation.md
+                                            // §Recommendation #1): emit local active-set view +
+                                            // precommit accounting at every finalize attempt so
+                                            // the next divergence event can be diagnosed by
+                                            // diff'ing the four validators' log lines for the
+                                            // same height. Active-set view divergence is the
+                                            // working hypothesis behind the recurring chain.db
+                                            // forks (mechanism #1 in that audit) but the
+                                            // evidence to nail it down requires this log to
+                                            // exist before the next event.
+                                            {
+                                                let bc_read = shared_clone.read().await;
+                                                let active_count =
+                                                    bc_read.stake_registry.active_set.len();
+                                                let total_stake: u64 = bc_read
+                                                    .stake_registry
+                                                    .active_set
+                                                    .iter()
+                                                    .filter_map(|a| {
+                                                        bc_read
+                                                            .stake_registry
+                                                            .get_validator(a)
+                                                            .map(|v| v.total_stake())
+                                                    })
+                                                    .sum();
+                                                drop(bc_read);
+                                                let precommit_count =
+                                                    justification.precommits.len();
+                                                let precommit_stake: u64 = justification
+                                                    .precommits
+                                                    .iter()
+                                                    .map(|p| p.stake_weight)
+                                                    .sum();
+                                                tracing::info!(
+                                                    target: "finalize_trace",
+                                                    "FinalizeBlock self-propose path: h={} round={} block={:.16}… \
+                                                     active_count={} total_stake={} precommit_count={} \
+                                                     precommit_stake={} our_addr={}",
+                                                    height, round, block_hash, active_count,
+                                                    total_stake, precommit_count, precommit_stake,
+                                                    wallet.address,
+                                                );
+                                            }
+
                                             // 2026-04-30 split-brain guard: if 2/3+ peer
                                             // stake-weight reports being at a higher round
                                             // than ours, the cluster has moved on. Finalising
@@ -2588,6 +2709,42 @@ async fn cmd_start(
                                     ref block_hash,
                                     ref justification,
                                 } => {
+                                    // 2026-05-04 finalize-entry trace — same instrumentation as
+                                    // the self-propose arm. Critical for diff'ing active-set
+                                    // views across the cluster when divergence recurs.
+                                    {
+                                        let bc_read = shared_clone.read().await;
+                                        let active_count =
+                                            bc_read.stake_registry.active_set.len();
+                                        let total_stake: u64 = bc_read
+                                            .stake_registry
+                                            .active_set
+                                            .iter()
+                                            .filter_map(|a| {
+                                                bc_read
+                                                    .stake_registry
+                                                    .get_validator(a)
+                                                    .map(|v| v.total_stake())
+                                            })
+                                            .sum();
+                                        drop(bc_read);
+                                        let precommit_count = justification.precommits.len();
+                                        let precommit_stake: u64 = justification
+                                            .precommits
+                                            .iter()
+                                            .map(|p| p.stake_weight)
+                                            .sum();
+                                        tracing::info!(
+                                            target: "finalize_trace",
+                                            "FinalizeBlock peer-propose path: h={} round={} block={:.16}… \
+                                             active_count={} total_stake={} precommit_count={} \
+                                             precommit_stake={} our_addr={}",
+                                            height, round, block_hash, active_count,
+                                            total_stake, precommit_count, precommit_stake,
+                                            wallet.address,
+                                        );
+                                    }
+
                                     // 2026-04-30 split-brain guard — same logic as the P1-A
                                     // FinalizeBlock arm (see comment up there for the full
                                     // rationale). Both round-driven finalize entry points have
