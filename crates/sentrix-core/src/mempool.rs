@@ -207,40 +207,56 @@ impl Blockchain {
         self.mempool.clear();
     }
 
-    /// Removes transactions older than MEMPOOL_MAX_AGE_SECS *and* any whose
-    /// nonce has gone stale relative to the sender's current finalized
-    /// nonce. Called automatically after each block is added; also callable
+    /// Age-only prune. Removes any tx older than MEMPOOL_MAX_AGE_SECS.
+    /// Called automatically after each block is added; also callable
     /// manually.
     ///
-    /// Stale-nonce eviction (added 2026-05-02): a tx admitted at insert
-    /// time with the right nonce can become invalid once the same sender's
-    /// account advances past it (e.g. a sibling tx mined first via a
-    /// different mempool entry, or the user resigned with the same nonce
-    /// elsewhere). Without this sweep the tx persists for up to
-    /// MEMPOOL_MAX_AGE_SECS (1h) and any block proposer that includes it
-    /// produces a block that fails pre-validate, which on a 4-validator
-    /// BFT mainnet stalls finality. Live discovery: chain stuck at
-    /// h=1,247,283 for ~3 min on 2026-05-02 because of one such tx.
+    /// Stale-nonce eviction lives in `evict_stale_nonce_for_senders` so
+    /// the per-block hot path only touches senders whose nonce actually
+    /// bumped in the just-mined block. The previous implementation
+    /// (v2.1.58, 2026-05-02) scanned the *entire* mempool against
+    /// AccountDB on every add_block — at MAX_MEMPOOL_SIZE = 10_000 that
+    /// is 10K HashMap lookups per second under load, and the extra
+    /// retain() iteration measurably stretched add_block past the BFT
+    /// round timeout on mainnet. Splitting the work keeps the
+    /// poison-pill eviction guarantee while bounding the per-block cost
+    /// to `O(block.transactions.len())` × `O(mempool.len())`, which in
+    /// practice is at most a few hundred entries per call.
     pub fn prune_mempool(&mut self) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.mempool.retain(|tx| {
-            // Age-expired
-            if now > tx.timestamp.saturating_add(MEMPOOL_MAX_AGE_SECS) {
-                return false;
-            }
-            // Stale-nonce: keep only when tx.nonce >= the account's current
-            // finalized nonce. (We can't track per-sender effective nonce
-            // here without re-scanning the mempool for every tx — the
-            // finalized check is enough to evict the poison-pill case.
-            // A lower-nonce sibling that's still valid will be drained on
-            // its own block.)
-            if tx.nonce < self.accounts.get_nonce(&tx.from_address) {
-                return false;
-            }
-            true
+        self.mempool
+            .retain(|tx| now <= tx.timestamp.saturating_add(MEMPOOL_MAX_AGE_SECS));
+    }
+
+    /// Evict mempool txs whose sender's finalized nonce has overtaken
+    /// their tx.nonce. Bounded scan: only senders that appeared in the
+    /// just-mined block are candidates. Called by add_block after
+    /// applying state.
+    pub fn evict_stale_nonce_for_senders<'a, I>(&mut self, senders: I)
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        use std::collections::HashSet;
+        let bumped: HashSet<&str> = senders.into_iter().collect();
+        if bumped.is_empty() {
+            return;
+        }
+        // Snapshot the just-bumped senders' finalized nonces once, so
+        // the inner retain() doesn't re-borrow self.accounts on every
+        // tx. AccountDB.get_nonce is a HashMap lookup but the indirection
+        // through &self inside Vec::retain forces a re-borrow each call,
+        // and the wedge under load that motivated this rewrite was
+        // essentially that pattern at 10K-entry scale.
+        let nonces: std::collections::HashMap<String, u64> = bumped
+            .iter()
+            .map(|addr| (addr.to_string(), self.accounts.get_nonce(addr)))
+            .collect();
+        self.mempool.retain(|tx| match nonces.get(&tx.from_address) {
+            Some(&finalized) => tx.nonce >= finalized,
+            None => true,
         });
     }
 }

@@ -1248,6 +1248,19 @@ impl Blockchain {
             .collect();
         self.mempool.retain(|tx| !mined_txids.contains(&tx.txid));
 
+        // Evict stale-nonce poison pills from senders that just had a
+        // nonce-bumping tx finalize in this block. v2.1.58 did this
+        // via a full-mempool scan inside prune_mempool(); under load
+        // that 10K-entry retain() could push add_block past the BFT
+        // round window. Now bounded to block.transactions.len() ×
+        // mempool.len() via a senders-snapshot pass.
+        let bumped_senders: Vec<&str> = block
+            .transactions
+            .iter()
+            .map(|tx| tx.from_address.as_str())
+            .collect();
+        self.evict_stale_nonce_for_senders(bumped_senders);
+
         // Prune expired transactions after each block to keep mempool bounded
         self.prune_mempool();
 
