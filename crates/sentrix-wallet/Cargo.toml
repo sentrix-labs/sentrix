@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-wallet"
-version = "2.1.60"
+version = "2.1.61"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Wallet, keystore encryption, and signing for Sentrix blockchain"
