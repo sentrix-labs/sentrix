@@ -3670,6 +3670,7 @@ async fn cmd_start(
         .unwrap_or(false)
     {
         let grpc_state = shared.clone();
+        let grpc_event_bus = event_bus.clone();
         let grpc_addr_str = std::env::var("SENTRIX_GRPC_ADDR")
             .unwrap_or_else(|_| "0.0.0.0:50051".to_string());
         match grpc_addr_str.parse::<std::net::SocketAddr>() {
@@ -3679,7 +3680,7 @@ async fn cmd_start(
                     grpc_addr
                 );
                 tokio::spawn(async move {
-                    let server = sentrix_grpc::server_factory(grpc_state);
+                    let server = sentrix_grpc::server_factory(grpc_state, grpc_event_bus);
                     // v2.1.70: accept_http1(true) + GrpcWebLayer so browsers
                     // can hit the same port. Pure gRPC clients (HTTP/2 +
                     // application/grpc) still work — the layer dispatches by
