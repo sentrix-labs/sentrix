@@ -1408,37 +1408,63 @@ async fn cmd_start(
         let shutdown = shutdown_flag.clone();
         // Capture sender handles so the watchdog can also surface channel
         // depth — `Sender::capacity()` returns free slots, max - free =
-        // depth. If a backpressure stall is what's wedging the validator
-        // loop, this gives us the smoking gun without waiting for the
-        // 60s abort threshold.
+        // depth.
         let event_tx_for_watchdog = event_tx.clone();
         let bft_tx_for_watchdog = bft_tx.clone();
+        // Chain-height-stale watchdog needs a Blockchain handle to read
+        // the latest finalized height. Read-only; takes the read lock
+        // for ~microseconds per tick.
+        let shared_for_watchdog = shared.clone();
         tokio::spawn(async move {
             use tokio::time::{Duration, sleep};
-            const STALL_THRESHOLD: Duration = Duration::from_secs(60);
-            const WARN_THRESHOLD: Duration = Duration::from_secs(20);
+            // Heartbeat watchdog — catches validator loop totally stopped
+            // iterating (silent thread death class). Loop iterates many
+            // times per second when healthy, so 60 s of zero increments
+            // is unambiguously wedged.
+            const HEARTBEAT_STALL_THRESHOLD: Duration = Duration::from_secs(60);
+            const HEARTBEAT_WARN_THRESHOLD: Duration = Duration::from_secs(20);
+            // Chain-height watchdog — catches the case where the loop IS
+            // iterating (heartbeat advances) but BFT can't reach finality
+            // (round-step rebroadcast cycle without finalize). Today's
+            // 2026-05-04 incident pattern: process alive + emitting
+            // libp2p outbound-failure logs every 2 s but height didn't
+            // move for 30+ min. Operator force-stopped, systemd
+            // SIGKILL'd, MDBX corrupted mid-write.
+            //
+            // 90 s threshold is generous: a healthy 4-validator BFT
+            // produces a block every 1 s, so 90 s of no-finalize = 90
+            // missed slots = real stall. False-positive cost is one
+            // restart; missed-detection cost is operator-triggered
+            // SIGKILL → MDBX_CORRUPTED → forced rsync recovery (today's
+            // failure mode that motivated this watchdog).
+            const HEIGHT_STALL_THRESHOLD: Duration = Duration::from_secs(90);
+            const HEIGHT_WARN_THRESHOLD: Duration = Duration::from_secs(30);
             const TICK: Duration = Duration::from_secs(5);
-            // Channel-depth observability: log every CHANNEL_GAUGE_TICK
-            // even on a healthy chain so we have a baseline to diff
-            // against when something goes wrong. Pressure threshold is
-            // 25% — well below saturation but distinct from idle noise.
             const CHANNEL_GAUGE_TICK: Duration = Duration::from_secs(30);
             const CHANNEL_PRESSURE_PCT: usize = 25;
+
             let mut last_seen = heartbeat.load(Ordering::Acquire);
             let mut last_changed = tokio::time::Instant::now();
+            let mut last_height: u64 = {
+                let bc = shared_for_watchdog.read().await;
+                bc.height()
+            };
+            let mut last_height_changed = tokio::time::Instant::now();
             let mut last_gauge = tokio::time::Instant::now();
             loop {
                 sleep(TICK).await;
                 if shutdown.load(Ordering::Acquire) {
                     return;
                 }
+
+                // ── Heartbeat watchdog (loop-stop) ──
                 let current = heartbeat.load(Ordering::Acquire);
                 if current != last_seen {
                     last_seen = current;
                     last_changed = tokio::time::Instant::now();
                 } else {
                     let stale = last_changed.elapsed();
-                    if stale >= STALL_THRESHOLD {
+                    if stale >= HEARTBEAT_STALL_THRESHOLD {
                         let event_depth = event_tx_for_watchdog.max_capacity()
                             - event_tx_for_watchdog.capacity();
                         let bft_depth = bft_tx_for_watchdog.max_capacity()
@@ -1453,19 +1479,46 @@ async fn cmd_start(
                             bft_depth, bft_tx_for_watchdog.max_capacity(),
                         );
                         std::process::abort();
-                    } else if stale >= WARN_THRESHOLD {
+                    } else if stale >= HEARTBEAT_WARN_THRESHOLD {
                         tracing::warn!(
                             target: "validator_watchdog",
                             "validator loop heartbeat stale for {}s (counter={}) — \
                              abort threshold {}s",
-                            stale.as_secs(), current, STALL_THRESHOLD.as_secs(),
+                            stale.as_secs(), current, HEARTBEAT_STALL_THRESHOLD.as_secs(),
                         );
                     }
                 }
 
-                // Channel-depth gauge — independent of heartbeat staleness so
-                // we see backpressure forming even when the loop is still
-                // making progress (just slower than the producer).
+                // ── Chain-height watchdog (BFT-stuck) ──
+                let current_height = {
+                    let bc = shared_for_watchdog.read().await;
+                    bc.height()
+                };
+                if current_height != last_height {
+                    last_height = current_height;
+                    last_height_changed = tokio::time::Instant::now();
+                } else {
+                    let stale = last_height_changed.elapsed();
+                    if stale >= HEIGHT_STALL_THRESHOLD {
+                        tracing::error!(
+                            target: "validator_watchdog",
+                            "FATAL: chain height stuck at {} for {}s — BFT can't finalize. \
+                             Aborting cleanly so systemd restarts (avoids operator SIGKILL \
+                             window that has corrupted MDBX in past incidents).",
+                            current_height, stale.as_secs(),
+                        );
+                        std::process::abort();
+                    } else if stale >= HEIGHT_WARN_THRESHOLD {
+                        tracing::warn!(
+                            target: "validator_watchdog",
+                            "chain height stuck at {} for {}s — abort threshold {}s",
+                            current_height, stale.as_secs(),
+                            HEIGHT_STALL_THRESHOLD.as_secs(),
+                        );
+                    }
+                }
+
+                // ── Channel-depth gauge ──
                 if last_gauge.elapsed() >= CHANNEL_GAUGE_TICK {
                     last_gauge = tokio::time::Instant::now();
                     let event_max = event_tx_for_watchdog.max_capacity();
@@ -2270,6 +2323,45 @@ async fn cmd_start(
                                                 );
                                             }
 
+                                            // 2026-05-05 chain-already-advanced check (v2.1.63).
+                                            // Race we hit on 2026-05-04: libp2p NewBlock handler
+                                            // applies the cluster-canonical block at this height
+                                            // via `add_block_from_peer` concurrent with our BFT
+                                            // engine reaching FinalizeBlock for the same height.
+                                            // By the time we reach validate_block below, chain
+                                            // already advanced — pre-validate fails with off-by-
+                                            // one ("expected index N+1, got N"), we break, but
+                                            // the BFT engine state is already at this height so
+                                            // the same FinalizeBlock fires again next round,
+                                            // wasting cycles. Worse: in the cluster-wide variant
+                                            // (all 4 validators in the same race), the cascade
+                                            // produces watchdog FATAL across the cluster within
+                                            // a single 90s window and chain liveness collapses
+                                            // (the silent-thread-death pattern documented in
+                                            // SESSION_HANDOFF 2026-05-04 late-evening).
+                                            //
+                                            // Fix: if `bc.height() >= action.height`, the block
+                                            // is already on our chain (canonical hash, applied
+                                            // via gossip). Skip the local write silently. The
+                                            // outer loop's need_new_round check resets the BFT
+                                            // engine to bc.height()+1 on the next iteration.
+                                            {
+                                                let bc_read = shared_clone.read().await;
+                                                if bc_read.height() >= height {
+                                                    tracing::info!(
+                                                        target: "finalize_trace",
+                                                        "BFT finalize self-propose: chain.height={} \
+                                                         already ≥ action.height={} — block applied \
+                                                         via libp2p sync; skipping local write at \
+                                                         round={}",
+                                                        bc_read.height(), height, round,
+                                                    );
+                                                    drop(bc_read);
+                                                    proposed_block = None;
+                                                    break;
+                                                }
+                                            }
+
                                             // 2026-04-30 split-brain guard: if 2/3+ peer
                                             // stake-weight reports being at a higher round
                                             // than ours, the cluster has moved on. Finalising
@@ -2807,6 +2899,34 @@ async fn cmd_start(
                                         );
                                     }
 
+                                    // 2026-05-05 chain-already-advanced check (v2.1.63) —
+                                    // mirror of the self-propose arm. See the long comment
+                                    // in the sibling arm for the full rationale; in short:
+                                    // libp2p NewBlock handler can apply the cluster-canonical
+                                    // block at this height concurrent with our BFT engine
+                                    // reaching FinalizeBlock for the same height, producing
+                                    // the off-by-one validate_block rejection that cascaded
+                                    // into silent-thread-death across the cluster on
+                                    // 2026-05-04. If chain.height() already covers this
+                                    // action's height, the block is on our chain — skip
+                                    // local write silently and let need_new_round reset
+                                    // the engine on the next outer-loop iteration.
+                                    {
+                                        let bc_read = shared_clone.read().await;
+                                        if bc_read.height() >= height {
+                                            tracing::info!(
+                                                target: "finalize_trace",
+                                                "BFT finalize peer-propose: chain.height={} \
+                                                 already ≥ action.height={} — block applied via \
+                                                 libp2p sync; skipping local write at round={}",
+                                                bc_read.height(), height, round,
+                                            );
+                                            drop(bc_read);
+                                            proposed_block = None;
+                                            break;
+                                        }
+                                    }
+
                                     // 2026-04-30 split-brain guard — same logic as the P1-A
                                     // FinalizeBlock arm (see comment up there for the full
                                     // rationale). Both round-driven finalize entry points have
@@ -3290,7 +3410,16 @@ async fn cmd_start(
                 NodeEvent::PeerConnected(addr) => tracing::info!("Peer connected: {}", addr),
                 NodeEvent::PeerDisconnected(addr) => tracing::info!("Peer disconnected: {}", addr),
                 NodeEvent::NewBlock(block) => {
-                    tracing::info!("Block {} received from peer", block.index);
+                    // 2026-05-05 v2.1.63: explicit log for the libp2p-applied
+                    // path so the BFT-engine vs chain.height race we hit on
+                    // 2026-05-04 is greppable in journalctl. Pair this with
+                    // `finalize_trace: ... block applied via libp2p sync` to
+                    // see when our local FinalizeBlock got pre-empted.
+                    tracing::info!(
+                        "libp2p NewBlock: applying block {} from peer; chain will advance, \
+                         BFT engine will resync via need_new_round on next validator iter",
+                        block.index
+                    );
                     if let Err(e) = storage_for_p2p.save_block(&block) {
                         // BACKLOG #16: a `warn` here was silent enough that the
                         // 2026-04-20-era mainnet chain.db ended up with 7,352
