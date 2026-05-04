@@ -1,6 +1,6 @@
-name: Dependabot auto-merge (score ≥85)
+name: Dependabot auto-merge (score ≥75)
 
-# Auto-merges Dependabot PRs whose compatibility score is ≥85.
+# Auto-merges Dependabot PRs whose compatibility score is ≥75.
 # Score is fetched from the Dependabot badge URL embedded in the PR body.
 # Below threshold (or if score can't be parsed) → comment + leave for manual review.
 
@@ -73,7 +73,7 @@ jobs:
             exit 0
           fi
           SVG=$(curl -fsSL "$BADGE_URL")
-          # The SVG renders the score as a plain integer text node, e.g. ">85<"
+          # The SVG renders the score as a plain integer text node, e.g. ">75<"
           SCORE=$(echo "$SVG" | grep -oP '>\K[0-9]{1,3}(?=<)' | head -1)
           if [[ -z "$SCORE" ]]; then
             echo "score=unknown" >> $GITHUB_OUTPUT
@@ -83,24 +83,24 @@ jobs:
           echo "score=$SCORE" >> $GITHUB_OUTPUT
           echo "Compatibility score: $SCORE"
 
-      - name: Auto-merge if score ≥85
-        if: steps.score.outputs.score != 'unknown' && steps.score.outputs.score >= 85
+      - name: Auto-merge if score ≥75
+        if: steps.score.outputs.score != 'unknown' && steps.score.outputs.score >= 75
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
           gh pr merge $PR_NUMBER --repo $REPO --squash --auto
-          gh pr comment $PR_NUMBER --repo $REPO --body "🤖 Dependabot auto-merge enabled — compatibility score ${{ steps.score.outputs.score }}% (≥85% threshold). Will merge once CI passes."
+          gh pr comment $PR_NUMBER --repo $REPO --body "🤖 Dependabot auto-merge enabled — compatibility score ${{ steps.score.outputs.score }}% (≥75% threshold). Will merge once CI passes."
 
       - name: Skip if score below threshold
-        if: steps.score.outputs.score != 'unknown' && steps.score.outputs.score < 85
+        if: steps.score.outputs.score != 'unknown' && steps.score.outputs.score < 75
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          gh pr comment $PR_NUMBER --repo $REPO --body "🤖 Dependabot auto-merge skipped — compatibility score ${{ steps.score.outputs.score }}% is below 85% threshold. Manual review required."
+          gh pr comment $PR_NUMBER --repo $REPO --body "🤖 Dependabot auto-merge skipped — compatibility score ${{ steps.score.outputs.score }}% is below 75% threshold. Manual review required."
 
       - name: Comment if score unknown
         if: steps.score.outputs.score == 'unknown'
