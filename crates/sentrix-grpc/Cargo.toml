@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-grpc"
-version = "2.1.68"
+version = "2.1.69"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Tonic gRPC supplement transport for Sentrix Chain (parallel to JSON-RPC eth_*)"
@@ -19,6 +19,10 @@ tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync"] }
 tokio-stream = "0.1"
 tracing = "0.1"
 async-stream = "0.3"
+sentrix-core = { path = "../sentrix-core" }
+sentrix-primitives = { path = "../sentrix-primitives" }
+hex = "0.4"
+bincode = "1.3"
 
 # Forbid unsafe code in this crate. Tonic + prost generate code so we
 # rely on their respective safety reviews; our handwritten code path
