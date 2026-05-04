@@ -3680,7 +3680,13 @@ async fn cmd_start(
                 );
                 tokio::spawn(async move {
                     let server = sentrix_grpc::server_factory(grpc_state);
+                    // v2.1.70: accept_http1(true) + GrpcWebLayer so browsers
+                    // can hit the same port. Pure gRPC clients (HTTP/2 +
+                    // application/grpc) still work — the layer dispatches by
+                    // content-type. CORS handled at Caddy edge, not here.
                     if let Err(e) = tonic::transport::Server::builder()
+                        .accept_http1(true)
+                        .layer(tonic_web::GrpcWebLayer::new())
                         .add_service(server)
                         .serve(grpc_addr)
                         .await
