@@ -19,6 +19,28 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// the 2026-04-26 mainnet stall (h=604547).
 static SYNC_SKIPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
+/// 2026-05-05 v2.1.67: cumulative count of NodeEvents dropped because
+/// `event_tx` was full when the swarm task tried to forward an inbound
+/// BFT message (Proposal / Prevote / Precommit / RoundStatus) to the
+/// event-handling task. Pre-v2.1.67 the swarm task used
+/// `event_tx.send(...).await` which BLOCKED until the consumer drained
+/// — that pattern wedged the entire swarm task whenever the validator
+/// main loop fell behind, producing the silent-halt class observed
+/// at h=1,400,218 (2026-05-05 afternoon) where vps5's prevote was
+/// never broadcast despite the BFT engine producing the BroadcastPrevote
+/// action and `DROPPED_BFT_BROADCASTS` (cmd_tx counter) staying at 0.
+///
+/// v2.1.67 switches to `try_send` + drop-on-Full + this counter.
+/// Mirrors the v2.1.65 cmd_tx pattern. Trade-off accepted: lossy
+/// inbound BFT delivery under burst load, in exchange for never
+/// wedging the swarm task. Halts caused by lost messages will now
+/// be OBSERVABLE via `rate(EVENT_TX_DROPPED) > 0` instead of invisible.
+/// Operator playbook: if this counter starts incrementing during a
+/// halt, the validator main loop has fallen behind — investigate
+/// consumer-side back-pressure (slow MDBX writes, contended write
+/// locks, RPC handler blocking).
+pub static EVENT_TX_DROPPED: AtomicU64 = AtomicU64::new(0);
+
 /// 2026-05-05 v2.1.66: swarm-task progress counter. Incremented on
 /// every iteration of the run_swarm select! loop. Read by a separate
 /// watchdog tokio task — if the counter stays still for ≥30 s, the
@@ -1202,6 +1224,67 @@ async fn on_rr_event(
     }
 }
 
+// 2026-05-05 v2.1.67: non-blocking event_tx forward used by the inbound
+// BFT message handlers. Pre-v2.1.67 used `event_tx.send(...).await` which
+// blocked the swarm task whenever the downstream consumer (the event
+// handler tokio task at main.rs:3407) fell behind on draining. That wedge
+// pattern produced silent halts: the swarm task couldn't deliver inbound
+// BFT messages to the BFT engine AND couldn't process outbound broadcast
+// commands either, so vps5 looked silent on the wire while local engine
+// state believed it was operating. The h=1,400,218 halt on 2026-05-05
+// matched this pattern (DROPPED_BFT_BROADCASTS=0 ruled out cmd_tx; no
+// libp2p outbound failures ruled out request_response per-peer wedge;
+// only the swarm-task internal stall fit).
+//
+// Trade-off: lossy inbound BFT message delivery under burst load — better
+// than wedging the swarm task. Halts caused by drops are at least
+// observable now via `rate(EVENT_TX_DROPPED) > 0` (use Telegram alerter
+// or /metrics scrape).
+fn try_send_event(
+    event_tx: &mpsc::Sender<NodeEvent>,
+    event: NodeEvent,
+    variant: &'static str,
+) {
+    let depth_pre = event_tx.max_capacity() - event_tx.capacity();
+    let max = event_tx.max_capacity();
+    let start = std::time::Instant::now();
+    match event_tx.try_send(event) {
+        Ok(()) => {
+            let elapsed = start.elapsed();
+            // try_send is microseconds in steady state; >100ms means the
+            // tracing subsystem itself is slow (file I/O, log rotation).
+            // Worth knowing — log it but don't take action.
+            if elapsed.as_millis() > 100 {
+                tracing::warn!(
+                    target: "event_tx_lat",
+                    "event_tx try_send {} took {}ms — surrounding logging or \
+                     allocator suspect (depth was {}/{})",
+                    variant, elapsed.as_millis(), depth_pre, max,
+                );
+            }
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            let total = EVENT_TX_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+            tracing::error!(
+                target: "event_tx_drop",
+                "event_tx FULL ({}/{}) — DROPPED inbound {} (total drops since \
+                 boot: {}). Validator-loop consumer not draining fast enough; \
+                 BFT message lost — investigate consumer-side back-pressure \
+                 (slow MDBX writes / contended write lock / RPC handler block).",
+                max, max, variant, total,
+            );
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            tracing::error!(
+                target: "event_tx_drop",
+                "event_tx CLOSED — DROPPED inbound {} (event-handler task is \
+                 gone; process should be restarting)",
+                variant,
+            );
+        }
+    }
+}
+
 // ── Inbound request handler ──────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -1452,7 +1535,7 @@ async fn on_inbound_request(
                 );
                 return;
             }
-            let _ = event_tx.send(NodeEvent::BftProposal(*proposal)).await;
+            try_send_event(event_tx, NodeEvent::BftProposal(*proposal), "BftProposal");
         }
 
         // ── BFT Prevote ─────────────────────────────────
@@ -1475,7 +1558,7 @@ async fn on_inbound_request(
                 );
                 return;
             }
-            let _ = event_tx.send(NodeEvent::BftPrevote(prevote)).await;
+            try_send_event(event_tx, NodeEvent::BftPrevote(prevote), "BftPrevote");
         }
 
         // ── BFT Precommit ───────────────────────────────
@@ -1498,7 +1581,7 @@ async fn on_inbound_request(
                 );
                 return;
             }
-            let _ = event_tx.send(NodeEvent::BftPrecommit(precommit)).await;
+            try_send_event(event_tx, NodeEvent::BftPrecommit(precommit), "BftPrecommit");
         }
 
         // ── BFT RoundStatus ────────────────────────────
@@ -1521,7 +1604,7 @@ async fn on_inbound_request(
                 );
                 return;
             }
-            let _ = event_tx.send(NodeEvent::BftRoundStatus(status)).await;
+            try_send_event(event_tx, NodeEvent::BftRoundStatus(status), "BftRoundStatus");
         }
     }
 }
