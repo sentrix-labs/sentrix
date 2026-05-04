@@ -9,6 +9,47 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.65] — 2026-05-05 — libp2p cmd_tx capacity 256→4096 + DROPPED_BFT_BROADCASTS counter
+
+Closes the silent-thread-death pattern that produced a cluster halt at h=1,392,113 on 2026-05-05. Under memory pressure on a small-RAM validator host, the libp2p swarm task drained `cmd_tx` slower than the validator main loop produced; the channel saturated at the 256-entry cap; subsequent `send_swarm_cmd` calls hit `TrySendError::Full` and silently dropped BFT prevote/precommit messages while `engine::accept_proposal` had already set `our_prevote_cast = true`. Peer mesh saw a silent validator while the local engine state thought the vote had been sent.
+
+- `crates/sentrix-network/src/libp2p_node.rs:156` — `mpsc::channel::<SwarmCommand>` capacity `256 → 4096`. Mirrors the v2.1.61 fix for the BFT message channels; gives ~5 min of margin at observed peak broadcast rates.
+- `pub static DROPPED_BFT_BROADCASTS: AtomicU64` near the top of `libp2p_node.rs`, incremented on every `TrySendError::Full` so the next-time canary is queryable.
+- `send_swarm_cmd` instrumented with breadcrumb logs at trace level (target `broadcast_bc`) plus the Full-branch upgraded from `warn!` to `error!` so journalctl ERROR-level filters surface drop events directly.
+
+The deeper logic refactor — set `our_prevote_cast` post-broadcast rather than pre — is deferred. Moving the flag-set without gossipsub message-id deduplication would open a double-vote slashing window when the on-timeout fallback nil prevote pairs with an eventually-delivered original prevote. Channel-cap headroom is the conservative fix that holds the invariant.
+
+PRs: #456 (bundled v2.1.62-65) + #457 (clippy fix). Tag `v2.1.65` retroactive.
+
+## [2.1.64] — 2026-05-05 — `/sentrix_status_extended` operator endpoint
+
+Health-verdict superset of `/sentrix_status` for ops dashboards and the new Telegram alerter. Single `state.read().await` snapshot, response includes:
+
+- `health` field — single-word `green` / `yellow` / `red` derived from `chain_age_seconds > 60` (red) / `> 5` or `active < 3` (yellow) / else green. Designed for `jq -r .health`.
+- `sync_info.chain_age_seconds` — wall-clock seconds since latest block timestamp.
+- `sync_info.block_time_avg_recent_seconds` — rolling avg over the last 10 blocks (matches `/metrics` window).
+- `mempool.size`, `validators.active_count`, `validators.top[]` (top-7 by stake with `address` / `stake_sentri` / `active`), `validators.total_active_stake_sentri`.
+- `supply.minted_sentri` / `burned_sentri` / `circulating_sentri`.
+- `ecosystem.deployed_tokens`, `uptime_seconds`, `version`.
+
+Cache policy: `Cache-Control: no-store` (live data; matches `/sentrix_status` and `/mempool`). Backs the new `sentrix-telegram-alert.service` on the build host that polls every 30 s and routes on the `health` field.
+
+## [2.1.63] — 2026-05-05 — chain-height watchdog + libp2p-vs-FinalizeBlock race fix
+
+Two patches combined into a single commit (both touch the same regions in `bin/sentrix/src/main.rs`):
+
+**v2.1.62 chain-height-stale watchdog** — adds a second branch to the validator-loop watchdog tokio task that reads `bc.height()` per 30 s tick and fires `std::process::abort()` after 90 s of no advance. Catches the silent-BFT-finalize class that the v2.1.60 heartbeat watchdog missed: validator main loop iterates (heartbeat ticks) but no blocks land. Clean SIGABRT → systemd `Restart=always` cycle without MDBX corruption (compare to operator-triggered SIGKILL flow that produced `MDBX_CORRUPTED` and forced rsync recovery in earlier incidents).
+
+**v2.1.63 chain-already-advanced guard in both FinalizeBlock arms** — closes the libp2p-vs-FinalizeBlock race observed during the v2.1.62 mainnet bake. The libp2p `NodeEvent::NewBlock` handler applies the cluster-canonical block at this height via `add_block_from_peer` concurrently with the validator's BFT engine reaching its own `FinalizeBlock` action for the same height. Pre-validate then fails with off-by-one (`Invalid block: expected index N+1, got N`), the action loop breaks, and the BFT engine state never advances — same race re-fires on the next height. When the race fires across the whole cluster simultaneously, the v2.1.62 chain-height watchdog cascade-fires.
+
+Fix: in both `BftAction::FinalizeBlock` arms (self-propose `bin/sentrix/src/main.rs:2326`, peer-propose `:2862`), early-return if `bc.height() >= action.height` — block already on chain via libp2p, skip local write, mark `proposed_block = None`, break, let the outer `need_new_round` reset the BFT engine to `bc.height() + 1` on the next iteration. Plus added a greppable `libp2p NewBlock: applying block N from peer; chain will advance, BFT engine will resync via need_new_round on next validator iter` log line at the libp2p-apply path so the race is journalctl-traceable.
+
+Mainnet impact: after rolling deploy, vps5 (the silent halter the night before) re-entered the proposer rotation, finalize_trace shows the new chain-already-advanced branch firing on every dual-finalize sequence (precommit_count=3 → 4 cascade), zero watchdog warns, zero NRestarts.
+
+## [2.1.49] — [2.1.61] — see git tags + commit history
+
+Sixteen versions shipped between 2026-05-01 and 2026-05-04 are not yet expanded into individual prose entries here. Tags are pushed on `origin` (`v2.1.50`, `v2.1.51`, `v2.1.54-56`, `v2.1.59-61`); commit messages on `main` carry the per-version intent. A batch refresh of this file ahead of any minor-version bump is in the operational backlog.
+
 ### Documentation
 
 - **Whitepaper v1.3.0 published** at `sentrix-labs/whitepaper@v1.3.0`. Full revision targeting infra-grade protocol-specification rigor — every constant in the paper traces back to a specific module path in this repo at `v2.1.56`. See `sentrix-labs/whitepaper/README.md` for the v1.2.4 → v1.3.0 delta. Notable: the paper now formalises Voyager BFT with proof sketches (Agreement / Validity / Termination), a full STF pseudocode pinned to `crates/sentrix-core/src/block_executor.rs`, real BFT timeouts from `crates/sentrix-bft/src/engine/timeouts.rs`, slashing constants from `crates/sentrix-staking/src/slashing/`, and a comparative analysis against Ethereum / Solana / Monad / Polygon. The Bahasa Indonesia translation lags at v1.2.4; v1.3.0 ID parallel pass is on the operational backlog.
