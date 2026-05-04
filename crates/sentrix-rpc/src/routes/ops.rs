@@ -199,7 +199,7 @@ pub async fn sentrix_status_extended(
         .iter()
         .map(|(addr, v)| (addr.clone(), v.total_stake()))
         .collect();
-    validators_by_stake.sort_by(|a, b| b.1.cmp(&a.1));
+    validators_by_stake.sort_by_key(|v| std::cmp::Reverse(v.1));
     let top_validators: Vec<serde_json::Value> = validators_by_stake
         .iter()
         .take(7)
@@ -235,9 +235,7 @@ pub async fn sentrix_status_extended(
     // scripts pull this with `jq -r .health` and route on green/yellow/red.
     let health = if chain_age_seconds > 60 {
         "red"
-    } else if chain_age_seconds > 5 {
-        "yellow"
-    } else if active_validators < 3 {
+    } else if chain_age_seconds > 5 || active_validators < 3 {
         "yellow"
     } else {
         "green"
