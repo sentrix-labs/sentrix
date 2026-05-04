@@ -12,12 +12,27 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Roadmap
 
 - **Native Rust SDK (`sentrix-sdk`, planned, no fixed ETA)** — high-level client crate for Rust developers building against Sentrix. Sub-crates: `sentrix-sdk` (umbrella), `-types` (struct parity with chain via shared `sentrix-primitives` dep — no drift possible at compile time), `-rpc` (JSON-RPC HTTP/WS client with mandatory 5-second timeouts and automatic retries), `-signer` (Argon2id keystore reuse), `-preflight` (client-side `revm` simulation for gas estimation + dry-run before submission), and a `sentrix-cli` binary for DevEx. All SDK modules `#![forbid(unsafe_code)]`. Will publish to crates.io.
-- **Native gRPC supplement transport (planned, no fixed ETA)** — high-bandwidth binary-protocol channel for high-throughput data streaming and power-user clients. Service surface: `BroadcastTx`, `GetBlock`, `GetBalance`, server-streaming `StreamEvents` with backpressure-aware lagging semantics. Designed as parallel to (not replacement of) the existing JSON-RPC `eth_*` interface — wallets and dApps continue using JSON-RPC at port 8545 unchanged. Default disabled (opt-in via `SENTRIX_GRPC_ENABLED=1`) so existing operators don't auto-expose a new port. Reference contract: `package sentrix.v1`.
 
 ### Internal
 
 - Audit pass 2026-05-05 confirmed clean: no `std::sync::Mutex` / `RwLock` held across an `.await` point in workspace production code. The codebase already enforces this discipline (explicit comment at `crates/sentrix-rpc/src/routes/mod.rs:49`); audit verified zero violations.
 - WebSocket broadcaster (`crates/sentrix-rpc/src/ws/`) already uses `tokio::sync::broadcast` with `RecvError::Lagged` handling — slow consumers drop the oldest frames per-subscriber without affecting the broadcaster or other subscribers. No code change needed for the "slow consumer" hardening pattern.
+
+## [2.1.70] — 2026-05-04 — gRPC-Web layer (browsers can talk to the side-car directly)
+
+Wraps the side-car gRPC service with `tonic_web::GrpcWebLayer` and enables HTTP/1.1 fallback (`accept_http1(true)`). Same port (default `:50051`) now serves both pure gRPC (HTTP/2 + `application/grpc`, used by Tonic / grpcio / grpc-go / grpcurl) and gRPC-Web (HTTP/1.1 or HTTP/2 + `application/grpc-web`, used by browsers via `@grpc/grpc-web` or `@protobuf-ts/grpcweb-transport`). The layer dispatches by content-type — pure gRPC clients see no behavioural change.
+
+Edge proxy CORS expanded on `grpc.sentrixchain.com` and `grpc-testnet.sentrixchain.com` to expose the gRPC-specific trailers (`Grpc-Status`, `Grpc-Message`, `Grpc-Encoding`, `Grpc-Accept-Encoding`) and accept the gRPC-Web request headers (`X-Grpc-Web`, `X-User-Agent`, `Grpc-Timeout`). Preflight `OPTIONS` returns 204 in <1 ms at the edge (no upstream hop).
+
+Default-OFF env-var gate from v2.1.69 retained — hosts without `SENTRIX_GRPC_ENABLED=1` see zero behavioural change. Public docs updated at `docs/operations/GRPC.md` with quickstart for TypeScript / Rust / Python / Go and a CORS reference.
+
+## [2.1.69] — 2026-05-04 — side-car Tonic gRPC server (read-only GetBlock + GetBalance)
+
+First implementation of the gRPC supplement transport from the [Unreleased] roadmap. New `sentrix-grpc` crate ships the proto schema (`package sentrix.v1`) and a server skeleton; integrated into the chain binary as a side-car spawned from `bin/sentrix/src/main.rs` when `SENTRIX_GRPC_ENABLED=1`. Bound to `SENTRIX_GRPC_ADDR` (default `0.0.0.0:50051`).
+
+Service surface in v0.2: `GetBlock` (by height, by hash, or `latest` / `finalized` selector — returns `NOT_FOUND` outside the local chain window) and `GetBalance` (balance + pending-aware nonce in one round-trip). `BroadcastTx` and `StreamEvents` return `tonic::Status::unimplemented` until v0.3 (proto Transaction ↔ chain Transaction marshalling needs careful field-by-field decoding; deferred for a regression-test pairing with the JSON-RPC path).
+
+Side-car spawn pattern: a wedged gRPC handler can stall its own task without affecting the validator main loop or the existing axum HTTP server. Read paths share the same `Arc<RwLock<Blockchain>>` as the JSON-RPC stack — same lock-contention profile as adding another axum handler, brief read-locks held for the minimum span. `#![forbid(unsafe_code)]` in the new crate; `tokio::sync::RwLock` only.
 
 ## [2.1.68] — 2026-05-05 — bft_tx try_send + BFT_TX_DROPPED counter (close last unbounded await in BFT msg path)
 

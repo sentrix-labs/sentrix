@@ -4451,7 +4451,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower 0.5.3",
- "tower-http",
+ "tower-http 0.6.8",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -4996,7 +4996,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",
@@ -5036,7 +5036,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tower 0.5.3",
- "tower-http",
+ "tower-http 0.6.8",
  "tracing",
  "uuid",
  "zeroize",
@@ -5044,7 +5044,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-bft"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "bincode",
  "secp256k1 0.31.1",
@@ -5059,7 +5059,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-codec"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "bincode",
  "hex",
@@ -5068,7 +5068,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-core"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "alloy-consensus",
  "alloy-eips 2.0.0",
@@ -5098,7 +5098,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-evm"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "alloy-primitives",
  "hex",
@@ -5113,7 +5113,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-faucet"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -5127,14 +5127,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tower-http",
+ "tower-http 0.6.8",
  "tracing",
  "tracing-subscriber 0.3.23",
 ]
 
 [[package]]
 name = "sentrix-grpc"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "async-stream",
  "bincode",
@@ -5152,7 +5152,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-network"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "async-trait",
  "bincode",
@@ -5170,7 +5170,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-node"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -5185,6 +5185,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tonic",
+ "tonic-web",
  "tracing",
  "tracing-subscriber 0.3.23",
  "zeroize",
@@ -5192,14 +5193,14 @@ dependencies = [
 
 [[package]]
 name = "sentrix-precompiles"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "alloy-primitives",
 ]
 
 [[package]]
 name = "sentrix-primitives"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "hex",
  "secp256k1 0.31.1",
@@ -5213,7 +5214,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-rpc"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "alloy-consensus",
  "alloy-eips 2.0.0",
@@ -5237,20 +5238,20 @@ dependencies = [
  "subtle",
  "tokio",
  "tower 0.5.3",
- "tower-http",
+ "tower-http 0.6.8",
  "tracing",
 ]
 
 [[package]]
 name = "sentrix-rpc-types"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "sentrix-staking"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "sentrix-primitives",
  "serde",
@@ -5260,7 +5261,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-storage"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "bincode",
  "libmdbx",
@@ -5275,7 +5276,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-trie"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "bincode",
  "blake3",
@@ -5291,7 +5292,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-wallet"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -5310,7 +5311,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-wire"
-version = "2.1.69"
+version = "2.1.70"
 dependencies = [
  "bincode",
  "secp256k1 0.31.1",
@@ -5995,6 +5996,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonic-web"
+version = "0.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5299dd20801ad736dccb4a5ea0da7376e59cd98f213bf1c3d478cf53f4834b58"
+dependencies = [
+ "base64",
+ "bytes",
+ "http",
+ "http-body",
+ "http-body-util",
+ "pin-project",
+ "tokio-stream",
+ "tonic",
+ "tower-http 0.5.2",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+]
+
+[[package]]
 name = "tower"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6029,6 +6050,22 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "tower-http"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e9cd434a998747dd2c4276bc96ee2e0c7a2eadf3cae88e52be55a05fa9053f5"
+dependencies = [
+ "bitflags",
+ "bytes",
+ "http",
+ "http-body",
+ "http-body-util",
+ "pin-project-lite",
+ "tower-layer",
+ "tower-service",
 ]
 
 [[package]]
