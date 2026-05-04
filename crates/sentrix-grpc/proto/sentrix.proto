@@ -1,0 +1,184 @@
+syntax = "proto3";
+
+// Sentrix gRPC service v0.1 — package sentrix.v1.
+//
+// Parallel transport to JSON-RPC at port 8545. Same backend, same state,
+// different wire format. Methods here mirror the most common JSON-RPC paths
+// plus add a server-streaming variant for events that JSON-RPC + WebSocket
+// can express but at a higher per-subscriber cost.
+//
+// Versioning: "sentrix.v1" is a hard contract. Breaking changes go to
+// "sentrix.v2" with v1 retained for ≥ 2 minor releases overlap.
+//
+// Status: v0.1 skeleton. Handlers in crates/sentrix-grpc/src/lib.rs return
+// tonic::Status::unimplemented until main.rs integration lands. Reference
+// design doc: founder-private/audits/2026-05-05-grpc-service-proto-draft.md.
+
+package sentrix.v1;
+
+// 20-byte EVM-compatible address. Mirror of sentrix-primitives::Address.
+// Wire = bytes (NOT hex string) for binary efficiency.
+message Address {
+  bytes value = 1;  // exactly 20 bytes
+}
+
+// 32-byte hash — block hash, tx hash, state root.
+message Hash {
+  bytes value = 1;  // exactly 32 bytes
+}
+
+// Native amount — sentri (10^-8 SRX). u64 wire to match Sentrix internal.
+message Amount {
+  uint64 sentri = 1;
+}
+
+// Block height — u64 starting at 0 (genesis).
+message BlockHeight {
+  uint64 value = 1;
+}
+
+// Mirror of sentrix-primitives::Transaction. Identical wire format to chain
+// MDBX serialisation (modulo prost-encoding). Field numbers match the
+// canonical struct order; do NOT renumber on changes.
+message Transaction {
+  Hash txid = 1;
+  Address from_address = 2;
+  Address to_address = 3;
+  Amount amount = 4;
+  Amount fee = 5;
+  uint64 nonce = 6;
+  uint64 timestamp = 7;
+  bytes signature = 8;       // 64-byte ed25519 OR 65-byte secp256k1
+  bytes payload = 9;         // contract calldata (EVM) or staking-op blob
+  uint32 chain_id = 10;
+  uint32 tx_type = 11;       // 0 = transfer, 1 = contract, 2 = staking-op
+}
+
+message Block {
+  uint64 index = 1;
+  Hash hash = 2;
+  Hash parent_hash = 3;
+  Hash state_root = 4;
+  uint64 timestamp = 5;
+  Address proposer = 6;
+  uint32 round = 7;
+  repeated Transaction transactions = 8;
+  // BFT justification carried from validator-side; included for audit.
+  // Empty for blocks at h<100_000 (pre state-root-fork).
+  bytes justification = 9;
+}
+
+message Account {
+  Address address = 1;
+  Amount balance = 2;
+  uint64 nonce = 3;
+  // For contract accounts: 32-byte storage root + non-empty code_hash.
+  Hash storage_root = 4;
+  Hash code_hash = 5;
+}
+
+// Server-streaming event types.
+message ChainEvent {
+  oneof event {
+    BlockFinalized block_finalized = 1;
+    PendingTx pending_tx = 2;
+    ValidatorSetChange validator_set_change = 3;
+    LogEmitted log = 4;
+    // Synthetic Lagged sentinel — emitted when the per-subscriber broadcast
+    // channel drops oldest events (slow consumer). Mirrors tokio broadcast
+    // RecvError::Lagged semantics. Consumer should resync state from RPC.
+    StreamLagged lagged = 5;
+  }
+  uint64 sequence = 100;     // monotonic across all events on this stream
+  uint64 timestamp = 101;    // server-wall-clock unix seconds
+}
+
+message BlockFinalized { Block block = 1; }
+message PendingTx { Transaction tx = 1; }
+
+message ValidatorSetChange {
+  uint32 epoch = 1;
+  repeated Address active = 2;
+  repeated Address jailed = 3;
+}
+
+message LogEmitted {
+  Address contract = 1;
+  repeated Hash topics = 2;       // 0..4 topics per EVM convention
+  bytes data = 3;
+  Hash tx_hash = 4;
+  uint64 block_height = 5;
+  uint32 log_index = 6;
+}
+
+message StreamLagged {
+  uint64 skipped_count = 1;       // events dropped since last delivery
+}
+
+// ────────────────────────────────────────────────────────────
+// Service definition
+// ────────────────────────────────────────────────────────────
+service Sentrix {
+  // Submit a signed transaction to the local mempool. Same semantics as
+  // JSON-RPC eth_sendRawTransaction for EVM txs, with native fields exposed
+  // for staking-ops and other native variants.
+  rpc BroadcastTx(BroadcastTxRequest) returns (BroadcastTxResponse);
+
+  // Fetch a block by height OR by hash. Returns NOT_FOUND if outside the
+  // local chain window (currently 1000 blocks; older blocks need indexer).
+  rpc GetBlock(GetBlockRequest) returns (Block);
+
+  // Fetch account balance + nonce. Mirrors eth_getBalance +
+  // eth_getTransactionCount in a single round-trip. Includes mempool-pending
+  // nonce so wallets build correct next-tx without an extra call (matches
+  // the pending-aware nonce behaviour from chain v2.1.57).
+  rpc GetBalance(GetBalanceRequest) returns (Account);
+
+  // Server-streaming chain events. Subscribe once, receive every event type
+  // until cancel or server restart. Replaces N separate eth_subscribe calls.
+  // Backpressure: server bounded channel per stream (capacity 4096 — same as
+  // event_tx in chain). On slow client, server drops OLDEST events and emits
+  // a StreamLagged sentinel. Client should resync state from RPC.
+  rpc StreamEvents(StreamEventsRequest) returns (stream ChainEvent);
+}
+
+message BroadcastTxRequest { Transaction tx = 1; }
+
+message BroadcastTxResponse {
+  Hash txid = 1;
+  uint64 mempool_position = 2;   // 0-indexed; FIFO ordering UX
+}
+
+message GetBlockRequest {
+  oneof selector {
+    BlockHeight height = 1;
+    Hash hash = 2;
+    bool latest = 3;             // selector == "latest" shorthand
+    bool finalized = 4;          // selector == "finalized" (BFT-finalized head)
+  }
+}
+
+message GetBalanceRequest {
+  Address address = 1;
+  // Snapshot height — read state as-of this block. Default = latest.
+  // Returns FAILED_PRECONDITION if outside chain window.
+  optional BlockHeight at_height = 2;
+}
+
+message StreamEventsRequest {
+  // Filter set — empty = subscribe to all event types. Backend filters
+  // server-side so the wire only carries matched events.
+  repeated EventFilter filters = 1;
+  // Resume from a sequence number (0 = current head). Backend keeps last
+  // 4096 events in a ring buffer — beyond that, sequence is not resumable
+  // and the server returns FAILED_PRECONDITION.
+  uint64 from_sequence = 2;
+}
+
+enum EventFilter {
+  EVENT_FILTER_UNSPECIFIED = 0;
+  EVENT_FILTER_BLOCK_FINALIZED = 1;
+  EVENT_FILTER_PENDING_TX = 2;
+  EVENT_FILTER_VALIDATOR_SET = 3;
+  EVENT_FILTER_LOG = 4;
+}
