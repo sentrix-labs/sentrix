@@ -32,6 +32,11 @@
 //!   so a wedged handler cannot stall the validator main loop.
 
 #![forbid(unsafe_code)]
+// `tonic::Status` is ~176 bytes (carries metadata, error code, message,
+// source). Returning it via `Result<T, Status>` is the canonical tonic
+// pattern across the entire ecosystem; boxing every Err would create
+// friction with every caller for no real benefit. Allow at crate root.
+#![allow(clippy::result_large_err)]
 
 /// Generated types and service stubs from `proto/sentrix.proto`.
 pub mod sentrix_proto {
@@ -209,7 +214,7 @@ impl Sentrix for SentrixServiceImpl {
                 // return the head block. Proper finalized-head tracking will
                 // come with the BFT finality observer integration.
                 bc.latest_block()
-                    .map(|b| b.clone())
+                    .cloned()
                     .map_err(|e| Status::not_found(format!("Chain empty: {e}")))?
             }
         };
