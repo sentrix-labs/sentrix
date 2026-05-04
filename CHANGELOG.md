@@ -18,6 +18,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Audit pass 2026-05-05 confirmed clean: no `std::sync::Mutex` / `RwLock` held across an `.await` point in workspace production code. The codebase already enforces this discipline (explicit comment at `crates/sentrix-rpc/src/routes/mod.rs:49`); audit verified zero violations.
 - WebSocket broadcaster (`crates/sentrix-rpc/src/ws/`) already uses `tokio::sync::broadcast` with `RecvError::Lagged` handling — slow consumers drop the oldest frames per-subscriber without affecting the broadcaster or other subscribers. No code change needed for the "slow consumer" hardening pattern.
 
+## [2.1.71] — 2026-05-04 — StreamEvents v0.3 (push BlockFinalized via broadcast)
+
+Wires the side-car gRPC service into `sentrix-rpc::events::EventBus` — the existing tokio `broadcast::Sender` bus that powers the WebSocket `eth_subscribe` handlers. The `StreamEvents` method now subscribes to `new_heads` on request and yields `ChainEvent::BlockFinalized` for each block as it lands. Single source of truth for event ordering: a gRPC stream subscriber and a WS subscriber see the same sequence at the broadcast::Sender boundary, no duplicate event-emit code path.
+
+Backpressure: `RecvError::Lagged` forwards as `ChainEvent::Lagged` with the broadcast's skipped_count — slow consumer can resync state via `GetBlock` instead of silently missing events. Mirrors the WS handler's Lagged semantics (1024-event capacity, drop-oldest).
+
+Filter / from_sequence / additional event variants (PendingTx, ValidatorSetChange, LogEmitted) deferred to v0.4 — same pattern, just additional `broadcast::Sender` subscriptions multiplexed onto this stream. Current impl always subscribes to all BlockFinalized from "now".
+
+Default-OFF env-var gate retained from v2.1.69. Hosts without `SENTRIX_GRPC_ENABLED=1` see zero behavioural change. Indexer in the `sentriscloud/indexer` repo can swap from `watchTipGrpc` polling to `streamBlocks` push for sub-100ms tip detection (push latency = broadcast hop, not 200ms poll interval).
+
 ## [2.1.70] — 2026-05-04 — gRPC-Web layer (browsers can talk to the side-car directly)
 
 Wraps the side-car gRPC service with `tonic_web::GrpcWebLayer` and enables HTTP/1.1 fallback (`accept_http1(true)`). Same port (default `:50051`) now serves both pure gRPC (HTTP/2 + `application/grpc`, used by Tonic / grpcio / grpc-go / grpcurl) and gRPC-Web (HTTP/1.1 or HTTP/2 + `application/grpc-web`, used by browsers via `@grpc/grpc-web` or `@protobuf-ts/grpcweb-transport`). The layer dispatches by content-type — pure gRPC clients see no behavioural change.
