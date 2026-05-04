@@ -1,8 +1,8 @@
 # Sentrix
 
-**Where real assets live.**
+**Open source, EVM-compatible L1 built in Rust.**
 
-Sentrix is the financial infrastructure for the real economy — starting with Indonesia. We bring real-world assets on-chain with Bitcoin's monetary discipline (fixed 315M supply, 4-year halving) and Ethereum's programmability (EVM-native, Solidity-ready) — built for Southeast Asia's 600 million people first, then the world.
+Real chain, real blocks, real code. Sentrix (SRX) is a purpose-built Layer-1 with 1-second blocks, instant BFT finality, and Ethereum-compatible tooling — MetaMask, ethers.js, viem, and hardhat connect natively. Bitcoin's monetary discipline (fixed 315M supply, 4-year halving) plus Ethereum's programmability (revm 38).
 
 [![Website](https://img.shields.io/badge/website-sentrixchain.com-8A5A11)](https://sentrixchain.com)
 [![CI/CD](https://github.com/sentrix-labs/sentrix/actions/workflows/ci.yml/badge.svg)](https://github.com/sentrix-labs/sentrix/actions)
@@ -17,11 +17,11 @@ Sentrix is the financial infrastructure for the real economy — starting with I
 
 ## What is Sentrix?
 
-Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, instant finality, and Ethereum-compatible tooling. MetaMask, ethers.js, and web3.js connect natively. The chain serves as a settlement and tokenization layer for real-world assets — designed to bring institutional-grade financial primitives on-chain with the monetary discipline of Bitcoin and the programmability of Ethereum.
+Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, instant BFT finality, and Ethereum-compatible tooling. MetaMask, ethers.js, viem, and web3.js connect natively to JSON-RPC. SDK developers can also use the Tonic-based **gRPC + gRPC-Web** transport for binary RPC and server-streaming block events.
 
-- **v2.1.48** — BFT FinalizeBlock hash-mismatch guard (closes recurring chain.db divergence). Plus the v2.1.47 set: MDBX storage, 1s blocks, 5000 tx/block capacity, Voyager DPoS+BFT live on mainnet, EVM (revm 38) with `eth_call` wired to revm execution against real chain state, V4 reward distribution v2 active, **tokenomics v2 fork ACTIVE on mainnet since h=640800** (BTC-parity 4-year halving + 315M cap), `StakingOp::AddSelfStake` ACTIVE since h=731245, libp2p sync race-safe
-- **700+ tests**, clippy clean, 11 security audit rounds
-- **4 validators** across 4 nodes (Foundation, Treasury, Core, Beacon) on the maintainer fleet
+- **v2.1.71** — Tonic gRPC `StreamEvents` push (server subscribes to the same broadcast bus that powers WS `eth_subscribe`). Plus v2.1.70 (`tonic-web` browser support) and v2.1.69 (read-only side-car: `GetBlock`, `GetBalance`). Earlier in the v2.1.6x line: silent-thread-death defence-in-depth (cmd_tx + event_tx + bft_tx try_send + drop counters; swarm-task / heartbeat / chain-height watchdogs). Tokenomics v2 fork active since h=640800 (BTC-parity 4-year halving + 315M cap).
+- **700+ tests**, clippy clean, multiple internal Sentrix Labs / SentrisCloud audit rounds
+- **4 validators** running Voyager DPoS+BFT on mainnet
 
 ## Features
 
@@ -34,7 +34,7 @@ Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, i
 | **State** | Binary Sparse Merkle Tree (BLAKE3 + SHA-256) with proofs |
 | **Tokens** | SRC-20 native + SRC-20 (ERC-20 via EVM) |
 | **Network** | libp2p + Noise XX + Kademlia + Gossipsub |
-| **API** | REST (60+ endpoints) + JSON-RPC 2.0 (25 methods, incl. `sentrix_*` native namespace) |
+| **API** | REST (60+ endpoints) + JSON-RPC 2.0 (25 methods, incl. `sentrix_*` native namespace) + **Tonic gRPC + gRPC-Web** ([docs](docs/operations/GRPC.md)) — `GetBlock`, `GetBalance`, server-streaming `StreamEvents` |
 | **Explorer** | Built-in dark-themed block explorer |
 | **Wallet** | AES-256-GCM keystore (Argon2id KDF) |
 | **Fee model** | 50% burn / 50% validator (deflationary) |
@@ -114,7 +114,7 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 | Phase | Status | Focus |
 |-------|--------|-------|
 | **Pioneer** | Completed (mainnet h=0…579058) | PoA round-robin, MDBX storage, 1s blocks, SRC-20 tokens — succeeded by Voyager 2026-04-25 |
-| **Voyager** | **Live on mainnet (v2.1.48)** | DPoS proposer rotation + BFT finality, EVM (revm 38) with `eth_call` against real chain state, `eth_sendRawTransaction`, L1 peer auto-discovery + connection-limits hardening, V4 reward distribution v2 (treasury escrow + ClaimRewards), runtime-aware Voyager dispatch, race-safe block sync, tokenomics v2 fork (315M cap + 4-year halving), `StakingOp::AddSelfStake` for non-phantom validator self-bond |
+| **Voyager** | **Live on mainnet** | DPoS proposer rotation + BFT finality, EVM (revm 38) with `eth_call` against real chain state, `eth_sendRawTransaction`, L1 peer auto-discovery + connection-limits hardening, V4 reward distribution v2 (treasury escrow + ClaimRewards), runtime-aware Voyager dispatch, race-safe block sync, tokenomics v2 fork (315M cap + 4-year halving), `StakingOp::AddSelfStake` for non-phantom validator self-bond, side-car gRPC + gRPC-Web for SDK integration |
 | **Frontier** | Phase F-1 scaffold landed; F-2…F-10 planned | Parallel transaction execution, sub-1s block time, mainnet hard fork |
 | **Odyssey** | Future | Cross-chain bridges, mature ecosystem, light clients |
 

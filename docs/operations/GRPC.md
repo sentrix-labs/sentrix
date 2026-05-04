@@ -121,7 +121,17 @@ Submit a signed transaction to the local mempool. **Returns `UNIMPLEMENTED` in v
 
 ### `StreamEvents(StreamEventsRequest) → stream ChainEvent`
 
-Server-streaming subscription replacing N separate `eth_subscribe` calls. **Returns `UNIMPLEMENTED` in v0.2.** Use the WebSocket `eth_subscribe` endpoint for now.
+Server-streaming subscription replacing N separate `eth_subscribe` calls. **Live since v2.1.71** — yields `ChainEvent::BlockFinalized` per block as it lands, plus `ChainEvent::Lagged` sentinel on backpressure (consumer behind 1024+ events).
+
+Subscribes to the same `EventBus` broadcast channel that powers the WebSocket `eth_subscribe` handlers — single source of truth for event ordering. A gRPC subscriber and a WS subscriber see the same sequence at the broadcast::Sender boundary.
+
+```bash
+# tail blocks in real time (no polling)
+grpcurl -import-path . -proto sentrix.proto \
+  -d '{}' grpc.sentrixchain.com:443 sentrix.v1.Sentrix/StreamEvents
+```
+
+**Filter / from_sequence / additional event variants** (`PendingTx`, `ValidatorSetChange`, `LogEmitted`) deferred to v0.4. Current impl always subscribes to all `BlockFinalized` from "now". Reconnect with exponential backoff is the client's responsibility — see the TypeScript example in *Quickstart* below for a reference reconnect loop.
 
 ---
 
@@ -209,6 +219,35 @@ client.GetBlock({ latest: true }, (err: any, block: any) => {
   if (err) return console.error(err);
   console.log("latest block index =", block.index);
 });
+```
+
+**Streaming with auto-reconnect (recommended for indexers):**
+
+```typescript
+function subscribeBlocks() {
+  const call = client.StreamEvents({});
+  let backoffMs = 500;
+
+  call.on("data", (msg: any) => {
+    backoffMs = 500; // reset on first frame after reconnect
+    if (msg.block_finalized?.block) {
+      const b = msg.block_finalized.block;
+      console.log("block", b.index);
+    } else if (msg.lagged) {
+      console.warn("stream lagged, skipped:", msg.lagged.skipped_count);
+      // resync: fetch last N blocks via JSON-RPC eth_getBlockByNumber
+    }
+  });
+
+  const reconnect = () => {
+    setTimeout(subscribeBlocks, backoffMs);
+    backoffMs = Math.min(backoffMs * 2, 8000);
+  };
+  call.on("error", reconnect);
+  call.on("end", reconnect);
+}
+
+subscribeBlocks();
 ```
 
 ### Browser / Next.js (`@grpc/grpc-web` or `@protobuf-ts/grpcweb-transport`)
@@ -310,14 +349,16 @@ Preflight `OPTIONS` requests are answered with `204 No Content`. Standard gRPC-W
 - **Chain window:** Validators serve blocks within their last ~1000-block in-memory window. Older blocks need to come from an indexer (none operated by Sentrix Labs at this time — community indexers welcome).
 - **No reflection:** `grpcurl list` won't work. Use the `.proto` file.
 - **No history reads:** `at_height` on `GetBalance` returns `FAILED_PRECONDITION`.
-- **Read-only:** `BroadcastTx` and `StreamEvents` are stubs in v0.2; use JSON-RPC `eth_sendRawTransaction` and the WebSocket `eth_subscribe` endpoint until v0.3.
+- **Write path still on JSON-RPC:** `BroadcastTx` returns `UNIMPLEMENTED` until v0.4 (proto Transaction marshalling). Use `eth_sendRawTransaction` for writes.
+- **StreamEvents emits BlockFinalized only:** other variants (PendingTx, ValidatorSetChange, LogEmitted) deferred to v0.4. Use WebSocket `eth_subscribe` for those today.
 - **Single validator per network:** The published endpoint forwards to a single validator side-car. If that validator restarts, expect a brief connection reset; clients should implement standard gRPC retry with exponential backoff.
 
 ---
 
 ## Roadmap
 
-- **v0.3** — full transaction marshalling (`BroadcastTx`), event-bus subscription (`StreamEvents`), MDBX snapshot reads (`at_height`).
-- **v0.4** — multi-validator load balancing on the edge, optional gRPC compression negotiation, server reflection toggle for tooling.
+- **v0.3** — ✅ shipped 2026-05-04 (v2.1.71). `StreamEvents` server-streaming subscription on the EventBus broadcast bus; `RecvError::Lagged` mapped to `ChainEvent::Lagged` sentinel.
+- **v0.4** — `BroadcastTx` proto Transaction marshalling, `StreamEvents` filter + from_sequence support, additional event variants (`PendingTx`, `ValidatorSetChange`, `LogEmitted`), MDBX snapshot reads for `at_height` historical queries.
+- **v0.5** — multi-validator load balancing at the edge, optional gRPC compression negotiation, server reflection toggle for tooling.
 
 Track progress at the canonical design doc in the repo: `crates/sentrix-grpc/proto/sentrix.proto` is updated as methods come online.
