@@ -3656,6 +3656,53 @@ async fn cmd_start(
     println!("REST API listening on http://{}", api_addr);
     let listener = tokio::net::TcpListener::bind(&api_addr).await?;
 
+    // 2026-05-05 v2.1.69: side-car Tonic gRPC server. Default OFF so
+    // the v2.1.68 production behaviour is unchanged unless an operator
+    // explicitly opts in via `SENTRIX_GRPC_ENABLED=1`. When enabled, the
+    // server binds `SENTRIX_GRPC_ADDR` (default `0.0.0.0:50051`) in a
+    // side-car tokio task — a wedged gRPC handler can stall its own
+    // task without affecting the validator main loop or the axum HTTP
+    // server. Read paths share the same `Arc<RwLock<Blockchain>>` as
+    // the JSON-RPC stack; same lock-contention profile as adding
+    // another axum handler.
+    if std::env::var("SENTRIX_GRPC_ENABLED")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        let grpc_state = shared.clone();
+        let grpc_addr_str = std::env::var("SENTRIX_GRPC_ADDR")
+            .unwrap_or_else(|_| "0.0.0.0:50051".to_string());
+        match grpc_addr_str.parse::<std::net::SocketAddr>() {
+            Ok(grpc_addr) => {
+                tracing::info!(
+                    "starting sentrix-grpc side-car at {} (env-var gated)",
+                    grpc_addr
+                );
+                tokio::spawn(async move {
+                    let server = sentrix_grpc::server_factory(grpc_state);
+                    if let Err(e) = tonic::transport::Server::builder()
+                        .add_service(server)
+                        .serve(grpc_addr)
+                        .await
+                    {
+                        tracing::error!(
+                            "sentrix-grpc server crashed (validator unaffected): {}",
+                            e
+                        );
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::error!(
+                    "SENTRIX_GRPC_ADDR={} is not a valid socket address: {} — \
+                     gRPC side-car NOT started",
+                    grpc_addr_str,
+                    e
+                );
+            }
+        }
+    }
+
     println!("Node started. Press Ctrl+C to stop.");
 
     // Graceful shutdown on SIGTERM/SIGINT — saves state before exit.
