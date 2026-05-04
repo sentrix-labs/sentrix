@@ -6,6 +6,8 @@ Base URLs:
 - **Mainnet:** `https://rpc.sentrixchain.com` (chain_id 7119, **Voyager DPoS+BFT** since 2026-04-25)
 - **Testnet:** `https://testnet-rpc.sentrixchain.com` (chain_id 7120, **Voyager DPoS+BFT** since 2026-04-23)
 
+> Looking for binary RPC? See [**gRPC API**](./GRPC.md) for the Tonic-based transport at `grpc.sentrixchain.com:443` (mainnet) and `grpc-testnet.sentrixchain.com:443` (testnet) — same backend, Protocol Buffers schema, gRPC-Web friendly.
+
 Rate limits (per IP): **60 req/min global**, **10 req/min write endpoints** (POST to `/transactions`, `/tokens/deploy|transfer|burn`, `/rpc`).
 
 Auth: most endpoints are public. Handlers tagged with `_auth: ApiKey` check the `X-API-Key` header against `SENTRIX_API_KEY` env var on the validator (16-char min, constant-time compare). If the env var isn't set, auth is skipped.
