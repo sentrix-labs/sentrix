@@ -19,6 +19,26 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// the 2026-04-26 mainnet stall (h=604547).
 static SYNC_SKIPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
+/// 2026-05-05 v2.1.66: swarm-task progress counter. Incremented on
+/// every iteration of the run_swarm select! loop. Read by a separate
+/// watchdog tokio task — if the counter stays still for ≥30 s, the
+/// swarm task is wedged (most likely on `event_tx.send().await` if
+/// the validator-loop consumer is stuck, or on internal libp2p
+/// state-machine deadlock) and we trigger `std::process::abort()` so
+/// systemd `Restart=always` cycles cleanly without MDBX corruption.
+///
+/// Same pattern as the v2.1.60 heartbeat watchdog and v2.1.62 chain-
+/// height watchdog. Closes the silent-thread-death class observed at
+/// h=1392113 (2026-05-05 morning) and h=1398998 (2026-05-05 afternoon)
+/// where vps1's libp2p went unresponsive while the validator main
+/// loop kept ticking — peers' BFT prevote/precommit/proposal/round-
+/// status all timed out outbound to vps1 (`outbound failure to
+/// 12D3KooWSZ...JJE: Timeout while waiting for a response`) and the
+/// cluster lost a voter without any local signal that vps1 should
+/// restart. With this watchdog vps1 will self-abort + cycle back via
+/// systemd before the cluster crosses the quorum threshold.
+pub static SWARM_TICK: AtomicU64 = AtomicU64::new(0);
+
 /// 2026-05-05 v2.1.65: cumulative count of broadcasts dropped because
 /// the swarm cmd_tx channel was full (try_send → TrySendError::Full).
 /// This is the silent-thread-death root cause from h=1392113 on
@@ -514,6 +534,50 @@ async fn run_swarm(
     // Periodic Kademlia bootstrap: every 60s, random walk to discover new peers.
     let mut kad_interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
 
+    // 2026-05-05 v2.1.66: spawn the swarm-task watchdog. It reads
+    // SWARM_TICK every 5 s; if the counter stays still for ≥30 s past
+    // the startup grace, the swarm select! loop has wedged and we
+    // abort. sync_interval (30 s) and kad_interval (60 s) ticks alone
+    // keep SWARM_TICK incrementing during quiet periods so we don't
+    // false-positive on a chain with no traffic.
+    tokio::spawn(async move {
+        use tokio::time::{Duration, sleep, Instant as TokioInstant};
+        const STALL_THRESHOLD: Duration = Duration::from_secs(30);
+        const STARTUP_GRACE: Duration = Duration::from_secs(60);
+        const TICK: Duration = Duration::from_secs(5);
+
+        let started = TokioInstant::now();
+        let mut last_seen = SWARM_TICK.load(Ordering::Acquire);
+        let mut last_changed = TokioInstant::now();
+        loop {
+            sleep(TICK).await;
+            // Honour startup grace — peer mesh + identify handshakes +
+            // initial gossipsub mesh formation can take >30 s on cold
+            // start. Reset the baseline during this window.
+            if started.elapsed() < STARTUP_GRACE {
+                last_seen = SWARM_TICK.load(Ordering::Acquire);
+                last_changed = TokioInstant::now();
+                continue;
+            }
+            let current = SWARM_TICK.load(Ordering::Acquire);
+            if current != last_seen {
+                last_seen = current;
+                last_changed = TokioInstant::now();
+            } else if last_changed.elapsed() >= STALL_THRESHOLD {
+                tracing::error!(
+                    target: "swarm_watchdog",
+                    "FATAL: libp2p swarm task stalled — no select!-loop progress \
+                     for {}s (counter={}). Aborting cleanly so systemd restarts \
+                     (closes silent-thread-death class at h=1392113 / h=1398998 \
+                     where libp2p went unresponsive while validator main loop \
+                     kept ticking).",
+                    last_changed.elapsed().as_secs(), current,
+                );
+                std::process::abort();
+            }
+        }
+    });
+
     loop {
         tokio::select! {
             // ── Commands from the LibP2pNode handle ──────
@@ -700,6 +764,15 @@ async fn run_swarm(
                 let _ = swarm.behaviour_mut().kademlia.bootstrap();
             }
         }
+
+        // 2026-05-05 v2.1.66: signal swarm-task progress to watchdog.
+        // After every select! branch fires (cmd / event / sync_interval
+        // / kad_interval), bump the counter. If the loop wedges in any
+        // .await inside a branch (event_tx.send back-pressure being the
+        // most likely real cause), the counter stops advancing and the
+        // watchdog spawned at the top of run_swarm will fire SIGABRT
+        // after STALL_THRESHOLD seconds.
+        SWARM_TICK.fetch_add(1, Ordering::Release);
     }
 
     Ok(())

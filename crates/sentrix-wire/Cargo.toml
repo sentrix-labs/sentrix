@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-wire"
-version = "2.1.65"
+version = "2.1.66"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Sentrix libp2p wire protocol types — request/response enums, gossipsub envelopes, protocol version + topic constants. No libp2p dep."
