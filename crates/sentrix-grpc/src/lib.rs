@@ -50,6 +50,7 @@ use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 
 use sentrix_core::blockchain::Blockchain;
+use sentrix_rpc::events::{EventBus, NewHeadEvent};
 
 /// Shared state handle — identical type to the one passed to the JSON-RPC
 /// router (`crates/sentrix-rpc/src/routes/mod.rs::SharedState`). Same Arc;
@@ -60,21 +61,30 @@ pub type SharedState = Arc<RwLock<Blockchain>>;
 /// stack. Read paths use a brief read-lock; the BroadcastTx path (when
 /// implemented) will use the same brief write-lock pattern as
 /// `routes::transactions::send_transaction`.
+///
+/// v0.3 also holds an `Arc<EventBus>` so `stream_events` can subscribe to
+/// the same broadcast channels powering the WebSocket `eth_subscribe` handlers.
+/// Single source-of-truth for event ordering — a gRPC stream subscriber and
+/// a WS subscriber see the same sequence at the broadcast::Sender boundary.
 pub struct SentrixServiceImpl {
     state: SharedState,
+    event_bus: Arc<EventBus>,
 }
 
 impl SentrixServiceImpl {
-    pub fn new(state: SharedState) -> Self {
-        Self { state }
+    pub fn new(state: SharedState, event_bus: Arc<EventBus>) -> Self {
+        Self { state, event_bus }
     }
 }
 
 /// Convenience constructor returning a tonic-ready `SentrixServer`.
 /// Caller is responsible for binding to a transport — see the gated
 /// spawn block in `bin/sentrix/src/main.rs`.
-pub fn server_factory(state: SharedState) -> SentrixServer<SentrixServiceImpl> {
-    SentrixServer::new(SentrixServiceImpl::new(state))
+pub fn server_factory(
+    state: SharedState,
+    event_bus: Arc<EventBus>,
+) -> SentrixServer<SentrixServiceImpl> {
+    SentrixServer::new(SentrixServiceImpl::new(state, event_bus))
 }
 
 // ── Helpers: chain-string-hex ↔ proto-bytes ──────────────────────────────
@@ -126,6 +136,34 @@ fn parse_hex_prefixed(s: &str, expect_bytes: usize) -> Option<Vec<u8>> {
         return None;
     }
     hex::decode(trimmed).ok()
+}
+
+/// Parse a `0x`-prefixed hex u64 (e.g. `"0x2a"` → 42). NewHeadEvent encodes
+/// numeric fields this way for ethers.js / viem compatibility.
+fn parse_hex_u64(s: &str) -> Option<u64> {
+    let trimmed = s.strip_prefix("0x").unwrap_or(s);
+    u64::from_str_radix(trimmed, 16).ok()
+}
+
+/// Marshal a `NewHeadEvent` (hex-string-encoded EVM-shaped header) into a
+/// proto `Block`. Used by the StreamEvents subscriber path. transactions
+/// stays empty in v0.3 — same as GetBlock — clients refetch full bodies via
+/// JSON-RPC `eth_getBlockByNumber` until v0.4 plumbs proto Transaction.
+fn newhead_to_proto_block(ev: &NewHeadEvent) -> Block {
+    Block {
+        index: parse_hex_u64(&ev.number).unwrap_or(0),
+        hash: chain_hash_to_proto(&ev.hash),
+        parent_hash: chain_hash_to_proto(&ev.parent_hash),
+        state_root: chain_hash_to_proto(&ev.state_root),
+        timestamp: parse_hex_u64(&ev.timestamp).unwrap_or(0),
+        proposer: chain_addr_to_proto(&ev.miner),
+        // NewHeadEvent doesn't carry the BFT round — that's an internal
+        // consensus detail not exposed in the EVM-compatible header shape.
+        // Streaming consumers that need round info can refetch via GetBlock.
+        round: 0,
+        transactions: Vec::new(),
+        justification: Vec::new(),
+    }
 }
 
 /// Marshal a chain `Block` into a proto `Block`. The proto schema mirrors
@@ -261,12 +299,24 @@ impl Sentrix for SentrixServiceImpl {
         }))
     }
 
-    /// Server-streaming chain events. **DEFERRED** to fresh-brain — needs
-    /// integration with `sentrix-rpc::events::EventBus` (existing
-    /// `tokio::sync::broadcast` infrastructure used by the JSON-RPC
-    /// WebSocket handlers). The pattern will mirror those handlers'
-    /// `RecvError::Lagged` handling, emitting a synthetic `StreamLagged`
-    /// sentinel on the gRPC stream.
+    /// Server-streaming chain events. v0.3 implements the BlockFinalized
+    /// channel by subscribing to the existing `EventBus.new_heads`
+    /// broadcast (Sentrix has instant BFT finality so new_heads ARE
+    /// finalized — same payload, different name). Other variants
+    /// (PendingTx, ValidatorSetChange, LogEmitted) deferred to v0.4 — same
+    /// pattern, just additional broadcast::Sender subscriptions multiplexed
+    /// onto this stream.
+    ///
+    /// Backpressure: when a slow consumer falls behind the broadcast
+    /// channel's per-receiver capacity (1024 events ≈ 17 minutes at 1
+    /// block/s), the receiver gets `RecvError::Lagged(skipped)`. We forward
+    /// that as a synthetic `ChainEvent::Lagged(StreamLagged{skipped_count})`
+    /// sentinel so the client can decide to resync state via GetBlock
+    /// instead of silently missing events. Mirrors the WS handler's
+    /// `RecvError::Lagged` semantics.
+    ///
+    /// Filter / from_sequence support deferred to v0.4 — current impl
+    /// always subscribes to all BlockFinalized events from "now".
     type StreamEventsStream =
         std::pin::Pin<Box<dyn tokio_stream::Stream<Item = Result<ChainEvent, Status>> + Send>>;
 
@@ -274,11 +324,54 @@ impl Sentrix for SentrixServiceImpl {
         &self,
         _request: Request<StreamEventsRequest>,
     ) -> Result<Response<Self::StreamEventsStream>, Status> {
-        Err(Status::unimplemented(
-            "StreamEvents: event-bus subscription deferred to v0.3 — \
-             will plumb sentrix-rpc::events::EventBus broadcast::Receiver \
-             through a tokio_stream::wrappers::BroadcastStream adapter",
-        ))
+        use chain_event::Event as EventVariant;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tokio::sync::broadcast::error::RecvError;
+
+        let mut rx = self.event_bus.new_heads.subscribe();
+        let now_secs = || {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        };
+
+        let stream = async_stream::stream! {
+            let mut sequence: u64 = 0;
+            loop {
+                match rx.recv().await {
+                    Ok(head) => {
+                        sequence = sequence.saturating_add(1);
+                        let block = newhead_to_proto_block(&head);
+                        yield Ok(ChainEvent {
+                            event: Some(EventVariant::BlockFinalized(BlockFinalized {
+                                block: Some(block),
+                            })),
+                            sequence,
+                            timestamp: now_secs(),
+                        });
+                    }
+                    Err(RecvError::Lagged(skipped)) => {
+                        sequence = sequence.saturating_add(1);
+                        yield Ok(ChainEvent {
+                            event: Some(EventVariant::Lagged(StreamLagged {
+                                skipped_count: skipped,
+                            })),
+                            sequence,
+                            timestamp: now_secs(),
+                        });
+                    }
+                    Err(RecvError::Closed) => {
+                        // Sender dropped — process is shutting down. Close
+                        // the stream cleanly so the client sees an end-of-
+                        // stream rather than a connection reset.
+                        break;
+                    }
+                }
+            }
+        };
+
+        Ok(Response::new(Box::pin(stream)))
     }
 }
 
