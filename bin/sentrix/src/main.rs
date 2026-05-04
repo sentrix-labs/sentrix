@@ -1383,6 +1383,59 @@ async fn cmd_start(
     let (bft_tx, bft_rx) =
         tokio::sync::mpsc::channel::<sentrix::core::bft_messages::BftMessage>(4096);
 
+    // 2026-05-05 v2.1.68: cumulative count of BFT messages dropped because
+    // bft_tx was full when the event-handler tokio task tried to forward
+    // an inbound BFT message (Propose/Prevote/Precommit/RoundStatus) to
+    // the validator main loop. Pre-v2.1.68 the event handler used
+    // `bft_tx.send().await` which BLOCKED until the validator loop drained
+    // bft_rx — that pattern wedged the event handler whenever the validator
+    // main loop fell behind. The wedged event handler then backed up
+    // event_tx (4096 cap) which in turn backed up the swarm task. This was
+    // the LAST remaining unbounded-block point in the BFT message path
+    // (cmd_tx → swarm → event_tx → bft_tx → validator).
+    //
+    // v2.1.68 switches to `try_send` + drop-on-Full + this counter. Mirror
+    // of v2.1.65 (DROPPED_BFT_BROADCASTS for cmd_tx) and v2.1.67
+    // (EVENT_TX_DROPPED for event_tx). Trade-off accepted: lossy inbound
+    // BFT delivery under burst load, in exchange for never wedging the
+    // event-handler task. Operator playbook: if this counter increments
+    // during a halt, the validator main loop has fallen behind —
+    // investigate consumer-side back-pressure (slow MDBX writes /
+    // contended write locks / RPC handler block).
+    static BFT_TX_DROPPED: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
+    fn try_send_bft(
+        bft_tx: &tokio::sync::mpsc::Sender<sentrix::core::bft_messages::BftMessage>,
+        msg: sentrix::core::bft_messages::BftMessage,
+        variant: &'static str,
+    ) {
+        let max = bft_tx.max_capacity();
+        match bft_tx.try_send(msg) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                let total = BFT_TX_DROPPED
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                tracing::error!(
+                    target: "bft_tx_drop",
+                    "bft_tx FULL ({}/{}) — DROPPED inbound {} (total drops since \
+                     boot: {}). Validator main loop not draining bft_rx fast enough; \
+                     BFT message lost — investigate consumer-side back-pressure \
+                     (slow MDBX writes / contended write lock).",
+                    max, max, variant, total,
+                );
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                tracing::error!(
+                    target: "bft_tx_drop",
+                    "bft_tx CLOSED — DROPPED inbound {} (validator main loop gone; \
+                     process should be restarting)",
+                    variant,
+                );
+            }
+        }
+    }
+
     // BFT engine watchdog — heartbeat counter incremented at the top of
     // every validator-loop iteration; a separate task panics + aborts
     // the process if the counter stays stale for STALL_THRESHOLD seconds.
@@ -3491,15 +3544,11 @@ async fn cmd_start(
                         &p.proposer[..p.proposer.len().min(12)],
                         &p.block_hash[..p.block_hash.len().min(16)]
                     );
-                    if let Err(e) = bft_tx_clone
-                        .send(sentrix::core::bft_messages::BftMessage::Propose(p))
-                        .await
-                    {
-                        tracing::error!(
-                            "C-07: BFT proposal forward failed (validator loop gone): {}",
-                            e
-                        );
-                    }
+                    try_send_bft(
+                        &bft_tx_clone,
+                        sentrix::core::bft_messages::BftMessage::Propose(p),
+                        "BftProposal",
+                    );
                 }
                 NodeEvent::BftPrevote(v) => {
                     let hash_tag = match &v.block_hash {
@@ -3513,15 +3562,11 @@ async fn cmd_start(
                         &v.validator[..v.validator.len().min(12)],
                         hash_tag
                     );
-                    if let Err(e) = bft_tx_clone
-                        .send(sentrix::core::bft_messages::BftMessage::Prevote(v))
-                        .await
-                    {
-                        tracing::error!(
-                            "C-07: BFT prevote forward failed (validator loop gone): {}",
-                            e
-                        );
-                    }
+                    try_send_bft(
+                        &bft_tx_clone,
+                        sentrix::core::bft_messages::BftMessage::Prevote(v),
+                        "BftPrevote",
+                    );
                 }
                 NodeEvent::BftPrecommit(c) => {
                     let hash_tag = match &c.block_hash {
@@ -3535,15 +3580,11 @@ async fn cmd_start(
                         &c.validator[..c.validator.len().min(12)],
                         hash_tag
                     );
-                    if let Err(e) = bft_tx_clone
-                        .send(sentrix::core::bft_messages::BftMessage::Precommit(c))
-                        .await
-                    {
-                        tracing::error!(
-                            "C-07: BFT precommit forward failed (validator loop gone): {}",
-                            e
-                        );
-                    }
+                    try_send_bft(
+                        &bft_tx_clone,
+                        sentrix::core::bft_messages::BftMessage::Precommit(c),
+                        "BftPrecommit",
+                    );
                 }
                 NodeEvent::BftRoundStatus(s) => {
                     tracing::debug!(
@@ -3552,15 +3593,11 @@ async fn cmd_start(
                         s.round,
                         &s.validator[..s.validator.len().min(12)]
                     );
-                    if let Err(e) = bft_tx_clone
-                        .send(sentrix::core::bft_messages::BftMessage::RoundStatus(s))
-                        .await
-                    {
-                        tracing::debug!(
-                            "C-07: BFT round-status forward failed (validator loop gone): {}",
-                            e
-                        );
-                    }
+                    try_send_bft(
+                        &bft_tx_clone,
+                        sentrix::core::bft_messages::BftMessage::RoundStatus(s),
+                        "BftRoundStatus",
+                    );
                 }
             }
         }
