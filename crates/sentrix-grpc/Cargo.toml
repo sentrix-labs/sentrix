@@ -1,0 +1,28 @@
+[package]
+name = "sentrix-grpc"
+version = "2.1.68"
+edition = "2024"
+license = "BUSL-1.1"
+description = "Tonic gRPC supplement transport for Sentrix Chain (parallel to JSON-RPC eth_*)"
+
+# 2026-05-05 v0.1 skeleton — handlers in src/lib.rs return tonic::Status::unimplemented
+# until main.rs integration lands. Reference design doc:
+# founder-private/audits/2026-05-05-grpc-service-proto-draft.md.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tonic = { version = "0.12", features = ["transport"] }
+prost = "0.13"
+tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+async-stream = "0.3"
+
+# Forbid unsafe code in this crate. Tonic + prost generate code so we
+# rely on their respective safety reviews; our handwritten code path
+# stays unsafe-free.
+
+[build-dependencies]
+tonic-build = "0.12"
