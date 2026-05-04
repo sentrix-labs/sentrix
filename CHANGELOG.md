@@ -9,6 +9,38 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Roadmap
+
+- **Native Rust SDK (`sentrix-sdk`, planned, no fixed ETA)** — high-level client crate for Rust developers building against Sentrix. Sub-crates: `sentrix-sdk` (umbrella), `-types` (struct parity with chain via shared `sentrix-primitives` dep — no drift possible at compile time), `-rpc` (JSON-RPC HTTP/WS client with mandatory 5-second timeouts and automatic retries), `-signer` (Argon2id keystore reuse), `-preflight` (client-side `revm` simulation for gas estimation + dry-run before submission), and a `sentrix-cli` binary for DevEx. All SDK modules `#![forbid(unsafe_code)]`. Will publish to crates.io.
+- **Native gRPC supplement transport (planned, no fixed ETA)** — high-bandwidth binary-protocol channel for high-throughput data streaming and power-user clients. Service surface: `BroadcastTx`, `GetBlock`, `GetBalance`, server-streaming `StreamEvents` with backpressure-aware lagging semantics. Designed as parallel to (not replacement of) the existing JSON-RPC `eth_*` interface — wallets and dApps continue using JSON-RPC at port 8545 unchanged. Default disabled (opt-in via `SENTRIX_GRPC_ENABLED=1`) so existing operators don't auto-expose a new port. Reference contract: `package sentrix.v1`.
+
+### Internal
+
+- Audit pass 2026-05-05 confirmed clean: no `std::sync::Mutex` / `RwLock` held across an `.await` point in workspace production code. The codebase already enforces this discipline (explicit comment at `crates/sentrix-rpc/src/routes/mod.rs:49`); audit verified zero violations.
+- WebSocket broadcaster (`crates/sentrix-rpc/src/ws/`) already uses `tokio::sync::broadcast` with `RecvError::Lagged` handling — slow consumers drop the oldest frames per-subscriber without affecting the broadcaster or other subscribers. No code change needed for the "slow consumer" hardening pattern.
+
+## [2.1.68] — 2026-05-05 — bft_tx try_send + BFT_TX_DROPPED counter (close last unbounded await in BFT msg path)
+
+Mirror of the v2.1.65 (cmd_tx) and v2.1.67 (event_tx) patches. Closes the last remaining unbounded blocking-await in the inbound BFT message path: `cmd_tx` → swarm task → `event_tx` → event-handler tokio task → `bft_tx` → validator main loop. Each layer is now `try_send` with drop-on-Full plus a dedicated counter (`DROPPED_BFT_BROADCASTS` / `EVENT_TX_DROPPED` / `BFT_TX_DROPPED`); any future halt is definitively traceable to the layer where messages start dropping.
+
+Trade-off accepted: under burst load, inbound BFT delivery becomes lossy instead of wedging the event-handler task. Halts caused by drops are now OBSERVABLE via `rate(BFT_TX_DROPPED) > 0` instead of invisible.
+
+The validator-loop's own `Blockchain` RwLock read/write locks remain — those are necessary for state safety and cannot be made non-blocking without a major refactor of the state-sharing model (tracked separately as MDBX snapshot isolation in the operational backlog).
+
+## [2.1.67] — 2026-05-05 — event_tx try_send + EVENT_TX_DROPPED counter (close swarm-task wedge)
+
+The libp2p swarm task forwarded inbound BFT messages (Proposal/Prevote/Precommit/RoundStatus) via `event_tx.send(...).await` which BLOCKED until the downstream consumer drained. When the validator main loop fell behind on its read/write locks, `event_tx` filled at 4096 cap and the swarm-task `.send().await` blocked indefinitely — wedging the entire swarm select! loop and producing silent halts that none of the existing watchdogs caught (heartbeat: validator loop was alive on a different thread; chain-height: bc.height advanced via libp2p sync from peers' cached blocks; cmd_tx counter: outbound side unaffected; swarm-task watchdog: select! body iterated 5-15s under wedge, never the 30s threshold).
+
+Fix: new helper `try_send_event(event_tx, event, variant)` (non-blocking try_send + drop-on-Full + tracing::error! on the Full branch + counter increment), applied at all four BFT inbound forward sites in `crates/sentrix-network/src/libp2p_node.rs`. Mirror of the v2.1.65 cmd_tx pattern.
+
+Verified live: post-deploy 25+ minutes sustained chain advance with `EVENT_TX_DROPPED = 0` across all four mainnet validators — the wedge mechanism that produced the h=1,400,218 silent halt earlier the same day is now closed.
+
+## [2.1.66] — 2026-05-05 — swarm-task watchdog (libp2p select!-loop stall → SIGABRT)
+
+Adds a third watchdog to the silent-thread-death defence-in-depth. The v2.1.60 heartbeat watchdog catches a wedged validator main loop; the v2.1.62 chain-height watchdog catches BFT engine stuck on finalisation; this patch catches the libp2p swarm task itself stalling. New `pub static SWARM_TICK: AtomicU64` in `crates/sentrix-network/src/libp2p_node.rs`, incremented after every iteration of the `run_swarm` select! loop. A separate watchdog tokio task spawned at the top of `run_swarm` polls the counter every 5 s; if it stays still for ≥ 30 s past the 60 s startup grace, fires `std::process::abort()` so systemd `Restart=always` cycles cleanly without MDBX corruption.
+
+Sync_interval (30 s) and kad_interval (60 s) ticks alone keep `SWARM_TICK` advancing during quiet periods, so the watchdog doesn't false-positive on a chain with no traffic.
+
 ## [2.1.65] — 2026-05-05 — libp2p cmd_tx capacity 256→4096 + DROPPED_BFT_BROADCASTS counter
 
 Closes the silent-thread-death pattern that produced a cluster halt at h=1,392,113 on 2026-05-05. Under memory pressure on a small-RAM validator host, the libp2p swarm task drained `cmd_tx` slower than the validator main loop produced; the channel saturated at the 256-entry cap; subsequent `send_swarm_cmd` calls hit `TrySendError::Full` and silently dropped BFT prevote/precommit messages while `engine::accept_proposal` had already set `our_prevote_cast = true`. Peer mesh saw a silent validator while the local engine state thought the vote had been sent.
