@@ -131,6 +131,155 @@ pub async fn sentrix_status(State(state): State<SharedState>) -> Json<serde_json
     }))
 }
 
+/// `/sentrix_status_extended` — superset of `/sentrix_status` for ops dashboards.
+///
+/// Adds the fields a phone-screen "is the chain healthy?" check needs:
+/// chain age (seconds since latest block timestamp; >5 s = degraded, >60 s = halted),
+/// rolling block-time avg over the last 10 blocks, mempool depth, supply
+/// snapshot, top-stake validators, plus a single-word `health` field that
+/// rolls all of the above into a green/yellow/red verdict an alerting
+/// script can `jq -r .health` against.
+///
+/// All fields read from a single `state.read().await` to avoid producing
+/// inconsistent snapshots under load.
+pub async fn sentrix_status_extended(
+    State(state): State<SharedState>,
+) -> Json<serde_json::Value> {
+    let uptime = START_TIME
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs();
+    let bc = state.read().await;
+    let chain_id = bc.chain_id;
+    let consensus = if bc.voyager_activated { "DPoS+BFT" } else { "PoA" };
+    let latest = bc.latest_block().ok().cloned();
+    let (latest_height, latest_hash, latest_timestamp) = latest
+        .as_ref()
+        .map(|b| (b.index, b.hash.clone(), b.timestamp))
+        .unwrap_or((0, String::new(), 0));
+    let earliest_height = bc.chain.first().map(|b| b.index).unwrap_or(0);
+    let active_validators = if consensus == "PoA" {
+        bc.authority.active_count()
+    } else {
+        bc.stake_registry.active_count()
+    };
+    let mempool_size = bc.mempool_size();
+    let total_minted = bc.total_minted;
+    let total_burned = bc.accounts.total_burned;
+    let circulating = total_minted.saturating_sub(total_burned);
+    let token_count = bc.list_tokens().len();
+
+    // Rolling block-time avg over the last 10 blocks. Same window the
+    // /metrics path uses; reproduced here so dashboards don't have to
+    // parse Prometheus text.
+    let chain = &bc.chain;
+    let block_time_avg_recent = if chain.len() >= 2 {
+        let tail = if chain.len() > 11 {
+            &chain[chain.len() - 11..]
+        } else {
+            &chain[..]
+        };
+        let mut sum = 0i64;
+        let mut n = 0i64;
+        for w in tail.windows(2) {
+            sum += w[1].timestamp.saturating_sub(w[0].timestamp) as i64;
+            n += 1;
+        }
+        if n > 0 { Some(sum as f64 / n as f64) } else { None }
+    } else {
+        None
+    };
+
+    // Top 4 by stake (matches mainnet N=4 today; Foundation, Treasury val5,
+    // Core, Beacon usually). Ops-friendly summary so a glance at the JSON
+    // tells you which keys are voting.
+    let mut validators_by_stake: Vec<(String, u64)> = bc
+        .stake_registry
+        .validators
+        .iter()
+        .map(|(addr, v)| (addr.clone(), v.total_stake()))
+        .collect();
+    validators_by_stake.sort_by(|a, b| b.1.cmp(&a.1));
+    let top_validators: Vec<serde_json::Value> = validators_by_stake
+        .iter()
+        .take(7)
+        .map(|(addr, stake)| {
+            let active = bc.stake_registry.active_set.contains(addr);
+            serde_json::json!({
+                "address": addr,
+                "stake_sentri": stake,
+                "active": active,
+            })
+        })
+        .collect();
+    let total_active_stake: u64 = bc
+        .stake_registry
+        .active_set
+        .iter()
+        .filter_map(|a| bc.stake_registry.get_validator(a))
+        .map(|v| v.total_stake())
+        .sum();
+
+    drop(bc);
+
+    // chain_age_seconds — "now - latest block timestamp", clamped to 0
+    // for nodes with clock-skew. Anything >5 s under steady 1 s blocks is
+    // a sign the chain is degraded; >60 s is the watchdog-fire threshold.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let chain_age_seconds = (now_secs - latest_timestamp as i64).max(0);
+
+    // Single-word health verdict. Phone-dashboard / Telegram alert
+    // scripts pull this with `jq -r .health` and route on green/yellow/red.
+    let health = if chain_age_seconds > 60 {
+        "red"
+    } else if chain_age_seconds > 5 {
+        "yellow"
+    } else if active_validators < 3 {
+        "yellow"
+    } else {
+        "green"
+    };
+
+    Json(serde_json::json!({
+        "version": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "build": option_env!("SENTRIX_BUILD_SHA").unwrap_or("unknown"),
+        },
+        "chain_id": chain_id,
+        "consensus": consensus,
+        "native_token": "SRX",
+        "health": health,
+        "sync_info": {
+            "latest_block_height": latest_height,
+            "latest_block_hash": latest_hash,
+            "latest_block_time": latest_timestamp,
+            "earliest_block_height": earliest_height,
+            "chain_age_seconds": chain_age_seconds,
+            "block_time_avg_recent_seconds": block_time_avg_recent,
+        },
+        "validators": {
+            "active_count": active_validators,
+            "total_active_stake_sentri": total_active_stake,
+            "top": top_validators,
+        },
+        "mempool": {
+            "size": mempool_size,
+        },
+        "supply": {
+            "minted_sentri": total_minted,
+            "burned_sentri": total_burned,
+            "circulating_sentri": circulating,
+        },
+        "ecosystem": {
+            "deployed_tokens": token_count,
+        },
+        "uptime_seconds": uptime,
+    }))
+}
+
 /// Prometheus-format metrics endpoint. Returns plain text `text/plain;
 /// version=0.0.4` so Prometheus, Grafana Agent, and Datadog can scrape
 /// directly.

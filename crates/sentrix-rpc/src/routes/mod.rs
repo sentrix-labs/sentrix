@@ -18,7 +18,7 @@ mod transactions;
 mod types;
 
 pub use auth::{ApiKey, constant_time_eq};
-pub use ops::sentrix_status;
+pub use ops::{sentrix_status, sentrix_status_extended};
 pub use ratelimit::{GlobalIpLimiter, IpRateLimiter, WriteIpLimiter};
 pub use types::{ApiResponse, SendTxRequest, SignedTxRequest};
 
@@ -167,6 +167,7 @@ pub fn create_router_with_bus(
         .route("/", get(root))
         .route("/health", get(health))
         .route("/sentrix_status", get(sentrix_status))
+        .route("/sentrix_status_extended", get(sentrix_status_extended))
         .route("/metrics", get(metrics))
         .route("/chain/info", get(chain_info))
         .route("/chain/blocks", get(get_blocks))

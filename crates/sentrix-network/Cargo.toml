@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-network"
-version = "2.1.63"
+version = "2.1.64"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Sentrix P2P networking — libp2p gossipsub, kademlia, request-response"
