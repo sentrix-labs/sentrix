@@ -19,6 +19,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// the 2026-04-26 mainnet stall (h=604547).
 static SYNC_SKIPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
+/// 2026-05-05 v2.1.65: cumulative count of broadcasts dropped because
+/// the swarm cmd_tx channel was full (try_send → TrySendError::Full).
+/// This is the silent-thread-death root cause from h=1392113 on
+/// 2026-05-05: under memory pressure the swarm task drained slower
+/// than the validator loop produced, the channel saturated, prevote/
+/// precommit were dropped silently, and engine.our_prevote_cast was
+/// already set to true so no retry happened — peer mesh saw vps5 as
+/// silent while local engine thought it had voted.
+///
+/// Channel cap was bumped 256 → 4096 in the same patch which should
+/// resolve the immediate symptom; this counter is the canary for next
+/// time. Exposed via /metrics + /sentrix_status_extended (Phase B,
+/// next session) so the Telegram alerter can fire on `rate(...) > 0`.
+pub static DROPPED_BFT_BROADCASTS: AtomicU64 = AtomicU64::new(0);
+
 use futures::StreamExt;
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder,
@@ -153,7 +168,17 @@ impl LibP2pNode {
         event_tx: mpsc::Sender<NodeEvent>,
     ) -> SentrixResult<Self> {
         let local_peer_id = PeerId::from_public_key(&keypair.public());
-        let (cmd_tx, cmd_rx) = mpsc::channel::<SwarmCommand>(256);
+        // 2026-05-05 v2.1.65: bumped 256 → 4096 to absorb backpressure when
+        // a tokio worker on a memory-pressured host stalls and the swarm
+        // task drains slower than the validator main loop produces. Below
+        // ~256 the channel filled silently → try_send returned Full →
+        // BFT prevote/precommit DROPPED at the network boundary while
+        // engine.our_prevote_cast was already set to true → silent thread
+        // death pattern (vps5 at h=1392113 on 2026-05-05; see
+        // audits/2026-05-05-h1392113-silent-halt-investigation-handoff.md).
+        // 4096 mirrors the v2.1.61 fix for event_tx + bft_tx and gives
+        // ~5 min margin at the observed peak rate.
+        let (cmd_tx, cmd_rx) = mpsc::channel::<SwarmCommand>(4096);
 
         let bc = blockchain.clone();
         let kp = keypair.clone();
@@ -185,18 +210,42 @@ impl LibP2pNode {
     /// receiver. Losing the occasional message is preferable to
     /// hard-stopping the BFT engine.
     fn send_swarm_cmd(&self, cmd: SwarmCommand, op: &'static str) {
+        // 2026-05-05 v2.1.65: breadcrumb logs at trace level + a hot
+        // ERROR log on the drop branch so journalctl + the Telegram
+        // alerter both surface it. The drop here is what caused the
+        // silent-thread-death pattern at h=1392113 on 2026-05-05 —
+        // see `DROPPED_BFT_BROADCASTS` doc above for the full story.
+        let max_cap = self.cmd_tx.max_capacity();
+        let depth_pre = max_cap - self.cmd_tx.capacity();
+        tracing::trace!(
+            target: "broadcast_bc",
+            "[A pre-send] op={} depth={}/{}",
+            op, depth_pre, max_cap,
+        );
         match self.cmd_tx.try_send(cmd) {
-            Ok(()) => {}
+            Ok(()) => {
+                tracing::trace!(
+                    target: "broadcast_bc",
+                    "[B sent] op={} depth_was={}/{}",
+                    op, depth_pre, max_cap,
+                );
+            }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                tracing::warn!(
-                    "libp2p: cmd channel full ({} backpressured) — dropping {} to keep validator loop responsive",
-                    self.cmd_tx.capacity(),
-                    op,
+                let total = DROPPED_BFT_BROADCASTS.fetch_add(1, Ordering::Relaxed) + 1;
+                tracing::error!(
+                    target: "broadcast_bc",
+                    "[B FAIL: channel FULL] libp2p cmd_tx saturated at {}/{} — \
+                     DROPPED {} (total drops since boot: {}). Engine will desync \
+                     from peers if this is a BFT vote — investigate swarm-task \
+                     starvation (memory pressure / I/O wait / blocked .await).",
+                    max_cap, max_cap, op, total,
                 );
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 tracing::error!(
-                    "libp2p: swarm task closed while sending {} - message dropped",
+                    target: "broadcast_bc",
+                    "[B FAIL: channel CLOSED] libp2p swarm task gone — DROPPED {} \
+                     (process should be restarting); message lost.",
                     op,
                 );
             }
