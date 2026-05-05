@@ -7,7 +7,7 @@ use sentrix_primitives::account::AccountDB;
 use sentrix_primitives::block::Block;
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::merkle::merkle_root;
-use sentrix_primitives::transaction::TOKEN_OP_ADDRESS;
+use sentrix_primitives::transaction::{PROTOCOL_TREASURY, TOKEN_OP_ADDRESS};
 use sentrix_primitives::transaction::Transaction;
 use sentrix_storage::{MdbxStorage, height_key, key_to_height, tables};
 use sentrix_trie::address::{account_value_bytes, address_to_key};
@@ -1490,6 +1490,50 @@ impl Blockchain {
             }
             if is_valid_sentrix_address(&block.validator) {
                 addrs.push(block.validator.clone());
+            }
+            // STATE_ROOT_V2 fix (gated by STATE_ROOT_V2_HEIGHT env var):
+            //
+            // Pre-fix `update_trie_for_block` derived `touched_addrs`
+            // strictly from each tx's `from`/`to` plus the proposer's
+            // address. Coinbase txs render `to_address = <validator>`
+            // for human display — but per V4 reward v2 fork (active
+            // since h=590,100) the actual state mutation routes the
+            // mint to PROTOCOL_TREASURY (`0x...0002`). PROTOCOL_TREASURY
+            // never appeared in `touched_addrs`, so the trie never saw
+            // its balance change, and the state_root froze the moment
+            // coinbase-only blocks became the steady state (~h=1.25M).
+            //
+            // 2026-05-05 audit confirmed: state_root identical across
+            // h=1.5M / 1.6M / 1.62M while PROTOCOL_TREASURY's actual
+            // balance grew by ~370K SRX over the same window. State
+            // commitment honestly represented the trie's view; the
+            // trie just wasn't tracking the system account.
+            //
+            // Activation is fork-gated to keep all 4 mainnet validators
+            // in lockstep: until every host has the same env-set
+            // `STATE_ROOT_V2_HEIGHT`, leaving the touch list intact
+            // preserves the existing (frozen-but-agreed) state_root
+            // chain. Past activation, every block also re-roots
+            // PROTOCOL_TREASURY into the trie so the commitment
+            // matches actual on-chain state.
+            //
+            // Operator runbook for activation:
+            //   1. Pick activation_height = current_tip + 600 (~10min lead)
+            //   2. Halt all 4 mainnet validators in parallel
+            //   3. Append `STATE_ROOT_V2_HEIGHT=<h>` to each /etc/<svc>/<svc>.env
+            //   4. Simul-start; chain crosses h, all 4 simultaneously
+            //      flip to including PROTOCOL_TREASURY in touch set
+            //   5. New state_root from h onward correctly commits to
+            //      PROTOCOL_TREASURY balance
+            //
+            // The default of u64::MAX leaves the fix dormant on hosts
+            // without the env var so it ships safely.
+            let state_root_v2_height = std::env::var("STATE_ROOT_V2_HEIGHT")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(u64::MAX);
+            if block.index >= state_root_v2_height {
+                addrs.push(PROTOCOL_TREASURY.to_string());
             }
             (addrs, block.index)
         };

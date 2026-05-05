@@ -19,20 +19,25 @@ the operator's private fleet" is required.
 
 ### Consensus responsibility
 
-Sentrix runs **Pioneer PoA** today (4-validator round-robin —
-Foundation, Treasury, Core, Beacon — expanding as operators join)
-and will upgrade to **Voyager DPoS + BFT**
-(stake-weighted, unbounded validator set) at a fork height TBD. As a
-validator:
+Sentrix runs **Voyager DPoS + BFT** on mainnet, live since
+h=579,047 (2026-04-25). Stake-weighted, unbounded validator set;
+3-phase BFT round (propose / prevote / precommit) per block; 2/3+1
+of stake-weighted active set finalises. Active validators today
+(reference set): Foundation, Treasury, Core, Beacon — additional
+operators expand the set without protocol changes.
 
 - Your node is expected to be online **>99.5%**. The in-chain liveness
   tracker jails validators that miss more than 70% of their slots in a
   rolling 14,400-block window (~4 hours at 1 s block time).
-- You sign every block in your slot; double-signing is slashable
-  (stake cut 20% on Voyager; removal from the authority registry on
-  Pioneer).
-- You do **not** need to hold the chain's native token to validate on
-  Pioneer. On Voyager you'll need to self-bond the DPoS minimum.
+- You sign every block in your turn; double-signing is slashable
+  (stake cut 20%, plus auto-jail).
+- **Self-stake minimum: 15,000 SRX** (1,500,000,000,000 sentri) —
+  matches the reference active set. The protocol enforces no hard
+  floor; the threshold is a coordination expectation so a new validator
+  carries comparable weight in the BFT supermajority. See
+  `docs/operations/CLAIM_REWARDS.md` for the post-V4-fork reward
+  flow (coinbase routes to protocol treasury; validators + delegators
+  claim accrued rewards via `StakingOp::ClaimRewards`).
 
 ### Operational responsibility
 
@@ -51,20 +56,24 @@ validator:
 
 ## 2. Hardware + network
 
-Minimum (reference mainnet today):
+Minimum (reference mainnet at h≈1.6M, 2026-05):
 
 | Resource | Minimum | Comfortable |
 |---|---|---|
 | vCPU  | 4       | 6 – 8 |
-| RAM   | 4 GiB   | 8 – 16 GiB |
+| RAM   | **8 GiB** | 16 GiB |
+| Swap  | **8 GiB** persistent (`/etc/fstab`) | 16 GiB |
 | Disk  | 60 GiB SSD | 120 GiB NVMe |
 | Bandwidth | 100 Mbit sustained | 1 Gbit |
 
-Any mainstream 64-bit Linux works. **We have deployed on Ubuntu 22.04
-and 24.04 in production; the consensus binary is OS-deterministic
-across kernel, glibc, and CPU family** — see the
-2026-04-23 Core node RCA addendum #9 in the project's incident archive for
-the cross-host determinism test result.
+The RAM/swap floor is non-negotiable: chain.db is mmap'd, and
+empirically tight memory + zero swap = page-cache thrash under
+sustained tx load = tokio worker stalls = silent halts. Any 64-bit
+Linux works; we have deployed on Ubuntu 22.04 + 24.04 in production.
+
+**The consensus binary is OS-deterministic across kernel, glibc, and
+CPU family** — verified across the Ubuntu 22.04 (glibc 2.35) and
+24.04 (glibc 2.39) hosts in the reference fleet.
 
 Open inbound ports:
 
@@ -203,22 +212,31 @@ Peer connected: 12D3KooW…
 Your node is now running, but it's not yet a VALIDATOR — it's just a
 peer. To become an authority:
 
-1. Send your validator address + uncompressed public key (both are
-   printed by `./sentrix wallet info <keystore>`) to the chain's
-   current admin (see `docs/operations/GOVERNANCE.md` for the
-   current admin address + contact channel).
-2. The admin runs `sentrix validator add <your-addr> "<your-name>"
-   <your-pubkey> --admin-key <admin-key>`.
-3. Once added, you'll appear in `GET /chain/info → validators` and in
-   the explorer at `scan.sentrixchain.com/validators`.
+1. Email **`validators@sentrixchain.com`** with:
+   - Your validator address + uncompressed public key (both are
+     printed by `./sentrix wallet info <keystore>`).
+   - Your operator name as you want it displayed in the on-chain
+     registry + block explorer (e.g. `"Acme Validator Co"`).
+   - Self-stake amount you intend to bond (≥ 15,000 SRX) and the
+     funding source (we'll coordinate testnet first if you're
+     bootstrapping fresh).
+   - Optional: jurisdiction, host region, ops contact for incident
+     coordination.
+2. The chain admin co-signs `sentrix validator add` (mainnet) or
+   `RegisterValidator` (post-Voyager dispatch). Activation height
+   is shared back so you can verify your appearance in
+   `GET /chain/info → validators` and at `scan.sentrixchain.com/validators`.
+3. Self-bond via `StakingOp::Delegate` once activated — you can
+   delegate your own stake before external delegators do, raising
+   your active-set weight.
 
 Admin op is verified on-chain — your admission cannot be tampered with
 once in a block.
 
 **The `<your-name>` string lands in the on-chain validator registry and
 drives the block-explorer label. Choose it to represent your operation
-(e.g. `"Acme Validator Co"`, `"Operator Alice"`). It's not a
-hostname — it's a public-facing identity.**
+(e.g. `"Acme Validator Co"`, `"nodes.guru"`, `"Operator Alice"`). It's
+not a hostname — it's a public-facing identity.**
 
 ---
 
@@ -294,9 +312,15 @@ on Voyager you may be jailed and need an unjail op.
 
 ## 10. Where to ask
 
+- Validator onboarding + ops coordination: **`validators@sentrixchain.com`**
+- General docs: https://docs.sentrixchain.com/operations/
+- Block explorer: https://scan.sentrixchain.com (mainnet) · https://scan-testnet.sentrixchain.com (testnet)
+- Public RPC for sanity tests: `https://rpc.sentrixchain.com` (chain 7119) · `https://testnet-rpc.sentrixchain.com` (chain 7120)
+- Testnet faucet: https://faucet.sentrixchain.com
+- Sourcify verifier: https://verify.sentrixchain.com
+- gRPC + gRPC-Web (read-only state queries): https://grpc.sentrixchain.com · https://grpc-testnet.sentrixchain.com
 - GitHub issues: https://github.com/sentrix-labs/sentrix/issues
 - Security advisories: see `SECURITY.md` in the repo root.
-- Operator chat: see the pinned link in the repo README.
 
 **This doc describes a chain that supports many independent operators
 on diverse hosts and OS versions. If any step above assumes the operator's

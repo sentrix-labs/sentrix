@@ -1,6 +1,6 @@
 [package]
 name = "sentrix-grpc"
-version = "2.1.75"
+version = "2.1.76"
 edition = "2024"
 license = "BUSL-1.1"
 description = "Tonic gRPC supplement transport for Sentrix Chain (parallel to JSON-RPC eth_*)"

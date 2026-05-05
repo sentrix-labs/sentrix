@@ -34,6 +34,40 @@ pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) 
                 Ok(a) => a,
                 Err(e) => return Err((-32602, e.into())),
             };
+            // Pre-2026-05-05 this handler silently ignored params[1]
+            // (block tag) and always returned the latest balance —
+            // callers asking for a specific historical height got the
+            // current value with no error. Audit surfaced the gap when
+            // probing balance at h=1M / 1.5M / 1.62M all returned
+            // identical hex.
+            //
+            // Sentrix doesn't yet have MDBX snapshot isolation for
+            // historical state reads (deferred refactor). For now:
+            //   - `latest` / `earliest` / `pending` / `finalized` / `safe`
+            //     → return current state (close enough for these tags)
+            //   - specific block number → return -32004 with a
+            //     "historical state reads not yet supported" message
+            //     so callers see the gap instead of stale data
+            let block_tag = params[1].as_str().unwrap_or("latest");
+            let is_height = block_tag.starts_with("0x")
+                && block_tag.len() > 2
+                && block_tag[2..].chars().all(|c| c.is_ascii_hexdigit());
+            if is_height {
+                let bc = state.read().await;
+                let head = bc.height();
+                let requested =
+                    u64::from_str_radix(block_tag.trim_start_matches("0x"), 16).unwrap_or(0);
+                if requested != head {
+                    return Err((
+                        -32004,
+                        format!(
+                            "historical state reads not yet supported (asked h={}, head h={}). \
+                             Use 'latest' until MDBX snapshot isolation lands.",
+                            requested, head
+                        ),
+                    ));
+                }
+            }
             let bc = state.read().await;
             let balance = bc.accounts.get_balance(&address);
             let wei = balance as u128 * 10_000_000_000u128;
