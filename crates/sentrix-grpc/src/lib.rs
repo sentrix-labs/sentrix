@@ -334,7 +334,7 @@ impl Sentrix for SentrixServiceImpl {
         // Sort by stake descending — UI consumers (the Explorer hero) want
         // the heaviest stakes first; alphabetic order on the HashMap iter
         // would shuffle each call and confuse caching downstream.
-        validators.sort_by(|a, b| b.stake_sentri.cmp(&a.stake_sentri));
+        validators.sort_by_key(|v| std::cmp::Reverse(v.stake_sentri));
 
         let active_count = bc.stake_registry.active_count() as u32;
         let total_count = bc.stake_registry.validators.len() as u32;
@@ -547,9 +547,9 @@ mod tests {
         assert_eq!(set.active_count, 4);
 
         let supply = Supply {
-            minted_sentri: 63_000_000_00_000_000,
+            minted_sentri: 6_300_000_000_000_000,
             burned_sentri: 0,
-            circulating_sentri: 63_000_000_00_000_000,
+            circulating_sentri: 6_300_000_000_000_000,
         };
         assert_eq!(
             supply.circulating_sentri,
