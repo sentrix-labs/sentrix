@@ -18,6 +18,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Audit pass 2026-05-05 confirmed clean: no `std::sync::Mutex` / `RwLock` held across an `.await` point in workspace production code. The codebase already enforces this discipline (explicit comment at `crates/sentrix-rpc/src/routes/mod.rs:49`); audit verified zero violations.
 - WebSocket broadcaster (`crates/sentrix-rpc/src/ws/`) already uses `tokio::sync::broadcast` with `RecvError::Lagged` handling — slow consumers drop the oldest frames per-subscriber without affecting the broadcaster or other subscribers. No code change needed for the "slow consumer" hardening pattern.
 
+## [2.1.72] — 2026-05-05 — gRPC v0.4 read-only state queries (GetValidatorSet + GetSupply + GetMempool)
+
+Three new read-only RPCs on the side-car gRPC service, all served off the same `state.read().await` snapshot used by GetBlock/GetBalance:
+
+- `GetValidatorSet(at_height?)` — `epoch`, `active_count`, `total_count`, `total_active_stake_sentri`, plus per-validator `{address, stake_sentri, active, jailed}`. Sorted by stake descending. Drops the explorer's REST `/sentrix_status_extended` round-trip for the validators panel.
+- `GetSupply(at_height?)` — `minted_sentri` / `burned_sentri` / `circulating_sentri`. The cap is fork-gated (210M pre-fork, 315M post-tokenomics-v2 at h=640800); display layer handles the 1 SRX = 10^8 sentri conversion.
+- `GetMempool(limit?)` — authoritative pending-tx count plus a capped header window (`MempoolEntry` with `txid / from / to / amount / fee / nonce / tx_type`). Default limit 100, max 500.
+
+`at_height` is reserved on the Supply / ValidatorSet variants — historical reads gate on MDBX snapshot isolation (deferred to a separate refactor). v0.4 returns the latest finalized snapshot.
+
+Default-OFF env-var gate from v2.1.69 retained — hosts without `SENTRIX_GRPC_ENABLED=1` see zero behavioural change. PR #472. Sentrix Explorer V2 stats hot path re-flipped from REST `/sentrix_status_extended` bridge to pure-gRPC against these three endpoints in the same session.
+
 ## [2.1.71] — 2026-05-04 — StreamEvents v0.3 (push BlockFinalized via broadcast)
 
 Wires the side-car gRPC service into `sentrix-rpc::events::EventBus` — the existing tokio `broadcast::Sender` bus that powers the WebSocket `eth_subscribe` handlers. The `StreamEvents` method now subscribes to `new_heads` on request and yields `ChainEvent::BlockFinalized` for each block as it lands. Single source of truth for event ordering: a gRPC stream subscriber and a WS subscriber see the same sequence at the broadcast::Sender boundary, no duplicate event-emit code path.
@@ -103,9 +115,91 @@ Fix: in both `BftAction::FinalizeBlock` arms (self-propose `bin/sentrix/src/main
 
 Mainnet impact: after rolling deploy, vps5 (the silent halter the night before) re-entered the proposer rotation, finalize_trace shows the new chain-already-advanced branch firing on every dual-finalize sequence (precommit_count=3 → 4 cascade), zero watchdog warns, zero NRestarts.
 
-## [2.1.49] — [2.1.61] — see git tags + commit history
+## [2.1.61] — 2026-05-04 — BFT message-channel buffers + channel-depth metric
 
-Sixteen versions shipped between 2026-05-01 and 2026-05-04 are not yet expanded into individual prose entries here. Tags are pushed on `origin` (`v2.1.50`, `v2.1.51`, `v2.1.54-56`, `v2.1.59-61`); commit messages on `main` carry the per-version intent. A batch refresh of this file ahead of any minor-version bump is in the operational backlog.
+Margin + observability follow-up to v2.1.60. Two adjustments from the deep-audit punch-list:
+
+1. `event_tx` (libp2p → event-handler) and `bft_tx` (event-handler → validator-loop) capacity raised 256 → 4096. The 256 ceiling covered ~20 s of validator-loop pause at the cluster's normal 12 BFT msgs/s; any longer pause backpressure-cascaded into libp2p, the worst case the audit flagged. 4096 covers ~5 min — well past the 60 s validator-watchdog abort threshold, so the heartbeat catches a real stall before the channel ever saturates. Memory cost ~MB; cheap insurance.
+2. New channel-depth metric exposed on `/metrics` and `/sentrix_status_extended` so the alerter can fire on `event_tx_depth > 0.25 * cap` instead of waiting for the watchdog SIGABRT.
+
+PR #455.
+
+## [2.1.60] — 2026-05-04 — Validator-loop watchdog + FinalizeBlock active-set tracing
+
+Two observability additions to catch the recurring silent-thread-death + active-set-view-divergence bug class. Both ship together because they're the prerequisites the 2026-04-30 eager-write audit asked for before any consensus-touching fix lands.
+
+- **Heartbeat watchdog** — separate tokio task polls a `validator_loop_alive: AtomicU64` heartbeat updated each iteration of the validator main loop. After 60 s with no advance, fires `std::process::abort()` so systemd `Restart=always` cycles cleanly without MDBX corruption (compare to operator-triggered SIGKILL flow that produced `MDBX_CORRUPTED` and forced rsync recovery in earlier incidents).
+- **FinalizeBlock active-set tracing** — both arms of `BftAction::FinalizeBlock` (self-propose + peer-propose) now emit a `finalize_trace` line at INFO level: `local_active_count`, `local_total_stake`, `precommit_count`, `precommit_stake_sum`, `block_hash[:16]`, `our_validator_address`. When the next divergence event hits, journalctl across all four validators tells the audit which validators agreed on the active-set view at the divergent height.
+
+PR #454. Reference: `audits/2026-04-30-eager-write-investigation.md` §Recommendation #1.
+
+## [2.1.59] — 2026-05-02 — Bounded stale-nonce mempool eviction (per-block sender set)
+
+v2.1.58 added stale-nonce eviction inside `prune_mempool()` — a full-mempool `retain()` calling `AccountDB::get_nonce()` per entry. With `MAX_MEMPOOL_SIZE = 10_000` that's a 10 K HashMap-lookup pass running inside `add_block` on every finalized block. Under live load on mainnet 2026-05-02, the extra retain() visibly stretched `add_block` past the BFT round-window — chain stalled multiple times in the hours after v2.1.58 went out, with the silent-thread pattern that pointed at hot-path contention.
+
+Same end behaviour, bounded cost: only inspect mempool entries whose `from` matches a sender that just had a tx finalized in the current block. Worst-case = `txs_in_block × mempool_entries_per_sender`, an order of magnitude under the v2.1.58 full-scan. PR #453. `prune_mempool()` itself reverted to age-only.
+
+## [2.1.58] — 2026-05-02 — Mempool sweep evicts stale-nonce txs
+
+Same root cause as the v2.1.57 nonce surface fix but the recovery side: a tx admitted to mempool with a valid nonce can become invalid once the sender's account advances past it. Pre-fix `prune_mempool()` only checked age (`MEMPOOL_MAX_AGE_SECS = 1h`), so a poison-pill tx could sit for an hour and stall block production every time the proposer offered it.
+
+Live discovery 2026-05-02: chain stuck at h=1,247,283 for ~3 min on a single nonce-5 tx whose sender was already at finalized nonce 7; every proposed block included it; every validator rejected with "Invalid nonce: expected 7, got 5". Manual recovery: stop validators, drop the mempool, restart.
+
+Fix walks the mempool every time a block is finalized and evicts entries with `tx.nonce < AccountDB.get_nonce(tx.from)`. Per-block cost was the regression v2.1.59 then bounded. PR #452.
+
+## [2.1.57] — 2026-05-02 — Pending-aware nonce in eth_getTransactionCount + /accounts/X/nonce
+
+Both endpoints used to return only the finalized account nonce. Two classes of caller broke on this:
+
+- `eth_getTransactionCount(addr, 'pending')` is the standard EVM-RPC surface for "next-usable nonce". Pre-fix we returned the same value for `'latest'` and `'pending'`, so wagmi/viem clients couldn't queue back-to-back txs without manually tracking submitted nonces.
+- `/accounts/X/nonce` is the REST equivalent the faucet calls before signing a drip. Concurrent claims for distinct recipients all observed the same finalized nonce, signed identical nonce, the chain accepted the first and rejected the rest with "Invalid nonce" errors that surfaced as cryptic faucet failures.
+
+Fix walks the mempool for entries with `from = addr` and returns `max(finalized_nonce, max_pending_nonce + 1)`. Mainnet & testnet tested. PR #450.
+
+## [2.1.56] — 2026-05-02 — Persist per-tx EVM receipts (real gas + contractAddress)
+
+Pre-fix `gasUsed` and `cumulativeGasUsed` were hardcoded `21_000` in both single-tx and block-receipts builders. `contractAddress` always null. Found 2026-05-02 while debugging a CoinBlast `buy()` failure: validator log said 318_931 gas, receipt said 21_000 — wallet UI couldn't tell if the call was cheap or massively expensive.
+
+This change adds:
+
+- `TABLE_RECEIPTS` (txid → `StoredReceipt`) in `sentrix-storage`.
+- `StoredReceipt { success, gas_used, contract_address, output }` in `sentrix-evm`.
+- Write hook in `block_executor/evm.rs::execute_evm_tx_in_block` after `execute_tx_with_state` returns.
+- Read path in `eth_getTransactionReceipt` + `eth_getBlockReceipts`. Falls back to 21 000 for native (non-EVM) txs that don't have a row.
+
+PR #448.
+
+## [2.1.55] — 2026-05-02 — eth_estimateGas EIP-150 buffer
+
+Dry-run runs at `TX_GAS_LIMIT_CAP` (16M) so sub-calls never starve, but the returned `gas_used` becomes the wallet's submitted `gas_limit`. At that limit, EIP-150's 63/64 forwarding leaves inner CALLs short of cold-account + value-transfer overhead — `CoinBlastCurve.buy()` reverts inside `_safeSendSRX.call{value:fee}("")` with `TransferFailed()`.
+
+Apply 1.25× multiplier with 30 K floor (geth uses 1.30×). Threshold proved empirically: dry-run returned 319 355, real apply OOG'd; 325 000 succeeds. Bumps all 17 per-crate Cargo.toml from 2.1.54 to 2.1.55. PR #446.
+
+## [2.1.54] — 2026-05-02 — eth_call/eth_estimateGas value plumbing + halt-reason surfacing
+
+Three closely-related fixes catching live binaries up to source:
+
+- **v2.1.52 — Pass `value` to TxEnv in `run_evm_dry_run`.** The eth_call/eth_estimateGas dry-run path built TxEnv without setting `.value()`. Every payable contract simulation ran with `msg.value=0` regardless of what the dApp requested. Functions gated on `if (msg.value == 0) revert ZeroValue()` (CoinBlastCurve.buy, WSRX.deposit, Router.addLiquiditySRX) always reverted in wagmi's pre-flight `estimateGas` check, surfacing as "RPC Request failed" / "execution reverted" with no data in the user's wallet UI.
+- **v2.1.53 — Surface revert reason + halt reason.** Pre-fix the dry-run handler returned a generic error for any non-success EVM exit. Now it threads the full `ExecutionResult` and converts `Revert { output }` into the standard EVM-RPC error code 3 with the ABI-encoded reason as `data`, and `Halt(reason)` into a "transaction halted: {reason}" message. wagmi/viem display the proper `revert MyContractError(arg)` instead of "execution reverted".
+- **v2.1.54 — Cargo.toml workspace bump** from 2.1.51 to 2.1.54 (the 2.1.52/2.1.53 micro-versions never landed as separate workspace bumps; they're rolled into 2.1.54).
+
+## [2.1.51] — 2026-05-02 — Explicit MDBX max_size + growth_step
+
+Default libmdbx geometry has a small upper_size and grows in tiny increments. When chain.db crossed the geometric ceiling, every trie write started failing with `MDBX_MAP_FULL: Environment mapsize limit reached`. The validators that hit it (vps1+vps5 first — independent write history pre-rsync) couldn't persist new state, but their in-memory blockchain advanced anyway. They proposed blocks built on unpersisted state; peers (vps2+vps3) computed different state_root and rejected → 2v2 BFT split-brain along Foundation+Beacon vs Treasury+Core → halt.
+
+Pattern repeated on 2026-05-01 at h≈1,180k / 1,191k / 1,192k / 1,195k / 1,197k. Earlier theory (EVM value-transfer plumbing in v2.1.49) was ruled out by deploying v2.1.50 with `EVM_VALUE_TRANSFER_HEIGHT=u64::MAX` (forced disabled) and seeing the divergence recur — the apply path was clean; the storage layer was the cause.
+
+Fix: explicit `max_size = 64 GiB` and `growth_step = 1 GiB` on MDBX env open. 64 GiB covers ~3 years of mainnet growth at 1 s blocks; growth happens in human-friendly chunks instead of map-full panics.
+
+## [2.1.50] — 2026-05-02 — Fork-gate EVM value-transfer plumbing (rollback by env var)
+
+PR #439's flat-shipping of `envelope.value()` into the Pass-2 EVM apply TxEnv produced 3 mainnet halts on 2026-05-01 (h≈1.18M / 1.19M / 1.19M). Each halt was a deterministic 2v2 split-brain along the same factional lines (vps1+vps5 vs vps2+vps3) and recurred ~24 min after every restart. Pattern matched the eager-write divergence shape the v2.1.48 FinalizeBlock guard was meant to catch — but the guard does not recover when the underlying apply path itself produces validator-specific state on every value-bearing tx.
+
+Fix: gate the value plumbing behind `EVM_VALUE_TRANSFER_HEIGHT`, default `u64::MAX` (disabled). Pre-fork: `TxEnv.value` forced to ZERO — matches v2.1.48 EVM behaviour, divergence-free. Post-fork: envelope value flows through to revm. Activation procedure mirrors every other consensus fork: pick a height, set the env var on all four validators simultaneously, halt-all + simul-start. (Eventual root cause turned out to be MDBX_MAP_FULL — see v2.1.51 — so this gate has stayed at u64::MAX without consequence.)
+
+## [2.1.49] — 2026-05-01 — EVM value-transfer fix (workspace bump)
+
+Workspace bump for PR #439's value-transfer plumbing. Symptom-level: `wagmi.useSendTransaction({ to, value })` and `viem.writeContract({ value })` didn't transfer SRX even though the EVM tx succeeded — the envelope's `value` field never made it into the revm TxEnv. Fix: thread `envelope.value()` into TxEnv at the Pass-2 apply path. Two-day mainnet bake exposed the divergence regression (see v2.1.50 / v2.1.51); the fix itself is correct, just needed a fork gate.
 
 ### Documentation
 
