@@ -225,8 +225,19 @@ pub async fn stats_daily(State(state): State<SharedState>) -> Json<Vec<DailyStat
 
     if today_day > 0 {
         let earliest = today_day.saturating_sub(13);
-        for i in 0..=height {
+        let earliest_ts = earliest.saturating_mul(86400);
+        // Walk backward from head and bail as soon as we drop below the 14-day
+        // window. Used to be `for i in 0..=height`, which scanned every block
+        // from genesis under the state read lock — at h=1.55M (2026-05-05) the
+        // request hung >30s and starved writers, taking the whole /stats/daily
+        // endpoint offline at the LB. Backward walk caps work at ~14d × block
+        // rate (~200k iter) and stays bounded as chain grows.
+        let mut i = height;
+        loop {
             if let Some(block) = bc.get_block_any(i) {
+                if block.timestamp < earliest_ts {
+                    break;
+                }
                 let day = block.timestamp / 86400;
                 if day >= earliest && day <= today_day {
                     let e = map.entry(day).or_insert((0, 0));
@@ -238,6 +249,10 @@ pub async fn stats_daily(State(state): State<SharedState>) -> Json<Vec<DailyStat
                         .count() as u64;
                 }
             }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
         }
     }
 

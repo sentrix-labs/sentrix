@@ -134,6 +134,18 @@ service Sentrix {
   // the pending-aware nonce behaviour from chain v2.1.57).
   rpc GetBalance(GetBalanceRequest) returns (Account);
 
+  // v0.4 read-only state queries — drop the REST `/sentrix_status_extended`
+  // bridge from the explorer's stats hot path. All three are pure reads
+  // off `state.read()` snapshots; same lock contention profile as
+  // GetBlock/GetBalance.
+  //
+  // Active validator set + per-validator stake/active/jailed flags.
+  rpc GetValidatorSet(GetValidatorSetRequest) returns (ValidatorSet);
+  // Native-token supply snapshot (minted, burned, circulating).
+  rpc GetSupply(GetSupplyRequest) returns (Supply);
+  // Pending-tx count + a capped header window for UI display.
+  rpc GetMempool(GetMempoolRequest) returns (Mempool);
+
   // Server-streaming chain events. Subscribe once, receive every event type
   // until cancel or server restart. Replaces N separate eth_subscribe calls.
   // Backpressure: server bounded channel per stream (capacity 4096 — same as
@@ -181,4 +193,65 @@ enum EventFilter {
   EVENT_FILTER_PENDING_TX = 2;
   EVENT_FILTER_VALIDATOR_SET = 3;
   EVENT_FILTER_LOG = 4;
+}
+
+// ────────────────────────────────────────────────────────────
+// v0.4 read-only state-query messages
+// ────────────────────────────────────────────────────────────
+
+message GetValidatorSetRequest {
+  // Reserved for at_height historical reads — gated on MDBX snapshot
+  // isolation (Refactor 5). v0.4 returns the latest finalized set.
+  optional BlockHeight at_height = 1;
+}
+
+message ValidatorSet {
+  uint32 epoch = 1;
+  uint32 active_count = 2;
+  uint32 total_count = 3;
+  // Total stake across the active set, in sentri (10^-8 SRX).
+  uint64 total_active_stake_sentri = 4;
+  repeated ValidatorEntry validators = 5;
+}
+
+message ValidatorEntry {
+  Address address = 1;
+  uint64 stake_sentri = 2;
+  bool active = 3;
+  bool jailed = 4;
+}
+
+message GetSupplyRequest {
+  optional BlockHeight at_height = 1;
+}
+
+message Supply {
+  // sentri = 10^-8 SRX. Cap is fork-gated (210M pre-fork, 315M post-
+  // tokenomics-v2 at h=640800); leave conversion to display layer.
+  uint64 minted_sentri = 1;
+  uint64 burned_sentri = 2;
+  uint64 circulating_sentri = 3;  // = minted − burned
+}
+
+message GetMempoolRequest {
+  // Cap returned tx headers; default 100, max 500. Larger windows need
+  // pagination (deferred). 0 = use server default (100).
+  uint32 limit = 1;
+}
+
+message Mempool {
+  // Authoritative pending-tx count. `entries` is capped by `limit`;
+  // size always reflects the full mempool depth.
+  uint32 size = 1;
+  repeated MempoolEntry entries = 2;
+}
+
+message MempoolEntry {
+  Hash txid = 1;
+  Address from_address = 2;
+  Address to_address = 3;
+  Amount amount = 4;
+  Amount fee = 5;
+  uint64 nonce = 6;
+  uint32 tx_type = 7;
 }
