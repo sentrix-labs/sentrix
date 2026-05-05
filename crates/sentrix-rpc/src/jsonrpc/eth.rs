@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 use super::DispatchResult;
 use super::helpers::{
     block_gas_used_ratio, collect_logs, load_logs_for_tx, normalize_rpc_address,
-    normalize_rpc_hash, parse_address_filter, parse_hex_u64, parse_topic_filter, resolve_block_tag,
-    to_hex, to_hex_u128,
+    normalize_rpc_hash, parse_address_filter, parse_hex_u64, parse_topic_filter,
+    require_latest_state_read, resolve_block_tag, to_hex, to_hex_u128,
 };
 
 pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) -> DispatchResult {
@@ -34,41 +34,8 @@ pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) 
                 Ok(a) => a,
                 Err(e) => return Err((-32602, e.into())),
             };
-            // Pre-2026-05-05 this handler silently ignored params[1]
-            // (block tag) and always returned the latest balance —
-            // callers asking for a specific historical height got the
-            // current value with no error. Audit surfaced the gap when
-            // probing balance at h=1M / 1.5M / 1.62M all returned
-            // identical hex.
-            //
-            // Sentrix doesn't yet have MDBX snapshot isolation for
-            // historical state reads (deferred refactor). For now:
-            //   - `latest` / `earliest` / `pending` / `finalized` / `safe`
-            //     → return current state (close enough for these tags)
-            //   - specific block number → return -32004 with a
-            //     "historical state reads not yet supported" message
-            //     so callers see the gap instead of stale data
-            let block_tag = params[1].as_str().unwrap_or("latest");
-            let is_height = block_tag.starts_with("0x")
-                && block_tag.len() > 2
-                && block_tag[2..].chars().all(|c| c.is_ascii_hexdigit());
-            if is_height {
-                let bc = state.read().await;
-                let head = bc.height();
-                let requested =
-                    u64::from_str_radix(block_tag.trim_start_matches("0x"), 16).unwrap_or(0);
-                if requested != head {
-                    return Err((
-                        -32004,
-                        format!(
-                            "historical state reads not yet supported (asked h={}, head h={}). \
-                             Use 'latest' until MDBX snapshot isolation lands.",
-                            requested, head
-                        ),
-                    ));
-                }
-            }
             let bc = state.read().await;
+            require_latest_state_read(params.get(1), bc.height())?;
             let balance = bc.accounts.get_balance(&address);
             let wei = balance as u128 * 10_000_000_000u128;
             Ok(json!(to_hex_u128(wei)))
@@ -86,8 +53,16 @@ pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) 
             // quick succession would all sign the same nonce — chain
             // accepted only the first, the rest piled up rejected
             // mid-block. Live discovery 2026-05-02.
-            let block_tag = params[1].as_str().unwrap_or("latest");
+            //
+            // 2026-05-06: extend the same historical-state honesty
+            // pattern Bug A applied to eth_getBalance — specific past
+            // heights return -32004 instead of silently returning
+            // current nonce. `pending` keeps its mempool-aware path.
+            let block_tag = params.get(1).and_then(|v| v.as_str()).unwrap_or("latest");
             let bc = state.read().await;
+            if block_tag != "pending" {
+                require_latest_state_read(params.get(1), bc.height())?;
+            }
             let mut nonce = bc.accounts.get_nonce(&address);
             if block_tag == "pending" {
                 nonce = nonce.saturating_add(bc.mempool_pending_count(&address));
@@ -793,6 +768,12 @@ async fn run_evm_dry_run(
 async fn eth_call(params: &Value, state: &SharedState) -> DispatchResult {
     // Execute a read-only EVM call without state mutation.
     // params[0] = {from, to, data, value, gas}
+    // params[1] = block tag (latest by default; specific historical
+    // heights gated until snapshot isolation lands)
+    {
+        let bc = state.read().await;
+        require_latest_state_read(params.get(1), bc.height())?;
+    }
     match run_evm_dry_run(&params[0], state).await {
         Ok(receipt) => {
             let output_hex = format!("0x{}", hex::encode(&receipt.output));
@@ -882,6 +863,11 @@ async fn eth_get_code(params: &Value, state: &SharedState) -> DispatchResult {
         Err(e) => return Err((-32602, e.into())),
     };
     let bc = state.read().await;
+    // 2026-05-06: same historical-state gate as eth_getBalance — pre-fix
+    // ignored the block-tag arg and always returned latest code. A caller
+    // probing "code at h=1M" got the same bytes as "code at tip" with no
+    // error. require_latest_state_read makes the gap visible.
+    require_latest_state_read(params.get(1), bc.height())?;
     if let Some(account) = bc.accounts.accounts.get(&address) {
         if account.is_contract() {
             let code_hash_hex = hex::encode(account.code_hash);
@@ -913,6 +899,10 @@ async fn eth_get_storage_at(params: &Value, state: &SharedState) -> DispatchResu
         return Err((-32602, "invalid storage slot (must be hex, ≤ 32 bytes)".into()));
     }
     let bc = state.read().await;
+    // 2026-05-06: storage block tag is params[2] per spec (params[0]=addr,
+    // params[1]=slot, params[2]=block). Pre-fix it was ignored. Same
+    // honest-error pattern as eth_getBalance.
+    require_latest_state_read(params.get(2), bc.height())?;
     if let Some(value) = bc.accounts.get_contract_storage(&address, slot_hex) {
         Ok(json!(format!("0x{}", hex::encode(value))))
     } else {
