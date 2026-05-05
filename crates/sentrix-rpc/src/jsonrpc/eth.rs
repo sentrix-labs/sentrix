@@ -74,6 +74,32 @@ pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) 
         "eth_accounts" => Ok(json!([])),
         "eth_getCode" => eth_get_code(params, state).await,
         "eth_getStorageAt" => eth_get_storage_at(params, state).await,
+        // `eth_getBlockTransactionCountByNumber` — added 2026-05-05 after
+        // a transport audit found it absent. Common ethers / wagmi probe
+        // when a wallet wants "how busy is this block." Mirrors the same
+        // block-resolution path as eth_getBlockByNumber.
+        "eth_getBlockTransactionCountByNumber" => {
+            let bc = state.read().await;
+            let block_param = params[0].as_str().unwrap_or("latest");
+            let index = if block_param == "latest" {
+                bc.height()
+            } else if block_param == "earliest" {
+                0
+            } else if block_param == "pending" || block_param == "finalized" || block_param == "safe" {
+                bc.height()
+            } else {
+                match u64::from_str_radix(block_param.trim_start_matches("0x"), 16) {
+                    Ok(n) => n,
+                    Err(_) => {
+                        return Err((-32602, format!("invalid block number: {block_param:?}")));
+                    }
+                }
+            };
+            match bc.get_block_any(index) {
+                Some(block) => Ok(json!(format!("0x{:x}", block.transactions.len()))),
+                None => Ok(json!(null)),
+            }
+        }
         // Subscriptions only make sense on a long-lived connection. HTTP is
         // request/response; clients that try to subscribe over HTTP get a
         // pointer to the right transport instead of a silent error.
