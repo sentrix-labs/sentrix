@@ -299,6 +299,132 @@ impl Sentrix for SentrixServiceImpl {
         }))
     }
 
+    /// `GetValidatorSet` — current active set + per-validator stake/active/jailed.
+    /// Mirrors `validators.*` slice of the REST `/sentrix_status_extended`
+    /// endpoint so the explorer can drop the JSON bridge from its hot path.
+    async fn get_validator_set(
+        &self,
+        request: Request<GetValidatorSetRequest>,
+    ) -> Result<Response<ValidatorSet>, Status> {
+        let req = request.into_inner();
+        if req.at_height.is_some() {
+            return Err(Status::unimplemented(
+                "at_height historical reads require MDBX snapshot isolation \
+                 (Refactor 5 in 2026-05-05-sentrix-sdk-design.md); v0.4 returns latest only",
+            ));
+        }
+
+        let bc = self.state.read().await;
+        let active_set: std::collections::HashSet<&String> =
+            bc.stake_registry.active_set.iter().collect();
+        let mut validators: Vec<ValidatorEntry> = bc
+            .stake_registry
+            .validators
+            .iter()
+            .map(|(addr, v)| {
+                let proto_addr = chain_addr_to_proto(addr);
+                ValidatorEntry {
+                    address: proto_addr,
+                    stake_sentri: v.total_stake(),
+                    active: active_set.contains(addr),
+                    jailed: v.is_jailed,
+                }
+            })
+            .collect();
+        // Sort by stake descending — UI consumers (the Explorer hero) want
+        // the heaviest stakes first; alphabetic order on the HashMap iter
+        // would shuffle each call and confuse caching downstream.
+        validators.sort_by(|a, b| b.stake_sentri.cmp(&a.stake_sentri));
+
+        let active_count = bc.stake_registry.active_count() as u32;
+        let total_count = bc.stake_registry.validators.len() as u32;
+        let total_active_stake_sentri: u64 = bc
+            .stake_registry
+            .active_set
+            .iter()
+            .filter_map(|a| bc.stake_registry.get_validator(a))
+            .map(|v| v.total_stake())
+            .sum();
+        let epoch = sentrix_staking::epoch::EpochManager::epoch_for_height(bc.height()) as u32;
+        drop(bc);
+
+        Ok(Response::new(ValidatorSet {
+            epoch,
+            active_count,
+            total_count,
+            total_active_stake_sentri,
+            validators,
+        }))
+    }
+
+    /// `GetSupply` — minted/burned/circulating snapshot.
+    async fn get_supply(
+        &self,
+        request: Request<GetSupplyRequest>,
+    ) -> Result<Response<Supply>, Status> {
+        let req = request.into_inner();
+        if req.at_height.is_some() {
+            return Err(Status::unimplemented(
+                "at_height historical reads require MDBX snapshot isolation; \
+                 v0.4 returns latest only",
+            ));
+        }
+
+        let bc = self.state.read().await;
+        let minted_sentri = bc.total_minted;
+        let burned_sentri = bc.accounts.total_burned;
+        drop(bc);
+
+        Ok(Response::new(Supply {
+            minted_sentri,
+            burned_sentri,
+            circulating_sentri: minted_sentri.saturating_sub(burned_sentri),
+        }))
+    }
+
+    /// `GetMempool` — pending-tx count + capped header window.
+    async fn get_mempool(
+        &self,
+        request: Request<GetMempoolRequest>,
+    ) -> Result<Response<Mempool>, Status> {
+        let req = request.into_inner();
+        // 0 → server default 100. Hard cap at 500 to keep one
+        // round-trip bounded under sustained mempool load.
+        let limit = match req.limit {
+            0 => 100usize,
+            n => (n as usize).min(500),
+        };
+
+        let bc = self.state.read().await;
+        let size = bc.mempool_size() as u32;
+        // VecDeque iter is FIFO — the order tx will be considered for
+        // inclusion. UI cares about that order more than insertion-time.
+        let entries: Vec<MempoolEntry> = bc
+            .mempool
+            .iter()
+            .take(limit)
+            .map(|tx| MempoolEntry {
+                txid: chain_hash_to_proto(&tx.txid),
+                from_address: chain_addr_to_proto(&tx.from_address),
+                to_address: chain_addr_to_proto(&tx.to_address),
+                amount: Some(Amount { sentri: tx.amount }),
+                fee: Some(Amount { sentri: tx.fee }),
+                nonce: tx.nonce,
+                // Chain-side `Transaction` doesn't carry an explicit
+                // tx_type field — the variant is implicit in the
+                // address conventions (system addresses for staking
+                // ops, contract creation when to_address is empty,
+                // etc.). v0.4 returns 0 ("transfer"); add proper
+                // classification in v0.5 alongside BroadcastTx where
+                // the wire shape is canonical.
+                tx_type: 0,
+            })
+            .collect();
+        drop(bc);
+
+        Ok(Response::new(Mempool { size, entries }))
+    }
+
     /// Server-streaming chain events. v0.3 implements the BlockFinalized
     /// channel by subscribing to the existing `EventBus.new_heads`
     /// broadcast (Sentrix has instant BFT finality so new_heads ARE
@@ -392,6 +518,49 @@ mod tests {
         assert_eq!(proto.value, bytes);
         let back = proto_addr_to_chain(&proto).expect("reverse");
         assert_eq!(back, addr);
+    }
+
+    #[test]
+    fn v04_messages_construct() {
+        // Smoke test for the v0.4 read-only types — proto changes ripple
+        // through tonic-build at compile time, so a missing field surfaces
+        // here long before deploy.
+        let req = GetValidatorSetRequest { at_height: None };
+        let _ = req.at_height.is_none();
+
+        let entry = ValidatorEntry {
+            address: Some(Address { value: vec![0u8; 20] }),
+            stake_sentri: 1_000_000_000,
+            active: true,
+            jailed: false,
+        };
+        assert!(entry.active);
+        assert!(!entry.jailed);
+
+        let set = ValidatorSet {
+            epoch: 12,
+            active_count: 4,
+            total_count: 4,
+            total_active_stake_sentri: 4_000_000_000_000,
+            validators: vec![entry],
+        };
+        assert_eq!(set.active_count, 4);
+
+        let supply = Supply {
+            minted_sentri: 63_000_000_00_000_000,
+            burned_sentri: 0,
+            circulating_sentri: 63_000_000_00_000_000,
+        };
+        assert_eq!(
+            supply.circulating_sentri,
+            supply.minted_sentri.saturating_sub(supply.burned_sentri)
+        );
+
+        let pool = Mempool {
+            size: 0,
+            entries: vec![],
+        };
+        assert_eq!(pool.size, 0);
     }
 
     #[test]
