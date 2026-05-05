@@ -63,6 +63,33 @@ impl VoteCollector {
         self.precommit_tally.values().sum()
     }
 
+    /// Snapshot of the current prevote tally — mirror of
+    /// `precommit_tally_snapshot`. Logged alongside the precommit tally on
+    /// nil-majority skip so the diff between the two reveals whether the
+    /// round failed because validators withheld prevotes (network partition
+    /// shape — both tallies thin) OR because validators prevoted YES but
+    /// then precommitted NIL (silent-thread pattern from the 2026-05-05
+    /// h=2575800 incident — prevote tally shows full quorum on hash X,
+    /// precommit tally splits same hash X / nil).
+    pub fn prevote_tally_snapshot(&self) -> Vec<(String, u64)> {
+        let mut entries: Vec<(String, u64)> = self
+            .prevote_tally
+            .iter()
+            .map(|(h, w)| {
+                let label = match h {
+                    Some(hash) => {
+                        let trimmed = &hash[..hash.len().min(12)];
+                        format!("{trimmed}…")
+                    }
+                    None => "nil".to_string(),
+                };
+                (label, *w)
+            })
+            .collect();
+        entries.sort_by_key(|e| std::cmp::Reverse(e.1));
+        entries
+    }
+
     /// Snapshot of the current precommit tally, for diagnostic logging.
     /// Returns `(short_hash_or_nil, weight)` pairs sorted by weight desc
     /// so split-vote livelocks are easy to spot in journalctl.
