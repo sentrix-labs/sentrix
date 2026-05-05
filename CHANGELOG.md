@@ -18,6 +18,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Audit pass 2026-05-05 confirmed clean: no `std::sync::Mutex` / `RwLock` held across an `.await` point in workspace production code. The codebase already enforces this discipline (explicit comment at `crates/sentrix-rpc/src/routes/mod.rs:49`); audit verified zero violations.
 - WebSocket broadcaster (`crates/sentrix-rpc/src/ws/`) already uses `tokio::sync::broadcast` with `RecvError::Lagged` handling — slow consumers drop the oldest frames per-subscriber without affecting the broadcaster or other subscribers. No code change needed for the "slow consumer" hardening pattern.
 
+## [2.1.73] — 2026-05-05 — bare `/address/{addr}` and `/accounts/{addr}` route aliases; accurate root docs; BFT nil-skip prevote-tally diagnostic
+
+Two cosmetic gaps in the REST surface, plus one diagnostic-logging follow-up. Surfaced by an external chain-list reviewer who pasted bare address URLs into a browser and got 404s — sub-paths like `/address/{addr}/info`, `/address/{addr}/history`, `/accounts/{addr}/balance`, `/accounts/{addr}/code` worked, but the bare paths advertised in the root `/` docs string did not.
+
+- **Bare `/address/{address}` and `/accounts/{address}` routes** (PR #474). New aliases in `crates/sentrix-rpc/src/routes/mod.rs` pointing at the existing `get_address_info` handler — same response shape as `/address/{addr}/info`. Wallets and registries that deeplink to the bare path now resolve correctly instead of the "Cannot GET /" Express default.
+- **Root `/` docs string accuracy** (PR #474). Expanded from 9 path stubs to 17 actually-served REST paths: `block`, `transaction`, `address`, `address_history`, `account_balance`, `account_nonce`, `account_code`, `token_info`, `status_extended` added to the existing list. `curl https://api.sentrixchain.com/ | jq .docs.rest` is an authoritative discovery surface again.
+- **BFT nil-majority-skip diagnostic logging** (PR #475). The nil-skip path already logged the precommit tally, but without the prevote tally for comparison the log can't distinguish a healthy network-silence timeout from the silent-thread pattern (validators prevoted yes then went silent / flipped to nil on precommit). Added `VoteCollector::prevote_tally_snapshot()` mirror of the existing precommit equivalent; the nil-skip log now emits both tallies side-by-side. Pure diagnostic — zero consensus surface change. The next occurrence of the pattern surfaces unambiguously in journalctl as `prevote_tally=[hashX=full] precommit_tally=[hashX=partial, nil=partial]`, distinguishing it from a clean network-silence skip where both tallies would be thin.
+
+Build via `rust:1.95-bullseye` for glibc 2.31 baseline (Ubuntu 22.04 mainnet validator parity). Halt-all + simul-start mainnet deploy completed in ~7 seconds with no chain.db divergence (state-root parity verified pre-halt at h=1604000 across all four validators).
+
 ## [2.1.72] — 2026-05-05 — gRPC v0.4 read-only state queries (GetValidatorSet + GetSupply + GetMempool)
 
 Three new read-only RPCs on the side-car gRPC service, all served off the same `state.read().await` snapshot used by GetBlock/GetBalance:
