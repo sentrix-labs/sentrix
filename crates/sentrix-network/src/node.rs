@@ -25,10 +25,7 @@ pub enum NodeEvent {
     NewTransaction(Transaction),
     PeerConnected(String),
     PeerDisconnected(String),
-    SyncNeeded {
-        peer_addr: String,
-        peer_height: u64,
-    },
+    SyncNeeded { peer_addr: String, peer_height: u64 },
     BftProposal(sentrix_bft::messages::Proposal),
     BftPrevote(sentrix_bft::messages::Prevote),
     BftPrecommit(sentrix_bft::messages::Precommit),

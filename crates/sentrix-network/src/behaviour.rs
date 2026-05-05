@@ -73,7 +73,8 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
             Err(_) => {
                 tracing::warn!(
                     "sentrix-network: {} set to {:?} but failed to parse — using default",
-                    key, raw
+                    key,
+                    raw
                 );
                 default
             }
@@ -92,7 +93,9 @@ fn env_bool(key: &str, default: bool) -> bool {
             _ => {
                 tracing::warn!(
                     "sentrix-network: {} set to {:?} but not a boolean — using default {}",
-                    key, raw, default
+                    key,
+                    raw,
+                    default
                 );
                 default
             }
@@ -431,9 +434,9 @@ mod tests {
     use libp2p::identity;
     // Primitives needed by the roundtrip tests below — not used at top
     // level of the module anymore (wire types moved to sentrix-wire).
+    use libp2p::request_response::Codec;
     use sentrix_primitives::block::Block;
     use sentrix_primitives::transaction::Transaction;
-    use libp2p::request_response::Codec;
 
     fn make_keypair() -> identity::Keypair {
         identity::Keypair::generate_ed25519()

@@ -9,7 +9,6 @@
 // SwarmTask is spawned once in `LibP2pNode::new()`.  All swarm mutations go
 // through the `SwarmCommand` channel so callers never need to hold the swarm.
 
-
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -76,13 +75,48 @@ pub static SWARM_TICK: AtomicU64 = AtomicU64::new(0);
 /// next session) so the Telegram alerter can fire on `rate(...) > 0`.
 pub static DROPPED_BFT_BROADCASTS: AtomicU64 = AtomicU64::new(0);
 
+/// 2026-05-05 v2.1.74: cumulative count of peer connections force-
+/// disconnected by the inbound-silence watchdog. A "silent peer" is one
+/// where our local view shows zero inbound libp2p messages from that
+/// peer for INBOUND_SILENCE_THRESHOLD seconds (default 30 s) despite
+/// the connection still being established at the swarm layer.
+///
+/// Closes the silent-peer halt class observed on 2026-05-05 testnet at
+/// h=2,607,387 (and matching session-off v33 35-second round-skip
+/// recoveries at h=2,575,800): val1's libp2p inbound stream stalled
+/// while outbound stayed alive, so peers (val2/3/4) saw 64-69 outbound
+/// failures each targeting val1's PeerId, BFT prevote/precommit never
+/// reached val1's view, cluster halted for 5 min until the SWARM_TICK
+/// watchdog SIGABRT'd the stuck node.
+///
+/// The v2.1.66 SWARM_TICK watchdog catches the case where val1's swarm
+/// task is fully wedged. This watchdog catches the narrower case where
+/// the swarm task is healthy overall (sync_interval / kad_interval
+/// ticks fire, SWARM_TICK advances) but a SPECIFIC peer connection's
+/// inbound stream drained slow or got stuck — most likely under page-
+/// fault pressure on chain.db reads during memory-pressure events.
+/// Force-disconnecting the half-dead connection lets libp2p re-dial
+/// with a fresh TCP+Noise+yamux stack, abandoning the stuck stream.
+///
+/// Threshold rationale: testnet + mainnet run 1-second blocks with
+/// 4 validators each. Every height a validator should see ~3 inbound
+/// BFT messages from each peer (proposal/prevote/precommit, plus
+/// gossipsub blocks + round_status pings). 30 s with zero inbound from
+/// a verified peer is genuinely abnormal, well above any plausible
+/// quiet window.
+///
+/// Trade-off accepted: false-positive disconnect during a true silent
+/// period (e.g. validator legitimately has nothing to broadcast for
+/// 30 s — extremely unlikely on Sentrix's 1-s cadence). Counter is the
+/// canary; if `rate(...) > 0` during normal operation without halts
+/// the threshold is too tight, retune.
+pub static INBOUND_SILENCE_DISCONNECTS: AtomicU64 = AtomicU64::new(0);
+
 use futures::StreamExt;
 use libp2p::{
-    Multiaddr, PeerId, Swarm, SwarmBuilder,
-    gossipsub,
+    Multiaddr, PeerId, Swarm, SwarmBuilder, gossipsub,
     identity::Keypair,
-    kad,
-    noise,
+    kad, noise,
     request_response::{self, OutboundRequestId},
     swarm::SwarmEvent,
     tcp, yamux,
@@ -109,8 +143,8 @@ mod multiaddr;
 mod ratelimit;
 mod validators;
 
-pub use multiaddr::make_multiaddr;
 use multiaddr::extract_ip;
+pub use multiaddr::make_multiaddr;
 use ratelimit::IpRateLimiter;
 use validators::{block_boundary_reject_reason, is_active_bft_signer};
 
@@ -481,7 +515,6 @@ impl LibP2pNode {
     }
 }
 
-
 // ── Swarm event loop ─────────────────────────────────────
 
 // large_futures: the Swarm owns SentrixBehaviour which has internal caches;
@@ -556,6 +589,18 @@ async fn run_swarm(
     // Periodic Kademlia bootstrap: every 60s, random walk to discover new peers.
     let mut kad_interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
 
+    // 2026-05-05 v2.1.74: inbound-silence watchdog state. Tracks the
+    // last-seen inbound libp2p message timestamp per verified peer.
+    // Updated on every inbound RR Request, RR Response, and gossipsub
+    // Message; initialised on ConnectionEstablished, removed on
+    // ConnectionClosed. Tick interval polls the map and force-
+    // disconnects peers with elapsed > INBOUND_SILENCE_THRESHOLD —
+    // closes the silent-peer halt class. See `INBOUND_SILENCE_DISCONNECTS`
+    // doc above for the full rationale.
+    let mut last_inbound_ts: HashMap<PeerId, std::time::Instant> = HashMap::new();
+    let mut inbound_watchdog_interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+    const INBOUND_SILENCE_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(30);
+
     // 2026-05-05 v2.1.66: spawn the swarm-task watchdog. It reads
     // SWARM_TICK every 5 s; if the counter stays still for ≥30 s past
     // the startup grace, the swarm select! loop has wedged and we
@@ -563,7 +608,7 @@ async fn run_swarm(
     // keep SWARM_TICK incrementing during quiet periods so we don't
     // false-positive on a chain with no traffic.
     tokio::spawn(async move {
-        use tokio::time::{Duration, sleep, Instant as TokioInstant};
+        use tokio::time::{Duration, Instant as TokioInstant, sleep};
         const STALL_THRESHOLD: Duration = Duration::from_secs(30);
         const STARTUP_GRACE: Duration = Duration::from_secs(60);
         const TICK: Duration = Duration::from_secs(5);
@@ -755,12 +800,82 @@ async fn run_swarm(
                     &mut pending_handshakes,
                     &mut pending_syncs,
                     &mut pending_variants,
+                    &mut last_inbound_ts,
                     our_chain_id,
                     &mut ip_limiter,
                     &mut multiaddr_cache,
                     MAX_CACHED_ADVERTS,
                 )
                 .await;
+            }
+
+            // ── Inbound-silence watchdog tick (v2.1.74) ──
+            // Force-disconnect any verified peer whose last inbound
+            // timestamp is older than INBOUND_SILENCE_THRESHOLD. libp2p
+            // will auto-redial via the dial-tick path or operator's
+            // --peers list, replacing the half-dead connection with a
+            // fresh stream stack. See INBOUND_SILENCE_DISCONNECTS doc.
+            _ = inbound_watchdog_interval.tick() => {
+                let now = std::time::Instant::now();
+                // Carry the elapsed Duration through the tuple so the
+                // disconnect loop logs the same elapsed value used to
+                // decide staleness — avoids a second Instant::now() that
+                // would drift by microseconds and produce mismatched logs.
+                let stale: Vec<(PeerId, std::time::Duration)> = verified_peers
+                    .iter()
+                    .filter_map(|peer_id| {
+                        last_inbound_ts.get(peer_id).and_then(|ts| {
+                            let elapsed = now.duration_since(*ts);
+                            if elapsed > INBOUND_SILENCE_THRESHOLD {
+                                Some((*peer_id, elapsed))
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect();
+
+                // Storm guard: never disconnect down to <2 verified peers.
+                // On a 4-validator cluster, a coincident quiet window
+                // could otherwise flag all 3 peers stale in the same
+                // tick → mass-disconnect → 0 verified peers → no BFT
+                // quorum → induced halt. Inverting the original bug.
+                // If we'd drop below 2 peers, log + skip this tick.
+                // Below 2 (i.e. 1 or 0) is also where redial latency
+                // matters most; the safer move is keep the current
+                // peers and let the v2.1.66 SWARM_TICK watchdog fire if
+                // the swarm task is genuinely stuck.
+                let post_count = verified_peers.len().saturating_sub(stale.len());
+                if !stale.is_empty() && post_count < 2 && verified_peers.len() >= 2 {
+                    tracing::warn!(
+                        target: "inbound_watchdog",
+                        "libp2p inbound watchdog: would drop {} of {} peers (post-disconnect <2), \
+                         skipping this tick to preserve quorum. SWARM_TICK watchdog will catch \
+                         a genuinely-wedged swarm task at the 30s threshold.",
+                        stale.len(), verified_peers.len()
+                    );
+                } else {
+                    for (peer_id, elapsed) in stale {
+                        let total = INBOUND_SILENCE_DISCONNECTS
+                            .fetch_add(1, Ordering::Relaxed)
+                            + 1;
+                        tracing::warn!(
+                            target: "inbound_watchdog",
+                            "libp2p inbound watchdog: peer {} silent for {}s — \
+                             force-disconnect (total={}). Closes silent-peer \
+                             halt class; libp2p will auto-redial.",
+                            peer_id, elapsed.as_secs(), total
+                        );
+                        // Pre-emptive ts removal so the peer cannot be
+                        // re-flagged during the redial window before
+                        // ConnectionClosed fires. ConnectionClosed will
+                        // remove from verified_peers; we do NOT remove
+                        // it here so the storm-guard count stays correct
+                        // for any other stale peers in the same tick.
+                        last_inbound_ts.remove(&peer_id);
+                        let _ = swarm.disconnect_peer_id(peer_id);
+                    }
+                }
             }
 
             // ── Periodic sync + rate limiter cleanup ──
@@ -812,6 +927,7 @@ async fn on_swarm_event(
     pending_handshakes: &mut HashMap<OutboundRequestId, PeerId>,
     pending_syncs: &mut HashMap<OutboundRequestId, PeerId>,
     pending_variants: &mut HashMap<OutboundRequestId, &'static str>,
+    last_inbound_ts: &mut HashMap<PeerId, std::time::Instant>,
     our_chain_id: u64,
     ip_limiter: &mut IpRateLimiter,
     multiaddr_cache: &mut HashMap<String, MultiaddrAdvertisement>,
@@ -848,6 +964,10 @@ async fn on_swarm_event(
             }
 
             tracing::info!("libp2p: TCP connection to {}", peer_id);
+            // v2.1.74: seed inbound-watchdog ts at connection time so a
+            // peer that just connected gets the full SILENCE_THRESHOLD
+            // window before it can be flagged stale.
+            last_inbound_ts.insert(peer_id, std::time::Instant::now());
             let height = blockchain.read().await.height();
             let req = SentrixRequest::Handshake {
                 host: "0.0.0.0".to_string(),
@@ -876,6 +996,7 @@ async fn on_swarm_event(
             // Previously, we removed on ANY close, orphaning the surviving connection.
             if num_established == 0 {
                 verified_peers.remove(&peer_id);
+                last_inbound_ts.remove(&peer_id);
                 let _ = event_tx
                     .send(NodeEvent::PeerDisconnected(peer_id.to_string()))
                     .await;
@@ -892,6 +1013,7 @@ async fn on_swarm_event(
                 pending_handshakes,
                 pending_syncs,
                 pending_variants,
+                last_inbound_ts,
                 our_chain_id,
             )
             .await;
@@ -929,6 +1051,8 @@ async fn on_swarm_event(
             propagation_source,
             ..
         })) => {
+            // v2.1.74: any inbound gossipsub from a peer marks it alive.
+            last_inbound_ts.insert(propagation_source, std::time::Instant::now());
             let topic = message.topic.as_str();
             if topic == BLOCKS_TOPIC {
                 match bincode::deserialize::<GossipBlock>(&message.data) {
@@ -1124,6 +1248,7 @@ async fn on_rr_event(
     pending_handshakes: &mut HashMap<OutboundRequestId, PeerId>,
     pending_syncs: &mut HashMap<OutboundRequestId, PeerId>,
     pending_variants: &mut HashMap<OutboundRequestId, &'static str>,
+    last_inbound_ts: &mut HashMap<PeerId, std::time::Instant>,
     our_chain_id: u64,
 ) {
     use request_response::{Event as RrEvent, Message as RrMessage};
@@ -1137,6 +1262,8 @@ async fn on_rr_event(
             },
             ..
         } => {
+            // v2.1.74: any inbound RR request from a peer marks it alive.
+            last_inbound_ts.insert(peer, std::time::Instant::now());
             on_inbound_request(
                 peer,
                 request,
@@ -1160,6 +1287,8 @@ async fn on_rr_event(
                 },
             ..
         } => {
+            // v2.1.74: any inbound RR response from a peer marks it alive.
+            last_inbound_ts.insert(peer, std::time::Instant::now());
             // Bug #1d diagnostic: release variant slot on successful response.
             // Without this the map would grow unbounded across the process
             // lifetime.
@@ -1240,11 +1369,7 @@ async fn on_rr_event(
 // than wedging the swarm task. Halts caused by drops are at least
 // observable now via `rate(EVENT_TX_DROPPED) > 0` (use Telegram alerter
 // or /metrics scrape).
-fn try_send_event(
-    event_tx: &mpsc::Sender<NodeEvent>,
-    event: NodeEvent,
-    variant: &'static str,
-) {
+fn try_send_event(event_tx: &mpsc::Sender<NodeEvent>, event: NodeEvent, variant: &'static str) {
     let depth_pre = event_tx.max_capacity() - event_tx.capacity();
     let max = event_tx.max_capacity();
     let start = std::time::Instant::now();
@@ -1604,7 +1729,11 @@ async fn on_inbound_request(
                 );
                 return;
             }
-            try_send_event(event_tx, NodeEvent::BftRoundStatus(status), "BftRoundStatus");
+            try_send_event(
+                event_tx,
+                NodeEvent::BftRoundStatus(status),
+                "BftRoundStatus",
+            );
         }
     }
 }
