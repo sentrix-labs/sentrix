@@ -183,17 +183,25 @@ if [[ -f "$HOME/.cargo/env" ]]; then
 fi
 
 need_rust=1
-if command -v rustc >/dev/null 2>&1; then
-    rustc_ver=$(rustc --version | awk '{print $2}')
+# Use `rustc --version` rather than `command -v rustc` — operators can have
+# `rustc` on PATH but a broken rustup state (no default toolchain set, stale
+# settings.toml from a wiped install, etc.) where `rustc --version` fails.
+# Set -e would abort the script silently; treat any failure as "need rustup
+# install" instead.
+if rustc_out=$(rustc --version 2>&1); then
+    rustc_ver=$(echo "$rustc_out" | awk '{print $2}')
     rustc_major=$(echo "$rustc_ver" | cut -d. -f1)
     rustc_minor=$(echo "$rustc_ver" | cut -d. -f2)
-    if (( rustc_major > RUST_MIN_MAJOR )) || \
-       (( rustc_major == RUST_MIN_MAJOR && rustc_minor >= RUST_MIN_MINOR )); then
+    if [[ -n "$rustc_major" ]] && [[ -n "$rustc_minor" ]] && \
+       { (( rustc_major > RUST_MIN_MAJOR )) || \
+         (( rustc_major == RUST_MIN_MAJOR && rustc_minor >= RUST_MIN_MINOR )); }; then
         ok "rustc ${rustc_ver} (>= ${RUST_MIN_MAJOR}.${RUST_MIN_MINOR})"
         need_rust=0
     else
         warn "rustc ${rustc_ver} < ${RUST_MIN_MAJOR}.${RUST_MIN_MINOR}; will upgrade via rustup"
     fi
+else
+    info "rustc present but unusable (likely broken rustup state); will (re)install via rustup"
 fi
 
 if (( need_rust == 1 )); then
@@ -203,6 +211,8 @@ if (( need_rust == 1 )); then
         # shellcheck disable=SC1091
         source "$HOME/.cargo/env"
     fi
+    # `rustup default stable` will install stable if absent, repair the
+    # default-toolchain link if a stale settings.toml left it unset.
     rustup default stable >/dev/null
     rustup update stable >/dev/null
     ok "rustup default: $(rustc --version)"
