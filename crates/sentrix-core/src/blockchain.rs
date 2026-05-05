@@ -1448,6 +1448,50 @@ impl Blockchain {
     ///   Phase 1 — immutable borrows of `chain` and `accounts` → collect owned data.
     ///   Phase 2 — mutable borrow of `state_trie` → insert + commit.
     pub fn update_trie_for_block(&mut self) -> SentrixResult<Option<[u8; 32]>> {
+        // Option B canonical-treasury rebase — fire BEFORE the trie-init
+        // check so it runs independent of trie readiness. Targets the
+        // exact activation block; force-sets in-memory PROTOCOL_TREASURY
+        // to the operator-set canonical so all 4 validators agree on
+        // the value the trie is about to commit. Detailed runbook lives
+        // a few hundred lines down in the touch-list section. Without
+        // either env var, this is a no-op.
+        let state_root_v2_height_for_rebase = std::env::var("STATE_ROOT_V2_HEIGHT")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(u64::MAX);
+        let activation_block_index = self.chain.last().map(|b| b.index);
+        if activation_block_index == Some(state_root_v2_height_for_rebase) {
+            if let Some(canonical) = std::env::var("STATE_ROOT_V2_TREASURY_BALANCE")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+            {
+                let prior = self.accounts.get_balance(PROTOCOL_TREASURY);
+                if prior != canonical {
+                    let delta = canonical as i128 - prior as i128;
+                    tracing::warn!(
+                        "STATE_ROOT_V2 activation rebase at h={}: PROTOCOL_TREASURY \
+                         {} → {} (delta {} sentri). Operator-set canonical override.",
+                        state_root_v2_height_for_rebase, prior, canonical, delta
+                    );
+                } else {
+                    tracing::info!(
+                        "STATE_ROOT_V2 activation at h={}: PROTOCOL_TREASURY \
+                         balance already matches canonical {} sentri (no rebase)",
+                        state_root_v2_height_for_rebase, canonical
+                    );
+                }
+                self.accounts.set_balance(PROTOCOL_TREASURY, canonical);
+            } else {
+                tracing::warn!(
+                    "STATE_ROOT_V2 activation at h={} WITHOUT \
+                     STATE_ROOT_V2_TREASURY_BALANCE override — fork risk if \
+                     in-memory PROTOCOL_TREASURY balance differs across validators. \
+                     See blockchain.rs::update_trie_for_block runbook.",
+                    state_root_v2_height_for_rebase
+                );
+            }
+        }
+
         if self.state_trie.is_none() {
             // Pre-STATE_ROOT_FORK_HEIGHT, missing trie is acceptable —
             // state_root isn't part of the block hash. Past the fork
@@ -1571,6 +1615,8 @@ impl Blockchain {
             (addrs, block.index)
         };
         // All borrows on `self.chain` released here.
+        // (Option B canonical-treasury rebase already fired at function
+        // entry — see top of update_trie_for_block.)
 
         // Phase 1b: snapshot current balances + nonces (immutable borrow of `accounts`)
         // CRITICAL: Use BTreeSet (sorted, deterministic) — NOT HashSet (random per-process).
@@ -3456,6 +3502,157 @@ mod tests {
 
         unsafe {
             std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
+        }
+    }
+
+    /// Option B: the env-driven canonical balance override force-sets
+    /// PROTOCOL_TREASURY at the activation block. Two nodes with
+    /// divergent in-memory PROTOCOL_TREASURY balances should converge
+    /// to the same value once activated.
+    #[test]
+    fn test_state_root_v2_canonical_override_rebases_drifted_balance() {
+        use sentrix_primitives::transaction::PROTOCOL_TREASURY;
+
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::set_var("STATE_ROOT_V2_HEIGHT", "1");
+            std::env::set_var("STATE_ROOT_V2_TREASURY_BALANCE", "1000000000000");
+        }
+
+        let mut bc = Blockchain::new("admin".to_string());
+        // Pretend chain progressed past genesis with a divergent treasury
+        // balance — simulates the 2026-05-06 drift scenario.
+        bc.accounts.set_balance(PROTOCOL_TREASURY, 999_999_000_000);
+        let prior = bc.accounts.get_balance(PROTOCOL_TREASURY);
+        assert_eq!(prior, 999_999_000_000);
+
+        // Append an empty block at h=1 so update_trie_for_block sees
+        // it as `chain.last()`. Genesis is h=0 so this lands on the
+        // activation height.
+        let prev_hash = bc.latest_block().unwrap().hash.clone();
+        let activation_block = sentrix_primitives::block::Block::new(
+            1,
+            prev_hash,
+            vec![sentrix_primitives::transaction::Transaction::new_coinbase(
+                "validator1".into(),
+                0,
+                1,
+                1_700_000_000,
+            )],
+            "validator1".into(),
+        );
+        bc.chain.push(activation_block);
+
+        let _ = bc.update_trie_for_block();
+
+        // After update_trie_for_block, in-memory PROTOCOL_TREASURY should
+        // be force-set to the canonical regardless of prior drift.
+        let post = bc.accounts.get_balance(PROTOCOL_TREASURY);
+        assert_eq!(
+            post, 1_000_000_000_000,
+            "Option B rebase must force PROTOCOL_TREASURY to env canonical"
+        );
+
+        unsafe {
+            std::env::remove_var("STATE_ROOT_V2_HEIGHT");
+            std::env::remove_var("STATE_ROOT_V2_TREASURY_BALANCE");
+        }
+    }
+
+    /// Option B is opt-in: without `STATE_ROOT_V2_TREASURY_BALANCE`,
+    /// no rebase happens. Preserves the v2.1.76 behavior on hosts that
+    /// only set the height gate.
+    #[test]
+    fn test_state_root_v2_no_rebase_without_canonical_env() {
+        use sentrix_primitives::transaction::PROTOCOL_TREASURY;
+
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::set_var("STATE_ROOT_V2_HEIGHT", "1");
+            std::env::remove_var("STATE_ROOT_V2_TREASURY_BALANCE");
+        }
+
+        let mut bc = Blockchain::new("admin".to_string());
+        bc.accounts.set_balance(PROTOCOL_TREASURY, 999_999_000_000);
+
+        let prev_hash = bc.latest_block().unwrap().hash.clone();
+        let activation_block = sentrix_primitives::block::Block::new(
+            1,
+            prev_hash,
+            vec![sentrix_primitives::transaction::Transaction::new_coinbase(
+                "validator1".into(),
+                0,
+                1,
+                1_700_000_000,
+            )],
+            "validator1".into(),
+        );
+        bc.chain.push(activation_block);
+
+        let _ = bc.update_trie_for_block();
+
+        let post = bc.accounts.get_balance(PROTOCOL_TREASURY);
+        assert_eq!(
+            post, 999_999_000_000,
+            "without canonical env, PROTOCOL_TREASURY must keep its in-memory value"
+        );
+
+        unsafe {
+            std::env::remove_var("STATE_ROOT_V2_HEIGHT");
+        }
+    }
+
+    /// Option B only fires AT the activation block, not at every block
+    /// past it. This is critical: subsequent blocks must let the trie
+    /// track real treasury growth via coinbase mints, not freeze the
+    /// canonical forever.
+    #[test]
+    fn test_state_root_v2_rebase_only_at_activation_block() {
+        use sentrix_primitives::transaction::PROTOCOL_TREASURY;
+
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::set_var("STATE_ROOT_V2_HEIGHT", "1");
+            std::env::set_var("STATE_ROOT_V2_TREASURY_BALANCE", "500");
+        }
+
+        let mut bc = Blockchain::new("admin".to_string());
+        bc.accounts.set_balance(PROTOCOL_TREASURY, 999);
+
+        // Push activation block (h=1) — rebases to 500.
+        let h0_hash = bc.latest_block().unwrap().hash.clone();
+        bc.chain.push(sentrix_primitives::block::Block::new(
+            1,
+            h0_hash,
+            vec![sentrix_primitives::transaction::Transaction::new_coinbase(
+                "v1".into(), 0, 1, 1_700_000_000,
+            )],
+            "v1".into(),
+        ));
+        let _ = bc.update_trie_for_block();
+        assert_eq!(bc.accounts.get_balance(PROTOCOL_TREASURY), 500);
+
+        // Subsequent block (h=2) — should NOT rebase; balance stays
+        // unless block apply mutates it (which this test bypasses).
+        bc.accounts.set_balance(PROTOCOL_TREASURY, 750);
+        let h1_hash = bc.latest_block().unwrap().hash.clone();
+        bc.chain.push(sentrix_primitives::block::Block::new(
+            2,
+            h1_hash,
+            vec![sentrix_primitives::transaction::Transaction::new_coinbase(
+                "v1".into(), 0, 2, 1_700_000_000,
+            )],
+            "v1".into(),
+        ));
+        let _ = bc.update_trie_for_block();
+        assert_eq!(
+            bc.accounts.get_balance(PROTOCOL_TREASURY), 750,
+            "post-activation blocks must not rebase — let coinbase + ClaimRewards drive treasury"
+        );
+
+        unsafe {
+            std::env::remove_var("STATE_ROOT_V2_HEIGHT");
+            std::env::remove_var("STATE_ROOT_V2_TREASURY_BALANCE");
         }
     }
 }
