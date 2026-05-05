@@ -196,6 +196,15 @@ pub fn create_router_with_bus(
         // ── Address history ──────────────────────────────────────
         .route("/address/{address}/history", get(get_address_history))
         .route("/address/{address}/info", get(get_address_info))
+        // Bare `/address/{addr}` and `/accounts/{addr}` were 404-only —
+        // sub-paths like `/info` / `/history` / `/balance` worked but
+        // the bare path that the root `/` docs string advertised did
+        // not. Surfaced by the chainlist reviewer who pasted a bare
+        // address URL and got 404 instead of the info shape every
+        // other registry chain returns at the bare path. Both now
+        // alias to `get_address_info` (the same shape as `/info`).
+        .route("/address/{address}", get(get_address_info))
+        .route("/accounts/{address}", get(get_address_info))
         // ── State trie ───────────────────────────────────────────
         .route("/address/{address}/proof", get(get_address_proof))
         .route("/chain/state-root/{height}", get(get_state_root))
