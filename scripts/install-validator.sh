@@ -65,6 +65,12 @@ case "$NETWORK" in
     *) echo "--network must be mainnet or testnet, got: $NETWORK"; exit 2 ;;
 esac
 
+# Service user — `$USER` isn't always set (cron, systemd-spawned shells,
+# `bash -c` under `set -u` in containers, etc.). Fall back to `id -un`
+# so chown / systemd unit / "User=" all resolve to the same identity
+# the script is actually running as.
+SERVICE_USER="${USER:-$(id -un)}"
+
 # ── Pretty output ───────────────────────────────────────────
 if [[ -t 1 ]]; then
     BOLD=$'\033[1m'; DIM=$'\033[2m'; RED=$'\033[31m'
@@ -260,10 +266,10 @@ else
     # that path at startup — even for `--version`. If $INSTALL_DIR is
     # root-owned, every invocation as the service user fails Permission
     # denied before reaching the subcommand. chown the whole tree to the
-    # service user up-front; the systemd unit (which also runs as $USER)
+    # service user up-front; the systemd unit (which also runs as $SERVICE_USER)
     # then has the same write permissions for chain.db, the wallets dir,
     # and any future state files.
-    sudo chown -R "$USER:$USER" "$INSTALL_DIR"
+    sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
     ok "binary installed at ${INSTALL_DIR}/sentrix ($("$INSTALL_DIR/sentrix" --version))"
 fi
 
@@ -294,7 +300,7 @@ step "Validator keystore"
 KEYSTORE_DIR="$INSTALL_DIR/data/wallets"
 IDENTITY_FILE="$INSTALL_DIR/data/wallets/${NAME}.identity"
 sudo mkdir -p "$KEYSTORE_DIR"
-sudo chown "$USER:$USER" "$KEYSTORE_DIR"
+sudo chown "$SERVICE_USER:$SERVICE_USER" "$KEYSTORE_DIR"
 
 # Detect existing keystore by scanning *.json. We can't pre-name it; the
 # binary generates `<addr[2..10]>.json`. If exactly one is present + the
@@ -412,8 +418,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=$USER
-Group=$USER
+User=$SERVICE_USER
+Group=$SERVICE_USER
 WorkingDirectory=$INSTALL_DIR
 ExecStart=$EXEC_START
 Restart=always
@@ -431,7 +437,7 @@ EOF
 fi
 
 # Ensure data dir is writable by the service user
-sudo chown -R "$USER:$USER" "$INSTALL_DIR"
+sudo chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
 # ── Step 8: enable + start + verify ─────────────────────────
 step "Enable + start sentrix service"
