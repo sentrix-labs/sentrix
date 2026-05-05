@@ -57,6 +57,21 @@ SENTRIX_VALIDATOR_KEY=<key> ./target/release/sentrix start --port 30303
 curl http://localhost:8545/health
 ```
 
+## Run a validator
+
+Sentrix is a permissioned-onboarding chain for now — the consensus is open and the binary is the same one anyone can build, but admission to the active set is co-signed by the chain admin (single-key today, N-of-M target). To run a node:
+
+```bash
+# One-line installer (Ubuntu 22.04 / 24.04, x86_64 or aarch64)
+curl -fsSL https://raw.githubusercontent.com/sentrix-labs/sentrix/main/scripts/install-validator.sh | bash
+```
+
+The script handles pre-flight checks (RAM ≥ 8 GiB, swap ≥ 8 GiB persistent, disk ≥ 60 GiB), apt deps, Rust 1.95+ via rustup, source clone + `cargo build --release -p sentrix-node`, keystore generation, systemd unit, and start. It's idempotent — re-runs are repair, not clobber.
+
+After the node is healthy, email **`validators@sentrixchain.com`** with your address + pubkey (printed by the installer) + intended self-stake (≥ 15,000 SRX) + ops contact. Activation height comes back; you appear in `GET /chain/info → validators` and at [scan.sentrixchain.com/validators](https://scan.sentrixchain.com/validators).
+
+Full operator guide: **[docs.sentrixchain.com/operations/VALIDATOR_ONBOARDING](https://docs.sentrixchain.com/operations/VALIDATOR_ONBOARDING)** (hardware, security, monitoring, recovery paths).
+
 ## Connect MetaMask (Testnet)
 
 | Field | Value |
@@ -104,9 +119,12 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 | **Explorer** | [scan.sentrixchain.com](https://scan.sentrixchain.com) | [scan.sentrixchain.com](https://scan.sentrixchain.com) (same unified UI, toggle Testnet) |
 
 **Website:** [sentrixchain.com](https://sentrixchain.com)
+**Docs:** [docs.sentrixchain.com](https://docs.sentrixchain.com)
 **Faucet:** [faucet.sentrixchain.com](https://faucet.sentrixchain.com) (testnet)
 **Wallet:** [solux.sentriscloud.com](https://solux.sentriscloud.com) (Solux web)
-**Docs:** [sentrixchain.com/docs/faucet](https://sentrixchain.com/docs/faucet)
+**Verifier:** [verify.sentrixchain.com](https://verify.sentrixchain.com) (Sourcify)
+**gRPC + gRPC-Web:** [grpc.sentrixchain.com](https://grpc.sentrixchain.com) · [grpc-testnet.sentrixchain.com](https://grpc-testnet.sentrixchain.com)
+**WebSocket:** `wss://api.sentrixchain.com/ws` (mainnet) · `wss://testnet-api.sentrixchain.com/ws` (testnet)
 **Telegram:** [t.me/SentrixCommunity](https://t.me/SentrixCommunity)
 
 ## Roadmap
