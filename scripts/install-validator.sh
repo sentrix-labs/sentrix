@@ -255,8 +255,16 @@ else
     sudo mkdir -p "$INSTALL_DIR"
     sudo cp "$SRC_DIR/target/release/sentrix" "$INSTALL_DIR/sentrix"
     sudo chmod +x "$INSTALL_DIR/sentrix"
-    ok "binary installed at ${INSTALL_DIR}/sentrix"
-    "$INSTALL_DIR/sentrix" --version
+    # The binary's `get_data_dir()` falls back to `<exe_dir>/data` when
+    # `SENTRIX_DATA_DIR` is unset, and `main` calls `create_dir_all` on
+    # that path at startup — even for `--version`. If $INSTALL_DIR is
+    # root-owned, every invocation as the service user fails Permission
+    # denied before reaching the subcommand. chown the whole tree to the
+    # service user up-front; the systemd unit (which also runs as $USER)
+    # then has the same write permissions for chain.db, the wallets dir,
+    # and any future state files.
+    sudo chown -R "$USER:$USER" "$INSTALL_DIR"
+    ok "binary installed at ${INSTALL_DIR}/sentrix ($("$INSTALL_DIR/sentrix" --version))"
 fi
 
 # Genesis config — mainnet uses the embedded canonical TOML (no flag),
