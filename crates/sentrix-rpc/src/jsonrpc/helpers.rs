@@ -32,6 +32,75 @@ pub(super) fn resolve_block_tag(v: Option<&Value>, latest: u64) -> Result<u64, &
     }
 }
 
+/// Gate state-read methods (`eth_getBalance`, `eth_getCode`,
+/// `eth_getStorageAt`, `eth_getTransactionCount`, `eth_call`) against
+/// historical-specific block heights.
+///
+/// Sentrix doesn't yet have MDBX snapshot isolation, so account state
+/// reads always serve current-tip data regardless of the block tag
+/// the caller passed. Pre-2026-05-05 these handlers silently ignored
+/// `params[block_tag_index]` and returned latest, so a caller probing
+/// "balance at h=1M" got the same answer as "balance at h=tip" — no
+/// way to tell. The 2026-05-05 audit caught it for `eth_getBalance`;
+/// this helper extends the same honesty to the rest of the namespace.
+///
+/// Returns Ok(()) when the read can be served from current state:
+///   - `None` / `Null` (tag arg omitted)
+///   - `""` / `"latest"` / `"pending"` / `"safe"` / `"finalized"`
+///   - `"earliest"` only when chain is at h=0
+///   - hex block number that equals current `latest`
+///
+/// Returns -32004 for any specific historical height. Returns -32602
+/// for malformed inputs.
+///
+/// Block-content methods (`eth_getBlockByNumber`, etc.) do NOT use
+/// this gate — historical block bodies live in chain.db and can be
+/// served correctly. Only the account-state subset is gated.
+pub(super) fn require_latest_state_read(
+    block_tag: Option<&Value>,
+    latest: u64,
+) -> Result<(), (i32, String)> {
+    let tag = match block_tag {
+        None | Some(Value::Null) => return Ok(()),
+        Some(Value::String(s)) => s.as_str(),
+        Some(Value::Number(n)) => {
+            return match n.as_u64() {
+                Some(h) if h == latest => Ok(()),
+                Some(_) => Err((
+                    -32004,
+                    "historical state reads not yet supported; use 'latest'".into(),
+                )),
+                None => Err((-32602, "invalid block number".into())),
+            };
+        }
+        Some(other) => {
+            return Err((-32602, format!("invalid block tag: {other}")));
+        }
+    };
+    match tag {
+        "" | "latest" | "pending" | "safe" | "finalized" => Ok(()),
+        "earliest" => {
+            if latest == 0 {
+                Ok(())
+            } else {
+                Err((
+                    -32004,
+                    "historical state reads not yet supported; use 'latest'".into(),
+                ))
+            }
+        }
+        hex if hex.starts_with("0x") => match u64::from_str_radix(&hex[2..], 16) {
+            Ok(h) if h == latest => Ok(()),
+            Ok(_) => Err((
+                -32004,
+                "historical state reads not yet supported; use 'latest'".into(),
+            )),
+            Err(_) => Err((-32602, format!("invalid hex block number: {hex}"))),
+        },
+        _ => Err((-32602, format!("invalid block tag: {tag}"))),
+    }
+}
+
 /// Address filter accepts either a single string or an array. Normalizes to
 /// lowercase 20-byte arrays; unparseable entries are silently skipped so
 /// malformed filters still work against the rest of the query.
@@ -222,4 +291,82 @@ pub(super) fn block_gas_used_ratio(bc: &sentrix_core::blockchain::Blockchain, he
         .map(|_| 21_000u64)
         .sum();
     (total_gas as f64) / (sentrix_evm::gas::BLOCK_GAS_LIMIT as f64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // Locks down the historical-state gate behavior so regressions
+    // surface in CI rather than in a wallet returning stale data.
+    #[test]
+    fn require_latest_state_read_passes_when_no_tag() {
+        assert!(require_latest_state_read(None, 1_000_000).is_ok());
+    }
+
+    #[test]
+    fn require_latest_state_read_passes_for_string_tags() {
+        let latest = 1_000_000;
+        for tag in ["", "latest", "pending", "safe", "finalized"] {
+            let v = json!(tag);
+            assert!(
+                require_latest_state_read(Some(&v), latest).is_ok(),
+                "tag {tag:?} should pass"
+            );
+        }
+    }
+
+    #[test]
+    fn require_latest_state_read_passes_for_hex_at_tip() {
+        let v = json!("0xf4240"); // 1_000_000
+        assert!(require_latest_state_read(Some(&v), 1_000_000).is_ok());
+    }
+
+    #[test]
+    fn require_latest_state_read_passes_for_number_at_tip() {
+        let v = json!(1_000_000);
+        assert!(require_latest_state_read(Some(&v), 1_000_000).is_ok());
+    }
+
+    #[test]
+    fn require_latest_state_read_rejects_historical_hex() {
+        let v = json!("0x1");
+        let err = require_latest_state_read(Some(&v), 1_000_000).unwrap_err();
+        assert_eq!(err.0, -32004);
+    }
+
+    #[test]
+    fn require_latest_state_read_rejects_historical_number() {
+        let v = json!(1);
+        let err = require_latest_state_read(Some(&v), 1_000_000).unwrap_err();
+        assert_eq!(err.0, -32004);
+    }
+
+    #[test]
+    fn require_latest_state_read_rejects_earliest_when_chain_progressed() {
+        let v = json!("earliest");
+        let err = require_latest_state_read(Some(&v), 1_000_000).unwrap_err();
+        assert_eq!(err.0, -32004);
+    }
+
+    #[test]
+    fn require_latest_state_read_passes_earliest_at_genesis() {
+        let v = json!("earliest");
+        assert!(require_latest_state_read(Some(&v), 0).is_ok());
+    }
+
+    #[test]
+    fn require_latest_state_read_rejects_invalid_hex() {
+        let v = json!("0xZZ");
+        let err = require_latest_state_read(Some(&v), 1_000_000).unwrap_err();
+        assert_eq!(err.0, -32602);
+    }
+
+    #[test]
+    fn require_latest_state_read_rejects_garbage_tag() {
+        let v = json!("not-a-block");
+        let err = require_latest_state_read(Some(&v), 1_000_000).unwrap_err();
+        assert_eq!(err.0, -32602);
+    }
 }

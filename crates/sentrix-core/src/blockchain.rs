@@ -1509,22 +1509,55 @@ impl Blockchain {
             // commitment honestly represented the trie's view; the
             // trie just wasn't tracking the system account.
             //
-            // Activation is fork-gated to keep all 4 mainnet validators
-            // in lockstep: until every host has the same env-set
-            // `STATE_ROOT_V2_HEIGHT`, leaving the touch list intact
-            // preserves the existing (frozen-but-agreed) state_root
-            // chain. Past activation, every block also re-roots
-            // PROTOCOL_TREASURY into the trie so the commitment
-            // matches actual on-chain state.
+            // !!! ACTIVATION POST-MORTEM 2026-05-06 !!!
             //
-            // Operator runbook for activation:
-            //   1. Pick activation_height = current_tip + 600 (~10min lead)
-            //   2. Halt all 4 mainnet validators in parallel
-            //   3. Append `STATE_ROOT_V2_HEIGHT=<h>` to each /etc/<svc>/<svc>.env
-            //   4. Simul-start; chain crosses h, all 4 simultaneously
-            //      flip to including PROTOCOL_TREASURY in touch set
-            //   5. New state_root from h onward correctly commits to
-            //      PROTOCOL_TREASURY balance
+            // First activation attempt FORKED the cluster within 30s.
+            // Root cause: PROTOCOL_TREASURY in-memory balance had
+            // silently drifted across the 4 validators for ~700K
+            // blocks, because the very bug this fix targets was the
+            // mechanism that prevented consensus from detecting drift.
+            // Snapshot at activation:
+            //   vps1: 1036005.66 SRX
+            //   vps2: 1035994.66 SRX (~11 SRX less)
+            //   vps3: 1035916.66 SRX (~89 SRX less)
+            //   vps5: 1036005.66 SRX (matches vps1)
+            //
+            // Activation makes each node insert its OWN local balance
+            // into the trie, so the 2-of-4 split (vps1+vps5 vs vps2+vps3)
+            // produced two competing state_roots. BFT couldn't reach
+            // 3-of-4 majority. Recovery: chain.db rsync from canonical
+            // (vps1) to the drifted nodes, restart with v2 disabled.
+            //
+            // Lesson: the simple touch-list addition is NOT a self-
+            // sufficient fix. Reactivation requires ONE of these
+            // companion mechanisms FIRST:
+            //
+            //   Option A (preferred): canonical balance reconciliation
+            //     pre-activation. Sample PROTOCOL_TREASURY across all
+            //     validators, pick canonical, sync via chain.db rsync,
+            //     THEN activate. Requires operator pre-flight pass.
+            //
+            //   Option B (cleanest): rewrite this block to recompute
+            //     PROTOCOL_TREASURY balance from chain history (sum of
+            //     coinbase mints since h=590,100) rather than reading
+            //     in-memory state. Makes activation deterministic
+            //     regardless of local drift. Bigger change.
+            //
+            //   Option C (current default): leave dormant indefinitely.
+            //     state_root commitment cosmetically broken but chain
+            //     functional. Acceptable until a light-client / SPV
+            //     consumer actually needs to verify treasury state.
+            //
+            // Operator runbook for activation (only after Option A or B):
+            //   1. Run canonical balance reconciliation pass (Option A)
+            //      OR confirm history-recompute logic deployed (Option B)
+            //   2. Pick activation_height = current_tip + 600 (~10min lead)
+            //   3. Halt all 4 mainnet validators in parallel
+            //   4. Append `STATE_ROOT_V2_HEIGHT=<h>` to each /etc/<svc>/<svc>.env
+            //   5. Simul-start; verify post-flip state_root agreement
+            //      across all 4 within 60s of activation block
+            //   6. If divergence detected, halt-all immediately and
+            //      revert to default (set env to far-future height)
             //
             // The default of u64::MAX leaves the fix dormant on hosts
             // without the env var so it ships safely.
