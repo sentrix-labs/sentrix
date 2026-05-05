@@ -539,10 +539,24 @@ impl BftEngine {
                 None => {
                     // Nil supermajority — skip this round.
                     //
-                    // Backlog #1d investigation: log the per-hash tally so we
-                    // can tell a unanimous-nil skip (healthy timeout path) from
-                    // a split-vote skip (livelock symptom — one subset voted
-                    // block_X, another voted nil, neither reached 2f+1).
+                    // Backlog #1d + 2026-05-05 h=2575800 investigation: log
+                    // BOTH tallies so we can distinguish:
+                    //   - Healthy timeout: prevote_tally thin + precommit nil
+                    //     → genuine network silence, recovery via round skip.
+                    //   - Network partition: prevote_tally thin OR split-hash
+                    //     → upstream peer mesh issue, address libp2p.
+                    //   - Silent-thread pattern (h=2575800 case): prevote
+                    //     UNANIMOUS yes on hash X, precommit splits hash X /
+                    //     nil → some validators flipped between phases. The
+                    //     diff IS the diagnostic: validators that prevoted
+                    //     yes but didn't precommit yes are the ones whose
+                    //     gossip-handler / engine task wedged silently.
+                    let prevote_summary: Vec<String> = self
+                        .collector
+                        .prevote_tally_snapshot()
+                        .into_iter()
+                        .map(|(label, w)| format!("{label}={w}"))
+                        .collect();
                     let tally_summary: Vec<String> = self
                         .collector
                         .precommit_tally_snapshot()
@@ -551,10 +565,11 @@ impl BftEngine {
                         .collect();
                     tracing::warn!(
                         "BFT #1d: precommit nil-majority skip at height={} round={} \
-                         threshold={} tally=[{}]",
+                         threshold={} prevote_tally=[{}] precommit_tally=[{}]",
                         self.state.height,
                         self.state.round,
                         supermajority_threshold(self.state.total_active_stake),
+                        prevote_summary.join(", "),
                         tally_summary.join(", ")
                     );
                     return BftAction::SkipRound;
