@@ -42,17 +42,26 @@ pub(super) async fn root(State(state): State<SharedState>) -> Json<serde_json::V
             "rest": {
                 "chain_info": "/chain/info",
                 "blocks": "/chain/blocks",
+                "block": "/chain/blocks/{height}",
                 "transactions": "/transactions",
+                "transaction": "/transactions/{txid}",
+                "address": "/address/{address}",
+                "address_history": "/address/{address}/history",
                 "accounts": "/accounts/{address}",
+                "account_balance": "/accounts/{address}/balance",
+                "account_nonce": "/accounts/{address}/nonce",
+                "account_code": "/accounts/{address}/code",
                 "tokens": "/tokens",
+                "token_info": "/tokens/{contract}",
                 "validators": "/validators",
-                "staking": "/staking",
+                "staking": "/staking/validators",
                 "epoch": "/epoch/current",
                 "mempool": "/mempool"
             },
             "ops": {
                 "health": "/health",
                 "status": "/sentrix_status",
+                "status_extended": "/sentrix_status_extended",
                 "metrics": "/metrics",
                 "explorer_builtin": "/explorer"
             }
