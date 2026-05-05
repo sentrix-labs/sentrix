@@ -158,7 +158,7 @@ ok "disk free: ${free_gib} GiB on /"
 # ── Step 2: install apt deps ────────────────────────────────
 step "Install apt dependencies"
 
-DEPS=(git curl build-essential pkg-config libssl-dev clang jq ca-certificates)
+DEPS=(git curl build-essential pkg-config libssl-dev clang jq ca-certificates protobuf-compiler)
 MISSING=()
 for pkg in "${DEPS[@]}"; do
     dpkg -s "$pkg" >/dev/null 2>&1 || MISSING+=("$pkg")
