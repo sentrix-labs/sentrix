@@ -217,8 +217,16 @@ if [[ -d "$SRC_DIR/.git" ]]; then
     git -C "$SRC_DIR" checkout "$REPO_REF" --quiet
     git -C "$SRC_DIR" pull --ff-only origin "$REPO_REF" --quiet
     ok "updated to $(git -C "$SRC_DIR" rev-parse --short HEAD)"
+elif [[ -d "$SRC_DIR" ]] && [[ -n "$(ls -A "$SRC_DIR" 2>/dev/null)" ]]; then
+    # Directory exists, has contents, but isn't a git checkout — likely a
+    # half-finished previous install, or an operator pre-created the path
+    # for a bind-mount cache. Refusing to clone-into-non-empty avoids a
+    # cryptic "destination path … already exists" git error and a partial
+    # state where the build lands in someone's unrelated tree.
+    fail "$SRC_DIR exists but is not a git checkout. Remove it (or pick another --src-dir) and re-run."
 else
     info "git clone ${REPO_URL}"
+    sudo mkdir -p "$(dirname "$SRC_DIR")"
     git clone --branch "$REPO_REF" --depth 1 "$REPO_URL" "$SRC_DIR" --quiet
     ok "cloned at $(git -C "$SRC_DIR" rev-parse --short HEAD)"
 fi
