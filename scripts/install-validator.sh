@@ -241,20 +241,57 @@ else
     "$INSTALL_DIR/sentrix" --version
 fi
 
+# Genesis config — mainnet uses the embedded canonical TOML (no flag),
+# testnet needs --genesis pointing at the testnet config so the binary
+# boots chain 7120 instead of 7119. Copy the source-tree genesis into
+# the install dir so a future cleanup of $SRC_DIR doesn't break the
+# unit's --genesis path.
+GENESIS_PATH=""
+if [[ "$NETWORK" == "testnet" ]]; then
+    GENESIS_PATH="$INSTALL_DIR/genesis-testnet.toml"
+    if [[ ! -f "$SRC_DIR/genesis/testnet.toml" ]]; then
+        fail "missing $SRC_DIR/genesis/testnet.toml (incomplete clone?)"
+    fi
+    sudo cp "$SRC_DIR/genesis/testnet.toml" "$GENESIS_PATH"
+    ok "testnet genesis copied → $GENESIS_PATH"
+fi
+
 # ── Step 6: keystore ────────────────────────────────────────
 step "Validator keystore"
 
+# `sentrix wallet generate` writes to ${SENTRIX_DATA_DIR}/wallets/<addr[2..10]>.json
+# (8-char prefix, .json, no override flag). And `wallet info` doesn't print
+# the public key — only generate does. So we set SENTRIX_DATA_DIR before
+# generate, capture the printed Address + Public key + Keystore path, and
+# stash address/pubkey into a sidecar `<name>.identity` file so re-runs can
+# recover both for the activation email without re-prompting for password.
 KEYSTORE_DIR="$INSTALL_DIR/data/wallets"
-KEYSTORE_PATH="$KEYSTORE_DIR/${NAME}.keystore"
+IDENTITY_FILE="$INSTALL_DIR/data/wallets/${NAME}.identity"
 sudo mkdir -p "$KEYSTORE_DIR"
 sudo chown "$USER:$USER" "$KEYSTORE_DIR"
 
-if [[ -f "$KEYSTORE_PATH" ]]; then
+# Detect existing keystore by scanning *.json. We can't pre-name it; the
+# binary generates `<addr[2..10]>.json`. If exactly one is present + the
+# identity sidecar exists, we treat that as "already installed".
+existing=()
+shopt -s nullglob
+for f in "$KEYSTORE_DIR"/*.json; do existing+=("$f"); done
+shopt -u nullglob
+
+VALIDATOR_ADDR=""
+VALIDATOR_PUBKEY=""
+KEYSTORE_PATH=""
+
+if (( ${#existing[@]} == 1 )) && [[ -f "$IDENTITY_FILE" ]]; then
+    KEYSTORE_PATH="${existing[0]}"
+    # shellcheck disable=SC1090
+    source "$IDENTITY_FILE"
     ok "keystore already at ${KEYSTORE_PATH} (skipping generation)"
-    info "if you need to rotate the password, run:"
-    info "  ${INSTALL_DIR}/sentrix wallet rekey ${KEYSTORE_PATH} --old-password … --new-password …"
+    info "rotate password later via: ${INSTALL_DIR}/sentrix wallet rekey ${KEYSTORE_PATH} --old-password … --new-password …"
+elif (( ${#existing[@]} > 1 )); then
+    fail "multiple keystores in ${KEYSTORE_DIR} — installer can't pick. Move or remove the old one(s) first."
 else
-    info "generating new keypair — set a strong passphrase (you'll need it for systemd env file too)"
+    info "generating new keypair — set a strong passphrase (you'll need it for the systemd env file too)"
     info "lost password = lost validator. store it in a password manager + offline backup."
     read -r -s -p "    Keystore password: " KEYSTORE_PASSWORD
     echo
@@ -266,19 +303,39 @@ else
     if [[ ${#KEYSTORE_PASSWORD} -lt 12 ]]; then
         fail "password too short (need ≥ 12 chars; pick something a password manager would generate)"
     fi
-    "$INSTALL_DIR/sentrix" wallet generate \
-        --output "$KEYSTORE_PATH" \
-        --password "$KEYSTORE_PASSWORD" >/dev/null
+
+    # Run from $INSTALL_DIR with SENTRIX_DATA_DIR set so the keystore lands
+    # at $INSTALL_DIR/data/wallets/<addr[2..10]>.json. Capture stdout so we
+    # can pull Address + Public key + Keystore path out of it.
+    GEN_OUTPUT=$(
+        SENTRIX_DATA_DIR="$INSTALL_DIR/data" \
+        "$INSTALL_DIR/sentrix" wallet generate --password "$KEYSTORE_PASSWORD"
+    )
+    VALIDATOR_ADDR=$(echo "$GEN_OUTPUT" | awk '/^[[:space:]]*Address:/ {print $2}')
+    VALIDATOR_PUBKEY=$(echo "$GEN_OUTPUT" | awk '/^[[:space:]]*Public key:/ {print $3}')
+    KEYSTORE_PATH=$(echo "$GEN_OUTPUT" | awk '/^[[:space:]]*Keystore:/ {print $2}')
+
+    if [[ -z "$VALIDATOR_ADDR" || -z "$KEYSTORE_PATH" ]]; then
+        echo "$GEN_OUTPUT" >&2
+        fail "couldn't parse wallet generate output (see lines above)"
+    fi
     sudo chmod 600 "$KEYSTORE_PATH"
+
+    # Persist address/pubkey for re-run discoverability — the keystore
+    # itself has the address but not the pubkey, so without this the
+    # activation email becomes a manual derive-from-privkey step.
+    cat > "$IDENTITY_FILE" <<EOF
+# sentrix validator identity — non-secret
+VALIDATOR_ADDR="$VALIDATOR_ADDR"
+VALIDATOR_PUBKEY="$VALIDATOR_PUBKEY"
+KEYSTORE_PATH="$KEYSTORE_PATH"
+EOF
+    chmod 644 "$IDENTITY_FILE"
     ok "keystore created at ${KEYSTORE_PATH}"
 fi
 
-# Print address + pubkey for the validators@ email
-WALLET_INFO=$("$INSTALL_DIR/sentrix" wallet info "$KEYSTORE_PATH" 2>/dev/null || true)
-VALIDATOR_ADDR=$(echo "$WALLET_INFO" | awk '/Address:/ {print $2}')
-VALIDATOR_PUBKEY=$(echo "$WALLET_INFO" | awk '/Public/ {print $NF}')
-ok "address: ${VALIDATOR_ADDR:-<run \`sentrix wallet info\` to read>}"
-ok "pubkey:  ${VALIDATOR_PUBKEY:-<run \`sentrix wallet info\` to read>}"
+ok "address: ${VALIDATOR_ADDR:-<missing — re-run installer>}"
+ok "pubkey:  ${VALIDATOR_PUBKEY:-<missing — re-run installer or sentrix wallet decrypt to derive>}"
 
 # ── Step 7: env file + systemd unit ─────────────────────────
 step "systemd unit + env file"
@@ -317,6 +374,10 @@ unset KEYSTORE_PASSWORD KEYSTORE_PASSWORD_CONFIRM
 if [[ -f "$UNIT_FILE" ]]; then
     ok "unit exists at ${UNIT_FILE} (preserving)"
 else
+    EXEC_START="$INSTALL_DIR/sentrix start --validator-keystore $KEYSTORE_PATH"
+    if [[ -n "$GENESIS_PATH" ]]; then
+        EXEC_START="$EXEC_START --genesis $GENESIS_PATH"
+    fi
     sudo bash -c "cat > $UNIT_FILE" <<EOF
 [Unit]
 Description=Sentrix validator (${NAME}) — ${NETWORK}
@@ -328,14 +389,13 @@ Type=simple
 User=$USER
 Group=$USER
 WorkingDirectory=$INSTALL_DIR
-ExecStart=$INSTALL_DIR/sentrix start --validator-keystore $KEYSTORE_PATH
+ExecStart=$EXEC_START
 Restart=always
 RestartSec=5
 LimitNOFILE=65536
 EnvironmentFile=$ENV_FILE
 Environment=SENTRIX_DATA_DIR=$INSTALL_DIR/data
 Environment=SENTRIX_ENCRYPTED_DISK=true
-Environment=SENTRIX_NETWORK=$NETWORK
 
 [Install]
 WantedBy=multi-user.target
