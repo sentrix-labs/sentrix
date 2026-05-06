@@ -123,10 +123,10 @@ jobs:
       - name: Run cargo audit
         # Ignore list mirrors deny.toml [advisories].ignore — each ID has
         # a documented reason there; if you add one here, add it there too.
-        # 2026-05-06: dropped RUSTSEC-2026-0105 (core2 yanked) — `cargo
-        # update -p multihash` to 0.19.5 removed core2 from Cargo.lock.
-        # 2026-05-06: added RUSTSEC-2026-0118, RUSTSEC-2026-0119
-        # (hickory-proto pinned by libp2p 0.56.0; awaiting libp2p 0.57+).
+        # 2026-05-07: dropped RUSTSEC-2026-0118 / -0119 (hickory-proto)
+        # and RUSTSEC-2025-0055 (tracing-subscriber 0.2) — none match
+        # in-tree crate versions any more (cargo-deny advisory-not-
+        # detected confirmed 2026-05-07).
         run: |
           cargo audit \
             --ignore RUSTSEC-2020-0105 \
@@ -134,9 +134,6 @@ jobs:
             --ignore RUSTSEC-2025-0141 \
             --ignore RUSTSEC-2024-0388 \
             --ignore RUSTSEC-2024-0436 \
-            --ignore RUSTSEC-2025-0055 \
-            --ignore RUSTSEC-2026-0118 \
-            --ignore RUSTSEC-2026-0119 \
             || echo "::warning::cargo audit findings (non-blocking, see deny.toml for ignored IDs)"
 
   # Second-layer secret scan — complements .githooks/pre-commit which only
