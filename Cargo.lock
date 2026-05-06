@@ -4996,7 +4996,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix"
-version = "2.1.78"
+version = "2.1.79"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",
@@ -5172,7 +5172,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-node"
-version = "2.1.78"
+version = "2.1.79"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -5253,7 +5253,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-staking"
-version = "2.1.77"
+version = "2.1.79"
 dependencies = [
  "sentrix-primitives",
  "serde",
