@@ -1045,6 +1045,16 @@ impl StakeRegistry {
         self.delegator_rewards.remove(delegator).unwrap_or(0)
     }
 
+    /// Audit H5 (2026-05-06): non-mutating sibling of
+    /// `take_delegator_rewards`. Used by the ClaimRewards apply path to
+    /// peek the amount BEFORE the balance transfer fires; the drain
+    /// only happens after the transfer succeeds, so a transfer failure
+    /// can't leave accumulators zeroed with no corresponding balance
+    /// credit.
+    pub fn peek_delegator_rewards(&self, delegator: &str) -> u64 {
+        self.delegator_rewards.get(delegator).copied().unwrap_or(0)
+    }
+
     pub fn weighted_proposer(&self, height: u64, round: u32) -> Option<String> {
         if self.active_set.is_empty() {
             return None;
@@ -1551,6 +1561,50 @@ mod tests {
 
         // Queue is now empty
         assert!(reg.unbonding_queue.is_empty());
+    }
+
+    /// Audit H5 (2026-05-06): regression guard for the
+    /// peek-then-transfer-then-drain pattern in the ClaimRewards
+    /// dispatch. `peek_delegator_rewards` must be a true read — no
+    /// mutation — so the apply path can check the amount BEFORE
+    /// running the balance transfer and only call
+    /// `take_delegator_rewards` when the transfer succeeds. Pre-fix
+    /// the ClaimRewards path drained accumulators FIRST and lost
+    /// rewards permanently if the transfer Erred.
+    #[test]
+    fn test_peek_delegator_rewards_is_non_mutating() {
+        let mut reg = new_registry();
+        // Seed delegator_rewards directly to isolate the peek/take
+        // pair from the distribute_reward plumbing.
+        reg.delegator_rewards.insert("0xdel1".to_string(), 12_345);
+
+        // Peek twice — both should return the same value with no
+        // mutation in between.
+        assert_eq!(reg.peek_delegator_rewards("0xdel1"), 12_345);
+        assert_eq!(reg.peek_delegator_rewards("0xdel1"), 12_345);
+        // The map entry survives.
+        assert_eq!(
+            reg.delegator_rewards.get("0xdel1").copied(),
+            Some(12_345),
+            "peek must not remove the entry",
+        );
+
+        // Now take — that DOES mutate.
+        let taken = reg.take_delegator_rewards("0xdel1");
+        assert_eq!(taken, 12_345);
+        assert_eq!(
+            reg.peek_delegator_rewards("0xdel1"),
+            0,
+            "after take, peek returns 0",
+        );
+        assert!(
+            !reg.delegator_rewards.contains_key("0xdel1"),
+            "after take, the entry is removed",
+        );
+
+        // Peek on an unknown delegator returns 0 without inserting.
+        assert_eq!(reg.peek_delegator_rewards("0xdel-unknown"), 0);
+        assert!(!reg.delegator_rewards.contains_key("0xdel-unknown"));
     }
 
     #[test]

@@ -831,23 +831,54 @@ impl Blockchain {
                 }
                 match staking_op {
                     StakingOp::ClaimRewards => {
-                        // Drain claimer's accumulator (delegator + validator).
+                        // Audit H5 (2026-05-06): peek-then-transfer-then-drain.
+                        // Pre-fix this drained the accumulators FIRST
+                        // (`take_delegator_rewards` + `std::mem::take` on
+                        // pending_rewards), then attempted the
+                        // PROTOCOL_TREASURY → claimer transfer. If the
+                        // transfer failed (treasury transient
+                        // insufficiency, error in transfer arithmetic),
+                        // Pass-2 rollback restores `accounts` from
+                        // BlockchainSnapshot but the snapshot doesn't
+                        // capture stake_registry — accumulators stay
+                        // zero, claimer's rewards permanently lost with
+                        // no error surfaced to the wallet.
+                        //
+                        // Now: peek both accumulators without mutation,
+                        // run the transfer, drain on success only. If
+                        // the transfer Errs, accumulators stay intact
+                        // and the claimer can re-submit later.
                         let claimer = tx.from_address.clone();
-                        let delegator_amount = self.stake_registry.take_delegator_rewards(&claimer);
+                        let delegator_amount =
+                            self.stake_registry.peek_delegator_rewards(&claimer);
                         let validator_amount = self
                             .stake_registry
                             .validators
-                            .get_mut(&claimer)
-                            .map(|v| std::mem::take(&mut v.pending_rewards))
+                            .get(&claimer)
+                            .map(|v| v.pending_rewards)
                             .unwrap_or(0);
                         let total_claim = delegator_amount.saturating_add(validator_amount);
                         if total_claim > 0 {
+                            // Transfer first; only drain on success.
                             self.accounts.transfer(
                                 PROTOCOL_TREASURY,
                                 &claimer,
                                 total_claim,
                                 0,
                             )?;
+                            // Transfer succeeded — drain accumulators.
+                            // `take_delegator_rewards` removes the entry
+                            // entirely (matches semantics — claimer
+                            // collected everything available at peek).
+                            // For the validator side we explicitly zero
+                            // `pending_rewards` rather than std::mem::take
+                            // because we already consumed the value at
+                            // peek and the assignment is clearer about
+                            // the post-condition.
+                            let _ = self.stake_registry.take_delegator_rewards(&claimer);
+                            if let Some(v) = self.stake_registry.validators.get_mut(&claimer) {
+                                v.pending_rewards = 0;
+                            }
                         }
                         // Phase 3 WS: notify sentrix_subscribe(stakingOps).
                         if let Some(emitter) = &self.event_emitter {
