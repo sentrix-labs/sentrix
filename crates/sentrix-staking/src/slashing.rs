@@ -766,4 +766,53 @@ mod tests {
             "validator inside grace period must not produce evidence"
         );
     }
+
+    /// Idempotency: record_signed called twice for the same
+    /// (validator, height) must produce a single entry.
+    /// record_block_signatures fires from four code paths
+    /// (main.rs:2541/3065 + libp2p_node.rs:1092/1542); a block flowing
+    /// through gossip-race + sync-fallback can hit the recorder twice
+    /// on one validator. Without idempotency, that node's
+    /// signed_in_window inflates by one, biasing its is_downtime_at
+    /// verdict relative to peers and producing divergent
+    /// JailEvidenceBundle outputs across the fleet.
+    #[test]
+    fn test_record_signed_idempotent_at_same_height() {
+        let mut tracker = LivenessTracker::new();
+        tracker.record_signed("0xval1", 100);
+        tracker.record_signed("0xval1", 100);
+        tracker.record_signed("0xval1", 100);
+        let (signed, missed) = tracker.get_stats("0xval1");
+        assert_eq!(signed, 1, "duplicate calls at h=100 must collapse");
+        assert_eq!(missed, 0);
+    }
+
+    /// Idempotency must NOT swallow legitimate distinct heights.
+    /// Sequential blocks 100, 101, 102 each produce one entry.
+    #[test]
+    fn test_record_signed_distinct_heights_persist() {
+        let mut tracker = LivenessTracker::new();
+        tracker.record_signed("0xval1", 100);
+        tracker.record_signed("0xval1", 101);
+        tracker.record_signed("0xval1", 102);
+        let (signed, _) = tracker.get_stats("0xval1");
+        assert_eq!(signed, 3, "distinct heights must each record once");
+    }
+
+    /// Mixed double-fire pattern matching the multi-path call sites:
+    /// gossip + validator-finalize for h=100, then h=101, then double
+    /// for h=102, ending with single for h=103. Final count = 4 unique
+    /// heights, regardless of the duplication pattern.
+    #[test]
+    fn test_record_signed_mixed_double_fire() {
+        let mut tracker = LivenessTracker::new();
+        tracker.record_signed("0xval1", 100);
+        tracker.record_signed("0xval1", 100); // duplicate
+        tracker.record_signed("0xval1", 101);
+        tracker.record_signed("0xval1", 102);
+        tracker.record_signed("0xval1", 102); // duplicate
+        tracker.record_signed("0xval1", 103);
+        let (signed, _) = tracker.get_stats("0xval1");
+        assert_eq!(signed, 4, "4 unique heights, duplicates collapsed");
+    }
 }
