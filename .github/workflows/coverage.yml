@@ -1,0 +1,99 @@
+name: Coverage
+
+# Coverage runs on every push to main + every PR. Sentrix is workspace-
+# wide Rust + revm; cargo-tarpaulin's ptrace engine trips a const-eval
+# bug inside the ruint crate when instrumenting revm's dep tree
+# (verified locally 2026-05-06). cargo-llvm-cov uses LLVM source-based
+# coverage instead — the same engine cargo-tarpaulin's `--engine llvm`
+# flag wraps — with cleaner setup, no const-eval interaction, and
+# direct Codecov upload via lcov.
+#
+# Scope: EVM-free crates only for now (primitives, bft, staking,
+# trie, codec, wallet). The EVM-touching set (sentrix-evm, sentrix-
+# precompiles, sentrix-core, sentrix-rpc, sentrix-network, sentrix-
+# grpc, sentrix-storage, bin/sentrix) compiles and tests fine but
+# llvm-cov instrumentation against the revm dep tree is brittle on
+# CI runners; revisit when we drop a revm version that ships
+# explicit const-eval guard.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  llvm-cov:
+    name: cargo-llvm-cov
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable + llvm-tools-preview
+        run: |
+          rustup default stable
+          rustup component add llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cov-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cov-${{ runner.os }}-
+
+      - name: Run coverage on EVM-free crates
+        run: |
+          cargo llvm-cov \
+            --package sentrix-primitives \
+            --package sentrix-bft \
+            --package sentrix-staking \
+            --package sentrix-trie \
+            --package sentrix-codec \
+            --package sentrix-wallet \
+            --lcov --output-path lcov.info \
+            --ignore-filename-regex '/(tests|benches)/'
+
+      - name: Coverage summary
+        run: |
+          cargo llvm-cov report \
+            --package sentrix-primitives \
+            --package sentrix-bft \
+            --package sentrix-staking \
+            --package sentrix-trie \
+            --package sentrix-codec \
+            --package sentrix-wallet \
+            --summary-only
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false  # Codecov upload failures shouldn't break the pipeline
+          # token: required only for private repos. sentrix-labs/sentrix is
+          # public + open-source under BUSL-1.1, so Codecov tokenless upload
+          # works after enabling the repo at https://codecov.io.
+        continue-on-error: true
+
+      - name: Upload lcov.info as artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: lcov-report
+          path: lcov.info
+          retention-days: 30

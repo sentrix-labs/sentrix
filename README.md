@@ -6,6 +6,7 @@ Real chain, real blocks, real code. Sentrix (SRX) is a purpose-built Layer-1 wit
 
 [![Website](https://img.shields.io/badge/website-sentrixchain.com-8A5A11)](https://sentrixchain.com)
 [![CI/CD](https://github.com/sentrix-labs/sentrix/actions/workflows/ci.yml/badge.svg)](https://github.com/sentrix-labs/sentrix/actions)
+[![Coverage](https://codecov.io/gh/sentrix-labs/sentrix/branch/main/graph/badge.svg)](https://codecov.io/gh/sentrix-labs/sentrix)
 [![Release](https://img.shields.io/github/v/release/sentrix-labs/sentrix)](https://github.com/sentrix-labs/sentrix/releases/latest)
 [![Tests](https://img.shields.io/badge/tests-700%2B%20passing-brightgreen)](https://github.com/sentrix-labs/sentrix/actions)
 [![Rust](https://img.shields.io/badge/rust-stable-orange)](Cargo.toml)
