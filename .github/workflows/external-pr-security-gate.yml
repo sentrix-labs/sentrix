@@ -1,0 +1,161 @@
+name: External PR security gate
+
+# Heuristic security gate for PRs from accounts other than `satyakwok`.
+# Flags high-risk patterns that are common malicious-PR vectors (workflow
+# tampering, encoded payloads, secret-like blobs, suspicious networking),
+# adds a `security-review-required` label, and posts a comment so the
+# operator sees the diff with eyes-open before merging. Does NOT
+# auto-close — false positives on legit contributors are worse than a
+# label nudge for the operator.
+#
+# What this is NOT:
+#   - A real malware scanner. That's `gitleaks` (already wired) +
+#     `cargo audit` + `cargo deny` (already wired). This workflow
+#     surfaces structural red flags those tools miss.
+#   - A permissions enforcer. Branch protection + GitHub's "Require
+#     approval for first-time contributors" setting handle write
+#     permissions. This is a visibility layer on top.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  security-heuristics:
+    runs-on: ubuntu-22.04
+    # Skip for the operator's own PRs — they go through the
+    # owner-auto-merge path; this gate is for external contribs.
+    if: github.event.pull_request.user.login != 'satyakwok'
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Compute diff vs base
+        id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -e
+          # Files added or modified
+          changed=$(git diff --name-only "$BASE_SHA"..HEAD)
+          echo "changed_files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$changed" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Heuristic — workflow file modification
+        id: workflows
+        env:
+          CHANGED: ${{ steps.diff.outputs.changed_files }}
+        run: |
+          # CI workflow tampering is the highest-impact attack vector
+          # for external-PR malware (write secrets, exfiltrate tokens,
+          # poison subsequent CI runs).
+          if echo "$CHANGED" | grep -qE '^\.github/workflows/'; then
+            echo "flag=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::PR modifies .github/workflows — security review required"
+          else
+            echo "flag=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Heuristic — base64 / hex blob in diff
+        id: blobs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Long unbroken base64 / hex strings in the diff are a common
+          # smuggling vector for binary payloads. Threshold: 200+ chars
+          # of [A-Za-z0-9+/=] without a space — well above any realistic
+          # source-code identifier or hash literal.
+          if git diff "$BASE_SHA"..HEAD -- ':(exclude)*.lock' ':(exclude)*.snap' \
+             | grep -E '^\+' \
+             | grep -qE '[A-Za-z0-9+/=]{200,}'; then
+            echo "flag=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::PR diff contains long encoded blob — security review required"
+          else
+            echo "flag=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Heuristic — sensitive config touched
+        id: configs
+        env:
+          CHANGED: ${{ steps.diff.outputs.changed_files }}
+        run: |
+          # `deny.toml` allowlist edits, `.env*` additions, secret-looking
+          # filenames, and `Cargo.toml` registry-source changes are all
+          # paths a malicious contrib would touch to weaken trust gates.
+          if echo "$CHANGED" | grep -qE '^(deny\.toml|\.env|.*\.pem$|.*\.key$|.*credentials.*|.*secret.*)$'; then
+            echo "flag=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::PR touches sensitive config / secret-named files — security review required"
+          elif git diff "${{ github.event.pull_request.base.sha }}"..HEAD -- '**/Cargo.toml' \
+             | grep -qE '^\+.*git\s*='; then
+            echo "flag=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::PR adds a git-source dependency (bypasses crates.io) — security review required"
+          else
+            echo "flag=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Heuristic — suspicious networking in source
+        id: net
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Source code reaching out to non-pinned hosts or pastebins is
+          # a typical command-and-control pattern. Skip the existing
+          # well-known infra hosts the codebase already references.
+          if git diff "$BASE_SHA"..HEAD -- '**/*.rs' '**/*.ts' '**/*.tsx' '**/*.js' \
+             | grep -E '^\+' \
+             | grep -iE 'pastebin|paste\.ee|hastebin|transfer\.sh|ngrok|webhook\.site|0x0\.st|file\.io|anonfiles|bashupload|tio\.run|sprunge\.us'; then
+            echo "flag=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::PR adds suspicious external host references — security review required"
+          else
+            echo "flag=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Aggregate flags + label
+        if: >
+          steps.workflows.outputs.flag == 'true' ||
+          steps.blobs.outputs.flag == 'true' ||
+          steps.configs.outputs.flag == 'true' ||
+          steps.net.outputs.flag == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -e
+          # Label so the operator's PR list highlights it. The label
+          # name is intentionally explicit — not "do-not-merge" —
+          # because the gate is advisory, not absolute. Operator can
+          # still merge after manual diff review.
+          gh pr edit "$PR_URL" --add-label 'security-review-required' || true
+
+          # One-shot comment summarising which heuristics fired. Re-runs
+          # on `synchronize` will post a fresh comment if flags change;
+          # noisy but better than silent.
+          {
+            echo "## ⚠️ External PR security gate"
+            echo
+            echo "This PR was authored by an account other than the repo owner. The following automated heuristics fired — please review the diff manually before merging:"
+            echo
+            if [ "${{ steps.workflows.outputs.flag }}" = "true" ]; then
+              echo "- 🔴 **\`.github/workflows/\` modified** — CI workflow tampering is the highest-impact attack vector. Verify the diff doesn't write secrets or change permissions."
+            fi
+            if [ "${{ steps.blobs.outputs.flag }}" = "true" ]; then
+              echo "- 🔴 **Long encoded blob in diff (≥200 chars)** — possible binary payload smuggling. Decode and inspect."
+            fi
+            if [ "${{ steps.configs.outputs.flag }}" = "true" ]; then
+              echo "- 🟡 **Sensitive config touched** — \`deny.toml\` / \`.env*\` / secret-named file / git-source dependency added. Verify the change isn't weakening a trust gate."
+            fi
+            if [ "${{ steps.net.outputs.flag }}" = "true" ]; then
+              echo "- 🟡 **Suspicious external host referenced** — pastebin / file-host / webhook URL appears in source. Confirm it's intentional and pinned to a trusted version."
+            fi
+            echo
+            echo "Existing tooling (\`gitleaks\`, \`cargo audit\`, \`cargo deny\`) covers secrets and dependency vulns separately. This gate flags structural patterns those tools miss."
+          } > /tmp/comment.md
+          gh pr comment "$PR_URL" --body-file /tmp/comment.md || true
