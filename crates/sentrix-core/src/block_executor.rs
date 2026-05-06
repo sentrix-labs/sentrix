@@ -517,6 +517,10 @@ impl Blockchain {
                 self.contracts = snap.contracts;
                 self.authority = snap.authority;
                 self.mempool = snap.mempool;
+                // Audit M6: snapshot-restored `mempool` is the
+                // authoritative state; rebuild sidecars before any
+                // subsequent admission reads them.
+                self.rebuild_mempool_sidecars();
                 self.total_minted = snap.total_minted;
                 self.chain.truncate(snap.chain_len);
                 // Rewind trie to pre-Pass-2 root if one was captured.
@@ -1294,6 +1298,10 @@ impl Blockchain {
             .map(|tx| tx.txid.clone())
             .collect();
         self.mempool.retain(|tx| !mined_txids.contains(&tx.txid));
+        // Audit M6 (2026-05-06): retain mutated `mempool`; the txid +
+        // sender-count sidecars must rebuild before the next
+        // `add_to_mempool` reads them.
+        self.rebuild_mempool_sidecars();
 
         // Evict stale-nonce poison pills from senders that just had a
         // nonce-bumping tx finalize in this block. v2.1.58 did this

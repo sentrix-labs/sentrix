@@ -87,8 +87,15 @@ impl Blockchain {
             )));
         }
 
-        // Reject duplicate txid — same transaction must not enter the mempool twice
-        if self.mempool.iter().any(|existing| existing.txid == tx.txid) {
+        // Reject duplicate txid — same transaction must not enter the mempool twice.
+        // Audit M6 (2026-05-06): O(1) HashSet lookup; pre-fix this was an
+        // `any()` linear scan that became a bottleneck under sustained
+        // submission load. The `mempool_txids` set is maintained as a
+        // mirror of the txid column of `mempool` — see
+        // `rebuild_mempool_sidecars` for the invariant restoration path
+        // any time the mempool itself is mutated outside `add_to_mempool`
+        // (retain, clear, snapshot rollback, post-storage-load).
+        if self.mempool_txids.contains(&tx.txid) {
             return Err(SentrixError::InvalidTransaction(format!(
                 "duplicate txid in mempool: {}",
                 tx.txid
@@ -154,11 +161,16 @@ impl Blockchain {
             Some(min_pos) => fee_pos.max(min_pos),
             None => fee_pos,
         };
-        // Capture txid BEFORE the move so we can emit the event after.
-        // The vec mutation borrows tx; emitting after the borrow ends
-        // keeps the lifetime simple.
+        // Capture txid + sender BEFORE the move so we can emit the event
+        // and update the M6 sidecars after. The vec mutation borrows tx;
+        // ending the borrow before the sidecar updates keeps the lifetime
+        // simple.
         let txid_for_event = tx.txid.clone();
+        let sender_for_count = tx.from_address.clone();
         self.mempool.insert(pos, tx);
+        // Audit M6: maintain sidecars on every successful admission.
+        self.mempool_txids.insert(txid_for_event.clone());
+        *self.mempool_sender_count.entry(sender_for_count).or_insert(0) += 1;
 
         // Notify WebSocket subscribers — eth_subscribe(newPendingTransactions).
         // Non-blocking, infallible by trait contract. Fires only on
@@ -175,10 +187,14 @@ impl Blockchain {
     /// without it, faucets and dapps that need the next-usable nonce keep
     /// signing with stale values and pile up un-includable txs.
     pub fn mempool_pending_count(&self, address: &str) -> u64 {
-        self.mempool
-            .iter()
-            .filter(|tx| tx.from_address == address)
-            .count() as u64
+        // Audit M6: O(1) HashMap lookup. Pre-fix this was an
+        // iter+filter+count which `add_to_mempool` called twice per
+        // admission (per-sender cap + expected-nonce computation),
+        // each scan O(n) on a 10K-entry mempool.
+        self.mempool_sender_count
+            .get(address)
+            .copied()
+            .unwrap_or(0) as u64
     }
 
     fn mempool_pending_spend(&self, address: &str) -> u64 {
@@ -205,6 +221,27 @@ impl Blockchain {
     /// incident (e.g. batch of bad-nonce txs blocking block production).
     pub fn clear_mempool(&mut self) {
         self.mempool.clear();
+        self.mempool_txids.clear();
+        self.mempool_sender_count.clear();
+    }
+
+    /// Audit M6 (2026-05-06): rebuild the txid + sender-count sidecars
+    /// from the authoritative `mempool` VecDeque. Called from any path
+    /// that mutates `mempool` outside `add_to_mempool` — VecDeque
+    /// `retain`, snapshot rollback, post-load from storage. The
+    /// alternative (incremental delta updates per call site) is more
+    /// efficient but bug-prone; rebuilding is O(n) where n ≤
+    /// MAX_MEMPOOL_SIZE = 10K, costing roughly 1ms once per block.
+    pub fn rebuild_mempool_sidecars(&mut self) {
+        self.mempool_txids.clear();
+        self.mempool_sender_count.clear();
+        for tx in &self.mempool {
+            self.mempool_txids.insert(tx.txid.clone());
+            *self
+                .mempool_sender_count
+                .entry(tx.from_address.clone())
+                .or_insert(0) += 1;
+        }
     }
 
     /// Age-only prune. Removes any tx older than MEMPOOL_MAX_AGE_SECS.
@@ -229,6 +266,9 @@ impl Blockchain {
             .as_secs();
         self.mempool
             .retain(|tx| now <= tx.timestamp.saturating_add(MEMPOOL_MAX_AGE_SECS));
+        // Audit M6: retain mutated `mempool`, rebuild sidecars to keep
+        // `mempool_txids` and `mempool_sender_count` in sync.
+        self.rebuild_mempool_sidecars();
     }
 
     /// Evict mempool txs whose sender's finalized nonce has overtaken
@@ -258,6 +298,9 @@ impl Blockchain {
             Some(&finalized) => tx.nonce >= finalized,
             None => true,
         });
+        // Audit M6: retain mutated `mempool`, rebuild sidecars to keep
+        // them consistent.
+        self.rebuild_mempool_sidecars();
     }
 }
 
