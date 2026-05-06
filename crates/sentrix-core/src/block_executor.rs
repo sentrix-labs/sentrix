@@ -1001,34 +1001,69 @@ impl Blockchain {
                         block_hash_b,
                         signature_a,
                         signature_b,
+                        offender,
                     } => {
                         if tx.amount != 0 {
                             return Err(SentrixError::InvalidTransaction(
                                 "SubmitEvidence: tx.amount must be 0".into(),
                             ));
                         }
-                        // Evidence targets the validator accused of
-                        // double-signing. Slashing engine verifies the
-                        // evidence + applies slash + tombstone if valid.
+                        // Audit H4 (2026-05-06): submitter / offender split.
+                        // Pre-fix `evidence.validator` was forced to
+                        // `tx.from_address`, meaning the submitter
+                        // accused themselves. Now `offender` is a
+                        // dedicated field on the variant; reject the
+                        // tx if it's empty so the wire-format change
+                        // is mandatory going forward (back-compat
+                        // payloads with empty offender can't slash
+                        // anyone, which is the desired behaviour
+                        // anyway — JAIL_CONSENSUS_HEIGHT=u64::MAX
+                        // already rejects auto-jail dispatch).
+                        if offender.is_empty() {
+                            return Err(SentrixError::InvalidTransaction(
+                                "SubmitEvidence: offender field must be populated"
+                                    .into(),
+                            ));
+                        }
+                        // Evidence targets the validator named in the
+                        // `offender` field, NOT the submitter.
                         let evidence = sentrix_staking::slashing::DoubleSignEvidence {
-                            validator: tx.from_address.clone(),
+                            validator: offender.clone(),
                             height,
                             block_hash_a,
                             block_hash_b,
                             signature_a,
                             signature_b,
                         };
-                        let _ = self
+                        // Audit H4: surface process_double_sign Err
+                        // and reject the tx instead of silently
+                        // swallowing. Pre-fix `let _ =` discarded the
+                        // Result, so a malformed or already-processed
+                        // evidence claim would silently succeed at the
+                        // outer apply-Pass-2 level.
+                        if let Err(e) = self
                             .slashing
-                            .process_double_sign(&mut self.stake_registry, &evidence);
-                        // Bounty to submitter deferred — current design
-                        // has no reporter field in SubmitEvidence (the
-                        // submitter IS the offender in this naive shape).
-                        // Follow-up: separate submitter + offender fields.
+                            .process_double_sign(&mut self.stake_registry, &evidence)
+                        {
+                            tracing::warn!(
+                                "SubmitEvidence (offender={}): process_double_sign failed: {}",
+                                offender,
+                                e,
+                            );
+                            return Err(e);
+                        }
+                        // Note: full signature verification of
+                        // signature_a / signature_b against
+                        // `Precommit::signing_payload(height, round,
+                        // block_hash, chain_id)` is deferred — the
+                        // wire format doesn't carry `round_a` /
+                        // `round_b` yet, and adding them is a
+                        // fork-gated wire-format extension separate
+                        // from this submitter/offender split.
                         if let Some(emitter) = &self.event_emitter {
                             emitter.emit_staking_op(&sentrix_primitives::events::StakingOpEvent {
                                 op: "submit_evidence".to_string(),
-                                validator: tx.from_address.clone(),
+                                validator: offender.clone(),
                                 delegator: tx.from_address.clone(),
                                 amount: 0,
                                 txid: tx.txid.clone(),

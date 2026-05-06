@@ -238,6 +238,30 @@ pub enum StakingOp {
         block_hash_b: String,
         signature_a: String,
         signature_b: String,
+        /// Audit H4 (2026-05-06): the address of the validator
+        /// accused of double-signing. Pre-fix the apply path forced
+        /// `evidence.validator = tx.from_address` — submitter and
+        /// offender collapsed into one field, meaning a third-party
+        /// reporter would have ended up accusing themselves. Now the
+        /// submitter (`tx.from_address`) is independent of the
+        /// offender (this field).
+        ///
+        /// `#[serde(default)]` for back-compat: all historical
+        /// SubmitEvidence payloads on chain.db have this empty (none
+        /// reached mainnet — `JAIL_CONSENSUS_HEIGHT = u64::MAX`
+        /// rejects this op type at the consensus boundary anyway).
+        /// Apply-side guards against an empty offender by returning
+        /// InvalidTransaction; submitters MUST populate it.
+        ///
+        /// Note: full signature verification of `signature_a` /
+        /// `signature_b` against `Precommit::signing_payload(height,
+        /// round, block_hash, chain_id)` requires `round_a` /
+        /// `round_b` fields which this variant doesn't carry yet.
+        /// That's a separate fork-gated wire-format extension; this
+        /// PR closes the submitter/offender split + Err propagation
+        /// only.
+        #[serde(default)]
+        offender: String,
     },
     /// Phase A: Consensus-computed jail evidence (data plumbing only —
     /// no dispatch wired yet). Activated post `JAIL_CONSENSUS_HEIGHT` fork
