@@ -522,4 +522,106 @@ mod tests {
         assert_eq!(db.get_balance("alice"), 40_000);
         assert_eq!(db.get_balance("bob"), 50_000);
     }
+
+    /// H3 reproducer (Rust audit 2026-05-06): the EVM apply path uses
+    /// `set_balance(addr, new_balance)` to write back revm's
+    /// post-execution wei→sentri balance. revm has internally deducted
+    /// `gas_used × base_fee` from the sender's wei balance during exec.
+    /// Because `set_balance` is a raw setter (no `total_burned` update,
+    /// no validator credit, no delta accounting), the gas portion is
+    /// silently destroyed — `total_supply()` drops by an amount that is
+    /// not reflected anywhere else in the supply ledger.
+    ///
+    /// On the native path the invariant `supply_drop == total_burned_delta`
+    /// holds because `transfer` / `charge_fee_only` correctly bookkeep the
+    /// burn half (`total_burned += fee/2`) and the validator half goes to
+    /// the validator account (still in supply). On the EVM path,
+    /// `commit_state_to_account_db` (sentrix-evm/src/writeback.rs:113)
+    /// breaks that invariant.
+    ///
+    /// This test asserts the POST-FIX expected behaviour — `leak == 0`.
+    /// It is `#[ignore]`d until the fix lands so CI stays green; un-ignore
+    /// it after `disable_base_fee=true` is set on the write path OR
+    /// `commit_state_to_account_db` is taught to credit validator +
+    /// `total_burned` per the 50/50 split rule.
+    #[test]
+    #[ignore = "H3: known supply leak — un-ignore after EVM fee-accounting fix lands (audit 2026-05-06)"]
+    fn test_h3_evm_writeback_set_balance_breaks_supply_invariant() {
+        let mut db = AccountDB::new();
+        let alice = "alice";
+        let validator = "v1";
+
+        // Genesis: alice holds 1B sentri = 10 SRX.
+        db.credit(alice, 1_000_000_000).unwrap();
+        let initial_supply = db.total_supply();
+        let initial_burned = db.total_burned;
+        assert_eq!(initial_supply, 1_000_000_000);
+        assert_eq!(initial_burned, 0);
+
+        // Step 1 — Pass-1 native: charge_fee_only(alice, MIN_TX_FEE).
+        // MIN_TX_FEE = 10_000 sentri. Burn 5_000, validator 5_000.
+        let fee = 10_000u64;
+        db.charge_fee_only(alice, fee).unwrap();
+
+        // Step 2 — block finalizer credits the validator floor(fee/2).
+        let validator_fee_share = fee / 2;
+        db.credit(validator, validator_fee_share).unwrap();
+
+        let after_pass1 = db.total_supply();
+        let after_pass1_burned = db.total_burned;
+        assert_eq!(after_pass1, 999_995_000);
+        assert_eq!(after_pass1_burned, 5_000);
+        // Native invariant holds: supply drop == burn increment.
+        assert_eq!(initial_supply - after_pass1, after_pass1_burned - initial_burned);
+
+        // Step 3 — Simulate `commit_state_to_account_db` writeback after
+        // revm internally deducted gas. Real values: gas_used = 100_000,
+        // INITIAL_BASE_FEE = 10_000 wei, /1e10 → 0 sentri at this scale,
+        // but a contract call typically lands ≥ 1M sentri. Use 1M to
+        // make the leak visible.
+        let evm_gas_deducted_sentri = 1_000_000u64;
+        let pre_writeback_alice = db.get_balance(alice);
+        db.set_balance(alice, pre_writeback_alice - evm_gas_deducted_sentri);
+
+        let after_writeback = db.total_supply();
+        let after_writeback_burned = db.total_burned;
+
+        // Supply dropped further by the gas deduction.
+        assert_eq!(
+            after_pass1 - after_writeback,
+            evm_gas_deducted_sentri,
+            "supply must drop exactly by the gas writeback"
+        );
+        // But total_burned did NOT update.
+        assert_eq!(
+            after_writeback_burned, after_pass1_burned,
+            "total_burned was NOT incremented by the EVM gas portion"
+        );
+        // No-one else's balance went up either.
+        assert_eq!(db.get_balance(validator), validator_fee_share);
+
+        // The H3 leak — supply dropped more than total_burned increased.
+        // Native invariant: total_supply drop == total_burned increment
+        // (validator credit is part of supply because it lives in an
+        // account; only burning removes from supply). EVM writeback's
+        // set_balance violates this because it doesn't bookkeep the
+        // delta anywhere.
+        let supply_drop = initial_supply - after_writeback;
+        let burned_delta = after_writeback_burned - initial_burned;
+        let leak = supply_drop - burned_delta;
+
+        // POST-FIX assertion: every sentri removed from total_supply must be
+        // accounted for in total_burned (or credited to a balance, which
+        // would keep it IN supply rather than dropping). Pre-fix this fails
+        // because the EVM gas deduction flows out via set_balance with no
+        // bookkeeping — leak == evm_gas_deducted_sentri (1M sentri here).
+        assert_eq!(
+            leak, 0,
+            "H3 supply leak: {} sentri dropped from total_supply via EVM \
+             writeback are NOT in total_burned and NOT in any account. Fix: \
+             disable_base_fee=true on write path, OR commit_state_to_account_db \
+             credits the delta per the 50/50 split rule.",
+            leak,
+        );
+    }
 }
