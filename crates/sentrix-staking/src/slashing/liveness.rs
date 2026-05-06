@@ -131,6 +131,25 @@ impl LivenessTracker {
             .entry(validator.to_string())
             .or_insert(height);
         let entries = self.records.entry(validator.to_string()).or_default();
+        // Idempotent: skip push if we already recorded this height.
+        // record_block_signatures fires from four code paths
+        // (main.rs:2541/3065 + libp2p_node.rs:1092/1542). The same
+        // block can flow through more than one without violating any
+        // chain-state invariant — gossip-race + sync-fallback in
+        // particular — but a duplicate entry inflates signed_in_window
+        // past MIN_SIGNED_PER_WINDOW on whichever node gets the
+        // double-fire and breaks consensus-jail determinism: nodes that
+        // recorded once vs nodes that recorded twice for the same
+        // (validator, height) produce different is_downtime_at verdicts
+        // → divergent JailEvidenceBundle → halt at first epoch boundary
+        // past JAIL_CONSENSUS_HEIGHT activation. Why this is safe to
+        // skip: blocks are processed in monotonic height order per
+        // validator (the chain extends forward), so the most-recent
+        // entry's height equalling the call's height is the
+        // double-fire signature, not a reorg.
+        if entries.last().map(|e| e.height) == Some(height) {
+            return;
+        }
         entries.push(LivenessRecord {
             height,
             signed: true,
