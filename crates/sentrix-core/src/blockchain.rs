@@ -1002,6 +1002,12 @@ impl Blockchain {
             epoch_start_block,
             epoch_end_block,
             evidence,
+            // V2 (2026-05-06): carry the active_set we used for evidence
+            // computation so verifiers iterate the same list. Closes the
+            // divergence class where each node's local active_set drifted
+            // post-jail/unjail and broke JailEvidenceBundle equality even
+            // when LivenessTracker contents agreed.
+            active_set,
         };
 
         match Transaction::new_jail_evidence_bundle(op, next_height, block_timestamp) {
@@ -1448,6 +1454,15 @@ impl Blockchain {
     ///   Phase 1 — immutable borrows of `chain` and `accounts` → collect owned data.
     ///   Phase 2 — mutable borrow of `state_trie` → insert + commit.
     pub fn update_trie_for_block(&mut self) -> SentrixResult<Option<[u8; 32]>> {
+        // [DEBUG] always-on eprintln — captures real flow during testnet
+        // activation rehearsal forensic. Remove before mainnet redeploy.
+        let _dbg_block_index = self.chain.last().map(|b| b.index).unwrap_or(0);
+        let _dbg_v2h = std::env::var("STATE_ROOT_V2_HEIGHT").unwrap_or_default();
+        eprintln!(
+            "[V2-DBG] update_trie_for_block ENTRY block_index={} STATE_ROOT_V2_HEIGHT_env={:?}",
+            _dbg_block_index, _dbg_v2h
+        );
+
         // Option B canonical-treasury rebase — fire BEFORE the trie-init
         // check so it runs independent of trie readiness. Targets the
         // exact activation block; force-sets in-memory PROTOCOL_TREASURY
@@ -1460,7 +1475,14 @@ impl Blockchain {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(u64::MAX);
         let activation_block_index = self.chain.last().map(|b| b.index);
+        eprintln!(
+            "[V2-DBG] activation_block_index={:?} state_root_v2_height_for_rebase={} treasury_in_mem={}",
+            activation_block_index,
+            state_root_v2_height_for_rebase,
+            self.accounts.get_balance(PROTOCOL_TREASURY)
+        );
         if activation_block_index == Some(state_root_v2_height_for_rebase) {
+            eprintln!("[V2-DBG] AT ACTIVATION BLOCK — checking canonical env");
             if let Some(canonical) = std::env::var("STATE_ROOT_V2_TREASURY_BALANCE")
                 .ok()
                 .and_then(|s| s.parse::<u64>().ok())
@@ -1481,7 +1503,12 @@ impl Blockchain {
                     );
                 }
                 self.accounts.set_balance(PROTOCOL_TREASURY, canonical);
+                eprintln!(
+                    "[V2-DBG] REBASE FIRED: PROTOCOL_TREASURY now = {} (post set_balance)",
+                    self.accounts.get_balance(PROTOCOL_TREASURY)
+                );
             } else {
+                eprintln!("[V2-DBG] activation height matched but STATE_ROOT_V2_TREASURY_BALANCE NOT set");
                 tracing::warn!(
                     "STATE_ROOT_V2 activation at h={} WITHOUT \
                      STATE_ROOT_V2_TREASURY_BALANCE override — fork risk if \
@@ -1490,6 +1517,11 @@ impl Blockchain {
                     state_root_v2_height_for_rebase
                 );
             }
+        } else {
+            eprintln!(
+                "[V2-DBG] NOT at activation block — block_index={:?} != v2_height={}",
+                activation_block_index, state_root_v2_height_for_rebase
+            );
         }
 
         if self.state_trie.is_none() {
@@ -1611,9 +1643,17 @@ impl Blockchain {
                 .unwrap_or(u64::MAX);
             if block.index >= state_root_v2_height {
                 addrs.push(PROTOCOL_TREASURY.to_string());
+                eprintln!(
+                    "[V2-DBG] block.index={} >= v2_height={} — PROTOCOL_TREASURY added to addrs",
+                    block.index, state_root_v2_height
+                );
             }
             (addrs, block.index)
         };
+        eprintln!(
+            "[V2-DBG] post-touch list: block_index={} touched_addrs_count={} treasury_in_mem={}",
+            block_index, touched_addrs.len(), self.accounts.get_balance(PROTOCOL_TREASURY)
+        );
         // All borrows on `self.chain` released here.
         // (Option B canonical-treasury rebase already fired at function
         // entry — see top of update_trie_for_block.)
@@ -1635,6 +1675,16 @@ impl Blockchain {
             })
             .collect();
         // Borrow of `accounts` ends after collect().
+        eprintln!(
+            "[V2-DBG] updates Vec built: {} entries at block_index={}",
+            updates.len(), block_index
+        );
+        for (addr, balance, nonce) in &updates {
+            eprintln!(
+                "[V2-DBG]   addr={} balance={} nonce={}",
+                addr, balance, nonce
+            );
+        }
 
         if trace {
             eprintln!("[trie-trace] update_trie_for_block at h={block_index}");
@@ -1685,6 +1735,10 @@ impl Blockchain {
         if trace {
             eprintln!("[trie-trace] commit at h={block_index} → root={}", hex::encode(root));
         }
+        eprintln!(
+            "[V2-DBG] FINAL trie root at block_index={}: 0x{}",
+            block_index, hex::encode(root)
+        );
         Ok(Some(root))
     }
 
@@ -3487,6 +3541,7 @@ mod tests {
                 epoch_start_block,
                 epoch_end_block,
                 evidence,
+                active_set,
             } => {
                 assert_eq!(
                     epoch,
@@ -3496,6 +3551,10 @@ mod tests {
                 assert_eq!(epoch_end_block, boundary);
                 assert_eq!(evidence.len(), 1);
                 assert_eq!(evidence[0].validator, downer);
+                assert!(
+                    !active_set.is_empty(),
+                    "V2: bundle must carry the active_set used for evidence"
+                );
             }
             _ => panic!("expected JailEvidenceBundle variant"),
         }
