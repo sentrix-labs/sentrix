@@ -108,3 +108,4 @@ __pycache__/
 .cl[a-z]ude/
 .cur[a-z]or/
 target-docker/
+*.proptest-regressions

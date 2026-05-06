@@ -162,6 +162,15 @@ impl Storage {
             }
         }
 
+        // Audit M6 (2026-05-06): chain.db doesn't persist the derived
+        // mempool sidecars (they're `#[serde(skip)]`), so after
+        // deserialise rebuild them from the loaded mempool. Skipping
+        // this would have `mempool_txids` empty while `mempool` holds
+        // entries — duplicate-tx detection would silently let
+        // duplicates back in until the next post-block retain
+        // rebuilt the index.
+        bc.rebuild_mempool_sidecars();
+
         Ok(Some(bc))
     }
 

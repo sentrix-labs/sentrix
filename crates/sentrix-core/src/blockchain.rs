@@ -361,6 +361,23 @@ pub struct Blockchain {
     pub authority: AuthorityManager, // pub: main.rs uses authority.* for validator management
     pub contracts: ContractRegistry,
     pub mempool: VecDeque<Transaction>,
+    /// Audit M6 (2026-05-06): O(1) duplicate-txid check sidecar for
+    /// `add_to_mempool`. Pre-fix the dup-scan was `mempool.iter().any(...)`
+    /// — at MAX_MEMPOOL_SIZE=10K + a 5K-tx burst the per-block cost is
+    /// 25M string comparisons. The sidecar is fully derived from
+    /// `mempool` (txid set), so anything that mutates `mempool`
+    /// rebuilds it via `rebuild_mempool_sidecars` (the snapshot
+    /// rollback path does, and so does each mempool `retain` call).
+    /// `#[serde(skip)]` because it's a derived index — chain.db only
+    /// needs to persist the authoritative `mempool` itself.
+    #[serde(skip)]
+    pub mempool_txids: std::collections::HashSet<String>,
+    /// Audit M6 (sister index): O(1) per-sender pending count. Backs
+    /// `mempool_pending_count`, called twice per `add_to_mempool` (once
+    /// for the per-sender cap check, once to compute the next nonce);
+    /// pre-fix each call was an O(n) iter+filter+count.
+    #[serde(skip)]
+    pub mempool_sender_count: std::collections::HashMap<String, u32>,
     pub total_minted: u64,
     pub chain_id: u64, // kept pub — read-only constant used by external clients
     /// Binary Sparse Merkle Tree for account state.
@@ -553,6 +570,8 @@ impl Blockchain {
             authority: AuthorityManager::new(admin_address),
             contracts: ContractRegistry::new(),
             mempool: VecDeque::new(),
+            mempool_txids: std::collections::HashSet::new(),
+            mempool_sender_count: std::collections::HashMap::new(),
             total_minted: 0,
             // Prefer the TOML's declared chain_id, but defer to the
             // SENTRIX_CHAIN_ID env var when set (matches previous semantics
