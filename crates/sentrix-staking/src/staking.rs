@@ -1025,6 +1025,16 @@ impl StakeRegistry {
         self.delegator_rewards.remove(delegator).unwrap_or(0)
     }
 
+    /// Audit H5 (2026-05-06): non-mutating sibling of
+    /// `take_delegator_rewards`. Used by the ClaimRewards apply path to
+    /// peek the amount BEFORE the balance transfer fires; the drain
+    /// only happens after the transfer succeeds, so a transfer failure
+    /// can't leave accumulators zeroed with no corresponding balance
+    /// credit.
+    pub fn peek_delegator_rewards(&self, delegator: &str) -> u64 {
+        self.delegator_rewards.get(delegator).copied().unwrap_or(0)
+    }
+
     pub fn weighted_proposer(&self, height: u64, round: u32) -> Option<String> {
         if self.active_set.is_empty() {
             return None;
