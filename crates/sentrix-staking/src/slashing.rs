@@ -68,7 +68,17 @@ impl SlashingEngine {
         let mut slashed = Vec::new();
 
         for validator in active_set {
-            if !self.liveness.is_downtime(validator) {
+            // Audit M4 (2026-05-06): pre-fix this called the entry-count
+            // form `is_downtime(validator)` which gates on
+            // `entries.len() < LIVENESS_WINDOW` and returns false. A
+            // validator who never signs a single block has 0 entries
+            // → 0 < 14400 → false → never flagged for downtime, complete
+            // non-participation was immune. The height-based form
+            // `is_downtime_at(validator, current_height)` already has
+            // the right semantics; we now have current_height in scope
+            // (added in v2.1.x for consensus-jail dispatch), so flip
+            // to the correct call.
+            if !self.liveness.is_downtime_at(validator, current_height) {
                 continue;
             }
 
@@ -432,12 +442,22 @@ mod tests {
         let mut reg = setup_registry();
         let mut engine = SlashingEngine::new();
 
-        // val1 misses everything in a FULL window. val2/val3 sign everything.
-        // Need LIVENESS_WINDOW entries to trip the "window-full" guard.
-        for h in 0..LIVENESS_WINDOW {
-            engine.liveness.record("0xval1", h, false);
-            engine.liveness.record("0xval2", h, true);
-            engine.liveness.record("0xval3", h, true);
+        // val1: signs once at h=0 to seed `first_seen`, then misses every
+        // subsequent block. val2/val3: sign everything. Audit M4 fix
+        // switched check_liveness from the entry-count `is_downtime` to
+        // the height-based `is_downtime_at`, which requires `first_seen`
+        // to be populated (only `record_signed` does that — the legacy
+        // `record(_, _, false)` path doesn't, by design).
+        engine.liveness.record_signed("0xval1", 0);
+        engine.liveness.record_signed("0xval2", 0);
+        engine.liveness.record_signed("0xval3", 0);
+        for h in 1..LIVENESS_WINDOW {
+            engine.liveness.record_signed("0xval2", h);
+            engine.liveness.record_signed("0xval3", h);
+            // val1 stops signing here — height-windowed downtime kicks in
+            // once we evaluate at h = LIVENESS_WINDOW because only the
+            // h=0 record exists, and the count filter requires height >
+            // cutoff (cutoff = 0 at this evaluation point).
         }
 
         let active = vec!["0xval1".into(), "0xval2".into(), "0xval3".into()];
@@ -624,10 +644,10 @@ mod tests {
         let mut reg = setup_registry();
         let mut engine = SlashingEngine::new();
 
-        // Slash via liveness — need full window to trip the window-full guard.
-        for h in 0..LIVENESS_WINDOW {
-            engine.liveness.record("0xval1", h, false);
-        }
+        // Audit M4: same setup pattern as `test_check_liveness_slashes` —
+        // seed first_seen via record_signed at h=0, then stop signing so
+        // the height-windowed `is_downtime_at` flags val1 at h=LIVENESS_WINDOW.
+        engine.liveness.record_signed("0xval1", 0);
         let active = vec!["0xval1".into()];
         engine.check_liveness(&mut reg, &active, LIVENESS_WINDOW);
 
