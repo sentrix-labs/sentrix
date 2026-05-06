@@ -427,7 +427,20 @@ impl Blockchain {
                             ));
                         }
                     }
-                    _ => unreachable!("TokenOp variant handled above"),
+                    // Audit L3 (2026-05-06): pre-fix this was
+                    // `unreachable!("TokenOp variant handled above")`,
+                    // which would `panic!` + `std::process::abort()` if a
+                    // future TokenOp variant landed without being added to
+                    // an arm above. Reject as InvalidTransaction so the
+                    // failing tx surfaces a normal block-apply error
+                    // instead of taking the validator down.
+                    _ => {
+                        return Err(SentrixError::InvalidTransaction(
+                            "unhandled TokenOp variant — add a Pass-1 \
+                             validation arm above before shipping"
+                                .into(),
+                        ));
+                    }
                 }
             }
 
@@ -776,7 +789,16 @@ impl Blockchain {
                                 .into(),
                         ));
                     }
-                    _ => unreachable!("TokenOp variant handled above"),
+                    // Audit L3 sister site (Pass-2 dispatch). Same
+                    // rationale as the Pass-1 fallthrough above — fail
+                    // the tx, don't abort the validator.
+                    _ => {
+                        return Err(SentrixError::InvalidTransaction(
+                            "unhandled TokenOp variant in dispatch — add \
+                             a handler arm above before shipping"
+                                .into(),
+                        ));
+                    }
                 }
             }
 
