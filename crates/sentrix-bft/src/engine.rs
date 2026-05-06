@@ -656,16 +656,25 @@ impl BftEngine {
         if status.height < self.state.height {
             return BftAction::Wait;
         }
-        // Track peer's highest-seen round. Keep the max round; refresh the
-        // stake snapshot on every update (the peer's stake can change across
-        // epoch boundaries).
+        // Track peer's highest-seen round.
+        //
+        // Audit M7 (2026-05-06): pre-fix the stake refresh was gated on
+        // `status.round >= entry.0` — same condition as the round
+        // update. When a peer crossed an epoch boundary (stake delta)
+        // but stayed at the same round number, the cached stake stayed
+        // at the pre-epoch value. `f_plus_one_round`'s stake-weighted
+        // threshold then summed pre-epoch stakes for a peer set whose
+        // active stakes had moved, producing the wrong catch-up trigger.
+        // Now: always refresh stake; only gate the round update on the
+        // `>=` check so we still preserve the "highest seen round"
+        // monotonicity invariant.
         let entry = self
             .peer_rounds
             .entry(status.validator.clone())
             .or_insert((0, stake));
+        entry.1 = stake;
         if status.round >= entry.0 {
             entry.0 = status.round;
-            entry.1 = stake;
         }
 
         if let Some(target) = self.f_plus_one_round()
