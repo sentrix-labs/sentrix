@@ -9,5 +9,5 @@ repository = "https://github.com/sentrix-labs/sentrix"
 [dependencies]
 sentrix-primitives = { path = "../sentrix-primitives" }
 serde = { version = "1.0", features = ["derive"] }
-sha2 = "0.10"
+sha2 = "0.11"
 tracing = "0.1"

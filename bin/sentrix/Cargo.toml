@@ -47,13 +47,13 @@ sentrix-wire = { path = "../../crates/sentrix-wire" }
 # explicitly opts in via SENTRIX_GRPC_ENABLED=1. See main.rs for the
 # spawn block.
 sentrix-grpc = { path = "../../crates/sentrix-grpc" }
-tonic = { version = "0.12", features = ["transport"] }
+tonic = { version = "0.14", features = ["transport"] }
 # v2.1.70: gRPC-Web codec layer so browsers (Next.js / React with @grpc/grpc-web
 # or @protobuf-ts/grpcweb-transport) can hit the side-car without a separate
 # proxy. Same port as pure gRPC; tonic-web detects content-type at request
 # time and dispatches the right codec. CORS stays at the Caddy edge so the
 # headers stay in one place (matches rpc.sentrixchain.com pattern).
-tonic-web = "0.12"
+tonic-web = "0.14"
 # V2 M-15 helper uses the SecretKey type from secp256k1 in its signature.
 # The wallet crate returns the same type from `get_secret_key`, but bin/
 # doesn't transitively re-export it, so we depend on the workspace version
