@@ -79,11 +79,20 @@ fn test_slash_removes_from_active_set() {
     let mut slashing = SlashingEngine::new();
 
     // Make val000 miss all blocks in liveness window
-    for h in 0..LIVENESS_WINDOW {
-        slashing.liveness.record("0xval000", h, false);
-        // Everyone else signs
+    // Audit M4 (PR #519): seed first_seen at h=0 for every validator,
+    // then val000 stops signing while the rest continue. The height-
+    // based `is_downtime_at` reads `first_seen` (only `record_signed`
+    // populates it) — the legacy `record(_, _, false)` path doesn't.
+    for i in 0..21 {
+        slashing
+            .liveness
+            .record_signed(&format!("0xval{:03}", i), 0);
+    }
+    for h in 1..LIVENESS_WINDOW {
         for i in 1..21 {
-            slashing.liveness.record(&format!("0xval{:03}", i), h, true);
+            slashing
+                .liveness
+                .record_signed(&format!("0xval{:03}", i), h);
         }
     }
 
