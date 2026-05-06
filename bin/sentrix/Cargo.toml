@@ -47,7 +47,7 @@ sentrix-wire = { path = "../../crates/sentrix-wire" }
 # explicitly opts in via SENTRIX_GRPC_ENABLED=1. See main.rs for the
 # spawn block.
 sentrix-grpc = { path = "../../crates/sentrix-grpc" }
-tonic = { version = "0.12", features = ["transport"] }
+tonic = { version = "0.14", features = ["transport"] }
 # v2.1.70: gRPC-Web codec layer so browsers (Next.js / React with @grpc/grpc-web
 # or @protobuf-ts/grpcweb-transport) can hit the side-car without a separate
 # proxy. Same port as pure gRPC; tonic-web detects content-type at request
