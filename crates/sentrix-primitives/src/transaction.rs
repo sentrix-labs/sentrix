@@ -201,7 +201,7 @@ impl TokenOp {
 }
 
 // ── Staking operation types (Voyager Phase 2a) ──────────────
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum StakingOp {
     RegisterValidator {
@@ -986,6 +986,61 @@ mod tests {
         };
         let encoded = bundle.encode().expect("encode");
         assert!(StakingOp::is_staking_op(&encoded));
+    }
+
+    /// 2026-05-06 incident follow-up: rule out wire-format change as the
+    /// cause of the v2.1.78 mainnet halt. The V2 patch added an
+    /// `active_set: Vec<String>` field with `#[serde(default)]`. If the
+    /// new variant were to round-trip the same logical payload to a
+    /// DIFFERENT byte string than the V1 shape, every block carrying a
+    /// JailEvidenceBundle tx would produce a different block hash on
+    /// v2.1.78 vs v2.1.77 — instant state-root divergence.
+    ///
+    /// Two checks:
+    ///   1. A V1-shape JSON (no active_set field) must decode cleanly
+    ///      under v2.1.78 with active_set defaulting to empty.
+    ///   2. The decoded value must re-encode to a byte string that the
+    ///      tx-data ingest path will accept as equivalent. We don't
+    ///      require byte-for-byte equality (serde_json may emit
+    ///      `"active_set":[]` even when defaulted in), but the round-
+    ///      tripped value MUST decode back into the same StakingOp.
+    ///
+    /// If this test fails, the V2 wire-format choice is wrong — the fix
+    /// is to bump enum versioning instead (`JailEvidenceBundleV2 { … }`)
+    /// so old payloads are an unambiguously-different variant tag.
+    #[test]
+    fn test_jail_evidence_v1_v2_wire_compat_no_active_set() {
+        let v1_shape = "{\"op\":\"jail_evidence_bundle\",\
+                        \"epoch\":42,\
+                        \"epoch_start_block\":590100,\
+                        \"epoch_end_block\":604499,\
+                        \"evidence\":[]}";
+        let decoded = StakingOp::decode(v1_shape).expect("v2.1.78 must decode v1 shape");
+        match &decoded {
+            StakingOp::JailEvidenceBundle {
+                epoch,
+                epoch_start_block,
+                epoch_end_block,
+                evidence,
+                active_set,
+            } => {
+                assert_eq!(*epoch, 42);
+                assert_eq!(*epoch_start_block, 590100);
+                assert_eq!(*epoch_end_block, 604499);
+                assert!(evidence.is_empty());
+                assert!(
+                    active_set.is_empty(),
+                    "default active_set must be empty when v1 shape omits it"
+                );
+            }
+            other => panic!("expected JailEvidenceBundle, got {other:?}"),
+        }
+        // Round-trip stability — encoded form may include "active_set":[]
+        // (serde defaults it in on serialize), but it must decode back to
+        // the same StakingOp.
+        let re_encoded = decoded.encode().expect("encode");
+        let re_decoded = StakingOp::decode(&re_encoded).expect("re-decode");
+        assert_eq!(decoded, re_decoded, "round-trip must preserve the StakingOp");
     }
 
     #[test]
