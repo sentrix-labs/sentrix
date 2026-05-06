@@ -253,6 +253,76 @@ impl Blockchain {
                     self.accounts.mark_evm_tx_failed(&tx.txid);
                 }
 
+                // Audit M2 (2026-05-06): state-mutation must complete BEFORE
+                // any MDBX persist so a panic mid-tx can't leave a receipt
+                // with success=true sitting in the receipts table while the
+                // post-execution state never reached AccountDB. Pre-fix
+                // ordering was [receipt persist] → [logs persist] → [code
+                // persist] → [state writeback]; on a panic between
+                // receipt-persist and writeback the only recovery path was
+                // chain.db rsync from a healthy peer. Post-fix order:
+                // [code persist + EIP-170] → [state writeback] → [receipt
+                // persist] → [logs persist]. A panic now leaves state
+                // applied with no receipt, which `eth_getTransactionReceipt`
+                // surfaces as a transient 404 the peer can refill from
+                // gossip — strictly recoverable.
+
+                // Store contract RUNTIME code (not init code) if CREATE succeeded.
+                // receipt.output contains the runtime bytecode returned by the constructor.
+                //
+                // P1 (EIP-170): cap deployed runtime bytecode at 24_576
+                // bytes. Without this an attacker could ship a contract
+                // whose runtime code expands state and trie pages
+                // disproportionately per gas unit, amplifying the cost
+                // of every subsequent block that touches the account.
+                // We reject the CREATE by dropping the stored code and
+                // marking the tx failed; the sender still paid gas but
+                // no contract is registered.
+                const EIP170_MAX_CODE_SIZE: usize = 24_576;
+                if let Some(contract_addr) = receipt.contract_address
+                    && !receipt.output.is_empty()
+                {
+                    if receipt.output.len() > EIP170_MAX_CODE_SIZE {
+                        tracing::warn!(
+                            "P1/EIP-170: contract {} runtime bytecode {} B > {} B limit; \
+                             rejecting deploy (tx {})",
+                            format!("0x{}", hex::encode(contract_addr.as_slice())),
+                            receipt.output.len(),
+                            EIP170_MAX_CODE_SIZE,
+                            &tx.txid[..16.min(tx.txid.len())]
+                        );
+                        self.accounts.mark_evm_tx_failed(&tx.txid);
+                    } else {
+                        let addr_str = format!("0x{}", hex::encode(contract_addr.as_slice()));
+                        use sha3::{Digest as _, Keccak256};
+                        let code_hash: [u8; 32] = Keccak256::digest(&receipt.output).into();
+                        let code_hash_hex = hex::encode(code_hash);
+                        self.accounts
+                            .store_contract_code(&code_hash_hex, receipt.output.clone());
+                        self.accounts.set_contract(&addr_str, code_hash);
+                    }
+                }
+
+                // ── EVM state writeback (closes Bug #1) ─────────────
+                // On success, commit every touched account's balance,
+                // nonce, storage slots, and (for CREATE) bytecode back
+                // to AccountDB so the next tx / next block sees them.
+                // Skip on revert — EVM spec requires state changes to
+                // be discarded on revert; the gas fee was already
+                // debited by the native Pass-1 .transfer() call above,
+                // so there's nothing else to do.
+                //
+                // The EIP-170 guard above may flip the tx to failed
+                // even for a successful revm receipt — in that case
+                // we skip the writeback too. Check mark AFTER the
+                // EIP-170 block ran so "was marked failed" is
+                // authoritative.
+                if receipt.success && !self.accounts.is_evm_tx_failed(&tx.txid) {
+                    commit_state_to_account_db(&state, &mut self.accounts)?;
+                }
+
+                // ── MDBX persist (post-state-writeback per audit M2) ──
+
                 // Persist the per-tx receipt so eth_getTransactionReceipt
                 // surfaces real gas_used + contract_address + revert reason
                 // bytes — pre-2026-05-02 the receipt builder hardcoded
@@ -262,8 +332,8 @@ impl Blockchain {
                     && let Some(key) = sentrix_evm::receipt_key(&tx.txid)
                 {
                     let stored = sentrix_evm::StoredReceipt::from_tx_receipt(&receipt);
-                    // Audit M1 (2026-05-06): pre-fix this swallowed the put
-                    // error silently. A failed receipt persist means
+                    // Audit M1: pre-fix this swallowed the put error
+                    // silently. A failed receipt persist means
                     // `eth_getTransactionReceipt` 404s for a tx that DID
                     // execute and DID move state — surface so ops can spot
                     // it. Don't propagate: block apply already succeeded,
@@ -341,59 +411,6 @@ impl Blockchain {
                             emitter.emit_log(&log_data);
                         }
                     }
-                }
-                // Store contract RUNTIME code (not init code) if CREATE succeeded.
-                // receipt.output contains the runtime bytecode returned by the constructor.
-                //
-                // P1 (EIP-170): cap deployed runtime bytecode at 24_576
-                // bytes. Without this an attacker could ship a contract
-                // whose runtime code expands state and trie pages
-                // disproportionately per gas unit, amplifying the cost
-                // of every subsequent block that touches the account.
-                // We reject the CREATE by dropping the stored code and
-                // marking the tx failed; the sender still paid gas but
-                // no contract is registered.
-                const EIP170_MAX_CODE_SIZE: usize = 24_576;
-                if let Some(contract_addr) = receipt.contract_address
-                    && !receipt.output.is_empty()
-                {
-                    if receipt.output.len() > EIP170_MAX_CODE_SIZE {
-                        tracing::warn!(
-                            "P1/EIP-170: contract {} runtime bytecode {} B > {} B limit; \
-                             rejecting deploy (tx {})",
-                            format!("0x{}", hex::encode(contract_addr.as_slice())),
-                            receipt.output.len(),
-                            EIP170_MAX_CODE_SIZE,
-                            &tx.txid[..16.min(tx.txid.len())]
-                        );
-                        self.accounts.mark_evm_tx_failed(&tx.txid);
-                    } else {
-                        let addr_str = format!("0x{}", hex::encode(contract_addr.as_slice()));
-                        use sha3::{Digest as _, Keccak256};
-                        let code_hash: [u8; 32] = Keccak256::digest(&receipt.output).into();
-                        let code_hash_hex = hex::encode(code_hash);
-                        self.accounts
-                            .store_contract_code(&code_hash_hex, receipt.output.clone());
-                        self.accounts.set_contract(&addr_str, code_hash);
-                    }
-                }
-
-                // ── EVM state writeback (closes Bug #1) ─────────────
-                // On success, commit every touched account's balance,
-                // nonce, storage slots, and (for CREATE) bytecode back
-                // to AccountDB so the next tx / next block sees them.
-                // Skip on revert — EVM spec requires state changes to
-                // be discarded on revert; the gas fee was already
-                // debited by the native Pass-1 .transfer() call above,
-                // so there's nothing else to do.
-                //
-                // The EIP-170 guard above may flip the tx to failed
-                // even for a successful revm receipt — in that case
-                // we skip the writeback too. Check mark AFTER the
-                // EIP-170 block ran so "was marked failed" is
-                // authoritative.
-                if receipt.success && !self.accounts.is_evm_tx_failed(&tx.txid) {
-                    commit_state_to_account_db(&state, &mut self.accounts)?;
                 }
             }
             Err(e) => {
