@@ -16,3 +16,11 @@ secp256k1 = { version = "0.31", features = ["rand", "recovery", "serde"] }
 sha2 = "0.11"
 sha3 = "0.11"
 hex = "0.4"
+
+[dev-dependencies]
+# Property-based testing for AccountDB invariant sweeps. See
+# `tests/account_proptest.rs` — generates random op sequences and
+# asserts `total_supply()` and `total_burned` match an independent
+# ledger model. Catches the H3-class supply leak (audit 2026-05-06)
+# at the unit level before it ships.
+proptest = "1"
