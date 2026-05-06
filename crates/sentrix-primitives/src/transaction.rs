@@ -247,12 +247,34 @@ pub enum StakingOp {
     /// JailEvidence list in the boundary block as this StakingOp variant.
     /// Other validators Pass-1-validate (recompute independently from same
     /// blocks; reject block if cited evidence doesn't match).
+    ///
+    /// V2 (2026-05-06): the proposer also carries the `active_set` it used
+    /// when computing evidence. Verifiers iterate the SAME claimed set
+    /// instead of their local `stake_registry.active_set` view, which
+    /// closes the divergence class where post-jail / post-unjail / mid-
+    /// catchup nodes had differing local sets and rejected each other's
+    /// JailEvidenceBundle even when both honestly derived their evidence
+    /// from canonical block.justification (deterministic per the
+    /// 2026-04-29 LivenessTracker::record_signed fix). Sanity check: every
+    /// member of the claimed set must already be in stake_registry.validators
+    /// — stops a malicious proposer from inventing addresses, but trusts
+    /// the BFT majority to reject a block whose claimed set diverges
+    /// wildly from each honest verifier's local view.
     /// See `audits/consensus-computed-jail-design.md`.
     JailEvidenceBundle {
         epoch: u64,
         epoch_start_block: u64,
         epoch_end_block: u64,
         evidence: Vec<JailEvidence>,
+        /// Active validator set the proposer used when computing `evidence`.
+        /// `#[serde(default)]` so chain.db payloads written before this
+        /// field shipped (none on mainnet — JAIL_CONSENSUS_HEIGHT has been
+        /// at u64::MAX since 2026-04-29) deserialize cleanly with an empty
+        /// vec; the V2 dispatch path treats an empty claimed set as a
+        /// validation error so the legacy shape can't accidentally jail
+        /// anyone.
+        #[serde(default)]
+        active_set: Vec<String>,
     },
     /// Add real SRX to an existing validator's self_stake without
     /// phantom-mint. Only the validator itself (`tx.from_address ==
@@ -902,6 +924,10 @@ mod tests {
                     justification_hashes: vec!["abc123".into(), "def456".into()],
                 },
             ],
+            active_set: vec![
+                "0x87c9976d4b2e360b9fbb87e4bd5442edce2a7511".into(),
+                "0x753f2f68829fbe76a0132295624f48b27ce2e2d9".into(),
+            ],
         };
 
         let encoded = bundle.encode().expect("encode");
@@ -912,6 +938,7 @@ mod tests {
                 epoch_start_block,
                 epoch_end_block,
                 evidence,
+                active_set,
             } => {
                 assert_eq!(epoch, 42);
                 assert_eq!(epoch_start_block, 590100);
@@ -924,6 +951,7 @@ mod tests {
                 assert_eq!(evidence[0].signed_count, 3000);
                 assert_eq!(evidence[0].missed_count, 11400);
                 assert_eq!(evidence[0].justification_hashes.len(), 2);
+                assert_eq!(active_set.len(), 2);
             }
             other => panic!("expected JailEvidenceBundle, got {:?}", other),
         }
@@ -936,6 +964,7 @@ mod tests {
             epoch_start_block: 0,
             epoch_end_block: 14400,
             evidence: vec![],
+            active_set: vec![],
         };
         let encoded = bundle.encode().expect("encode");
         // Per #[serde(tag = "op", rename_all = "snake_case")] on StakingOp,
@@ -953,6 +982,7 @@ mod tests {
             epoch_start_block: 0,
             epoch_end_block: 14400,
             evidence: vec![],
+            active_set: vec![],
         };
         let encoded = bundle.encode().expect("encode");
         assert!(StakingOp::is_staking_op(&encoded));

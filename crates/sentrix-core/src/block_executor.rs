@@ -1015,6 +1015,7 @@ impl Blockchain {
                         epoch_start_block: _,
                         epoch_end_block: _,
                         evidence: claimed_evidence,
+                        active_set: claimed_active_set,
                     } => {
                         // Phase C: consensus-applied jail dispatch.
                         //
@@ -1044,17 +1045,41 @@ impl Blockchain {
                             )));
                         }
 
-                        // Verification: recompute evidence locally + compare.
-                        // Determinism: each validator's LivenessTracker should
-                        // produce the same evidence list (post asymmetric-record
-                        // fix in PR #356 + #362). If a validator's local view
-                        // differs, it'll reject this block — that's the safety
-                        // mechanism (block can't finalize unless 2/3+ of
-                        // stake-weighted validators agree on evidence).
-                        let active_set = self.stake_registry.active_set.clone();
+                        // Verification: recompute evidence using the proposer's
+                        // claimed active_set, then compare against the claimed
+                        // evidence. Determinism property: identical
+                        // LivenessTracker contents (canonical via
+                        // record_signed) + identical iteration set → identical
+                        // evidence list. Closes the 2026-04-29 divergence
+                        // class where verifiers iterated their LOCAL
+                        // stake_registry.active_set, which can drift across
+                        // the fleet post-jail/unjail or mid-catchup.
+                        //
+                        // Sanity gate: every validator in the claimed set must
+                        // already be registered. Stops a malicious proposer
+                        // from inventing addresses to forge evidence; honest
+                        // validators are expected to vote-no on a block whose
+                        // claimed set diverges materially from their local
+                        // view (BFT majority is the trust anchor for the set
+                        // itself, not equality with each verifier's view).
+                        if claimed_active_set.is_empty() {
+                            return Err(SentrixError::InvalidTransaction(
+                                "JailEvidenceBundle V2: claimed active_set must \
+                                 be non-empty"
+                                    .into(),
+                            ));
+                        }
+                        for v in claimed_active_set.iter() {
+                            if !self.stake_registry.validators.contains_key(v) {
+                                return Err(SentrixError::InvalidTransaction(format!(
+                                    "JailEvidenceBundle V2: claimed active_set \
+                                     contains unregistered validator {v}"
+                                )));
+                            }
+                        }
                         let local_evidence = self
                             .slashing
-                            .compute_jail_evidence(&active_set, self.height());
+                            .compute_jail_evidence(&claimed_active_set, self.height());
 
                         if local_evidence != *claimed_evidence {
                             return Err(SentrixError::InvalidTransaction(format!(
