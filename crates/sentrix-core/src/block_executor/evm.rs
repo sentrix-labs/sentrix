@@ -26,7 +26,38 @@ impl Blockchain {
         if parts.len() != 3 || parts[0] != "EVM" {
             return Ok(()); // not an EVM tx, skip
         }
-        let gas_limit: u64 = parts[1].parse().unwrap_or(30_000_000);
+        // Audit H2 (2026-05-06): a malformed gas_limit field used to fall
+        // back to 30_000_000 — equal to BLOCK_GAS_LIMIT — letting one tx
+        // consume the entire block budget and bypass TX_GAS_LIMIT_CAP. RPC
+        // ingress validates this field for client-built txs, so historical
+        // mainnet txs all have well-formed values; the silent fallback was
+        // a hostile-input safety net that defaulted in the wrong direction.
+        // Now: parse strictly, cap at TX_GAS_LIMIT_CAP, mark the tx failed
+        // on either error so the block still progresses (Pass-1 already
+        // debited tx.fee).
+        let gas_limit: u64 = match parts[1].parse() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!(
+                    "EVM tx {}: malformed gas_limit {:?}: {}",
+                    &tx.txid[..16.min(tx.txid.len())],
+                    parts[1],
+                    e,
+                );
+                self.accounts.mark_evm_tx_failed(&tx.txid);
+                return Ok(());
+            }
+        };
+        if gas_limit > sentrix_evm::gas::TX_GAS_LIMIT_CAP {
+            tracing::warn!(
+                "EVM tx {}: gas_limit {} exceeds TX_GAS_LIMIT_CAP {}",
+                &tx.txid[..16.min(tx.txid.len())],
+                gas_limit,
+                sentrix_evm::gas::TX_GAS_LIMIT_CAP,
+            );
+            self.accounts.mark_evm_tx_failed(&tx.txid);
+            return Ok(());
+        }
         let calldata = hex::decode(parts[2]).unwrap_or_default();
 
         // Decode raw Ethereum tx from signature field for re-validation
@@ -137,7 +168,15 @@ impl Blockchain {
             }
         }
 
-        let evm_tx = TxEnv::builder()
+        // Audit H1 (2026-05-06): pre-fix this trailed `.unwrap_or_default()`,
+        // substituting a zero TxEnv (caller=0x0, gas=0, chain_id=None) on
+        // build failure. revm would then execute that zero-env against state,
+        // producing non-deterministic results across revm versions / validator
+        // builds — same shape as the 2026-05-01 EVM-value-transfer split-brain.
+        // build() can only fail when a required field is unset; we set them
+        // all above, so this path is unreachable in practice. Surface the
+        // error explicitly anyway and mark the tx failed if it ever fires.
+        let evm_tx = match TxEnv::builder()
             .caller(from_addr)
             .kind(tx_kind)
             .data(alloy_primitives::Bytes::from(calldata))
@@ -156,7 +195,18 @@ impl Blockchain {
             .nonce(sender_nonce)
             .chain_id(Some(tx.chain_id))
             .build()
-            .unwrap_or_default();
+        {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(
+                    "EVM tx {}: TxEnv::builder().build() failed: {}",
+                    &tx.txid[..16.min(tx.txid.len())],
+                    e,
+                );
+                self.accounts.mark_evm_tx_failed(&tx.txid);
+                return Ok(());
+            }
+        };
 
         match execute_tx_with_state(evm_db, evm_tx, INITIAL_BASE_FEE, self.chain_id) {
             Ok((receipt, state)) => {
