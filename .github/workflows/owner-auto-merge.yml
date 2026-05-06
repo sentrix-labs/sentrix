@@ -1,0 +1,46 @@
+name: Owner auto-merge
+
+# Auto-enable GitHub native auto-merge on PRs authored by the repo owner
+# (`satyakwok`). External contributors keep manual review + merge — this
+# workflow only flips the auto-merge bit; it does NOT bypass branch
+# protection, required reviews, or required status checks. Once enabled
+# GitHub merges as soon as the configured required checks turn green.
+#
+# Why a workflow instead of a default org-wide setting: GitHub doesn't
+# expose a per-PR "auto-merge by author" toggle, and we want third-party
+# contribs to require explicit operator review. This is the smallest
+# wrapper that gates auto-merge on author identity.
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  pull-requests: write
+  contents: write
+
+jobs:
+  enable-auto-merge:
+    runs-on: ubuntu-22.04
+    if: >
+      github.event.pull_request.user.login == 'satyakwok' &&
+      github.event.pull_request.draft == false
+    steps:
+      - name: Enable auto-merge (squash) for owner PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -e
+          # `gh pr merge --auto` queues the merge for when all required
+          # checks pass. If checks already passed (rare on PR open),
+          # GitHub merges immediately. Squash strategy matches the
+          # operator's manual cadence on this repo.
+          gh pr merge --auto --squash "$PR_URL" || {
+            # Common no-op causes that should NOT fail the workflow:
+            #   - PR already merged
+            #   - PR has merge conflicts (operator must rebase)
+            #   - "auto-merge" already enabled
+            echo "::warning::auto-merge enable returned non-zero — PR may already be merged, conflicted, or have auto-merge already enabled."
+            exit 0
+          }
