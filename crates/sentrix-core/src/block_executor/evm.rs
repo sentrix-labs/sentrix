@@ -68,14 +68,18 @@ impl Blockchain {
 
         use alloy_consensus::TxEnvelope;
         use alloy_consensus::Transaction as AlloyTx; // brings .value() into scope
-        use alloy_consensus::transaction::SignerRecoverable;
         use alloy_eips::eip2718::Decodable2718;
 
         let envelope: TxEnvelope = match TxEnvelope::decode_2718(&mut raw_bytes.as_slice()) {
             Ok(e) => e,
             Err(_) => return Ok(()),
         };
-        let _sender = envelope.recover_signer().ok();
+        // Audit L1 (2026-05-06): a stray `let _sender = envelope.recover_signer().ok();`
+        // here was burning a secp256k1 recovery (~100µs/tx) without using
+        // the result. The actual sender comes from `tx.from_address` (set
+        // by Pass-1 native flow); the EVM caller is derived below from
+        // `parse_sentrix_address(&tx.from_address)`. No correctness role for
+        // this line; deleted.
 
         // Pull native-value out of the envelope, but gate it. Flat-shipping
         // the `.value()` plumbing in v2.1.49 produced 3 same-day mainnet
@@ -234,11 +238,23 @@ impl Blockchain {
                     && let Some(key) = sentrix_evm::receipt_key(&tx.txid)
                 {
                     let stored = sentrix_evm::StoredReceipt::from_tx_receipt(&receipt);
-                    let _ = storage.put_bincode(
+                    // Audit M1 (2026-05-06): pre-fix this swallowed the put
+                    // error silently. A failed receipt persist means
+                    // `eth_getTransactionReceipt` 404s for a tx that DID
+                    // execute and DID move state — surface so ops can spot
+                    // it. Don't propagate: block apply already succeeded,
+                    // chain state is canonical.
+                    if let Err(e) = storage.put_bincode(
                         sentrix_storage::tables::TABLE_RECEIPTS,
                         &key,
                         &stored,
-                    );
+                    ) {
+                        tracing::warn!(
+                            "EVM tx {}: receipt persist failed: {}",
+                            &tx.txid[..16.min(tx.txid.len())],
+                            e,
+                        );
+                    }
                 }
                 // Sprint 2: persist every log emitted by this tx. Key is
                 // (height, tx_index, log_index) BE-packed so range scans
@@ -265,8 +281,22 @@ impl Blockchain {
                             log_idx as u32,
                         );
                         let key = log_key(block_height, tx_index, log_idx as u32);
-                        let _ =
-                            storage.put_bincode(sentrix_storage::tables::TABLE_LOGS, &key, &stored);
+                        // Audit M1 (sister site): same warn-on-Err pattern
+                        // as the receipt persist above. Failed log persist
+                        // means `eth_getLogs` misses an entry; emit_log
+                        // below still notifies live WS subscribers.
+                        if let Err(e) = storage.put_bincode(
+                            sentrix_storage::tables::TABLE_LOGS,
+                            &key,
+                            &stored,
+                        ) {
+                            tracing::warn!(
+                                "EVM tx {}: log persist failed (idx={}): {}",
+                                &tx.txid[..16.min(tx.txid.len())],
+                                log_idx,
+                                e,
+                            );
+                        }
 
                         // Notify WebSocket subscribers — eth_subscribe(logs).
                         // Convert StoredLog to the trait-friendly LogData

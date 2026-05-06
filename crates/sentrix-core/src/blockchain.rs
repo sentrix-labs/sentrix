@@ -689,11 +689,22 @@ impl Blockchain {
     /// never called (e.g. unit tests with no storage backing).
     pub fn record_tx_in_index(&self, txid: &str, block_index: u64) {
         if let Some(mdbx) = &self.mdbx_storage {
-            let _ = mdbx.put(
+            // Audit M5 (2026-05-06): pre-fix this swallowed put errors,
+            // which would silently 404 `eth_getTransactionByHash` for a
+            // tx already canonical in chain state. Don't propagate (block
+            // apply already succeeded), but surface for ops.
+            if let Err(e) = mdbx.put(
                 tables::TABLE_TX_INDEX,
                 txid.as_bytes(),
                 &height_key(block_index),
-            );
+            ) {
+                tracing::warn!(
+                    "record_tx_in_index({}, h={}): MDBX put failed: {}",
+                    txid,
+                    block_index,
+                    e,
+                );
+            }
         }
     }
 
