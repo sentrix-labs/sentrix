@@ -507,7 +507,6 @@ impl StakeRegistry {
         let remaining = slash_amount.saturating_sub(from_self);
         if remaining > 0 && val.total_delegated > 0 {
             let delegated_before = val.total_delegated;
-            val.total_delegated = val.total_delegated.saturating_sub(remaining);
 
             // Reduce individual delegation amounts proportionally.
             //
@@ -520,16 +519,37 @@ impl StakeRegistry {
             // single delegator by at most 1 sentri per rounding step
             // (imperceptible) but keeps the protocol-wide slash invariant
             // ≥ stated rate.
+            //
+            // Audit M3 (2026-05-06): pre-fix this also pre-set
+            // `val.total_delegated -= remaining` before the per-entry
+            // loop. With ceiling division, `sum(entry.amount drops)` ≥
+            // `remaining` by up to N sentri (N = delegator count for
+            // this validator), so the validator-level subtraction
+            // under-counted vs the actual sum. The invariant
+            // `total_delegated == sum(entries.amount where validator
+            // matches)` would drift by N sentri after every slash,
+            // inflating the denominator pay_one_signer uses for
+            // reward distribution → delegators slowly under-paid. Now:
+            // do the per-entry slash first, sum the survivors, then
+            // assign val.total_delegated = sum so the invariant holds
+            // exactly (still ≥ stated rate, courtesy of ceiling div).
+            let mut delegated_after: u128 = 0;
             for entries in self.delegations.values_mut() {
                 for entry in entries.iter_mut() {
-                    if entry.validator == validator && delegated_before > 0 {
+                    if entry.validator == validator {
                         let num = (entry.amount as u128).saturating_mul(remaining as u128);
                         let den = delegated_before as u128;
                         let entry_slash = num.div_ceil(den);
                         entry.amount = entry.amount.saturating_sub(entry_slash as u64);
+                        delegated_after = delegated_after.saturating_add(entry.amount as u128);
                     }
                 }
             }
+            // u128 → u64 saturate: the sum of u64 entries cannot exceed
+            // u64::MAX in practice (validator total stake is bounded by
+            // the chain's max supply 315M SRX = 3.15e16 sentri, far
+            // below u64::MAX = 1.8e19), but keep the conversion explicit.
+            val.total_delegated = delegated_after.try_into().unwrap_or(u64::MAX);
         }
 
         // Also slash unbonding entries for this validator
@@ -1358,6 +1378,100 @@ mod tests {
         let total = MIN_SELF_STAKE * 2;
         let slashed = reg.slash("0xval1", 2000).unwrap(); // 20%
         assert_eq!(slashed, total / 5);
+    }
+
+    /// Audit M3 (2026-05-06): pre-fix the validator-level subtraction
+    /// `val.total_delegated -= remaining` ran before the per-entry
+    /// ceiling-division loop. With ceiling division each delegator can
+    /// be over-slashed by 1 sentri per rounding step, so the sum of
+    /// entry amount drops exceeds `remaining` by up to N sentri (N =
+    /// delegator count). Pre-fix this would leave
+    /// `total_delegated > sum(entries)` — drifting the denominator
+    /// `pay_one_signer` uses for reward distribution.
+    ///
+    /// Setup: 3 delegators of 99 tokens each (= 297 total), validator
+    /// self-stake at MIN_SELF_STAKE. 10% slash. The remaining slash on
+    /// delegators after self-stake takes its 10% would be:
+    ///   total_stake = MIN_SELF_STAKE + 297, slash = 10% of that
+    ///   from_self = min(slash, MIN_SELF_STAKE) = slash
+    ///   remaining = 0 in this layout — refactor with a much smaller
+    ///   self_stake so remaining > 0 and ceiling actually rounds.
+    ///
+    /// Use 3 delegators × 99 tokens against val1 with a low self-stake
+    /// (1 token). 10% slash → slash = ceil(0.1 × (1 + 297)) = 30 (using
+    /// floor formula in code = 29). from_self = min(29, 1) = 1.
+    /// remaining = 28 to distribute across 3 × 99 = 297 delegators.
+    /// Per-entry slash = ceil(99 × 28 / 297) = ceil(2772/297) = 10
+    /// (exact = 9.333…). Sum = 30. Pre-fix `val.total_delegated` was
+    /// set to 297-28 = 269; sum was 297-30 = 267. Drift = 2.
+    /// Post-fix: `val.total_delegated = sum = 267`.
+    #[test]
+    fn test_slash_preserves_total_delegated_equals_sum_invariant() {
+        let mut reg = new_registry();
+        // Bypass MIN_SELF_STAKE check by direct insert — this is what
+        // RegisterValidator's apply path does at runtime; we mirror it
+        // here so we can test ceiling-division drift without the
+        // self-stake floor swallowing the slash.
+        let val = ValidatorStake {
+            address: "0xval1".to_string(),
+            self_stake: 1,
+            total_delegated: 0,
+            commission_rate: 100,
+            max_commission_rate: 1000,
+            is_jailed: false,
+            jail_until: 0,
+            is_tombstoned: false,
+            blocks_signed: 0,
+            blocks_missed: 0,
+            pending_rewards: 0,
+            registration_height: 0,
+            last_commission_change_height: 0,
+        };
+        reg.validators.insert("0xval1".to_string(), val);
+
+        // Three 99-token delegations to val1.
+        reg.delegate("0xdel1", "0xval1", 99, 0).unwrap();
+        reg.delegate("0xdel2", "0xval1", 99, 0).unwrap();
+        reg.delegate("0xdel3", "0xval1", 99, 0).unwrap();
+        assert_eq!(reg.validators["0xval1"].total_delegated, 297);
+
+        // 10% slash. With self_stake=1, from_self=1, remaining=29, but
+        // exact formula uses (total × bp) / 10_000 with floor → slash =
+        // (298 × 1000) / 10_000 = 29. from_self = 1, remaining = 28.
+        let slash_amount = reg.slash("0xval1", 1000).unwrap();
+        assert!(slash_amount > 0, "slash must do something");
+
+        // Compute actual sum of entries for val1.
+        let sum_entries: u64 = reg
+            .delegations
+            .values()
+            .flat_map(|entries| entries.iter())
+            .filter(|e| e.validator == "0xval1")
+            .map(|e| e.amount)
+            .sum();
+
+        // **The invariant**: total_delegated equals sum of entries for
+        // this validator. Pre-fix this could drift by N sentri per
+        // slash (N = delegator count). Post-fix exact.
+        assert_eq!(
+            reg.validators["0xval1"].total_delegated,
+            sum_entries,
+            "audit M3 invariant: total_delegated must equal sum of delegation entries",
+        );
+
+        // Sanity: each entry got slashed at least 9 (floor) and at most
+        // 10 (ceiling) sentri.
+        for entries in reg.delegations.values() {
+            for entry in entries {
+                if entry.validator == "0xval1" {
+                    assert!(
+                        entry.amount <= 99 - 9 && entry.amount >= 99 - 10,
+                        "entry slash should be 9–10 sentri (got drop of {})",
+                        99 - entry.amount,
+                    );
+                }
+            }
+        }
     }
 
     #[test]
