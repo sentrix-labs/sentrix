@@ -31,19 +31,40 @@
 
 use alloy_primitives::Address;
 
-/// Sentrix staking precompile address (0x0100).
-/// Allows smart contracts to interact with the DPoS staking system.
+/// **Reserved** address for the future Sentrix staking precompile (0x0100).
+///
+/// Audit L7 (2026-05-06): the address is reserved + advertised, but
+/// **no handler is wired into revm's `PrecompilesContext`**. A
+/// contract that calls 0x0100 today goes through revm's normal CALL
+/// flow → empty-code account → returns success with empty output. A
+/// contract author who treats `is_sentrix_precompile(...) == true` as
+/// proof a real handler exists will silently misinterpret that
+/// empty-success as "stake recorded".
+///
+/// Before wiring an actual handler: gate behind a fork height
+/// (`STAKING_PRECOMPILE_FORK_HEIGHT` or similar) so historical
+/// chain.db state stays reproducible, and add a regression test that
+/// CALLs to 0x0100 return data in the expected ABI shape.
 pub const STAKING_PRECOMPILE: Address = Address::new([
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0x00,
 ]);
 
-/// Sentrix slashing evidence precompile address (0x0101).
-/// Allows submitting double-sign evidence from smart contracts.
+/// **Reserved** address for the future Sentrix slashing-evidence
+/// precompile (0x0101). Same caveat as `STAKING_PRECOMPILE` — no
+/// handler is currently wired into revm; a contract calling 0x0101
+/// receives revm's default empty-success.
 pub const SLASHING_PRECOMPILE: Address = Address::new([
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0x01,
 ]);
 
-/// Check if an address is a Sentrix-specific precompile.
+/// Check if an address matches a **reserved** Sentrix precompile slot.
+///
+/// Returning `true` here does NOT mean a handler exists. As of
+/// v2.1.80 no handler is wired into revm for either reserved address;
+/// a contract calling 0x0100 or 0x0101 receives revm's default
+/// empty-success. This helper exists so the future wire-up has a
+/// canonical address-set to gate on — do not treat it as proof that
+/// the call executed precompile logic.
 pub fn is_sentrix_precompile(address: &Address) -> bool {
     *address == STAKING_PRECOMPILE || *address == SLASHING_PRECOMPILE
 }
