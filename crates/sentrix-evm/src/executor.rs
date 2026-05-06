@@ -86,7 +86,27 @@ where
     D: Database,
     D::Error: std::fmt::Debug,
 {
-    execute_tx_inner(db, tx, block_base_fee, false, chain_id)
+    execute_tx_inner(db, tx, block_base_fee, false, chain_id, false)
+}
+
+/// Audit H3 variant — write-path execution with the gas-supply-leak
+/// fix gated. Caller computes `gas_fix_active` from
+/// `Blockchain::is_evm_gas_fix_height(block_height)` so pre-fork blocks
+/// produce identical state to v2.1.79 and below; post-fork blocks have
+/// `cfg.disable_base_fee = true` set unconditionally, eliminating the
+/// silent supply leak via wei→sentri floor-div on the gas portion.
+pub fn execute_tx_with_state_gated<D>(
+    db: D,
+    tx: TxEnv,
+    block_base_fee: u64,
+    chain_id: u64,
+    gas_fix_active: bool,
+) -> Result<(TxReceipt, EvmState), String>
+where
+    D: Database,
+    D::Error: std::fmt::Debug,
+{
+    execute_tx_inner(db, tx, block_base_fee, false, chain_id, gas_fix_active)
 }
 
 /// Read-only variant of [`execute_tx_with_state`] — disables balance/nonce
@@ -103,7 +123,7 @@ where
     D: Database,
     D::Error: std::fmt::Debug,
 {
-    execute_tx_inner(db, tx, block_base_fee, true, chain_id)
+    execute_tx_inner(db, tx, block_base_fee, true, chain_id, false)
 }
 
 fn execute_tx_inner<D>(
@@ -112,6 +132,12 @@ fn execute_tx_inner<D>(
     block_base_fee: u64,
     read_only: bool,
     chain_id: u64,
+    // Audit H3: post-fork callers set this to true so revm skips its
+    // internal `gas_used × base_fee` deduction on the write path. The
+    // wei→sentri writeback then sees only value-transfer deltas; gas
+    // accounting lives entirely in Pass-1 native flat tx.fee. Default
+    // false preserves pre-v2.1.80 behaviour.
+    disable_base_fee_post_fork: bool,
 ) -> Result<(TxReceipt, EvmState), String>
 where
     D: Database,
@@ -136,6 +162,13 @@ where
             if read_only {
                 cfg.disable_balance_check = true;
                 cfg.disable_nonce_check = true;
+                cfg.disable_base_fee = true;
+            } else if disable_base_fee_post_fork {
+                // Audit H3 fork-gated write path: skip revm's internal
+                // gas-cost deduction so the wei→sentri writeback can't
+                // silently leak the gas portion. Pass-1 already debited
+                // the flat tx.fee with the canonical 50/50 burn/validator
+                // split; gas accounting in revm is redundant here.
                 cfg.disable_base_fee = true;
             }
         })

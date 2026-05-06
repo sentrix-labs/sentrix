@@ -128,7 +128,7 @@ impl Blockchain {
         use revm::primitives::TxKind;
         use revm::state::Bytecode;
         use sentrix_evm::database::{SentrixEvmDb, parse_sentrix_address};
-        use sentrix_evm::executor::execute_tx_with_state;
+        use sentrix_evm::executor::execute_tx_with_state_gated;
         use sentrix_evm::gas::INITIAL_BASE_FEE;
         use sentrix_evm::writeback::commit_state_to_account_db;
 
@@ -204,13 +204,27 @@ impl Blockchain {
         // build() can only fail when a required field is unset; we set them
         // all above, so this path is unreachable in practice. Surface the
         // error explicitly anyway and mark the tx failed if it ever fires.
+        // Audit H3: post-fork we set gas_price=0 alongside the
+        // `cfg.disable_base_fee = true` so revm's internal
+        // `gas_used × gas_price` deduction is exactly 0 — combined
+        // with disable_base_fee removing the floor enforcement, this
+        // closes the wei-side gas leak that the writeback's floor-div
+        // would otherwise drop into nowhere. Pre-fork keeps the
+        // INITIAL_BASE_FEE value so existing chain history is identity-
+        // reproducible.
+        let gas_fix_active_pre_check = Blockchain::is_evm_gas_fix_height(block_height);
+        let evm_gas_price: u128 = if gas_fix_active_pre_check {
+            0
+        } else {
+            INITIAL_BASE_FEE as u128
+        };
         let evm_tx = match TxEnv::builder()
             .caller(from_addr)
             .kind(tx_kind)
             .data(alloy_primitives::Bytes::from(calldata))
             .value(tx_value)
             .gas_limit(gas_limit)
-            .gas_price(INITIAL_BASE_FEE as u128)
+            .gas_price(evm_gas_price)
             // EVM CREATE/CALL nonce: revm checks `tx.nonce == state.nonce`
             // and bumps state.nonce internally. Native pass no longer
             // pre-bumps nonce for EVM txs (charge_fee_only above), so
@@ -236,7 +250,19 @@ impl Blockchain {
             }
         };
 
-        match execute_tx_with_state(evm_db, evm_tx, INITIAL_BASE_FEE, self.chain_id) {
+        // Audit H3 fork gate: post-EVM_GAS_FIX_HEIGHT we ask the executor
+        // to set `cfg.disable_base_fee = true` so revm doesn't deduct
+        // gas internally. Pre-fork (mainnet today; default u64::MAX) the
+        // flag stays false and behaviour is identical to v2.1.79.
+        // (Same value already computed for the gas_price toggle above —
+        // recompute here to keep the executor call site self-contained.)
+        match execute_tx_with_state_gated(
+            evm_db,
+            evm_tx,
+            INITIAL_BASE_FEE,
+            self.chain_id,
+            gas_fix_active_pre_check,
+        ) {
             Ok((receipt, state)) => {
                 tracing::info!(
                     "EVM tx {}: success={} gas_used={} contract={:?}",

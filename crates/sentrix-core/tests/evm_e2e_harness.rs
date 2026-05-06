@@ -59,11 +59,25 @@ fn temp_mdbx() -> (TempDir, Arc<MdbxStorage>) {
 /// integration-test file as its own binary, so there's no cross-file
 /// bleed; within this binary we set once at chain construction.
 fn setup_evm_active_chain() -> (TempDir, Arc<MdbxStorage>, Blockchain) {
+    setup_evm_active_chain_with_h3(true)
+}
+
+/// Test-only chain builder. `h3_active=true` activates the audit H3
+/// fork (`EVM_GAS_FIX_HEIGHT=0`) so write-path EVM txs skip revm's
+/// internal gas deduction; `false` leaves the fork at u64::MAX so the
+/// pre-fix supply-leak path runs (used for the negative reproducer
+/// test that documents the bug class).
+fn setup_evm_active_chain_with_h3(h3_active: bool) -> (TempDir, Arc<MdbxStorage>, Blockchain) {
     // SAFETY: see fn doc.
     unsafe {
         std::env::set_var("VOYAGER_FORK_HEIGHT", "0");
         std::env::set_var("VOYAGER_EVM_HEIGHT", "0");
         std::env::set_var("EVM_VALUE_TRANSFER_HEIGHT", "0");
+        if h3_active {
+            std::env::set_var("EVM_GAS_FIX_HEIGHT", "0");
+        } else {
+            std::env::remove_var("EVM_GAS_FIX_HEIGHT");
+        }
     }
 
     let (dir, mdbx) = temp_mdbx();
@@ -270,4 +284,132 @@ fn test_evm_tx_e2e_value_zero_call() {
     );
     let r = stored.unwrap();
     assert!(r.success, "value=0 call to EOA should succeed under revm");
+}
+
+/// Construct + sign a value-transfer EVM tx and apply it via add_block.
+/// Returns (sender_str, sender_balance_before, txid). Shared by the H3
+/// reproducer pair below.
+fn submit_evm_value_transfer(
+    bc: &mut Blockchain,
+    sk: &SecretKey,
+    pk: &PublicKey,
+    value_sentri: u64,
+    nonce: u64,
+) -> (String, u64, String) {
+    let sender_evm: Address = evm_address(pk);
+    let sender_str = format!("0x{}", hex::encode(sender_evm.as_slice()));
+    let sender_balance_before = bc.accounts.get_balance(&sender_str);
+    let chain_id = bc.chain_id;
+    let recipient = Address::from([0xab; 20]);
+    let recipient_str = format!("0x{}", hex::encode(recipient.as_slice()));
+
+    // 1 sentri = 1e10 wei. Value in wei must be a whole-sentri multiple
+    // (the RPC ingress enforces this; same constraint here so writeback
+    // doesn't drop sub-sentri remainders.)
+    let value_wei = U256::from(value_sentri).saturating_mul(U256::from(10_000_000_000u64));
+
+    let alloy_tx = TxLegacy {
+        chain_id: Some(chain_id),
+        nonce,
+        gas_price: sentrix_evm::gas::INITIAL_BASE_FEE as u128,
+        gas_limit: 100_000,
+        to: TxKind::Call(recipient),
+        value: value_wei,
+        input: Bytes::new(),
+    };
+    let sig_hash = alloy_tx.signature_hash();
+    let signature = secp_to_alloy_signature(sk, sig_hash);
+    let signed = alloy_tx.into_signed(signature);
+    let envelope: TxEnvelope = signed.into();
+    let mut raw_bytes = Vec::new();
+    envelope.encode_2718(&mut raw_bytes);
+    let raw_hex = hex::encode(&raw_bytes);
+    let txid = hex::encode(Keccak256::digest(&raw_bytes));
+
+    let evm_data = format!("EVM:{}:{}", 100_000u64, hex::encode(b""));
+    let sentrix_tx = Transaction {
+        txid: txid.clone(),
+        from_address: sender_str.clone(),
+        to_address: recipient_str,
+        amount: value_sentri,
+        fee: MIN_TX_FEE,
+        nonce,
+        data: evm_data,
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        chain_id,
+        signature: raw_hex,
+        public_key: String::new(),
+    };
+
+    bc.add_to_mempool(sentrix_tx).expect("mempool admit");
+    let block = bc.create_block(VALIDATOR).expect("create_block");
+    bc.add_block(block).expect("add_block");
+
+    (sender_str, sender_balance_before, txid)
+}
+
+/// Audit H3 — POST-fork: with `EVM_GAS_FIX_HEIGHT=0` active, a value-
+/// transfer EVM tx debits the sender by EXACTLY `value + tx.fee` —
+/// no extra wei-side gas deduction sneaks out via the writeback's
+/// floor-div. Sender's net debit stays whole-sentri-aligned, no
+/// silent supply leak.
+#[test]
+fn test_h3_post_fork_supply_invariant_holds_on_value_transfer() {
+    let (_dir, _mdbx, mut bc) = setup_evm_active_chain_with_h3(true);
+    let (sk, pk) = deterministic_keypair(3);
+    let sender_str = format!("0x{}", hex::encode(evm_address(&pk).as_slice()));
+    bc.accounts.credit(&sender_str, 100_000_000_000).unwrap(); // 1000 SRX
+
+    let value = 100_000_000u64; // 1 SRX
+    let (_, balance_before, _txid) =
+        submit_evm_value_transfer(&mut bc, &sk, &pk, value, 0);
+
+    let balance_after = bc.accounts.get_balance(&sender_str);
+    let actual_drop = balance_before - balance_after;
+    let expected_drop = value + MIN_TX_FEE;
+
+    assert_eq!(
+        actual_drop, expected_drop,
+        "post-H3-fork sender drop = value + tx.fee EXACT (got {}, expected {})",
+        actual_drop, expected_drop,
+    );
+}
+
+/// Audit H3 — PRE-fork (negative reproducer): with the gas fix
+/// inactive, the same value-transfer above leaks an extra sub-sentri
+/// amount due to revm's internal `gas_used × INITIAL_BASE_FEE`
+/// deduction surviving the wei→sentri floor-div in writeback. The
+/// leak amount is small at INITIAL_BASE_FEE = 10K wei (≤1 sentri per
+/// tx) but the architectural pattern scales with base_fee. Marked
+/// `#[ignore]` because it asserts the pre-fix LEAKY behaviour —
+/// running it on the post-fork code path produces no leak (good)
+/// and the assertion would fail. Keep as documentation for a future
+/// reader who wants to see the exact failure mode the H3 fix closes.
+#[test]
+#[ignore = "documents pre-fork leak — un-ignore + flip assert direction to verify the bug if EVM_GAS_FIX_HEIGHT is ever rolled back"]
+fn test_h3_pre_fork_supply_leak_documented() {
+    let (_dir, _mdbx, mut bc) = setup_evm_active_chain_with_h3(false);
+    let (sk, pk) = deterministic_keypair(4);
+    let sender_str = format!("0x{}", hex::encode(evm_address(&pk).as_slice()));
+    bc.accounts.credit(&sender_str, 100_000_000_000).unwrap();
+
+    let (_, balance_before, _) = submit_evm_value_transfer(
+        &mut bc,
+        &sk,
+        &pk,
+        100_000_000, // 1 SRX
+        0,
+    );
+    let balance_after = bc.accounts.get_balance(&sender_str);
+    let drop = balance_before - balance_after;
+    // Pre-fix the drop is value + fee + the wei-side gas remainder.
+    // We don't know the exact gas_used without running it, so just
+    // assert the inequality that demonstrates the leak.
+    assert!(
+        drop > 100_000_000 + MIN_TX_FEE,
+        "pre-fork: drop must exceed value + fee due to wei-side gas leak"
+    );
 }
