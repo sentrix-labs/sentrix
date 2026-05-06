@@ -85,10 +85,15 @@ jobs:
         uses: codecov/codecov-action@v4
         with:
           files: lcov.info
-          fail_ci_if_error: false  # Codecov upload failures shouldn't break the pipeline
-          # token: required only for private repos. sentrix-labs/sentrix is
-          # public + open-source under BUSL-1.1, so Codecov tokenless upload
-          # works after enabling the repo at https://codecov.io.
+          # `main` on this repo is branch-protected, and Codecov v4 rejects
+          # tokenless upload to protected branches ("Token required because
+          # branch is protected") — even on public repos. Token must be
+          # configured at GitHub → Settings → Secrets and variables →
+          # Actions → New repository secret `CODECOV_TOKEN`, value taken
+          # from codecov.io after enabling the repo. With the secret unset
+          # the upload step warns + skips; the workflow itself stays green.
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
         continue-on-error: true
 
       - name: Upload lcov.info as artifact
