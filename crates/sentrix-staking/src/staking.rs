@@ -507,7 +507,6 @@ impl StakeRegistry {
         let remaining = slash_amount.saturating_sub(from_self);
         if remaining > 0 && val.total_delegated > 0 {
             let delegated_before = val.total_delegated;
-            val.total_delegated = val.total_delegated.saturating_sub(remaining);
 
             // Reduce individual delegation amounts proportionally.
             //
@@ -520,16 +519,37 @@ impl StakeRegistry {
             // single delegator by at most 1 sentri per rounding step
             // (imperceptible) but keeps the protocol-wide slash invariant
             // ≥ stated rate.
+            //
+            // Audit M3 (2026-05-06): pre-fix this also pre-set
+            // `val.total_delegated -= remaining` before the per-entry
+            // loop. With ceiling division, `sum(entry.amount drops)` ≥
+            // `remaining` by up to N sentri (N = delegator count for
+            // this validator), so the validator-level subtraction
+            // under-counted vs the actual sum. The invariant
+            // `total_delegated == sum(entries.amount where validator
+            // matches)` would drift by N sentri after every slash,
+            // inflating the denominator pay_one_signer uses for
+            // reward distribution → delegators slowly under-paid. Now:
+            // do the per-entry slash first, sum the survivors, then
+            // assign val.total_delegated = sum so the invariant holds
+            // exactly (still ≥ stated rate, courtesy of ceiling div).
+            let mut delegated_after: u128 = 0;
             for entries in self.delegations.values_mut() {
                 for entry in entries.iter_mut() {
-                    if entry.validator == validator && delegated_before > 0 {
+                    if entry.validator == validator {
                         let num = (entry.amount as u128).saturating_mul(remaining as u128);
                         let den = delegated_before as u128;
                         let entry_slash = num.div_ceil(den);
                         entry.amount = entry.amount.saturating_sub(entry_slash as u64);
+                        delegated_after = delegated_after.saturating_add(entry.amount as u128);
                     }
                 }
             }
+            // u128 → u64 saturate: the sum of u64 entries cannot exceed
+            // u64::MAX in practice (validator total stake is bounded by
+            // the chain's max supply 315M SRX = 3.15e16 sentri, far
+            // below u64::MAX = 1.8e19), but keep the conversion explicit.
+            val.total_delegated = delegated_after.try_into().unwrap_or(u64::MAX);
         }
 
         // Also slash unbonding entries for this validator
