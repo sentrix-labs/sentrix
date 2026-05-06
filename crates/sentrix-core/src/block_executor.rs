@@ -1550,6 +1550,15 @@ impl Blockchain {
         // incident). prune() is the only sound GC, so it runs here.
         self.maybe_prune_trie();
 
+        // State-drift instrumentation (gated by SENTRIX_STATE_FINGERPRINT=1).
+        // Emits a deterministic hash of AccountDB + total_minted at the end
+        // of every block-apply so post-mortem `grep STATE-FP` across the 4
+        // mainnet hosts can pinpoint the exact block where validators
+        // diverged. We've been chasing state_root v2 drift for a week
+        // without a localised cause — this gives us the first per-block
+        // fingerprint to compare across the fleet at next halt.
+        emit_state_fingerprint(self, self.height());
+
         Ok(())
     }
 
@@ -1572,6 +1581,81 @@ impl Blockchain {
         self.stake_registry.delegator_rewards.clear();
     }
 
+}
+
+/// State-drift fingerprint emitter (debug-only). When
+/// `SENTRIX_STATE_FINGERPRINT=1` the apply path calls this at the end
+/// of every block; cross-host log diff at next halt pinpoints the
+/// first diverging block.
+///
+/// What we hash:
+///   1. AccountDB.accounts — sorted by address, each (balance, nonce,
+///      code_hash, storage_root)
+///   2. AccountDB.total_burned
+///   3. AccountDB.contract_code — sorted by code_hash, each
+///      sha256(bytecode)
+///   4. AccountDB.contract_storage — sorted by composite key, raw
+///      value bytes
+///   5. Blockchain.total_minted
+///
+/// We deliberately skip stake_registry — bincode HashMap serialisation
+/// is non-deterministic, and the drift we're chasing manifests in
+/// AccountDB (via trie roots that read from AccountDB).
+///
+/// Output line shape:
+///   [STATE-FP] h=<height> acc=<8-byte-hex> fp=<8-byte-hex>
+///
+/// Cost when enabled: ~O(N) sha256 over AccountDB content per block,
+/// where N = total accounts + contract storage entries. At Sentrix
+/// mainnet scale (~tens of thousands of accounts, sparse contract
+/// storage) this adds ~1-2 ms per block. Acceptable for debug runs.
+fn emit_state_fingerprint(bc: &Blockchain, height: u64) {
+    if std::env::var_os("SENTRIX_STATE_FINGERPRINT").is_none() {
+        return;
+    }
+    use sha2::{Digest, Sha256};
+
+    let mut acc_hasher = Sha256::new();
+    let mut accounts: Vec<(&String, &sentrix_primitives::account::Account)> =
+        bc.accounts.accounts.iter().collect();
+    accounts.sort_by(|a, b| a.0.cmp(b.0));
+    for (addr, account) in accounts {
+        acc_hasher.update(addr.as_bytes());
+        acc_hasher.update(account.balance.to_be_bytes());
+        acc_hasher.update(account.nonce.to_be_bytes());
+        acc_hasher.update(account.code_hash);
+        acc_hasher.update(account.storage_root);
+    }
+    acc_hasher.update(bc.accounts.total_burned.to_be_bytes());
+
+    let mut codes: Vec<(&String, &Vec<u8>)> = bc.accounts.contract_code.iter().collect();
+    codes.sort_by(|a, b| a.0.cmp(b.0));
+    for (k, v) in codes {
+        acc_hasher.update(k.as_bytes());
+        let h: [u8; 32] = Sha256::digest(v).into();
+        acc_hasher.update(h);
+    }
+
+    let mut storage: Vec<(&String, &Vec<u8>)> = bc.accounts.contract_storage.iter().collect();
+    storage.sort_by(|a, b| a.0.cmp(b.0));
+    for (k, v) in storage {
+        acc_hasher.update(k.as_bytes());
+        acc_hasher.update(v);
+    }
+
+    let acc_fp: [u8; 32] = acc_hasher.finalize().into();
+    let mut combined = Sha256::new();
+    combined.update(acc_fp);
+    combined.update(bc.total_minted.to_be_bytes());
+    let fp: [u8; 32] = combined.finalize().into();
+
+    tracing::info!(
+        target: "state_fingerprint",
+        "[STATE-FP] h={} acc={} fp={}",
+        height,
+        hex::encode(&acc_fp[..8]),
+        hex::encode(&fp[..8]),
+    );
 }
 
 // ── Tests ─────────────────────────────────────────────────
