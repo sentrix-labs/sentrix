@@ -9,6 +9,36 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.79] — 2026-05-06 — LivenessTracker `record_signed` idempotent + major deps bundle
+
+Two bundled changes shipped together because the chain-code fix only matters once the deps churn settles.
+
+- **`record_signed` idempotent at same height** (PR #500 + #507). Closes the consensus-jail halt class that has gated `JAIL_CONSENSUS_HEIGHT` flip on production. Pre-fix, `record_block_signatures` fires from FOUR call sites (validator-finalize / peer-finalize / libp2p gossip / libp2p sync); for one block, only one path SHOULD fire per validator, but gossip-race + sync-fallback can fire two. The same `(validator, height)` pair gets pushed twice into `LivenessTracker.records`; `is_downtime_at` counts both as separate signed marks; that node's `signed_in_window` inflates past `MIN_SIGNED_PER_WINDOW`; downtime that should fire is hidden. Different `is_downtime_at` outputs across the fleet on identical chain history → divergent JailEvidenceBundle → consensus halt at first epoch boundary past activation. Fix: skip the push when `entries.last().height == call's height`. The chain extends in monotonic height order per validator, so "last entry height equals call's height" is unambiguously the duplicate signal — not a reorg, not a sequential block. Three new tests pin idempotency at same height, distinct heights, and mixed double-fire patterns. Pairs with the V2 active_set patch in v2.1.78 — V2 ensures every validator iterates the same active_set; this patch ensures every validator's LivenessTracker contents are byte-identical for any chain history. Both fixes required to enable consensus-jail dispatch on production.
+
+- **Major dependency bundle** (PR #504, supersedes 4 stuck individual bumps). Cross-coupled crates that couldn't merge individually because each one alone fails CI:
+  - `tonic` 0.12 → 0.14 (`ProstCodec` moved to a new `tonic-prost` crate; build script needs `tonic-prost-build` + `compile_with_config` instead of `tonic_build::compile_protos_with_config`)
+  - `tonic-web` 0.12 → 0.14 (follows tonic)
+  - `prost` 0.13 → 0.14 (tonic 0.14 prerequisite)
+  - `sha2` 0.10 → 0.11 (newer pbkdf2 needed to satisfy `CoreProxy` trait bound under sha2 0.11)
+  - `pbkdf2` 0.12 → 0.13 (sha2 0.11 prerequisite)
+  - new deps: `tonic-prost` 0.14, `tonic-prost-build` 0.14
+  No `src/*.rs` changes — only the build script + Cargo.toml versions. Workspace cargo check, clippy `-D warnings`, and 700+ unit + integration tests all pass.
+
+Testnet bake clean post-flip — `JAIL_CONSENSUS_HEIGHT` armed at a near-future block on the testnet docker stack and observed 13+ minutes past activation with no halt and no recovery, confirming both fixes work together. Mainnet binary swap deployed via halt-all + canonical chain.db rsync (cleared a pre-existing 3-way fork that had emerged from earlier deploy turbulence). Mainnet `JAIL_CONSENSUS_HEIGHT` remains `u64::MAX` — fixes shipped but consensus-jail activation deferred to a separate session pending longer testnet observation across an epoch boundary.
+
+Build via `rust:1.95-bullseye` for glibc 2.31 baseline. Binary glibc max requirement: GLIBC_2.30.
+
+## [2.1.78] — 2026-05-06 — JailEvidenceBundle V2 wire format (active_set in payload)
+
+The first half of the consensus-jail fix pair — V2 active_set carriage in the `JailEvidenceBundle` system tx so verifiers iterate the proposer's claimed set instead of their locally-divergent `stake_registry.active_set`.
+
+- **`StakingOp::JailEvidenceBundle` carries `active_set: Vec<String>`** (PR #497). `#[serde(default)]` for backward compat with V1-shape payloads. Proposer populates the field at proposal time in `blockchain.rs::build_jail_evidence_system_tx`. Verifier in `block_executor.rs::apply_tx` iterates `claimed_active_set` instead of local state, with a sanity gate (non-empty + every member must be `stake_registry.validators.contains_key`). Closes the active_set divergence path — different per-node HashMap iteration order plus mempool divergence in the boundary block had previously produced different evidence lists across validators → consensus jail dispatch could halt on disagreement.
+- **V1↔V2 wire-format round-trip test** (PR #498) at `crates/sentrix-primitives/tests/jail_evidence_v1_v2_wire_compat.rs`. Encode V1-shape (no `active_set`) under V1 enum; decode bytes under V2 enum; `active_set` defaults to `vec![]`. Re-encode V2 → V1 decode round-trips fields preserved. Confirms wire format is forward-compatible without an enum-versioning bump.
+
+This patch alone is necessary but not sufficient to enable consensus-jail dispatch — paired with v2.1.79's `record_signed` idempotent fix to close the LivenessTracker non-determinism class. Both shipped before any `JAIL_CONSENSUS_HEIGHT` activation on production.
+
+
+
 ### Roadmap
 
 - **Native Rust SDK (`sentrix-sdk`, planned, no fixed ETA)** — high-level client crate for Rust developers building against Sentrix. Sub-crates: `sentrix-sdk` (umbrella), `-types` (struct parity with chain via shared `sentrix-primitives` dep — no drift possible at compile time), `-rpc` (JSON-RPC HTTP/WS client with mandatory 5-second timeouts and automatic retries), `-signer` (Argon2id keystore reuse), `-preflight` (client-side `revm` simulation for gas estimation + dry-run before submission), and a `sentrix-cli` binary for DevEx. All SDK modules `#![forbid(unsafe_code)]`. Will publish to crates.io.
