@@ -60,10 +60,26 @@ impl Blockchain {
         }
         let calldata = hex::decode(parts[2]).unwrap_or_default();
 
-        // Decode raw Ethereum tx from signature field for re-validation
+        // Decode raw Ethereum tx from signature field for re-validation.
+        // Audit L2 (2026-05-06): pre-fix the two early returns below were
+        // `return Ok(())` with no visibility — a malformed RLP-hex
+        // signature or an undecodable EIP-2718 envelope on a tx already
+        // marked `EVM:` (i.e. the sender intended an EVM tx) silently
+        // succeeded with status=0x1, hiding the failure from
+        // `eth_getTransactionReceipt`. Pass-1 had already debited
+        // tx.fee, so the tx is still on-chain — surface the malformation
+        // and mark the receipt failed so wallets see status=0x0.
         let raw_bytes = match hex::decode(&tx.signature) {
             Ok(b) => b,
-            Err(_) => return Ok(()), // malformed, skip silently
+            Err(e) => {
+                tracing::warn!(
+                    "EVM tx {}: malformed RLP hex in signature field: {}",
+                    &tx.txid[..16.min(tx.txid.len())],
+                    e,
+                );
+                self.accounts.mark_evm_tx_failed(&tx.txid);
+                return Ok(());
+            }
         };
 
         use alloy_consensus::TxEnvelope;
@@ -72,7 +88,15 @@ impl Blockchain {
 
         let envelope: TxEnvelope = match TxEnvelope::decode_2718(&mut raw_bytes.as_slice()) {
             Ok(e) => e,
-            Err(_) => return Ok(()),
+            Err(e) => {
+                tracing::warn!(
+                    "EVM tx {}: TxEnvelope::decode_2718 failed: {}",
+                    &tx.txid[..16.min(tx.txid.len())],
+                    e,
+                );
+                self.accounts.mark_evm_tx_failed(&tx.txid);
+                return Ok(());
+            }
         };
         // Audit L1 (2026-05-06): a stray `let _sender = envelope.recover_signer().ok();`
         // here was burning a secp256k1 recovery (~100µs/tx) without using
