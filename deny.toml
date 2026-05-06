@@ -19,18 +19,43 @@ ignore = [
     # issue). Transitive pullers include libp2p and sled descendants.
     "RUSTSEC-2025-0141",
 
-    # RUSTSEC-2026-0105 — `core2 0.4.0` unmaintained AND yanked upstream.
-    # Pulled only by `multihash 0.19.3` → libp2p-core. core2 is a no_std
-    # std::io::Read/Write shim; no unsafe / security surface. Will drop
-    # automatically when multihash 0.20+ releases with core2 removed.
-    "RUSTSEC-2026-0105",
-
     # RUSTSEC-2024-0436 — `paste 1.0.15` unmaintained (informational).
     # Pulled transitively by too many crates to enumerate (revm, libp2p,
     # arkworks all use it for name concatenation in proc-macros).
     # Proc-macro only, compile-time expansion.
     "RUSTSEC-2024-0436",
 
+    # ── Real vulnerabilities pinned upstream — accepted with reasoning ──
+    #
+    # RUSTSEC-2026-0118 — hickory-proto 0.25.2 NSEC3 closest-encloser
+    # unbounded-loop on cross-zone DNS responses. Hickory's own advisory
+    # says "No fixed upgrade is available!" — upstream hasn't shipped a
+    # patch as of 2026-05-06. Sentrix pulls hickory-proto only via
+    # libp2p-mdns 0.48.0 + libp2p-dns 0.44.0 (both pinned by libp2p
+    # 0.56.0 with `hickory-proto = ^0.25.2`, blocking the 0.26.1 fix).
+    # Mitigation context: validator mDNS is bound to the private
+    # validator mesh, not internet-exposed; libp2p-dns is for bootstrap
+    # peer name resolution only. Drop this ignore once libp2p ships a
+    # 0.57+ that bumps the hickory-proto floor.
+    "RUSTSEC-2026-0118",
+
+    # RUSTSEC-2026-0119 — hickory-proto 0.25.2 O(n²) name compression
+    # CPU exhaustion during message encoding. Fix exists in 0.26.1 but
+    # same upstream pin — libp2p-mdns 0.48.0 / libp2p-dns 0.44.0 require
+    # `^0.25.2`, locking us out. Same mitigation context as -0118.
+    # Drop alongside -0118 when libp2p 0.57+ lands.
+    "RUSTSEC-2026-0119",
+
+    # RUSTSEC-2025-0055 — tracing-subscriber 0.2.25 ANSI escape log
+    # injection. Fix in 0.3.20+. Sentrix uses tracing-subscriber 0.3.x
+    # directly (in main.rs / sentrix-rpc/etc.); the 0.2.25 entry is
+    # pulled exclusively by ark-relations 0.5.1 → ark-r1cs-std →
+    # ark-bn254 → revm-precompile 34.0.0. Arkworks is the zk-circuit
+    # framework; revm pulls it for BN254/BLS12-381 EC precompiles.
+    # ark-relations doesn't subscribe its own logs to user input, so
+    # the practical exploit surface is nil. Drop when arkworks ships
+    # a release that bumps tracing-subscriber to 0.3.x.
+    "RUSTSEC-2025-0055",
 ]
 
 # ── Licenses ────────────────────────────────────────────────
