@@ -292,6 +292,26 @@ pub fn get_evm_value_transfer_height() -> u64 {
         .unwrap_or(EVM_VALUE_TRANSFER_HEIGHT_DEFAULT)
 }
 
+/// Audit H3 (2026-05-06): EVM gas-fix fork height. Pre-fork the
+/// write-path EVM tx flow let revm internally deduct
+/// `gas_used × INITIAL_BASE_FEE` from sender's wei balance, and the
+/// writeback's wei→sentri floor-div silently dropped that delta (not
+/// burned, not credited to validator) — `total_supply()` leaked.
+/// Post-fork we set `cfg.disable_base_fee = true` on the write path
+/// too so revm skips gas accounting; Pass-1 native `tx.fee` (10K
+/// sentri flat) is the entire fee, with the existing 50/50
+/// burn/validator split intact. Default `u64::MAX` keeps the leak
+/// behaviour unchanged on chains that haven't activated; operator
+/// flips to a real height after testnet bake confirms the
+/// supply-conservation invariant on real flows.
+const EVM_GAS_FIX_HEIGHT_DEFAULT: u64 = u64::MAX;
+pub fn get_evm_gas_fix_height() -> u64 {
+    std::env::var("EVM_GAS_FIX_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(EVM_GAS_FIX_HEIGHT_DEFAULT)
+}
+
 /// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
 pub fn get_chain_id() -> u64 {
     std::env::var("SENTRIX_CHAIN_ID")
@@ -943,6 +963,15 @@ impl Blockchain {
     /// for the regression context this gate manages.
     pub fn is_evm_value_transfer_height(height: u64) -> bool {
         let fork = get_evm_value_transfer_height();
+        fork != u64::MAX && height >= fork
+    }
+
+    /// Audit H3 — true once `EVM_GAS_FIX_HEIGHT` activates. Post-fork
+    /// the write-path EVM tx skips revm's internal gas accounting
+    /// (`cfg.disable_base_fee = true`); Pass-1 flat `tx.fee` is the
+    /// entire fee, supply invariant restored.
+    pub fn is_evm_gas_fix_height(height: u64) -> bool {
+        let fork = get_evm_gas_fix_height();
         fork != u64::MAX && height >= fork
     }
 
