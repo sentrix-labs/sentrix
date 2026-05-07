@@ -54,7 +54,7 @@ const FeatureList: FeatureItem[] = [
     icon: Pillar,
     description: (
       <>
-        EVM-native L1 with Solidity smart contracts (revm 37). EIP-1559 fee
+        EVM-native L1 with Solidity smart contracts (revm 38). EIP-1559 fee
         market, ERC-20 / ERC-721 / SRC-721 token standards, MetaMask + Hardhat
         + ethers.js ready out of the box.
       </>
