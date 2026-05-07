@@ -82,6 +82,27 @@ pub struct AccountDB {
     /// without scanning the set. Kept in lockstep with `failed_evm_txs`.
     #[serde(default)]
     pub failed_evm_txs_order: VecDeque<String>,
+
+    /// state_root v2 drift fix (audit follow-up, 2026-05-07): per-block
+    /// accumulator of every address mutated during apply. The trie's
+    /// `update_trie_for_block` historically derived its touched-address
+    /// list from `tx.from`, `tx.to`, `block.validator`, and (post-v2)
+    /// `PROTOCOL_TREASURY`. That derivation misses EVM-CREATE'd contract
+    /// addresses and EVM internal-CALL recipients, so the trie root
+    /// silently desynced from AccountDB on those addresses. Validators
+    /// would agree on trie root for a long time (untracked addresses
+    /// drift quietly across hosts), then halt the moment a block touched
+    /// a previously-drifted address. Halt at h=1,650,000 on 2026-05-07
+    /// localised this exactly: `state-diff` showed identical block
+    /// content with divergent trie roots, while STATE-FP traces showed
+    /// agreeing AccountDB through h=1,649,999.
+    ///
+    /// Every mutator on AccountDB now inserts the touched address here.
+    /// `apply_block_pass2` clears the set at start of block; the trie
+    /// drains it post-`EXTENDED_TOUCH_LIST_HEIGHT` fork. `#[serde(skip)]`
+    /// because it's per-block scratch — never persisted to chain.db.
+    #[serde(skip)]
+    pub touched_in_block: HashSet<String>,
 }
 
 impl AccountDB {
@@ -109,6 +130,7 @@ impl AccountDB {
     }
 
     pub fn credit(&mut self, address: &str, amount: u64) -> SentrixResult<()> {
+        self.touched_in_block.insert(address.to_string());
         let account = self.get_or_create(address);
         account.balance = account
             .balance
@@ -132,6 +154,7 @@ impl AccountDB {
                 need: fee,
             });
         }
+        self.touched_in_block.insert(from.to_string());
         let sender = self.get_or_create(from);
         sender.balance = sender
             .balance
@@ -155,6 +178,9 @@ impl AccountDB {
                 need: total,
             });
         }
+
+        self.touched_in_block.insert(from.to_string());
+        self.touched_in_block.insert(to.to_string());
 
         // Deduct from sender
         {
@@ -215,6 +241,7 @@ impl AccountDB {
     /// Store a contract storage value.
     /// Key format: "address:slot_hex" → value bytes.
     pub fn store_contract_storage(&mut self, address: &str, slot_hex: &str, value: Vec<u8>) {
+        self.touched_in_block.insert(address.to_string());
         let key = format!("{}:{}", address, slot_hex);
         self.contract_storage.insert(key, value);
     }
@@ -243,6 +270,7 @@ impl AccountDB {
 
     /// Set account as a contract (after EVM CREATE).
     pub fn set_contract(&mut self, address: &str, code_hash: [u8; 32]) {
+        self.touched_in_block.insert(address.to_string());
         let account = self.get_or_create(address);
         account.code_hash = code_hash;
     }
@@ -256,6 +284,7 @@ impl AccountDB {
     /// must NOT migrate to this setter or they'd lose the overflow/underflow
     /// guards on the delta arithmetic.
     pub fn set_balance(&mut self, address: &str, balance: u64) {
+        self.touched_in_block.insert(address.to_string());
         let account = self.get_or_create(address);
         account.balance = balance;
     }
@@ -265,8 +294,26 @@ impl AccountDB {
     /// Native paths (`transfer`) continue to increment via `checked_add` —
     /// they must NOT migrate to this setter or they'd lose the overflow guard.
     pub fn set_nonce(&mut self, address: &str, nonce: u64) {
+        self.touched_in_block.insert(address.to_string());
         let account = self.get_or_create(address);
         account.nonce = nonce;
+    }
+
+    /// Drain the per-block touched-address set. Called by
+    /// `update_trie_for_block` post-`EXTENDED_TOUCH_LIST_HEIGHT` fork to
+    /// pick up every address mutated during apply (notably EVM-CREATE'd
+    /// contracts + EVM internal-CALL recipients that the
+    /// `tx.from`/`tx.to` derivation in the legacy path misses).
+    /// `apply_block_pass2` clears the set at start of block.
+    pub fn drain_touched_in_block(&mut self) -> HashSet<String> {
+        std::mem::take(&mut self.touched_in_block)
+    }
+
+    /// Reset the per-block touched-address accumulator at start of
+    /// apply_block_pass2. Mirror of `drain_touched_in_block` for callers
+    /// that want to clear without consuming the value.
+    pub fn clear_touched_in_block(&mut self) {
+        self.touched_in_block.clear();
     }
 
     /// A2: Mark an EVM tx hash as failed (reverted). Bounded FIFO — evicts

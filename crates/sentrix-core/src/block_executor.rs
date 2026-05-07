@@ -539,6 +539,14 @@ impl Blockchain {
     /// from `add_block` after Pass 1 has validated the block and the
     /// caller has taken a `BlockchainSnapshot` for rollback.
     fn apply_block_pass2(&mut self, block: Block) -> SentrixResult<()> {
+        // EXTENDED_TOUCH_LIST fork (2026-05-07): clear the per-block
+        // accumulator at start so each block sees a fresh set. Mutators
+        // populate `accounts.touched_in_block` during apply;
+        // `update_trie_for_block` post-fork drains it into the trie
+        // touch list. Pre-fork the field is populated but ignored — the
+        // clear keeps memory bounded regardless.
+        self.accounts.clear_touched_in_block();
+
         // Frontier Phase F-2 (shadow-mode wiring): when
         // SENTRIX_FRONTIER_F2_SHADOW=1, run the parallel-batching
         // scheduler over the block's transactions and log the result.
