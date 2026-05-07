@@ -1649,8 +1649,10 @@ fn emit_state_fingerprint(bc: &Blockchain, height: u64) {
     combined.update(bc.total_minted.to_be_bytes());
     let fp: [u8; 32] = combined.finalize().into();
 
-    tracing::info!(
-        target: "state_fingerprint",
+    // eprintln! matches the existing `[V2-DBG]` trace pattern in
+    // `update_trie_for_block` — guaranteed journalctl visibility
+    // regardless of RUST_LOG / tracing subscriber filter config.
+    eprintln!(
         "[STATE-FP] h={} acc={} fp={}",
         height,
         hex::encode(&acc_fp[..8]),
