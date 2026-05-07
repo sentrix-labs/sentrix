@@ -1611,6 +1611,37 @@ async fn cmd_start(
         let shutdown_flag_clone = shutdown_flag.clone();
         let mut bft_rx = bft_rx; // move receiver into this task
         let validator_secret_key = wallet.get_secret_key()?;
+
+        // LastSignBytes guard (Tendermint privval pattern, 2026-05-07
+        // post-halt-class hardening). If `LAST_SIGN_GUARD_PATH` env is
+        // set we persist the highest (height, round, step) tuple this
+        // validator has signed at; subsequent sign attempts at-or-below
+        // that tuple are refused. Closes the cascade-jail-at-restart
+        // class — pre-fix a validator that crashed mid-round could
+        // re-vote with different content after recovery, which under a
+        // Byzantine interpretation looks like equivocation. With the
+        // env var unset the guard is a no-op (legacy behaviour
+        // bit-identical) so chain history stays valid.
+        if let Ok(path) = std::env::var("LAST_SIGN_GUARD_PATH") {
+            let p = std::path::PathBuf::from(&path);
+            if let Err(e) = sentrix_bft::last_sign_guard::init(p) {
+                tracing::error!(
+                    "FATAL: LastSignBytes guard init failed at {}: {}. Refusing to start \
+                     validator — fix path / permissions and restart.",
+                    path,
+                    e
+                );
+                return Err(anyhow::anyhow!(
+                    "LastSignBytes guard init failed at {path}: {e}"
+                ));
+            }
+        } else {
+            tracing::warn!(
+                "LAST_SIGN_GUARD_PATH not set — running without privval double-vote guard. \
+                 Set to e.g. /var/lib/sentrix/last-sign.json for production. \
+                 (Behaviour matches v2.1.83 unguarded baseline.)"
+            );
+        }
         Some(tokio::spawn(async move {
             use sentrix::core::bft::{BftAction, BftEngine, BftPhase};
             use sentrix::core::bft_messages::{BftMessage, Proposal};

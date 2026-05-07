@@ -435,7 +435,28 @@ pub fn verify_vote_signature(payload: &[u8], signature: &[u8], expected_validato
 
 impl Prevote {
     /// Sign this prevote with the given secret key, filling the signature field.
+    ///
+    /// LastSignBytes guard (Tendermint privval pattern): if the
+    /// `last_sign_guard` is initialised (operator set
+    /// `LAST_SIGN_GUARD_PATH`), refuse to sign at any (height, round,
+    /// step) that doesn't strictly exceed the persisted last-signed
+    /// tuple. Refusal leaves `signature` unchanged (empty `Vec`),
+    /// which the receiving end rejects via `verify_sig` →
+    /// `InvalidSignature`. With the guard uninitialised the call is
+    /// the legacy unconditional sign.
     pub fn sign(&mut self, secret_key: &SecretKey) {
+        if let Err(e) = crate::last_sign_guard::check_and_record(
+            self.height,
+            self.round,
+            crate::last_sign_guard::VoteStep::Prevote,
+        ) {
+            tracing::error!(
+                target: "sentrix_bft::sign",
+                "REFUSING TO SIGN PREVOTE — double-vote attempt: {}",
+                e
+            );
+            return; // signature stays empty — peer-side verify_sig rejects
+        }
         let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
         self.signature = sign_payload(&payload, secret_key);
     }
@@ -449,7 +470,20 @@ impl Prevote {
 
 impl Precommit {
     /// Sign this precommit with the given secret key, filling the signature field.
+    /// See `Prevote::sign` for the LastSignBytes guard semantics.
     pub fn sign(&mut self, secret_key: &SecretKey) {
+        if let Err(e) = crate::last_sign_guard::check_and_record(
+            self.height,
+            self.round,
+            crate::last_sign_guard::VoteStep::Precommit,
+        ) {
+            tracing::error!(
+                target: "sentrix_bft::sign",
+                "REFUSING TO SIGN PRECOMMIT — double-vote attempt: {}",
+                e
+            );
+            return;
+        }
         let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
         self.signature = sign_payload(&payload, secret_key);
     }
@@ -463,7 +497,20 @@ impl Precommit {
 
 impl Proposal {
     /// Sign this proposal with the given secret key.
+    /// See `Prevote::sign` for the LastSignBytes guard semantics.
     pub fn sign(&mut self, secret_key: &SecretKey) {
+        if let Err(e) = crate::last_sign_guard::check_and_record(
+            self.height,
+            self.round,
+            crate::last_sign_guard::VoteStep::Proposal,
+        ) {
+            tracing::error!(
+                target: "sentrix_bft::sign",
+                "REFUSING TO SIGN PROPOSAL — equivocation attempt: {}",
+                e
+            );
+            return;
+        }
         let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
         self.signature = sign_payload(&payload, secret_key);
     }

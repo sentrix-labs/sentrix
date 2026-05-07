@@ -17,6 +17,7 @@
 #![allow(missing_docs)]
 
 pub mod engine;
+pub mod last_sign_guard;
 pub mod messages;
 
 pub use engine::{BftAction, BftEngine, BftPhase, BftRoundState, VoteCollector};

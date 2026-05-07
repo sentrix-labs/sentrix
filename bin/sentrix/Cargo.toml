@@ -63,3 +63,7 @@ secp256k1 = { version = "0.31", features = ["rand", "recovery", "serde"] }
 # Wraps the env-var validator key so the source `String`'s heap allocation
 # is wiped after we derive the `Wallet` (C-06 hardening).
 zeroize = "1.7"
+# 2026-05-07 v2.1.84: LastSignBytes / privval guard init lives in main.rs.
+# sentrix (lib) doesn't re-export sentrix-bft, so we pull it directly. Pinned
+# via path to keep the workspace at one copy.
+sentrix-bft = { path = "../../crates/sentrix-bft" }
