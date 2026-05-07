@@ -92,6 +92,21 @@ pub fn init(path: PathBuf) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Read the persisted last-signed state. Returns None if the guard
+/// hasn't been initialised (operator opted out via unset env var).
+///
+/// Added in v2.1.85 so the BFT engine init path can resume at
+/// `last_signed.round + 1` for the same height after a mid-round
+/// crash, instead of restarting at round 0 and getting refused by
+/// the guard. See `bin/sentrix/src/main.rs` validator-loop for the
+/// caller; without this the v2.1.84 guard caused chicken-egg halts
+/// where post-restart engine couldn't make progress.
+pub fn current_state() -> Option<LastSignState> {
+    let g = GUARD.get()?;
+    let st = g.state.lock().ok()?;
+    Some(st.clone())
+}
+
 /// Check + record a sign-attempt. Returns Ok(()) if the guard isn't
 /// initialised (legacy behaviour) OR if `(height, round, step)` strictly
 /// exceeds the persisted last-signed tuple. Returns Err if the request

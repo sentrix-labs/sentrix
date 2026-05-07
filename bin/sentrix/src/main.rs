@@ -1490,8 +1490,20 @@ async fn cmd_start(
             // restart; missed-detection cost is operator-triggered
             // SIGKILL → MDBX_CORRUPTED → forced rsync recovery (today's
             // failure mode that motivated this watchdog).
-            const HEIGHT_STALL_THRESHOLD: Duration = Duration::from_secs(90);
-            const HEIGHT_WARN_THRESHOLD: Duration = Duration::from_secs(30);
+            // v2.1.85: env-var override. Default 90s is fine for steady-state
+            // 1s-block production but kills validators mid-recovery (round-skip
+            // cycles can take >90s when the cluster is converging from a halt).
+            // Operators in recovery scenarios can set
+            // HEIGHT_STALL_THRESHOLD_SEC=600 to give BFT room to finish round
+            // transitions. Pre-v2.1.85 was hardcoded 90s; see v44 incident
+            // 2026-05-07 for the failure mode this override addresses.
+            let height_stall_secs: u64 = std::env::var("HEIGHT_STALL_THRESHOLD_SEC")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(90);
+            let height_stall_threshold = Duration::from_secs(height_stall_secs);
+            let height_warn_threshold =
+                Duration::from_secs(height_stall_secs.saturating_mul(1).max(30) / 3);
             const TICK: Duration = Duration::from_secs(5);
             const CHANNEL_GAUGE_TICK: Duration = Duration::from_secs(30);
             const CHANNEL_PRESSURE_PCT: usize = 25;
@@ -1552,7 +1564,7 @@ async fn cmd_start(
                     last_height_changed = tokio::time::Instant::now();
                 } else {
                     let stale = last_height_changed.elapsed();
-                    if stale >= HEIGHT_STALL_THRESHOLD {
+                    if stale >= height_stall_threshold {
                         tracing::error!(
                             target: "validator_watchdog",
                             "FATAL: chain height stuck at {} for {}s — BFT can't finalize. \
@@ -1561,12 +1573,12 @@ async fn cmd_start(
                             current_height, stale.as_secs(),
                         );
                         std::process::abort();
-                    } else if stale >= HEIGHT_WARN_THRESHOLD {
+                    } else if stale >= height_warn_threshold {
                         tracing::warn!(
                             target: "validator_watchdog",
                             "chain height stuck at {} for {}s — abort threshold {}s",
                             current_height, stale.as_secs(),
-                            HEIGHT_STALL_THRESHOLD.as_secs(),
+                            height_stall_threshold.as_secs(),
                         );
                     }
                 }
@@ -2268,6 +2280,34 @@ async fn cmd_start(
 
                     let mut bft =
                         BftEngine::new(next_height, wallet.address.clone(), total_active_stake);
+
+                    // v2.1.85: resume at the correct round if we previously
+                    // signed at this height pre-crash. Without this the v2.1.84
+                    // LastSignBytes guard correctly refuses any sign at-or-below
+                    // last_signed (h=N, r=R_prev, *), but the engine initialises
+                    // at round 0, so the next sign is at (N, 0, Proposal) which
+                    // is rejected as a double-vote attempt. Result: chicken-egg
+                    // halt where chain can't advance until operator manually
+                    // clears /var/lib/sentrix/last-sign.json. See v44 incident
+                    // 2026-05-07 for the failure mode.
+                    if let Some(state) = sentrix_bft::last_sign_guard::current_state()
+                        && state.height == next_height
+                        && state.round > 0
+                    {
+                        let target_round = state.round.saturating_add(1);
+                        // BftEngine::advance_round bumps round + resets the
+                        // vote collector + phase_start. Apply N times to
+                        // skip the prior in-progress round.
+                        for _ in 0..target_round {
+                            bft.advance_round();
+                        }
+                        tracing::info!(
+                            "BFT engine resume: prior sign at (h={}, r={}, s={}) — \
+                             advanced engine to round {} to bypass guard refusal",
+                            state.height, state.round, state.step, target_round,
+                        );
+                    }
+
                     proposed_block = None;
                     // #1d: reset rebroadcast tracking on new height.
                     proposal_broadcast_at = None;
