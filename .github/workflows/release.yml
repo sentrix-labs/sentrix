@@ -1,0 +1,175 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write     # write release notes + upload artifacts
+  id-token: write     # required for cosign keyless OIDC + SLSA provenance
+  attestations: write # SLSA Level 3 provenance via actions/attest-build-provenance
+
+jobs:
+  build:
+    name: Build release binary
+    runs-on: ubuntu-22.04
+    outputs:
+      bin_sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build via docker bullseye (matches mainnet glibc 2.31 baseline)
+        run: |
+          docker run --rm -v $PWD:/work -e CARGO_TARGET_DIR=/work/target-docker \
+            rust:1.95-bullseye \
+            sh -c 'apt-get update -qq && apt-get install -y -qq libclang-dev clang protobuf-compiler >/dev/null 2>&1 && cd /work && cargo build --release -p sentrix-node'
+
+      - name: Compute binary sha256
+        id: sha
+        run: |
+          SHA=$(sha256sum target-docker/release/sentrix | awk '{print $1}')
+          echo "sha=${SHA}" >> $GITHUB_OUTPUT
+          echo "Binary sha256: ${SHA}"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: sentrix-binary
+          path: target-docker/release/sentrix
+          retention-days: 30
+
+  sbom:
+    name: Generate SBOM (CycloneDX)
+    runs-on: ubuntu-22.04
+    needs: build
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked
+
+      - name: Generate SBOM (workspace)
+        run: |
+          cargo cyclonedx --format json --output-pattern bom --override-filename sentrix-sbom.cdx
+          ls -la sentrix-sbom*
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: sentrix-sbom
+          path: sentrix-sbom.cdx.json
+          retention-days: 365
+
+  sign:
+    name: Sign binary + SBOM (cosign keyless)
+    runs-on: ubuntu-22.04
+    needs: [build, sbom]
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: sentrix-binary
+          path: ./bin
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: sentrix-sbom
+          path: ./sbom
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Sign binary (keyless OIDC)
+        run: |
+          cosign sign-blob --yes \
+            --output-signature ./bin/sentrix.sig \
+            --output-certificate ./bin/sentrix.crt \
+            ./bin/sentrix
+
+      - name: Sign SBOM (keyless OIDC)
+        run: |
+          cosign sign-blob --yes \
+            --output-signature ./sbom/sentrix-sbom.cdx.json.sig \
+            --output-certificate ./sbom/sentrix-sbom.cdx.json.crt \
+            ./sbom/sentrix-sbom.cdx.json
+
+      - name: SLSA build provenance attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ./bin/sentrix
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: signatures
+          path: |
+            ./bin/sentrix.sig
+            ./bin/sentrix.crt
+            ./sbom/sentrix-sbom.cdx.json.sig
+            ./sbom/sentrix-sbom.cdx.json.crt
+          retention-days: 365
+
+  release:
+    name: Publish GitHub release with all artifacts
+    runs-on: ubuntu-22.04
+    needs: [build, sbom, sign]
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: sentrix-binary
+          path: ./bin
+      - uses: actions/download-artifact@v5
+        with:
+          name: sentrix-sbom
+          path: ./sbom
+      - uses: actions/download-artifact@v5
+        with:
+          name: signatures
+          path: ./sigs
+
+      - name: Create / update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BIN_SHA: ${{ needs.build.outputs.bin_sha }}
+        run: |
+          set -euo pipefail
+          # Create release if it doesn't exist (cargo workspace bump PR may have created it via gh release create)
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+            gh release create "${GITHUB_REF_NAME}" --generate-notes --notes "Binary sha256: \`${BIN_SHA}\`"
+
+          # Upload artifacts (--clobber overwrites if release was created earlier)
+          gh release upload "${GITHUB_REF_NAME}" \
+            ./bin/sentrix \
+            ./sbom/sentrix-sbom.cdx.json \
+            ./sigs/* \
+            --clobber
+
+      - name: Verify reproducibility line in release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BIN_SHA: ${{ needs.build.outputs.bin_sha }}
+        run: |
+          # Append verification block to release notes
+          gh release edit "${GITHUB_REF_NAME}" --notes-file - <<NOTES
+$(gh release view "${GITHUB_REF_NAME}" --json body --jq '.body')
+
+## Verify
+
+\`\`\`bash
+# Binary checksum
+echo "${BIN_SHA}  sentrix" | sha256sum -c
+
+# Cosign keyless verify (binary)
+cosign verify-blob \\
+  --certificate-identity-regexp "https://github.com/sentrix-labs/sentrix" \\
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \\
+  --signature sentrix.sig \\
+  --certificate sentrix.crt \\
+  sentrix
+
+# SLSA build provenance
+gh attestation verify --owner sentrix-labs sentrix
+\`\`\`
+NOTES
