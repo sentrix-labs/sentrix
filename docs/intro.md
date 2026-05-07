@@ -27,7 +27,7 @@ Sentrix is an open-source, EVM-compatible Layer-1 built in Rust. Real chain, rea
 | **Testnet** | Chain ID `7120` · `https://testnet-rpc.sentrixchain.com/rpc` |
 | **Block Time** | 1 second |
 | **Consensus** | Voyager DPoS+BFT (live since April 2026) |
-| **Execution** | EVM-native (revm 37) |
+| **Execution** | EVM-native (revm 38) |
 | **Max Supply** | 315M SRX (post tokenomics-v2 fork) |
 | **Premine** | 20% of cap |
 | **Halving** | Every 126M blocks (~4 years, Bitcoin-parity) |

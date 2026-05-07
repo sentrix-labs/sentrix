@@ -1,6 +1,6 @@
 # Architecture Overview
 
-Sentrix is a Layer-1 blockchain written in Rust. **Voyager DPoS+BFT consensus** (live since 2026-04-25; Pioneer PoA round-robin was bootstrap consensus through h=579046), account-based model (like Ethereum), custom Binary Sparse Merkle Tree for state proofs, EVM execution via revm 37.
+Sentrix is a Layer-1 blockchain written in Rust. **Voyager DPoS+BFT consensus** (live since 2026-04-25; Pioneer PoA round-robin was bootstrap consensus through h=579046), account-based model (like Ethereum), custom Binary Sparse Merkle Tree for state proofs, EVM execution via revm 38.
 
 ## Components
 
@@ -32,7 +32,7 @@ crates/sentrix-wire/            Wire-protocol message types
 crates/sentrix-wallet/          Keygen, Argon2id keystore
 crates/sentrix-trie/            256-level Binary Sparse Merkle Tree
 crates/sentrix-staking/         DPoS, epoch rotation, slashing
-crates/sentrix-evm/             revm 37 adapter
+crates/sentrix-evm/             revm 38 adapter
 crates/sentrix-precompiles/     EVM precompiles
 crates/sentrix-bft/             BFT consensus (timeout-only round advance)
 crates/sentrix-core/            Blockchain, authority, executor, mempool,

@@ -1,6 +1,6 @@
 # Voyager — DPoS + BFT + EVM (LIVE on mainnet)
 
-> **Status: ACTIVE on mainnet since 2026-04-25 (h=579047).** Both networks (mainnet chain_id 7119, testnet chain_id 7120) run Voyager DPoS+BFT with EVM (revm 37) enabled.
+> **Status: ACTIVE on mainnet since 2026-04-25 (h=579047).** Both networks (mainnet chain_id 7119, testnet chain_id 7120) run Voyager DPoS+BFT with EVM (revm 38) enabled.
 
 Voyager succeeded Pioneer (PoA round-robin, blocks 0…579046 on mainnet) as the consensus + execution engine. The transition was a hard-fork at h=579047 — `voyager_activated=true` flag set on chain.db, all 4 mainnet validators migrated together via parallel restart with the L2 cold-start gate ensuring mesh-stable BFT entry.
 
@@ -29,9 +29,9 @@ After a proposer drafts a block, all active validators vote in two phases (Tende
 
 For a 4-validator mesh, supermajority threshold = 3 of 4 (75%). Mainnet routinely finalizes round-0 at 1 block/sec under nominal load.
 
-### 3. EVM via revm 37
+### 3. EVM via revm 38
 
-Solidity smart contracts via [revm](https://github.com/bluealloy/revm) (Paradigm's EVM, used by Reth/Erigon). Pure Rust, battle-tested, currently on revm 37.
+Solidity smart contracts via [revm](https://github.com/bluealloy/revm) (Paradigm's EVM, used by Reth/Erigon). Pure Rust, battle-tested, currently on revm 38.
 
 - **Activation:** `evm_activated=true` set 2026-04-25 in the same window as Voyager activation (h=579060).
 - **Gas pricing:** 0.1 sentri/gas; block gas limit 30M; basic transfer ≈ 0.000021 SRX.
