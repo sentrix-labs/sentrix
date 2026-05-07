@@ -340,6 +340,36 @@ pub fn get_extended_touch_list_height() -> u64 {
         .unwrap_or(EXTENDED_TOUCH_LIST_HEIGHT_DEFAULT)
 }
 
+/// Strict-justification fork (2026-05-07, post-halt #9 RCA): pre-fork
+/// the peer-justification gate verified only stake-weight ARITHMETIC —
+/// it summed the `stake_weight` field on each `SignedPrecommit` (sender-
+/// supplied number) and checked that against the receiver's local
+/// `total_active_stake` threshold. The signatures themselves were never
+/// recovered or matched against the claimed validator. A peer with a
+/// drifted active-set view could send a block whose precommits were
+/// either unsigned, signed by the wrong key, or weighted from a
+/// different registry snapshot, and the receiver would accept the block
+/// silently — applied a fork. Plus the `total_active_stake==0` branch
+/// at simul-start COMPLETELY bypassed the gate, accepting any
+/// justification during the cold-start window.
+///
+/// Post-fork: every precommit signature is recovered with
+/// `Precommit::signing_payload_for_height` + `recover_signer` and
+/// matched against the claimed validator address. Verified-stake is
+/// summed using the receiver's OWN `stake_registry.get_validator(...)`,
+/// not the sender's `stake_weight` field. Threshold gate uses the
+/// receiver's active set; if `total_active_stake==0` post-fork the
+/// gate REJECTS instead of bypassing (cold-start nodes catch up via
+/// `bypass_authz` replay anyway). Default `u64::MAX` preserves
+/// legacy behaviour bit-identically.
+const STRICT_JUSTIFICATION_HEIGHT_DEFAULT: u64 = u64::MAX;
+pub fn get_strict_justification_height() -> u64 {
+    std::env::var("STRICT_JUSTIFICATION_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(STRICT_JUSTIFICATION_HEIGHT_DEFAULT)
+}
+
 /// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
 pub fn get_chain_id() -> u64 {
     std::env::var("SENTRIX_CHAIN_ID")
@@ -1011,6 +1041,17 @@ impl Blockchain {
     /// CALL trie-vs-AccountDB divergence class.
     pub fn is_extended_touch_list_height(height: u64) -> bool {
         let fork = get_extended_touch_list_height();
+        fork != u64::MAX && height >= fork
+    }
+
+    /// Strict justification verification — true once
+    /// `STRICT_JUSTIFICATION_HEIGHT` activates. Post-fork every
+    /// peer-supplied block runs full crypto verification on its
+    /// justification precommits (recover signer, match against
+    /// claimed validator, sum verified stake from receiver's own
+    /// registry). Closes the chain-fork class identified by halt #9.
+    pub fn is_strict_justification_height(height: u64) -> bool {
+        let fork = get_strict_justification_height();
         fork != u64::MAX && height >= fork
     }
 

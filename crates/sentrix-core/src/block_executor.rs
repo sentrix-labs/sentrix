@@ -222,12 +222,95 @@ impl Blockchain {
                 .filter_map(|a| self.stake_registry.get_validator(a))
                 .map(|v| v.total_stake())
                 .sum();
-            // total_active_stake==0 means the registry hasn't been
-            // initialised on this node yet (cold-start syncing from
-            // genesis before staking state has been replayed). Skip
-            // rather than reject — the apply path for staking ops
-            // earlier in the catch-up sequence brings the registry up.
-            if total_active_stake > 0 && !j.has_supermajority(total_active_stake) {
+
+            // Strict justification verification (audit halt #9 fix,
+            // 2026-05-07). Pre-fork the gate verified ONLY the
+            // arithmetic of stake-weight (peer-supplied number summed
+            // against receiver's threshold). Signatures themselves
+            // were never recovered — a peer with drifted active-set
+            // view (post-halt-recovery, simul-start race) could ship
+            // a block whose precommits were signed by the wrong
+            // keys or weighted from a different registry snapshot;
+            // receiver would accept silently → fork. Halt #9 was
+            // exactly this. Post-fork: recover every precommit's
+            // signer via `Precommit::signing_payload_for_height` +
+            // `recover_signer`, match against claimed validator,
+            // sum verified-stake using the RECEIVER's own registry,
+            // reject if threshold not met.
+            if Self::is_strict_justification_height(expected_index) {
+                use sentrix_bft::messages::{Precommit, recover_signer};
+                let mut verified_stake: u64 = 0;
+                let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                for p in &j.precommits {
+                    // Reject duplicate validators in the justification —
+                    // pre-fix the dedup was implicit via the stake-weight
+                    // sum but now we tally per validator.
+                    if !seen.insert(p.validator.as_str()) {
+                        return Err(SentrixError::InvalidBlock(format!(
+                            "block {} justification has duplicate precommit from {}",
+                            expected_index, p.validator,
+                        )));
+                    }
+                    // Validator must be in our active set.
+                    let val = match self.stake_registry.get_validator(&p.validator) {
+                        Some(v) => v,
+                        None => {
+                            return Err(SentrixError::InvalidBlock(format!(
+                                "block {} justification cites validator {} not in our active \
+                                 set — peer-finalised view diverges, refusing to apply",
+                                expected_index, p.validator,
+                            )));
+                        }
+                    };
+                    // Recover signer + match against claimed validator.
+                    let payload = Precommit::signing_payload_for_height(
+                        j.height,
+                        j.round,
+                        &Some(j.block_hash.clone()),
+                        self.chain_id,
+                    );
+                    let recovered = match recover_signer(&payload, &p.signature) {
+                        Ok(addr) => addr,
+                        Err(_) => {
+                            return Err(SentrixError::InvalidBlock(format!(
+                                "block {} precommit from {} has invalid signature",
+                                expected_index, p.validator,
+                            )));
+                        }
+                    };
+                    if recovered.to_lowercase() != p.validator.to_lowercase() {
+                        return Err(SentrixError::InvalidBlock(format!(
+                            "block {} precommit from {} signed by different key (recovered={})",
+                            expected_index, p.validator, recovered,
+                        )));
+                    }
+                    verified_stake = verified_stake.saturating_add(val.total_stake());
+                }
+                if total_active_stake == 0 {
+                    return Err(SentrixError::InvalidBlock(format!(
+                        "block {} arrived during cold-start (total_active_stake=0); strict-\
+                         justification fork active so we refuse to bypass — bypass_authz \
+                         replay should be used to catch up",
+                        expected_index,
+                    )));
+                }
+                let threshold = sentrix_primitives::supermajority_threshold(total_active_stake);
+                if verified_stake < threshold {
+                    return Err(SentrixError::InvalidBlock(format!(
+                        "block {} verified-stake {} < threshold {} (total_active_stake={}, \
+                         signers={}) — peer-finalised view diverges from ours, refusing \
+                         to apply",
+                        expected_index,
+                        verified_stake,
+                        threshold,
+                        total_active_stake,
+                        j.signer_count(),
+                    )));
+                }
+            } else if total_active_stake > 0 && !j.has_supermajority(total_active_stake) {
+                // Pre-fork legacy gate (stake-weight arithmetic only).
+                // total_active_stake==0 cold-start bypass preserved for
+                // bit-identical chain history.
                 return Err(SentrixError::InvalidBlock(format!(
                     "block {} justification stake {} is below the local supermajority \
                      threshold {} (total_active_stake={}, signers={}) — peer-finalised \
