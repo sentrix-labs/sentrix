@@ -312,6 +312,34 @@ pub fn get_evm_gas_fix_height() -> u64 {
         .unwrap_or(EVM_GAS_FIX_HEIGHT_DEFAULT)
 }
 
+/// state_root v2 drift fix (2026-05-07, post-halt #5 RCA): pre-fork
+/// `update_trie_for_block` derives `touched_addrs` from `tx.from` /
+/// `tx.to` / `block.validator` + `PROTOCOL_TREASURY` only. That misses
+/// every address mutated by the EVM apply path that isn't named in the
+/// outer Sentrix Tx — CREATE'd contract addresses (computed from
+/// sender + nonce, not in tx.to), internal-CALL recipients (a contract
+/// calling another contract), contract storage from internal SSTOREs.
+/// AccountDB tracks them, the trie doesn't. Validators agree on trie
+/// root for a long time (untracked addresses drift quietly across
+/// hosts) then halt the moment a block touches a previously-drifted
+/// address. Halt at h=1,650,000 on 2026-05-07 localised this exactly:
+/// `state-diff` showed identical block content with divergent trie
+/// roots; STATE-FP traces showed agreeing AccountDB through h=1,649,999.
+///
+/// Post-fork the `touched_addrs` list is augmented with every address
+/// in `accounts.touched_in_block`, the per-block accumulator hooked
+/// into every AccountDB mutator. Default `u64::MAX` keeps the legacy
+/// behaviour unchanged so v2.1.81 chain history stays bit-identical.
+/// Operator flips after testnet bake + chain.db rsync alignment to
+/// pick canonical trie root pre-flip.
+const EXTENDED_TOUCH_LIST_HEIGHT_DEFAULT: u64 = u64::MAX;
+pub fn get_extended_touch_list_height() -> u64 {
+    std::env::var("EXTENDED_TOUCH_LIST_HEIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(EXTENDED_TOUCH_LIST_HEIGHT_DEFAULT)
+}
+
 /// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
 pub fn get_chain_id() -> u64 {
     std::env::var("SENTRIX_CHAIN_ID")
@@ -972,6 +1000,17 @@ impl Blockchain {
     /// entire fee, supply invariant restored.
     pub fn is_evm_gas_fix_height(height: u64) -> bool {
         let fork = get_evm_gas_fix_height();
+        fork != u64::MAX && height >= fork
+    }
+
+    /// state_root v2 drift fix — true once `EXTENDED_TOUCH_LIST_HEIGHT`
+    /// activates. Post-fork `update_trie_for_block` augments the
+    /// `tx.from`/`tx.to`/validator/+TREASURY touch list with every
+    /// address in `accounts.touched_in_block` (every AccountDB mutator
+    /// records there). Closes the EVM-CREATE'd contract + internal
+    /// CALL trie-vs-AccountDB divergence class.
+    pub fn is_extended_touch_list_height(height: u64) -> bool {
+        let fork = get_extended_touch_list_height();
         fork != u64::MAX && height >= fork
     }
 
@@ -1708,6 +1747,23 @@ impl Blockchain {
                 );
             }
             (addrs, block.index)
+        };
+
+        // EXTENDED_TOUCH_LIST fork (2026-05-07, drift-halt RCA): post-fork
+        // augment the legacy list with every address mutated during apply.
+        // Picks up EVM-CREATE'd contracts + internal-CALL recipients +
+        // contract-storage SSTOREs that the legacy `tx.from`/`tx.to`
+        // derivation misses. Drained from AccountDB's per-block
+        // accumulator. Pre-fork: no-op, legacy behaviour identity.
+        let touched_addrs: Vec<String> = if Self::is_extended_touch_list_height(block_index) {
+            let mut combined = touched_addrs;
+            let extra = self.accounts.drain_touched_in_block();
+            for addr in extra {
+                combined.push(addr);
+            }
+            combined
+        } else {
+            touched_addrs
         };
         eprintln!(
             "[V2-DBG] post-touch list: block_index={} touched_addrs_count={} treasury_in_mem={}",
