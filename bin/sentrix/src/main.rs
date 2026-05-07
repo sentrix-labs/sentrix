@@ -2290,21 +2290,22 @@ async fn cmd_start(
                     // halt where chain can't advance until operator manually
                     // clears /var/lib/sentrix/last-sign.json. See v44 incident
                     // 2026-05-07 for the failure mode.
-                    if let Some(state) = sentrix_bft::last_sign_guard::current_state() {
-                        if state.height == next_height && state.round > 0 {
-                            let target_round = state.round.saturating_add(1);
-                            // BftEngine::advance_round bumps round + resets the
-                            // vote collector + phase_start. Apply N times to
-                            // skip the prior in-progress round.
-                            for _ in 0..target_round {
-                                bft.advance_round();
-                            }
-                            tracing::info!(
-                                "BFT engine resume: prior sign at (h={}, r={}, s={}) — \
-                                 advanced engine to round {} to bypass guard refusal",
-                                state.height, state.round, state.step, target_round,
-                            );
+                    if let Some(state) = sentrix_bft::last_sign_guard::current_state()
+                        && state.height == next_height
+                        && state.round > 0
+                    {
+                        let target_round = state.round.saturating_add(1);
+                        // BftEngine::advance_round bumps round + resets the
+                        // vote collector + phase_start. Apply N times to
+                        // skip the prior in-progress round.
+                        for _ in 0..target_round {
+                            bft.advance_round();
                         }
+                        tracing::info!(
+                            "BFT engine resume: prior sign at (h={}, r={}, s={}) — \
+                             advanced engine to round {} to bypass guard refusal",
+                            state.height, state.round, state.step, target_round,
+                        );
                     }
 
                     proposed_block = None;
