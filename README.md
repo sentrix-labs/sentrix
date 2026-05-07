@@ -20,7 +20,7 @@ Real chain, real blocks, real code. Sentrix (SRX) is a purpose-built Layer-1 wit
 [![Rust](https://img.shields.io/badge/rust-stable-orange)](Cargo.toml)
 [![Chain ID](https://img.shields.io/badge/chain%20ID-7119-blue)](docs/operations/NETWORKS.md)
 [![License](https://img.shields.io/badge/license-BUSL--1.1-purple)](LICENSE)
-[![Whitepaper](https://img.shields.io/badge/whitepaper-v1.2.4-8A5A11)](https://github.com/sentrix-labs/whitepaper)
+[![Whitepaper](https://img.shields.io/badge/whitepaper-v1.3.0-8A5A11)](https://github.com/sentrix-labs/whitepaper)
 
 ---
 
@@ -28,7 +28,8 @@ Real chain, real blocks, real code. Sentrix (SRX) is a purpose-built Layer-1 wit
 
 Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, instant BFT finality, and Ethereum-compatible tooling. MetaMask, ethers.js, viem, and web3.js connect natively to JSON-RPC. SDK developers can also use the Tonic-based **gRPC + gRPC-Web** transport for binary RPC and server-streaming block events.
 
-- **v2.1.71** — Tonic gRPC `StreamEvents` push (server subscribes to the same broadcast bus that powers WS `eth_subscribe`). Plus v2.1.70 (`tonic-web` browser support) and v2.1.69 (read-only side-car: `GetBlock`, `GetBalance`). Earlier in the v2.1.6x line: silent-thread-death defence-in-depth (cmd_tx + event_tx + bft_tx try_send + drop counters; swarm-task / heartbeat / chain-height watchdogs). Tokenomics v2 fork active since h=640800 (BTC-parity 4-year halving + 315M cap).
+- **v2.1.85** — BFT engine reads `last_signed` at boot (resumes at correct round post-restart) + `HEIGHT_STALL_THRESHOLD_SEC` env override for recovery cycles. Builds on v2.1.84 LastSignBytes / privval guard (Tendermint canonical pattern) — closes the double-finalize-via-mid-round-restart class that produced 9 state_root v2 drift halts across v43–v44. Plus: v2.1.83 STRICT_JUSTIFICATION (full crypto-recovery on peer justifications), v2.1.82 EXTENDED_TOUCH_LIST (closes touched_addrs incompleteness for EVM CREATE'd contracts + internal CALLs), v2.1.79 LivenessTracker idempotent recording. Release pipeline: SBOM (CycloneDX) + cosign keyless OIDC + SLSA Level 3 provenance on every tag.
+- Earlier line: v2.1.69-71 Tonic gRPC + gRPC-Web + StreamEvents push, v2.1.6x silent-thread-death defence-in-depth (cmd_tx/event_tx/bft_tx try_send + drop counters + watchdogs). Tokenomics v2 fork active since h=640800 (BTC-parity 4-year halving + 315M cap).
 - **700+ tests**, clippy clean, multiple internal Sentrix Labs / SentrisCloud audit rounds
 - **4 validators** running Voyager DPoS+BFT on mainnet
 
@@ -43,7 +44,7 @@ Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, i
 | **State** | Binary Sparse Merkle Tree (BLAKE3 + SHA-256) with proofs |
 | **Tokens** | SRC-20 native + SRC-20 (ERC-20 via EVM) |
 | **Network** | libp2p + Noise XX + Kademlia + Gossipsub |
-| **API** | REST (60+ endpoints) + JSON-RPC 2.0 (25 methods, incl. `sentrix_*` native namespace) + **Tonic gRPC + gRPC-Web** ([docs](docs/operations/GRPC.md)) — `GetBlock`, `GetBalance`, server-streaming `StreamEvents` |
+| **API** | REST (60+ endpoints) + JSON-RPC 2.0 (22 methods, incl. `sentrix_*` native namespace) + **Tonic gRPC + gRPC-Web** ([docs](docs/operations/GRPC.md)) — `GetBlock`, `GetBalance`, server-streaming `StreamEvents` |
 | **Explorer** | Built-in dark-themed block explorer |
 | **Wallet** | AES-256-GCM keystore (Argon2id KDF) |
 | **Fee model** | 50% burn / 50% validator (deflationary) |
@@ -140,7 +141,7 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 
 | Phase | Status | Focus |
 |-------|--------|-------|
-| **Pioneer** | Completed (mainnet h=0…579058) | PoA round-robin, MDBX storage, 1s blocks, SRC-20 tokens — succeeded by Voyager 2026-04-25 |
+| **Pioneer** | Completed (mainnet h=0…579,046) | PoA round-robin, MDBX storage, 1s blocks, SRC-20 tokens — succeeded by Voyager 2026-04-25 |
 | **Voyager** | **Live on mainnet** | DPoS proposer rotation + BFT finality, EVM (revm 38) with `eth_call` against real chain state, `eth_sendRawTransaction`, L1 peer auto-discovery + connection-limits hardening, V4 reward distribution v2 (treasury escrow + ClaimRewards), runtime-aware Voyager dispatch, race-safe block sync, tokenomics v2 fork (315M cap + 4-year halving), `StakingOp::AddSelfStake` for non-phantom validator self-bond, side-car gRPC + gRPC-Web for SDK integration |
 | **Frontier** | Phase F-1 scaffold landed; F-2…F-10 planned | Parallel transaction execution, sub-1s block time, mainnet hard fork |
 | **Odyssey** | Future | Cross-chain bridges, mature ecosystem, light clients |
