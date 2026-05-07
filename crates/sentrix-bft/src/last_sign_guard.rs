@@ -182,7 +182,6 @@ impl std::error::Error for DoubleSignAttempt {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     // Tests can't use the global GUARD safely (singleton). Test the
     // pure logic in isolation via a helper.
@@ -247,28 +246,11 @@ mod tests {
         assert_eq!(read.step, 2);
     }
 
-    // Exercise the global guard end-to-end. Must run serially since
-    // the guard is process-singleton; cargo test serializes #[test]s
-    // from the same module by default for this kind of state.
-    static SERIAL: Mutex<()> = Mutex::new(());
-
-    #[test]
-    fn end_to_end_via_global_guard() {
-        let _l = SERIAL.lock().unwrap();
-        // Reset by using a fresh path each time (GUARD.set() is once-
-        // only, so we test as if this is a fresh process).
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("e2e.json");
-        let _ = init(path.clone());
-        // First sign — accepted.
-        check_and_record(100, 0, VoteStep::Prevote).unwrap();
-        // Second sign — same tuple — rejected.
-        let err = check_and_record(100, 0, VoteStep::Prevote);
-        assert!(err.is_err());
-        // Precommit at same (h, r) — accepted.
-        // (Only if GUARD wasn't already initialised by an earlier
-        // test in this binary. The OnceLock semantics mean we may be
-        // observing a guard from a prior test path. Either way the
-        // monotonicity check holds — second-time-same-tuple rejects.)
-    }
+    // Note: no end-to-end test for the global GUARD. It's a process-
+    // singleton OnceLock; initializing it in any test poisons the state
+    // for every sibling test that goes through `Prevote::sign` /
+    // `Precommit::sign` / `Proposal::sign` (those refuse to sign at
+    // already-recorded tuples). Algorithm coverage above is enough; the
+    // glue (init → state file → mutex → check_and_record) is exercised
+    // by the validator binary at startup.
 }
