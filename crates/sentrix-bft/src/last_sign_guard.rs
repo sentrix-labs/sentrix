@@ -424,4 +424,11 @@ mod tests {
         // SHA-256 hex output is 64 chars.
         assert_eq!(h1.len(), 64);
     }
+
+    // The end-to-end test that walks every branch of
+    // `check_and_record_with_bytes` through the global singleton GUARD lives
+    // in `tests/last_sign_guard_integration.rs`. Integration tests get their
+    // own test binary, so the OnceLock initialisation can't poison sibling
+    // unit tests in `messages.rs` that exercise `Proposal::sign` /
+    // `Prevote::sign` / `Precommit::sign` via the same singleton.
 }
