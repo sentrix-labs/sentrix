@@ -1305,7 +1305,13 @@ async fn cmd_start(
     // validator-loop pause without losing the await-based send semantics
     // that BFT requires (dropped votes destabilise consensus more than
     // backpressure does).
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<NodeEvent>(4096);
+    // 2026-05-08 v2.1.88: bumped 4096 → 16384 after testnet observed 8671
+    // bft_tx FULL drops in 30 min on a fullnode under catch-up sync, which
+    // produced BFT split-brain at h=3066004 (validators received proposals
+    // at different rounds → 2-2 fork → halt). Channel back-pressure is
+    // worse for consensus stability than the extra ~2 MB RAM cost of
+    // deeper buffering.
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<NodeEvent>(16384);
 
     // ── P2P: libp2p TCP + Noise + Yamux ─────────────────
     println!("P2P transport: libp2p (Noise encrypted)");
@@ -1373,15 +1379,16 @@ async fn cmd_start(
     let shutdown_flag = Arc::new(AtomicBool::new(false));
 
     // BFT event channel — forwards P2P BFT votes from event handler to validator loop
-    // Same 4096 capacity rationale as event_tx above. This is the
-    // event-handler → validator-loop hop; when validator pauses (e.g.
-    // long write lock during epoch boundary processing), incoming BFT
-    // messages buffer here. 256 slots was tight enough that a slow
-    // finalize would stall the event handler trying to forward;
-    // 4096 gives enough margin that the validator's heartbeat watchdog
-    // catches a truly stuck loop before this channel saturates.
+    // Capacity history: 256 → 4096 (v2.1.65) → 16384 (v2.1.88).
+    // 2026-05-08 v2.1.88: bumped 4096 → 16384 after testnet halt at
+    // h=3066004 traced to BFT split-brain caused by upstream channel
+    // back-pressure. fullnode-1 logged 8671 bft_tx FULL drops in 30 min
+    // under catch-up sync; under that pressure validators received
+    // proposals at different rounds → 2-2 fork → halt. Deeper buffer
+    // gives the main loop time to drain MDBX-write backlogs before
+    // dropping consensus messages. Cost: ~3 MB extra RAM per validator.
     let (bft_tx, bft_rx) =
-        tokio::sync::mpsc::channel::<sentrix::core::bft_messages::BftMessage>(4096);
+        tokio::sync::mpsc::channel::<sentrix::core::bft_messages::BftMessage>(16384);
 
     // 2026-05-05 v2.1.68: cumulative count of BFT messages dropped because
     // bft_tx was full when the event-handler tokio task tried to forward
