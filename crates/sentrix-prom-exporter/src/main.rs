@@ -145,10 +145,7 @@ async fn poll_one(client: &reqwest::Client, t: &Target) -> Option<()> {
         .with_label_values(&[&t.name, &t.network])
         .set(now - status.sync_info.latest_block_time as f64);
 
-    // Tip hash as u32 — first 8 hex chars after 0x prefix
-    let h = status.sync_info.latest_block_hash.trim_start_matches("0x");
-    if h.len() >= 8 {
-        let v = u32::from_str_radix(&h[..8], 16).unwrap_or(0);
+    if let Some(v) = decode_tip_hash_short(&status.sync_info.latest_block_hash) {
         TIP_HASH.get()?
             .with_label_values(&[&t.name, &t.network])
             .set(v as i64);
@@ -203,6 +200,21 @@ async fn metrics_handler(
         .header("Content-Type", encoder.format_type())
         .body(http_body_util::Full::new(buffer.into()))
         .unwrap())
+}
+
+/// Decode the first 8 hex chars of `latest_block_hash` (after stripping
+/// any `0x` prefix) into a u32 short-form fingerprint. Returns None if
+/// the string is too short or contains non-hex chars.
+///
+/// Used as a divergence indicator: when all validators agree on the same
+/// block, every host emits the same value; when one diverges, PromQL's
+/// `count(count by (sentrix_chain_tip_hash_short))` jumps to ≥ 2.
+fn decode_tip_hash_short(s: &str) -> Option<u32> {
+    let h = s.trim_start_matches("0x");
+    if h.len() < 8 {
+        return None;
+    }
+    u32::from_str_radix(&h[..8], 16).ok()
 }
 
 fn parse_targets() -> Vec<Target> {
@@ -275,5 +287,146 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 warn!(?err, "conn error");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_tip_hash_short_strips_0x_prefix() {
+        let v = decode_tip_hash_short("0xdeadbeefcafebabe").unwrap();
+        assert_eq!(v, 0xdeadbeef);
+    }
+
+    #[test]
+    fn decode_tip_hash_short_without_prefix() {
+        let v = decode_tip_hash_short("12345678abcdef").unwrap();
+        assert_eq!(v, 0x12345678);
+    }
+
+    #[test]
+    fn decode_tip_hash_short_too_short_returns_none() {
+        assert!(decode_tip_hash_short("0xabc").is_none());
+        assert!(decode_tip_hash_short("").is_none());
+        assert!(decode_tip_hash_short("0x").is_none());
+        // 7 hex chars — under threshold.
+        assert!(decode_tip_hash_short("0xabcdefa").is_none());
+    }
+
+    #[test]
+    fn decode_tip_hash_short_non_hex_returns_none() {
+        assert!(decode_tip_hash_short("0xZZZZZZZZ").is_none());
+        assert!(decode_tip_hash_short("not-a-hash-at-all").is_none());
+    }
+
+    #[test]
+    fn decode_tip_hash_short_zero() {
+        assert_eq!(decode_tip_hash_short("0x00000000ffff").unwrap(), 0);
+    }
+
+    // All four parse_targets scenarios live in one test because std::env is
+    // process-global; parallel tests touching SENTRIX_TARGETS would race.
+    #[test]
+    fn parse_targets_all_scenarios() {
+        // SAFETY: single-test scope, no concurrent env access in this body.
+        unsafe {
+            // ── 1. Default topology (env unset) ──
+            std::env::remove_var("SENTRIX_TARGETS");
+            let t = parse_targets();
+            // 6 mainnet (4 vals + 2 fullnodes) + 4 testnet = 10
+            assert_eq!(t.len(), 10);
+            let mainnet = t.iter().filter(|x| x.network == "mainnet").count();
+            let testnet = t.iter().filter(|x| x.network == "testnet").count();
+            assert_eq!(mainnet, 6);
+            assert_eq!(testnet, 4);
+            assert!(t.iter().all(|x| x.url.starts_with("http://")));
+
+            // ── 2. Env override with 3 well-formed targets ──
+            std::env::set_var(
+                "SENTRIX_TARGETS",
+                "alpha:mainnet:http://10.0.0.1:8545,bravo:testnet:http://10.0.0.2:9545,charlie:mainnet:http://example.com:8545",
+            );
+            let t = parse_targets();
+            assert_eq!(t.len(), 3);
+            assert_eq!(t[0].name, "alpha");
+            assert_eq!(t[0].network, "mainnet");
+            assert_eq!(t[0].url, "http://10.0.0.1:8545");
+            assert_eq!(t[1].name, "bravo");
+            assert_eq!(t[2].name, "charlie");
+
+            // ── 3. Malformed entries silently skipped ──
+            std::env::set_var(
+                "SENTRIX_TARGETS",
+                "good:mainnet:http://1.1.1.1:8545,bad-no-colons,also:bad,fine:testnet:http://2.2.2.2:9545",
+            );
+            let t = parse_targets();
+            // Only the two 3-part entries survive.
+            assert_eq!(t.len(), 2);
+            assert_eq!(t[0].name, "good");
+            assert_eq!(t[1].name, "fine");
+
+            // ── 4. URL with colons (splitn(3) keeps tail intact) ──
+            std::env::set_var("SENTRIX_TARGETS", "x:net:http://host.example:8545/path");
+            let t = parse_targets();
+            assert_eq!(t.len(), 1);
+            assert_eq!(t[0].url, "http://host.example:8545/path");
+
+            std::env::remove_var("SENTRIX_TARGETS");
+        }
+    }
+
+    #[test]
+    fn sentrix_status_deserialises_minimal_shape() {
+        let body = r#"{
+            "sync_info": {
+                "latest_block_height": 1234,
+                "latest_block_time": 1715000000,
+                "latest_block_hash": "0xabcdef0123456789"
+            },
+            "validators": null,
+            "mempool": null,
+            "uptime_seconds": null
+        }"#;
+        let s: SentrixStatus = serde_json::from_str(body).unwrap();
+        assert_eq!(s.sync_info.latest_block_height, 1234);
+        assert_eq!(s.sync_info.latest_block_time, 1715000000);
+        assert_eq!(s.sync_info.latest_block_hash, "0xabcdef0123456789");
+        assert!(s.validators.is_none());
+        assert!(s.mempool.is_none());
+        assert!(s.uptime_seconds.is_none());
+    }
+
+    #[test]
+    fn sentrix_status_deserialises_full_shape() {
+        let body = r#"{
+            "sync_info": {
+                "latest_block_height": 1,
+                "latest_block_time": 2,
+                "latest_block_hash": "0x00000001"
+            },
+            "validators": { "active_count": 4 },
+            "mempool": { "size": 7 },
+            "uptime_seconds": 999
+        }"#;
+        let s: SentrixStatus = serde_json::from_str(body).unwrap();
+        assert_eq!(s.validators.unwrap().active_count, 4);
+        assert_eq!(s.mempool.unwrap().size, 7);
+        assert_eq!(s.uptime_seconds.unwrap(), 999);
+    }
+
+    #[test]
+    fn target_clone_and_debug_present() {
+        let t = Target {
+            name: "n".into(),
+            network: "mainnet".into(),
+            url: "http://x".into(),
+        };
+        let t2 = t.clone();
+        assert_eq!(t2.name, "n");
+        // Debug formatting (derived) renders the struct.
+        let s = format!("{:?}", t);
+        assert!(s.contains("Target"));
     }
 }
