@@ -115,7 +115,46 @@ pub fn current_state() -> Option<LastSignState> {
 ///
 /// On Ok, the new tuple is fsync'd to disk BEFORE returning, so a
 /// post-broadcast crash leaves the on-disk state already advanced.
+///
+/// **Legacy entry point** — preserved for backwards compatibility. Callers
+/// that don't supply payload bytes get the strict check (any
+/// `(h,r,s) <= last_signed` is rejected, no replay exemption).
+///
+/// New callers that need legitimate-rebroadcast support should use
+/// [`check_and_record_with_bytes`] instead.
 pub fn check_and_record(height: u64, round: u32, step: VoteStep) -> Result<(), DoubleSignAttempt> {
+    check_and_record_with_bytes(height, round, step, &[])
+}
+
+/// Check + record a sign-attempt with the signing payload bytes.
+///
+/// Adds a same-bytes-replay exemption: if the (h, r, step) equals the
+/// persisted last-signed tuple AND `payload_bytes` hashes to the same
+/// value as the persisted hash, the call returns Ok(()) without
+/// re-persisting. This is a legitimate rebroadcast of an already-signed
+/// message (BFT engine retransmitting on round timeout) — re-emitting
+/// the same signature is NOT a double-vote.
+///
+/// Behaviour:
+/// - Guard not initialised → Ok (legacy bypass)
+/// - `step == Other` → Ok (non-consensus messages aren't guarded)
+/// - new `(h,r,s)` strictly > last_signed → record + persist + Ok
+/// - same `(h,r,s)` AND `hash(payload) == last_persisted_hash` → Ok (replay)
+/// - same `(h,r,s)` AND hash differs → Err (real double-vote)
+/// - new `(h,r,s)` < last_signed → Err (rollback attempt)
+///
+/// Closes the v2.1.85 rebroadcast bug class: pre-fix, BFT engine's
+/// proposal/prevote/precommit rebroadcast loop (see
+/// `bin/sentrix/src/main.rs::proposal_rebroadcast_count`) constructs a
+/// fresh struct with `signature: vec![]` each cycle and calls `.sign()`,
+/// which the strict guard rejected as double-vote, leaving signature
+/// empty → peers reject → validator silent → halt.
+pub fn check_and_record_with_bytes(
+    height: u64,
+    round: u32,
+    step: VoteStep,
+    payload_bytes: &[u8],
+) -> Result<(), DoubleSignAttempt> {
     let g = match GUARD.get() {
         Some(g) => g,
         None => return Ok(()),
@@ -127,6 +166,29 @@ pub fn check_and_record(height: u64, round: u32, step: VoteStep) -> Result<(), D
     let new_step_ord = step as u32;
     let cur_tuple = (st.height, st.round, st.step);
     let new_tuple = (height, round, new_step_ord);
+
+    // Same-bytes-replay exemption: if the requested tuple equals the
+    // persisted tuple AND the payload bytes match, this is a legitimate
+    // rebroadcast — return Ok without re-persisting (already on disk).
+    // Empty payload_bytes (legacy callers via `check_and_record`) skips
+    // the replay path so old behaviour is preserved bit-identically.
+    if new_tuple == cur_tuple && !payload_bytes.is_empty() {
+        let new_hash = hash_payload(payload_bytes);
+        if !st.last_sign_bytes_hex.is_empty() && st.last_sign_bytes_hex == new_hash {
+            tracing::debug!(
+                target: "sentrix_bft::last_sign_guard",
+                "rebroadcast replay exempt: h={} r={} step={:?}",
+                height, round, step
+            );
+            return Ok(());
+        }
+        // Same tuple, different bytes — real equivocation attempt.
+        return Err(DoubleSignAttempt {
+            attempted: new_tuple,
+            last_signed: cur_tuple,
+        });
+    }
+
     if new_tuple <= cur_tuple {
         return Err(DoubleSignAttempt {
             attempted: new_tuple,
@@ -136,6 +198,11 @@ pub fn check_and_record(height: u64, round: u32, step: VoteStep) -> Result<(), D
     st.height = height;
     st.round = round;
     st.step = new_step_ord;
+    if !payload_bytes.is_empty() {
+        st.last_sign_bytes_hex = hash_payload(payload_bytes);
+    } else {
+        st.last_sign_bytes_hex.clear();
+    }
     let snapshot = st.clone();
     drop(st);
     if let Err(e) = write_atomic(&g.path, &snapshot) {
@@ -151,6 +218,16 @@ pub fn check_and_record(height: u64, round: u32, step: VoteStep) -> Result<(), D
         });
     }
     Ok(())
+}
+
+/// Hash signing payload bytes to a stable hex digest stored in the
+/// last-sign state file. Uses SHA-256 — matches the rest of the chain's
+/// canonical hashing convention.
+fn hash_payload(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
 }
 
 /// Atomic write: writes to a `<path>.tmp` file, fsyncs, then renames.
@@ -268,4 +345,83 @@ mod tests {
     // already-recorded tuples). Algorithm coverage above is enough; the
     // glue (init → state file → mutex → check_and_record) is exercised
     // by the validator binary at startup.
+
+    // ── Same-bytes-replay exemption (v2.1.86 rebroadcast fix) ──
+    //
+    // Pure tests for the replay logic. Can't use the global GUARD (singleton
+    // poisoning), so test the decision rule in isolation.
+    fn check_replay_pure(
+        cur: (u64, u32, u32),
+        cur_hash: &str,
+        new: (u64, u32, u32),
+        new_hash: &str,
+    ) -> Result<(), &'static str> {
+        if new == cur && !new_hash.is_empty() {
+            if !cur_hash.is_empty() && cur_hash == new_hash {
+                return Ok(()); // legitimate rebroadcast replay
+            }
+            return Err("same tuple, different bytes — equivocation");
+        }
+        if new <= cur {
+            return Err("rollback");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn replay_same_bytes_same_tuple_allowed() {
+        // Validator already prevoted at h=10 r=0 with hash "abc".
+        // Rebroadcast cycle calls sign() again with same payload.
+        let cur = (10, 0, VoteStep::Prevote as u32);
+        assert!(check_replay_pure(cur, "abc", cur, "abc").is_ok());
+    }
+
+    #[test]
+    fn replay_different_bytes_same_tuple_rejected() {
+        // Validator already prevoted at h=10 r=0 with hash "abc".
+        // New attempt at same tuple but DIFFERENT block hash = real
+        // double-vote. Must be refused.
+        let cur = (10, 0, VoteStep::Prevote as u32);
+        assert!(check_replay_pure(cur, "abc", cur, "xyz").is_err());
+    }
+
+    #[test]
+    fn replay_legacy_no_hash_allows_strict_check() {
+        // Legacy callers via `check_and_record` (no payload) get the
+        // pre-fix behaviour: same tuple = always reject.
+        let cur = (10, 0, VoteStep::Prevote as u32);
+        // Empty new_hash bypasses the replay path and falls into the
+        // strict tuple check.
+        assert!(check_replay_pure(cur, "abc", cur, "").is_err());
+    }
+
+    #[test]
+    fn replay_higher_tuple_always_advances() {
+        // New tuple > last_signed always advances regardless of hash.
+        let cur = (10, 0, VoteStep::Prevote as u32);
+        let new = (10, 0, VoteStep::Precommit as u32);
+        assert!(check_replay_pure(cur, "abc", new, "different").is_ok());
+    }
+
+    #[test]
+    fn replay_curfile_no_hash_falls_through_to_strict() {
+        // Edge case: persisted state file has no hash (state from v2.1.85
+        // pre-fix), new sign comes in with hash. Same tuple, but cur_hash
+        // is empty. The replay path requires BOTH non-empty to allow.
+        // Falls through to strict tuple check, which says "same tuple = err".
+        // This is correct: without a way to match the old signature, refuse.
+        let cur = (10, 0, VoteStep::Prevote as u32);
+        assert!(check_replay_pure(cur, "", cur, "abc").is_err());
+    }
+
+    #[test]
+    fn hash_payload_deterministic() {
+        let h1 = hash_payload(b"test-prevote-payload-h10-r0");
+        let h2 = hash_payload(b"test-prevote-payload-h10-r0");
+        let h3 = hash_payload(b"different");
+        assert_eq!(h1, h2);
+        assert_ne!(h1, h3);
+        // SHA-256 hex output is 64 chars.
+        assert_eq!(h1.len(), 64);
+    }
 }

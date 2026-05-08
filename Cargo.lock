@@ -5021,6 +5021,7 @@ name = "sentrix-bft"
 version = "2.1.85"
 dependencies = [
  "bincode",
+ "hex",
  "secp256k1 0.31.1",
  "sentrix-primitives",
  "sentrix-staking",

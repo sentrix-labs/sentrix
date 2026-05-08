@@ -9,6 +9,22 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.86] — 2026-05-08 — LastSignBytes guard same-bytes-replay exemption
+
+Closes the rebroadcast bug class that kept `LAST_SIGN_GUARD_PATH` env-disabled cluster-wide since v2.1.84/v2.1.85.
+
+**The bug**: BFT engine's proposal/prevote/precommit rebroadcast loop (see `bin/sentrix/src/main.rs::proposal_rebroadcast_count`) constructs a fresh struct with `signature: vec![]` each cycle and calls `.sign()` again. With the LastSignBytes guard ON, the second cycle saw `(h, r, step) <= last_signed` and refused — leaving signature empty, peers reject via `verify_sig`, validator silent → halt.
+
+**The fix**: same-bytes-replay exemption. New `check_and_record_with_bytes(h, r, step, payload_bytes)` differentiates legitimate rebroadcast (same tuple AND same bytes → return Ok, signature regenerated identically) from real double-vote (same tuple, different bytes → still refuses).
+
+The `last_sign_bytes_hex` field on `LastSignState` (reserved-but-unused since v2.1.84) now persists `sha256(signing_payload)`. Backwards-compatible: legacy `check_and_record(h, r, step)` still exists, behaves bit-identically to v2.1.85 (strict, no replay).
+
+Effect on operations: `LAST_SIGN_GUARD_PATH=/var/lib/sentrix/last-sign.json` can be re-enabled cluster-wide. Restart cycles that previously left validators silent now resume signing the legitimate rebroadcast on the same (h, r, step). Double-vote with different bytes still refused (the guard's actual purpose preserved).
+
+Tests: 5 new pure tests cover the replay decision rule; SHA-256 roundtrip; legacy callsite parity. All 13 last_sign_guard tests + 103 sentrix-bft suite pass. Workspace builds clean.
+
+Files: `crates/sentrix-bft/src/last_sign_guard.rs` (+143 lines), `crates/sentrix-bft/src/messages.rs` (3 sign-site callers updated), `crates/sentrix-bft/Cargo.toml` (+`hex = "0.4"`).
+
 ## [2.1.81] — 2026-05-07 — state-fingerprint debug trace
 
 Single-purpose release: ships PR #534's `emit_state_fingerprint` in the apply path, gated on `SENTRIX_STATE_FINGERPRINT=1`. When enabled, every block-apply emits a deterministic SHA-256 of AccountDB content (sorted balances, nonces, code-hashes, storage, plus `total_burned` + `total_minted`) as `[STATE-FP] h=<height> acc=<hex8> fp=<hex8>` to stderr. Default-off — zero overhead when env var unset.
