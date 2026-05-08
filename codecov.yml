@@ -1,0 +1,16 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        target: 80%
+        threshold: 5%
+
+ignore:
+  - "crates/sentrix-prom-exporter/src/main.rs"
+  - "**/tests/**"
+  - "**/benches/**"
+  - "bin/**"
