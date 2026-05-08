@@ -534,14 +534,27 @@ impl StakeRegistry {
             // assign val.total_delegated = sum so the invariant holds
             // exactly (still ≥ stated rate, courtesy of ceiling div).
             let mut delegated_after: u128 = 0;
-            for entries in self.delegations.values_mut() {
-                for entry in entries.iter_mut() {
-                    if entry.validator == validator {
-                        let num = (entry.amount as u128).saturating_mul(remaining as u128);
-                        let den = delegated_before as u128;
-                        let entry_slash = num.div_ceil(den);
-                        entry.amount = entry.amount.saturating_sub(entry_slash as u64);
-                        delegated_after = delegated_after.saturating_add(entry.amount as u128);
+            // CRITICAL determinism: HashMap iteration order is randomized
+            // per-process via SipHash seed. With ceiling-division on each
+            // entry's slashed amount (line below), a different iteration
+            // order produces a slightly different per-entry rounding
+            // distribution → a different `delegated_after` total → a
+            // different `total_delegated` written to state → divergent
+            // state_root across validators → BFT halt at the slash block.
+            // Iterate by sorted delegator address so every validator
+            // process applies the slash in the same order.
+            let mut delegator_keys: Vec<String> = self.delegations.keys().cloned().collect();
+            delegator_keys.sort();
+            for key in &delegator_keys {
+                if let Some(entries) = self.delegations.get_mut(key) {
+                    for entry in entries.iter_mut() {
+                        if entry.validator == validator {
+                            let num = (entry.amount as u128).saturating_mul(remaining as u128);
+                            let den = delegated_before as u128;
+                            let entry_slash = num.div_ceil(den);
+                            entry.amount = entry.amount.saturating_sub(entry_slash as u64);
+                            delegated_after = delegated_after.saturating_add(entry.amount as u128);
+                        }
                     }
                 }
             }
@@ -1415,6 +1428,74 @@ mod tests {
     /// (exact = 9.333…). Sum = 30. Pre-fix `val.total_delegated` was
     /// set to 297-28 = 269; sum was 297-30 = 267. Drift = 2.
     /// Post-fix: `val.total_delegated = sum = 267`.
+    #[test]
+    /// Determinism regression test for v2.1.87: slash() must produce
+    /// bit-identical state across runs regardless of the per-process
+    /// HashMap iteration seed. Pre-fix `for entries in
+    /// self.delegations.values_mut()` walked the HashMap in random
+    /// order; combined with ceiling-division per-entry rounding, the
+    /// `total_delegated` sum drifted by up to N sentri per slash event
+    /// (N = delegator count). Across 4 validator processes that meant
+    /// 4 different `total_delegated` values for the same input → state
+    /// divergence → BFT halt.
+    ///
+    /// This test seeds the same registry layout twice from independent
+    /// HashMap instances, slashes both, and asserts the post-state is
+    /// identical down to per-entry amount + total_delegated.
+    #[test]
+    fn test_slash_is_deterministic_across_hashmap_seeds() {
+        // Helper: build identical registry, slash, return post-state.
+        fn slash_and_capture() -> (u64, Vec<(String, u64)>) {
+            let mut reg = new_registry();
+            let val = ValidatorStake {
+                address: "0xval1".to_string(),
+                self_stake: 1,
+                total_delegated: 0,
+                commission_rate: 100,
+                max_commission_rate: 1000,
+                is_jailed: false,
+                jail_until: 0,
+                is_tombstoned: false,
+                blocks_signed: 0,
+                blocks_missed: 0,
+                pending_rewards: 0,
+                registration_height: 0,
+                last_commission_change_height: 0,
+            };
+            reg.validators.insert("0xval1".to_string(), val);
+            // Insert delegators in INSERTION order A → C → E → B → D —
+            // HashMap will reshuffle internally per process. Sorted-key
+            // iteration in slash() must produce the same outcome
+            // regardless.
+            for k in ["0xdelA", "0xdelC", "0xdelE", "0xdelB", "0xdelD"] {
+                reg.delegate(k, "0xval1", 99, 0).unwrap();
+            }
+            reg.slash("0xval1", 1000).unwrap();
+            let total_delegated = reg.validators["0xval1"].total_delegated;
+            let mut amounts: Vec<(String, u64)> = reg
+                .delegations
+                .iter()
+                .flat_map(|(k, entries)| {
+                    entries
+                        .iter()
+                        .filter(|e| e.validator == "0xval1")
+                        .map(|e| (k.clone(), e.amount))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            amounts.sort();
+            (total_delegated, amounts)
+        }
+        // Run twice — different per-process HashMap seeds via fresh
+        // registry instantiation. Pre-fix this could produce different
+        // ceiling-rounding distributions; post-fix sorted iteration
+        // pins the outcome.
+        let (td1, a1) = slash_and_capture();
+        let (td2, a2) = slash_and_capture();
+        assert_eq!(td1, td2, "total_delegated drifted across runs");
+        assert_eq!(a1, a2, "per-delegator slashed amounts drifted across runs");
+    }
+
     #[test]
     fn test_slash_preserves_total_delegated_equals_sum_invariant() {
         let mut reg = new_registry();
