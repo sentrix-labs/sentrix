@@ -67,6 +67,7 @@ jobs:
             --package sentrix-trie \
             --package sentrix-codec \
             --package sentrix-wallet \
+            --package sentrix-prom-exporter \
             --lcov --output-path lcov.info \
             --ignore-filename-regex '/(tests|benches)/'
 
@@ -79,6 +80,7 @@ jobs:
             --package sentrix-trie \
             --package sentrix-codec \
             --package sentrix-wallet \
+            --package sentrix-prom-exporter \
             --summary-only
 
       - name: Upload to Codecov
