@@ -1428,7 +1428,7 @@ mod tests {
     /// (exact = 9.333…). Sum = 30. Pre-fix `val.total_delegated` was
     /// set to 297-28 = 269; sum was 297-30 = 267. Drift = 2.
     /// Post-fix: `val.total_delegated = sum = 267`.
-    #[test]
+
     /// Determinism regression test for v2.1.87: slash() must produce
     /// bit-identical state across runs regardless of the per-process
     /// HashMap iteration seed. Pre-fix `for entries in
