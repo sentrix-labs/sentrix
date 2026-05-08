@@ -429,4 +429,113 @@ mod tests {
         let s = format!("{:?}", t);
         assert!(s.contains("Target"));
     }
+
+    // Async coverage: init_metrics + poll_one + the prometheus encode path
+    // metrics_handler uses. All in one #[tokio::test] because the
+    // OnceLock-backed metrics statics are process-global and prometheus's
+    // default registry is a singleton — sequencing avoids cross-test races.
+    #[tokio::test]
+    async fn init_metrics_then_poll_against_local_server() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // ── 1. init_metrics walks every register macro + OnceLock.set ──
+        init_metrics();
+        assert!(HEIGHT.get().is_some());
+        assert!(BLOCK_AGE.get().is_some());
+        assert!(TIP_HASH.get().is_some());
+        assert!(ACTIVE_VALIDATORS.get().is_some());
+        assert!(MEMPOOL.get().is_some());
+        assert!(UPTIME.get().is_some());
+        assert!(PROBE_FAILED.get().is_some());
+
+        // ── 2. Prometheus gather + encode (mirrors metrics_handler body) ──
+        // Pre-populate one metric so the output is non-trivial.
+        HEIGHT.get().unwrap()
+            .with_label_values(&["test-val", "test-net"])
+            .set(42);
+        let metric_families = prometheus::gather();
+        let mut buffer = Vec::new();
+        let encoder = TextEncoder::new();
+        encoder.encode(&metric_families, &mut buffer).unwrap();
+        let body = String::from_utf8(buffer).unwrap();
+        assert!(body.contains("sentrix_chain_height"));
+        assert!(body.contains("test-val"));
+        assert!(body.contains("test-net"));
+        assert!(body.contains("42"));
+
+        // ── 3. poll_one against a local HTTP fixture ──
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let canned = r#"{
+            "sync_info": {
+                "latest_block_height": 12345,
+                "latest_block_time": 1000000000,
+                "latest_block_hash": "0xcafebabedeadbeef0011223344556677"
+            },
+            "validators": { "active_count": 4 },
+            "mempool": { "size": 2 },
+            "uptime_seconds": 60
+        }"#;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 1024];
+            let _ = stream.read(&mut buf).await;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                canned.len(),
+                canned,
+            );
+            stream.write_all(resp.as_bytes()).await.unwrap();
+            stream.shutdown().await.ok();
+        });
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let target = Target {
+            name: "fixture".into(),
+            network: "fxnet".into(),
+            url: format!("http://{}", addr),
+        };
+        let res = poll_one(&client, &target).await;
+        assert!(res.is_some(), "poll_one returned None — fixture handshake failed");
+
+        let h = HEIGHT.get().unwrap()
+            .get_metric_with_label_values(&["fixture", "fxnet"])
+            .unwrap()
+            .get();
+        assert_eq!(h, 12345);
+        let m = MEMPOOL.get().unwrap()
+            .get_metric_with_label_values(&["fixture", "fxnet"])
+            .unwrap()
+            .get();
+        assert_eq!(m, 2);
+        let av = ACTIVE_VALIDATORS.get().unwrap()
+            .get_metric_with_label_values(&["fxnet"])
+            .unwrap()
+            .get();
+        assert_eq!(av, 4);
+        let up = UPTIME.get().unwrap()
+            .get_metric_with_label_values(&["fixture", "fxnet"])
+            .unwrap()
+            .get();
+        assert_eq!(up, 60);
+        let th = TIP_HASH.get().unwrap()
+            .get_metric_with_label_values(&["fixture", "fxnet"])
+            .unwrap()
+            .get();
+        assert_eq!(th, 0xcafebabe_u32 as i64);
+
+        let _ = server.await;
+
+        // ── 4. poll_one against an unreachable address returns None ──
+        let dead = Target {
+            name: "dead".into(),
+            network: "fxnet".into(),
+            url: "http://127.0.0.1:1".into(),
+        };
+        let res = poll_one(&client, &dead).await;
+        assert!(res.is_none(), "poll_one against closed port should return None");
+    }
 }
