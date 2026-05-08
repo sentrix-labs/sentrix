@@ -445,10 +445,12 @@ impl Prevote {
     /// `InvalidSignature`. With the guard uninitialised the call is
     /// the legacy unconditional sign.
     pub fn sign(&mut self, secret_key: &SecretKey) {
-        if let Err(e) = crate::last_sign_guard::check_and_record(
+        let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
+        if let Err(e) = crate::last_sign_guard::check_and_record_with_bytes(
             self.height,
             self.round,
             crate::last_sign_guard::VoteStep::Prevote,
+            &payload,
         ) {
             tracing::error!(
                 target: "sentrix_bft::sign",
@@ -457,7 +459,6 @@ impl Prevote {
             );
             return; // signature stays empty — peer-side verify_sig rejects
         }
-        let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
         self.signature = sign_payload(&payload, secret_key);
     }
 
@@ -472,10 +473,12 @@ impl Precommit {
     /// Sign this precommit with the given secret key, filling the signature field.
     /// See `Prevote::sign` for the LastSignBytes guard semantics.
     pub fn sign(&mut self, secret_key: &SecretKey) {
-        if let Err(e) = crate::last_sign_guard::check_and_record(
+        let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
+        if let Err(e) = crate::last_sign_guard::check_and_record_with_bytes(
             self.height,
             self.round,
             crate::last_sign_guard::VoteStep::Precommit,
+            &payload,
         ) {
             tracing::error!(
                 target: "sentrix_bft::sign",
@@ -484,7 +487,6 @@ impl Precommit {
             );
             return;
         }
-        let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
         self.signature = sign_payload(&payload, secret_key);
     }
 
@@ -499,10 +501,12 @@ impl Proposal {
     /// Sign this proposal with the given secret key.
     /// See `Prevote::sign` for the LastSignBytes guard semantics.
     pub fn sign(&mut self, secret_key: &SecretKey) {
-        if let Err(e) = crate::last_sign_guard::check_and_record(
+        let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
+        if let Err(e) = crate::last_sign_guard::check_and_record_with_bytes(
             self.height,
             self.round,
             crate::last_sign_guard::VoteStep::Proposal,
+            &payload,
         ) {
             tracing::error!(
                 target: "sentrix_bft::sign",
@@ -511,7 +515,6 @@ impl Proposal {
             );
             return;
         }
-        let payload = Self::signing_payload(self.height, self.round, &self.block_hash);
         self.signature = sign_payload(&payload, secret_key);
     }
 
