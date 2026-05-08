@@ -1017,8 +1017,14 @@ fn cmd_wallet_rekey(
     println!("Next steps (operator):");
     println!("  1. Update SENTRIX_WALLET_PASSWORD in the env file to the new password.");
     println!("  2. Restart the validator service (e.g. `systemctl restart sentrix-node`).");
-    println!("  3. Confirm 'Validator mode: {}' appears in journalctl.", address);
-    println!("  4. After the node runs stable for 48h, delete {}.", bak_path.display());
+    println!(
+        "  3. Confirm 'Validator mode: {}' appears in journalctl.",
+        address
+    );
+    println!(
+        "  4. After the node runs stable for 48h, delete {}.",
+        bak_path.display()
+    );
     Ok(())
 }
 
@@ -1409,8 +1415,7 @@ async fn cmd_start(
     // during a halt, the validator main loop has fallen behind —
     // investigate consumer-side back-pressure (slow MDBX writes /
     // contended write locks / RPC handler block).
-    static BFT_TX_DROPPED: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(0);
+    static BFT_TX_DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     fn try_send_bft(
         bft_tx: &tokio::sync::mpsc::Sender<sentrix::core::bft_messages::BftMessage>,
@@ -1421,8 +1426,7 @@ async fn cmd_start(
         match bft_tx.try_send(msg) {
             Ok(()) => {}
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                let total = BFT_TX_DROPPED
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let total = BFT_TX_DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 tracing::error!(
                     target: "bft_tx_drop",
                     "bft_tx FULL ({}/{}) — DROPPED inbound {} (total drops since \
@@ -1537,10 +1541,10 @@ async fn cmd_start(
                 } else {
                     let stale = last_changed.elapsed();
                     if stale >= HEARTBEAT_STALL_THRESHOLD {
-                        let event_depth = event_tx_for_watchdog.max_capacity()
-                            - event_tx_for_watchdog.capacity();
-                        let bft_depth = bft_tx_for_watchdog.max_capacity()
-                            - bft_tx_for_watchdog.capacity();
+                        let event_depth =
+                            event_tx_for_watchdog.max_capacity() - event_tx_for_watchdog.capacity();
+                        let bft_depth =
+                            bft_tx_for_watchdog.max_capacity() - bft_tx_for_watchdog.capacity();
                         tracing::error!(
                             target: "validator_watchdog",
                             "FATAL: validator loop heartbeat stale for {}s (counter={}, \
@@ -1771,6 +1775,18 @@ async fn cmd_start(
             // enough peers have acked, without spamming the network.
             let mut proposal_broadcast_at: Option<std::time::Instant> = None;
             let mut proposal_rebroadcast_count: u32 = 0;
+            // v2.1.89: stash the originally-signed Proposal struct so the
+            // #1d rebroadcast tick replays byte-identical bytes instead of
+            // rebuilding + re-signing. Pre-fix, the rebroadcast path called
+            // `bincode::serialize(block)` and `proposal.sign()` afresh; that
+            // worked most of the time, but produced occasional "bad
+            // signature" rejections on peers that had already accepted the
+            // first emit (smoking-gun trace at 2026-05-08 23:32:41 vps3 →
+            // vps6 foundation). Stashing + replaying the original signed
+            // Proposal removes the re-encode/re-sign step entirely, which
+            // is the correct invariant: a rebroadcast is the same message,
+            // not a new one.
+            let mut last_signed_proposal: Option<Proposal> = None;
             // Pioneer mode: track last block time for a fine-grained poll loop.
             // Poll every PIONEER_TICK, but only attempt to build a block when
             // at least BLOCK_TIME_SECS has elapsed since the last one. Gives
@@ -1788,8 +1804,8 @@ async fn cmd_start(
             // internal docs
             // -plan.md (L1 + L4 baked in).
             let mut last_advert_broadcast_at: Option<tokio::time::Instant> = None;
-            let mut last_l1_tick_at = tokio::time::Instant::now()
-                - tokio::time::Duration::from_secs(31); // fire on first iter
+            let mut last_l1_tick_at =
+                tokio::time::Instant::now() - tokio::time::Duration::from_secs(31); // fire on first iter
             // Sequence MUST be loaded from disk on startup, otherwise
             // restart resets to 0 and peers (cached at the previous
             // lifetime's high-water mark) silently drop our broadcasts
@@ -1800,8 +1816,7 @@ async fn cmd_start(
                 advert_sequence,
                 advert_sequence.saturating_add(1)
             );
-            const L1_TICK_INTERVAL: tokio::time::Duration =
-                tokio::time::Duration::from_secs(30);
+            const L1_TICK_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(30);
             const ADVERT_BROADCAST_INTERVAL: tokio::time::Duration =
                 tokio::time::Duration::from_secs(600); // 10 minutes
 
@@ -2044,7 +2059,9 @@ async fn cmd_start(
                         tracing::warn!(
                             "L2 cold-start gate: {} (gate-relax-fork-active={}) — sleeping 5s, will retry once L1 mesh converges",
                             reason,
-                            sentrix::core::blockchain::Blockchain::is_bft_gate_relax_height(current_height),
+                            sentrix::core::blockchain::Blockchain::is_bft_gate_relax_height(
+                                current_height
+                            ),
                         );
                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                         continue;
@@ -2079,11 +2096,10 @@ async fn cmd_start(
                         let force_override = force_bft_insufficient_peers_set();
                         // BFT-gate-relax fork-aware required peer count
                         // (same as L2 cold-start gate above — see comment there).
-                        let min_active =
-                            sentrix::core::blockchain::Blockchain::min_active_for_bft(
-                                current_height,
-                                total_validators,
-                            );
+                        let min_active = sentrix::core::blockchain::Blockchain::min_active_for_bft(
+                            current_height,
+                            total_validators,
+                        );
                         let required_peers = min_active.saturating_sub(1);
 
                         match check_bft_peer_mesh_eligible(
@@ -2264,11 +2280,10 @@ async fn cmd_start(
                         // For 4-validator network post-fork: gate becomes 3 (allows 1-jail tolerance).
                         // See audits/jail-cascade-root-cause-analysis.md.
                         let total_validators = bc_check.stake_registry.validators.len();
-                        let min_active =
-                            sentrix::core::blockchain::Blockchain::min_active_for_bft(
-                                next_height,
-                                total_validators,
-                            );
+                        let min_active = sentrix::core::blockchain::Blockchain::min_active_for_bft(
+                            next_height,
+                            total_validators,
+                        );
                         if active < min_active {
                             tracing::warn!(
                                 "P1: skipping BFT round at height {} — active set \
@@ -2277,7 +2292,9 @@ async fn cmd_start(
                                 active,
                                 min_active,
                                 total_validators,
-                                sentrix::core::blockchain::Blockchain::is_bft_gate_relax_height(next_height),
+                                sentrix::core::blockchain::Blockchain::is_bft_gate_relax_height(
+                                    next_height
+                                ),
                             );
                             drop(bc_check);
                             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -2311,7 +2328,10 @@ async fn cmd_start(
                         tracing::info!(
                             "BFT engine resume: prior sign at (h={}, r={}, s={}) — \
                              advanced engine to round {} to bypass guard refusal",
-                            state.height, state.round, state.step, target_round,
+                            state.height,
+                            state.round,
+                            state.step,
+                            target_round,
                         );
                     }
 
@@ -2319,6 +2339,7 @@ async fn cmd_start(
                     // #1d: reset rebroadcast tracking on new height.
                     proposal_broadcast_at = None;
                     proposal_rebroadcast_count = 0;
+                    last_signed_proposal = None;
 
                     // Check if we're the proposer for this height+round
                     let bc = shared_clone.read().await;
@@ -2362,6 +2383,8 @@ async fn cmd_start(
                                 // seconds if prevote supermajority isn't reached.
                                 proposal_broadcast_at = Some(std::time::Instant::now());
                                 proposal_rebroadcast_count = 0;
+                                // v2.1.89: stash for byte-identical rebroadcast.
+                                last_signed_proposal = Some(proposal.clone());
 
                                 // V2 M-15: stash bytes so if prevote-supermajority
                                 // forms on this hash, they get promoted into
@@ -2510,7 +2533,9 @@ async fn cmd_start(
                                                     "BFT split-brain guard: aborting local \
                                                      finalise at h={} round={} — supermajority \
                                                      of peer stake at round {}+; catching up",
-                                                    height, round, target_round,
+                                                    height,
+                                                    round,
+                                                    target_round,
                                                 );
                                                 if let Some(mut prevote) =
                                                     bft.catch_up_round(target_round)
@@ -2559,7 +2584,10 @@ async fn cmd_start(
                                                      and waiting for peer-gossip canonical \
                                                      block (prevents chain.db divergence per \
                                                      audits/2026-04-30-eager-write-investigation.md)",
-                                                    stashed.hash, block_hash, height, round,
+                                                    stashed.hash,
+                                                    block_hash,
+                                                    height,
+                                                    round,
                                                 );
                                                 proposed_block = None;
                                                 break;
@@ -2628,7 +2656,12 @@ async fn cmd_start(
                                                             justification
                                                                 .precommits
                                                                 .iter()
-                                                                .map(|p| (p.validator.clone(), p.stake_weight))
+                                                                .map(|p| {
+                                                                    (
+                                                                        p.validator.clone(),
+                                                                        p.stake_weight,
+                                                                    )
+                                                                })
                                                                 .collect();
                                                         let validator_fee = 0;
                                                         let _ =
@@ -2791,6 +2824,7 @@ async fn cmd_start(
                                                     proposal_broadcast_at =
                                                         Some(std::time::Instant::now());
                                                     proposal_rebroadcast_count = 0;
+                                                    last_signed_proposal = Some(proposal.clone());
                                                     proposed_block = Some(block);
                                                     bft.stash_proposal_bytes(
                                                         &block_hash,
@@ -2839,6 +2873,7 @@ async fn cmd_start(
                                                     proposal_broadcast_at =
                                                         Some(std::time::Instant::now());
                                                     proposal_rebroadcast_count = 0;
+                                                    last_signed_proposal = Some(proposal.clone());
                                                     proposed_block = Some(block);
                                                     bft.stash_proposal_bytes(
                                                         &block_hash,
@@ -2999,8 +3034,7 @@ async fn cmd_start(
                                     // views across the cluster when divergence recurs.
                                     {
                                         let bc_read = shared_clone.read().await;
-                                        let active_count =
-                                            bc_read.stake_registry.active_set.len();
+                                        let active_count = bc_read.stake_registry.active_set.len();
                                         let total_stake: u64 = bc_read
                                             .stake_registry
                                             .active_set
@@ -3070,10 +3104,11 @@ async fn cmd_start(
                                             "BFT split-brain guard: aborting local finalise at \
                                              h={} round={} — supermajority of peer stake at \
                                              round {}+; catching up",
-                                            height, round, target_round,
+                                            height,
+                                            round,
+                                            target_round,
                                         );
-                                        if let Some(mut prevote) =
-                                            bft.catch_up_round(target_round)
+                                        if let Some(mut prevote) = bft.catch_up_round(target_round)
                                         {
                                             prevote.sign(&validator_secret_key);
                                             lp2p_clone.broadcast_bft_prevote(&prevote).await;
@@ -3096,7 +3131,10 @@ async fn cmd_start(
                                              {:.16}… ≠ FinalizeBlock action hash {:.16}… \
                                              at h={} round={}; refusing write and waiting \
                                              for peer-gossip canonical block",
-                                            stashed.hash, block_hash, height, round,
+                                            stashed.hash,
+                                            block_hash,
+                                            height,
+                                            round,
                                         );
                                         proposed_block = None;
                                         break;
@@ -3149,7 +3187,9 @@ async fn cmd_start(
                                                     justification
                                                         .precommits
                                                         .iter()
-                                                        .map(|p| (p.validator.clone(), p.stake_weight))
+                                                        .map(|p| {
+                                                            (p.validator.clone(), p.stake_weight)
+                                                        })
                                                         .collect();
                                                 let validator_fee = 0;
                                                 let _ = bc.stake_registry.distribute_reward(
@@ -3297,6 +3337,7 @@ async fn cmd_start(
                                             lp2p_clone.broadcast_bft_proposal(&proposal).await;
                                             proposal_broadcast_at = Some(std::time::Instant::now());
                                             proposal_rebroadcast_count = 0;
+                                            last_signed_proposal = Some(proposal.clone());
                                             proposed_block = Some(block);
                                             bft.stash_proposal_bytes(&block_hash, block_data);
                                             let _ = bft.on_own_proposal(&block_hash);
@@ -3335,6 +3376,7 @@ async fn cmd_start(
                                             lp2p_clone.broadcast_bft_proposal(&proposal).await;
                                             proposal_broadcast_at = Some(std::time::Instant::now());
                                             proposal_rebroadcast_count = 0;
+                                            last_signed_proposal = Some(proposal.clone());
                                             proposed_block = Some(block);
                                             bft.stash_proposal_bytes(&block_hash, block_data);
                                             let _ = bft.on_own_proposal(&block_hash);
@@ -3376,28 +3418,34 @@ async fn cmd_start(
                     const REBROADCAST_INTERVAL: std::time::Duration =
                         std::time::Duration::from_secs(2);
                     const MAX_REBROADCASTS: u32 = 7;
-                    if let Some(ref block) = proposed_block
+                    // v2.1.89 fix: replay the originally-signed proposal verbatim
+                    // instead of rebuilding + re-signing. The pre-fix path called
+                    // `bincode::serialize(block)` and `proposal.sign()` afresh on
+                    // every retry; even though the signing payload only covers
+                    // (height, round, block_hash) and ECDSA over secp256k1 is
+                    // RFC-6979 deterministic, the rebuild path produced occasional
+                    // bad-signature rejections on peers — the smoking gun trace
+                    // 2026-05-08 23:32:41 vps3 → vps6 foundation. Replaying the
+                    // saved Proposal struct sidesteps every re-encode/re-sign
+                    // hazard: same bytes, same signature, byte-for-byte identical
+                    // wire image. Only fires when the saved proposal still
+                    // matches the engine's current (height, round) — if either
+                    // has advanced, we drop the stash and let the next propose
+                    // path build a fresh proposal.
+                    if let Some(ref signed_prop) = last_signed_proposal
+                        && proposed_block.is_some()
+                        && signed_prop.height == bft.height()
+                        && signed_prop.round == bft.round()
                         && matches!(bft.phase(), BftPhase::Propose | BftPhase::Prevote)
                         && proposal_rebroadcast_count < MAX_REBROADCASTS
                         && proposal_broadcast_at
                             .is_some_and(|t| t.elapsed() >= REBROADCAST_INTERVAL)
                     {
-                        let block_hash = block.hash.clone();
-                        let block_data = bincode::serialize(block).unwrap_or_default();
-                        let mut proposal = Proposal {
-                            height: bft.height(),
-                            round: bft.round(),
-                            block_hash,
-                            block_data,
-                            proposer: wallet.address.clone(),
-                            signature: vec![],
-                        };
-                        proposal.sign(&validator_secret_key);
-                        lp2p_clone.broadcast_bft_proposal(&proposal).await;
+                        lp2p_clone.broadcast_bft_proposal(signed_prop).await;
                         proposal_broadcast_at = Some(std::time::Instant::now());
                         proposal_rebroadcast_count += 1;
                         tracing::info!(
-                            "BFT #1d: rebroadcast proposal at height={} round={} attempt={}/{}",
+                            "BFT #1d: rebroadcast proposal at height={} round={} attempt={}/{} (replay)",
                             bft.height(),
                             bft.round(),
                             proposal_rebroadcast_count,
@@ -3749,8 +3797,8 @@ async fn cmd_start(
     {
         let grpc_state = shared.clone();
         let grpc_event_bus = event_bus.clone();
-        let grpc_addr_str = std::env::var("SENTRIX_GRPC_ADDR")
-            .unwrap_or_else(|_| "0.0.0.0:50051".to_string());
+        let grpc_addr_str =
+            std::env::var("SENTRIX_GRPC_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".to_string());
         match grpc_addr_str.parse::<std::net::SocketAddr>() {
             Ok(grpc_addr) => {
                 tracing::info!(
@@ -4529,8 +4577,14 @@ mod tests {
         let result = check_bft_peer_mesh_eligible(1, 4, 3, false);
         assert!(result.is_err(), "1 peer in 4-val mesh must be rejected");
         let msg = result.unwrap_err();
-        assert!(msg.contains("need ≥3"), "error must state requirement: {msg}");
-        assert!(msg.contains("have 1"), "error must state actual count: {msg}");
+        assert!(
+            msg.contains("need ≥3"),
+            "error must state requirement: {msg}"
+        );
+        assert!(
+            msg.contains("have 1"),
+            "error must state actual count: {msg}"
+        );
     }
 
     /// Healthy fully-meshed 4-validator chain: 3 peers passes.
