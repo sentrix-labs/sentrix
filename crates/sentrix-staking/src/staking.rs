@@ -1412,23 +1412,6 @@ mod tests {
     /// `total_delegated > sum(entries)` — drifting the denominator
     /// `pay_one_signer` uses for reward distribution.
     ///
-    /// Setup: 3 delegators of 99 tokens each (= 297 total), validator
-    /// self-stake at MIN_SELF_STAKE. 10% slash. The remaining slash on
-    /// delegators after self-stake takes its 10% would be:
-    ///   total_stake = MIN_SELF_STAKE + 297, slash = 10% of that
-    ///   from_self = min(slash, MIN_SELF_STAKE) = slash
-    ///   remaining = 0 in this layout — refactor with a much smaller
-    ///   self_stake so remaining > 0 and ceiling actually rounds.
-    ///
-    /// Use 3 delegators × 99 tokens against val1 with a low self-stake
-    /// (1 token). 10% slash → slash = ceil(0.1 × (1 + 297)) = 30 (using
-    /// floor formula in code = 29). from_self = min(29, 1) = 1.
-    /// remaining = 28 to distribute across 3 × 99 = 297 delegators.
-    /// Per-entry slash = ceil(99 × 28 / 297) = ceil(2772/297) = 10
-    /// (exact = 9.333…). Sum = 30. Pre-fix `val.total_delegated` was
-    /// set to 297-28 = 269; sum was 297-30 = 267. Drift = 2.
-    /// Post-fix: `val.total_delegated = sum = 267`.
-
     /// Determinism regression test for v2.1.87: slash() must produce
     /// bit-identical state across runs regardless of the per-process
     /// HashMap iteration seed. Pre-fix `for entries in
@@ -1496,6 +1479,22 @@ mod tests {
         assert_eq!(a1, a2, "per-delegator slashed amounts drifted across runs");
     }
 
+    /// Setup: 3 delegators of 99 tokens each (= 297 total), validator
+    /// self-stake at MIN_SELF_STAKE. 10% slash. The remaining slash on
+    /// delegators after self-stake takes its 10% would be:
+    ///   total_stake = MIN_SELF_STAKE + 297, slash = 10% of that
+    ///   from_self = min(slash, MIN_SELF_STAKE) = slash
+    ///   remaining = 0 in this layout — refactor with a much smaller
+    ///   self_stake so remaining > 0 and ceiling actually rounds.
+    ///
+    /// Use 3 delegators × 99 tokens against val1 with a low self-stake
+    /// (1 token). 10% slash → slash = ceil(0.1 × (1 + 297)) = 30 (using
+    /// floor formula in code = 29). from_self = min(29, 1) = 1.
+    /// remaining = 28 to distribute across 3 × 99 = 297 delegators.
+    /// Per-entry slash = ceil(99 × 28 / 297) = ceil(2772/297) = 10
+    /// (exact = 9.333…). Sum = 30. Pre-fix `val.total_delegated` was
+    /// set to 297-28 = 269; sum was 297-30 = 267. Drift = 2.
+    /// Post-fix: `val.total_delegated = sum = 267`.
     #[test]
     fn test_slash_preserves_total_delegated_equals_sum_invariant() {
         let mut reg = new_registry();
