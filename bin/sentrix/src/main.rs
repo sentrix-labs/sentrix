@@ -2189,33 +2189,28 @@ async fn cmd_start(
 
                     if let Some((height, Some(block_to_save))) = result {
                         pioneer_last_block = tokio::time::Instant::now();
-                        // H-09: only broadcast after the block is durably
-                        // persisted. A broadcast of a block we can't recover
-                        // on restart is a fork risk — peers would accept
-                        // blocks extending ours, but after our next restart
-                        // we would rewind to the last saved block and
-                        // diverge from the chain we just helped produce.
-                        if let Err(e) = storage_clone.save_block(&block_to_save) {
+                        // H-09 + Patch B1 (v2.1.90): persist block bytes,
+                        // height, hash index, and the Blockchain bincode
+                        // blob (accounts, mempool, stake_registry, …) in
+                        // one atomic MDBX transaction. The pre-fix path
+                        // called save_block + save_blockchain as two
+                        // separate commits, leaving a window where a crash
+                        // could persist the block without the matching
+                        // accounts state. save_blockchain now writes
+                        // everything atomically.
+                        let bc = shared_clone.read().await;
+                        if let Err(e) = storage_clone.save_blockchain(&bc) {
                             tracing::error!(
-                                "H-09: failed to persist block {} produced by {}: {}; \
+                                "H-09: atomic save_blockchain failed at height {} produced by {}: {}; \
                                  skipping broadcast to prevent fork",
                                 height,
                                 wallet.address,
                                 e
                             );
+                            drop(bc);
                         } else {
+                            drop(bc);
                             println!("Block {} produced by {}", height, wallet.address);
-                            {
-                                let bc = shared_clone.read().await;
-                                if let Err(e) = storage_clone.save_blockchain(&bc) {
-                                    tracing::warn!(
-                                        "save_blockchain snapshot failed at height {}: {} \
-                                         (block already persisted, continuing)",
-                                        height,
-                                        e
-                                    );
-                                }
-                            }
                             lp2p_clone.broadcast_block(&block_to_save).await;
                         }
                     }
@@ -2753,36 +2748,32 @@ async fn cmd_start(
 
                                                         drop(bc);
                                                         if let Some(ref saved_block) = updated {
-                                                            // H-09: persist before broadcast.
-                                                            if let Err(e) = storage_clone
-                                                                .save_block(saved_block)
+                                                            // H-09 + Patch B1 (v2.1.90): atomic
+                                                            // persist of block bytes, height,
+                                                            // hash index, and Blockchain blob
+                                                            // in one MDBX transaction. Replaces
+                                                            // the pre-fix save_block +
+                                                            // save_blockchain pair (which had a
+                                                            // crash window between them).
+                                                            let bc = shared_clone.read().await;
+                                                            if let Err(e) =
+                                                                storage_clone.save_blockchain(&bc)
                                                             {
                                                                 tracing::error!(
-                                                                    "H-09: failed to persist \
-                                                                     BFT block {} by {}: {}; \
-                                                                     skipping broadcast",
+                                                                    "H-09: atomic save_blockchain \
+                                                                     failed at BFT block {} by {}: \
+                                                                     {}; skipping broadcast",
                                                                     height,
                                                                     proposer,
                                                                     e
                                                                 );
+                                                                drop(bc);
                                                             } else {
+                                                                drop(bc);
                                                                 println!(
                                                                     "Block {} produced by {}",
                                                                     height, proposer
                                                                 );
-                                                                let bc = shared_clone.read().await;
-                                                                if let Err(e) = storage_clone
-                                                                    .save_blockchain(&bc)
-                                                                {
-                                                                    tracing::warn!(
-                                                                        "save_blockchain \
-                                                                         snapshot failed at \
-                                                                         {}: {}",
-                                                                        height,
-                                                                        e
-                                                                    );
-                                                                }
-                                                                drop(bc);
                                                                 lp2p_clone
                                                                     .broadcast_block(saved_block)
                                                                     .await;
@@ -2990,8 +2981,11 @@ async fn cmd_start(
                                     .get_validator(&status.validator)
                                     .map(|v| v.total_stake())
                                     .unwrap_or(0);
-                                let action =
-                                    bft.on_round_status_weighted(&status, stake, &bc.stake_registry);
+                                let action = bft.on_round_status_weighted(
+                                    &status,
+                                    stake,
+                                    &bc.stake_registry,
+                                );
                                 drop(bc);
                                 action
                             }
@@ -3115,10 +3109,8 @@ async fn cmd_start(
                                             target_round,
                                         );
                                         let bc_read = shared_clone.read().await;
-                                        let cu_result = bft.catch_up_round(
-                                            target_round,
-                                            &bc_read.stake_registry,
-                                        );
+                                        let cu_result = bft
+                                            .catch_up_round(target_round, &bc_read.stake_registry);
                                         drop(bc_read);
                                         if let Some(mut prevote) = cu_result {
                                             prevote.sign(&validator_secret_key);

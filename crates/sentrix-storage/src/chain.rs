@@ -93,38 +93,68 @@ impl ChainStorage {
 
     // ── Blockchain state ────────────────────────────────────
 
+    /// Persist the full blockchain snapshot atomically.
+    ///
+    /// Patch B1 (v2.1.90 state-root determinism RCA): everything that
+    /// describes "the chain at height N" — the bincode state blob, every
+    /// block in `chain`, the hash-to-height index entries, the `height`
+    /// key, and the `blob_height` checkpoint — is written in one MDBX
+    /// transaction. A crash during the transaction commits nothing; a
+    /// crash after the commit commits everything. This eliminates the
+    /// pre-fix crash window where `save_block` had advanced the height
+    /// and persisted the block but `save_blockchain` had not yet
+    /// rewritten the bincode blob, leaving `accounts` one block behind
+    /// the chain.
     pub fn save_blockchain<T: Serialize>(
         &self,
         blockchain: &T,
         chain: &[Block],
     ) -> StorageResult<()> {
-        // Save state (accounts, authority, etc.)
-        self.mdbx.put_json(TABLE_STATE, b"state", blockchain)?;
+        let blob = serde_json::to_vec(blockchain)?;
+        let blob_height = chain.last().map(|b| b.index).unwrap_or(0);
+        let blob_height_bytes = serde_json::to_vec(&blob_height)?;
 
-        // Save each block + hash index
         let batch = self.mdbx.begin_write()?;
+        // State blob (accounts, mempool, stake_registry, total_minted, …).
+        batch.put(TABLE_STATE, b"state", &blob)?;
+        // Checkpoint: the height that `accounts` in the blob is consistent
+        // with. Read on load to detect "blocks on disk ahead of accounts
+        // blob" (Patch B2 detector).
+        batch.put(TABLE_STATE, b"blob_height", &blob_height_bytes)?;
+
         for block in chain {
             let key = format!("block:{}", block.index);
             let block_json = serde_json::to_vec(block)?;
             batch.put(TABLE_META, key.as_bytes(), &block_json)?;
-
             batch.put(
                 TABLE_BLOCK_HASHES,
                 block.hash.as_bytes(),
                 &height_key(block.index),
             )?;
         }
-        batch.commit()?;
 
+        // Tip height key — same MDBX table as the per-block keys, written
+        // inside the same transaction so a torn write cannot leave the
+        // height advanced past the persisted blob.
         if let Some(last) = chain.last() {
-            self.save_height(last.index)?;
+            let height_bytes = serde_json::to_vec(&last.index)?;
+            batch.put(TABLE_META, b"height", &height_bytes)?;
         }
+
+        batch.commit()?;
         self.mdbx.sync()?;
         Ok(())
     }
 
     pub fn load_state<T: DeserializeOwned>(&self) -> StorageResult<Option<T>> {
         self.mdbx.get_json(TABLE_STATE, b"state")
+    }
+
+    /// Read the height the `state` blob was last consistent with (Patch
+    /// B2 checkpoint). Returns `None` for legacy chain.dbs that pre-date
+    /// the atomic-persist change; callers treat that as `0`.
+    pub fn load_blob_height(&self) -> StorageResult<Option<u64>> {
+        self.mdbx.get_json(TABLE_STATE, b"blob_height")
     }
 
     // ── Per-block operations ────────────────────────────────

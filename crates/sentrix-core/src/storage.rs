@@ -171,6 +171,63 @@ impl Storage {
         // rebuilt the index.
         bc.rebuild_mempool_sidecars();
 
+        // Patch B2 (v2.1.90 state-root determinism RCA): if persisted
+        // chain height is ahead of the bincode blob's checkpoint
+        // height, the on-disk view is inconsistent — `accounts` is
+        // older than `chain` + the trie. Replay the missing blocks
+        // through the peer-apply path so `accounts` catches up before
+        // we hand the loaded chain back to the caller.
+        //
+        // `blob_height` is `None` for chain.dbs written before B1 (the
+        // atomic-persist change). For those we trust the legacy invariant
+        // (height == bc.height()) and skip the replay; if they were
+        // already torn, operator recovery via chain.db rsync from a
+        // healthy peer is the documented path.
+        if let Some(blob_height) = self
+            .chain
+            .load_blob_height()
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?
+            && height > blob_height
+        {
+            let missing = height - blob_height;
+            tracing::warn!(
+                "load_blockchain: disk height {} is {} blocks ahead of blob_height {} \
+                 — replaying {} block(s) to align accounts state (Patch B2)",
+                height,
+                missing,
+                blob_height,
+                missing
+            );
+            // Truncate the in-memory chain window back to blob_height.
+            // The disk-window load above filled bc.chain up to disk_height,
+            // but bc.accounts is still at blob_height — replaying through
+            // add_block_from_peer requires the chain head to match the
+            // accounts state so the new block's `expected index` lines up.
+            bc.chain.retain(|b| b.index <= blob_height);
+            for h in (blob_height + 1)..=height {
+                let block = self.load_block(h)?.ok_or_else(|| {
+                    SentrixError::Internal(format!(
+                        "load_blockchain replay: block {h} missing on disk \
+                         (blob_height={blob_height} disk_height={height}); \
+                         cannot reconstruct accounts state. Recovery: rsync chain.db \
+                         from a healthy peer."
+                    ))
+                })?;
+                bc.add_block_from_peer(block).map_err(|e| {
+                    SentrixError::Internal(format!("load_blockchain replay failed at h={h}: {e}"))
+                })?;
+            }
+            // Persist the now-consistent state so the next load is
+            // a no-op (and the blob_height checkpoint advances).
+            self.chain
+                .save_blockchain(&bc, &bc.chain)
+                .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+            tracing::info!(
+                "load_blockchain: replay complete; blob_height now {}",
+                height
+            );
+        }
+
         Ok(Some(bc))
     }
 
@@ -212,6 +269,14 @@ impl Storage {
         self.chain
             .load_height()
             .map_err(|e| SentrixError::StorageError(e.to_string()))
+    }
+
+    /// Test-only access to the underlying ChainStorage. Public because
+    /// integration tests need `load_blob_height()` to verify the Patch
+    /// B1 atomicity invariant; production code should not need this.
+    #[doc(hidden)]
+    pub fn chain_for_test(&self) -> &sentrix_storage::ChainStorage {
+        &self.chain
     }
 
     // ── Utility ──────────────────────────────────────────
