@@ -263,8 +263,12 @@ impl std::fmt::Display for DoubleSignAttempt {
         write!(
             f,
             "DoubleSignAttempt: attempted (h={}, r={}, s={}) <= last_signed (h={}, r={}, s={})",
-            self.attempted.0, self.attempted.1, self.attempted.2,
-            self.last_signed.0, self.last_signed.1, self.last_signed.2,
+            self.attempted.0,
+            self.attempted.1,
+            self.attempted.2,
+            self.last_signed.0,
+            self.last_signed.1,
+            self.last_signed.2,
         )
     }
 }
@@ -329,7 +333,12 @@ mod tests {
     fn write_atomic_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("last-sign.json");
-        let st = LastSignState { height: 42, round: 7, step: 2, last_sign_bytes_hex: String::new() };
+        let st = LastSignState {
+            height: 42,
+            round: 7,
+            step: 2,
+            last_sign_bytes_hex: String::new(),
+        };
         write_atomic(&path, &st).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         let read: LastSignState = serde_json::from_slice(&bytes).unwrap();

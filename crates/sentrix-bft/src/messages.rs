@@ -312,12 +312,7 @@ impl RoundStatus {
     }
 
     /// v2 signing payload — see [`Proposal::signing_payload_v2`] for shape rationale.
-    pub fn signing_payload_v2(
-        height: u64,
-        round: u32,
-        validator: &str,
-        chain_id: u64,
-    ) -> Vec<u8> {
+    pub fn signing_payload_v2(height: u64, round: u32, validator: &str, chain_id: u64) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&bft_v2_prefix(chain_id));
         payload.extend_from_slice(&height.to_le_bytes());

@@ -12,7 +12,7 @@
 //! rollback rejection, legacy clear-hash advance, idempotent init.
 
 use sentrix_bft::last_sign_guard::{
-    check_and_record, check_and_record_with_bytes, current_state, init, VoteStep,
+    VoteStep, check_and_record, check_and_record_with_bytes, current_state, init,
 };
 
 #[test]
@@ -35,7 +35,10 @@ fn full_guard_lifecycle_through_global() {
     let p1 = b"prevote-payload-h10-r0";
     assert!(check_and_record_with_bytes(10, 0, VoteStep::Prevote, p1).is_ok());
     let st = current_state().unwrap();
-    assert_eq!((st.height, st.round, st.step), (10, 0, VoteStep::Prevote as u32));
+    assert_eq!(
+        (st.height, st.round, st.step),
+        (10, 0, VoteStep::Prevote as u32)
+    );
     assert_eq!(st.last_sign_bytes_hex.len(), 64);
 
     // Same tuple + same bytes → replay exempt (Ok, no error).
