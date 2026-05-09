@@ -2537,9 +2537,13 @@ async fn cmd_start(
                                                     round,
                                                     target_round,
                                                 );
-                                                if let Some(mut prevote) =
-                                                    bft.catch_up_round(target_round)
-                                                {
+                                                let bc_read = shared_clone.read().await;
+                                                let cu_result = bft.catch_up_round(
+                                                    target_round,
+                                                    &bc_read.stake_registry,
+                                                );
+                                                drop(bc_read);
+                                                if let Some(mut prevote) = cu_result {
                                                     prevote.sign(&validator_secret_key);
                                                     lp2p_clone
                                                         .broadcast_bft_prevote(&prevote)
@@ -2986,8 +2990,10 @@ async fn cmd_start(
                                     .get_validator(&status.validator)
                                     .map(|v| v.total_stake())
                                     .unwrap_or(0);
+                                let action =
+                                    bft.on_round_status_weighted(&status, stake, &bc.stake_registry);
                                 drop(bc);
-                                bft.on_round_status_weighted(&status, stake)
+                                action
                             }
                         };
 
@@ -3108,8 +3114,13 @@ async fn cmd_start(
                                             round,
                                             target_round,
                                         );
-                                        if let Some(mut prevote) = bft.catch_up_round(target_round)
-                                        {
+                                        let bc_read = shared_clone.read().await;
+                                        let cu_result = bft.catch_up_round(
+                                            target_round,
+                                            &bc_read.stake_registry,
+                                        );
+                                        drop(bc_read);
+                                        if let Some(mut prevote) = cu_result {
                                             prevote.sign(&validator_secret_key);
                                             lp2p_clone.broadcast_bft_prevote(&prevote).await;
                                         }

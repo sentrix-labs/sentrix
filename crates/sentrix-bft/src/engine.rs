@@ -97,25 +97,52 @@ impl BftEngine {
     }
 
     /// Round catch-up: if peers are at a higher round, fast-forward.
-    /// Returns `Some(Prevote)` (nil block_hash) if we advanced — the caller
-    /// MUST sign and broadcast this prevote so peers observe our
+    /// Returns `Some(Prevote)` (nil block_hash) when we advanced AND we
+    /// are NOT the proposer for the caught-up round — the caller MUST
+    /// sign and broadcast this nil prevote so peers observe our
     /// participation in the caught-up round.
     ///
-    /// Issue #133: without the nil-prevote, a validator that restarts
-    /// mid-consensus catches up to the peers' round and then sits
-    /// silently in `BftPhase::Propose` forever — gossipsub does not
-    /// replay the round's original proposal and the catching-up
-    /// validator is rarely the proposer for the round it just caught
-    /// up to. The chain then runs on 3-of-4 quorum and any timing
-    /// drift stalls the height.
+    /// Returns `None` in two cases:
+    ///   1. `target_round <= self.state.round` (no catch-up needed).
+    ///   2. We are the proposer for the caught-up round. The local round
+    ///      counter still advances, but we leave the engine in
+    ///      `BftPhase::Propose` with `our_prevote_cast = false` so the
+    ///      validator-loop's normal propose flow can build a block,
+    ///      broadcast it, and call `on_own_proposal` to obtain a
+    ///      yes-prevote action.
     ///
-    /// Nil prevote is Tendermint-legal: it represents "I participate in
-    /// this round but have no valid proposal to vote for". It cannot be
-    /// a double-vote because `advance_round` above cleared
+    /// **Why the proposer-aware branch matters (2026-05-09 mainnet
+    /// finalization-dead fix):** without it, every `catch_up_round`
+    /// call set `phase = Prevote` and `our_prevote_cast = true`. When
+    /// the catching-up validator turned out to be the round's proposer,
+    /// `on_own_proposal -> accept_proposal` then short-circuited on the
+    /// `phase != Propose` and `our_prevote_cast` guards and returned
+    /// `BftAction::Wait` instead of `BroadcastPrevote(yes-prevote)`.
+    /// Net effect on the wire: peers received the proposer's proposal
+    /// AND its earlier catch-up nil-prevote, but never the proposer's
+    /// yes-prevote on its own block. Tally always undercounted by 1.5 B
+    /// stake; on a 4-validator network with 4.001 B threshold, that
+    /// makes quorum unreachable. Mainnet stuck at h=1,674,136 round 70+
+    /// because every restart fired this catch-up path again.
+    ///
+    /// Issue #133 (the original motivation for the nil-prevote path):
+    /// without it a non-proposer validator that restarts mid-consensus
+    /// catches up to the peers' round and then sits silently in
+    /// `BftPhase::Propose` forever — gossipsub does not replay the
+    /// round's original proposal. That fix still applies for
+    /// non-proposers; this proposer-aware branch leaves it intact.
+    ///
+    /// Nil prevote is Tendermint-legal for non-proposers: "I participate
+    /// in this round but have no valid proposal to vote for". It cannot
+    /// be a double-vote because `advance_round` cleared
     /// `our_prevote_cast`, and `accept_proposal` respects
     /// `our_prevote_cast`, so a proposal arriving later in the same
     /// round does not cause us to re-vote.
-    pub fn catch_up_round(&mut self, target_round: u32) -> Option<Prevote> {
+    pub fn catch_up_round(
+        &mut self,
+        target_round: u32,
+        stake_registry: &StakeRegistry,
+    ) -> Option<Prevote> {
         if target_round <= self.state.round {
             return None;
         }
@@ -131,9 +158,31 @@ impl BftEngine {
         }
         self.phase_start = Instant::now();
 
-        // Enter Prevote phase with a nil vote so we contribute to quorum
-        // immediately instead of waiting (forever) for a proposal that
-        // gossipsub will not re-deliver.
+        // 2026-05-09 finalization-dead fix: if we are the proposer for
+        // the caught-up round, do NOT enter the Prevote/nil-cast path.
+        // The validator-loop will detect the proposer slot via
+        // `is_proposer(...)`, build a proposal, and rely on
+        // `on_own_proposal -> accept_proposal -> BroadcastPrevote` to
+        // emit our yes-prevote. That path requires `phase == Propose`
+        // and `our_prevote_cast == false`, both of which `advance_round`
+        // already established above.
+        if stake_registry
+            .weighted_proposer(self.state.height, self.state.round)
+            .as_deref()
+            == Some(self.our_address.as_str())
+        {
+            tracing::debug!(
+                target: "bft_catch_up",
+                "catch_up_round: we are proposer at h={} r={} — skip nil-prevote, leave phase=Propose",
+                self.state.height,
+                self.state.round,
+            );
+            return None;
+        }
+
+        // Non-proposer path (Issue #133): enter Prevote with nil vote
+        // so we contribute to quorum immediately instead of waiting
+        // (forever) for a proposal that gossipsub will not re-deliver.
         self.state.phase = BftPhase::Prevote;
         self.state.our_prevote_cast = true;
         Some(Prevote {
@@ -263,11 +312,7 @@ impl BftEngine {
             (&self.state.locked_hash, self.state.locked_round)
             && locked_hash != block_hash
             && self.state.locked_block.is_none()
-            && self
-                .state
-                .round
-                .saturating_sub(locked_round)
-                >= Self::STALE_LOCK_ROUND_GAP
+            && self.state.round.saturating_sub(locked_round) >= Self::STALE_LOCK_ROUND_GAP
         {
             tracing::warn!(
                 "BFT stale-lock relax: dropping lock on {} acquired at round {} \
@@ -647,7 +692,12 @@ impl BftEngine {
     ///
     /// Catch-up emits a nil prevote in the new round (issue #133 fix, see
     /// `catch_up_round`) so we participate in quorum immediately.
-    pub fn on_round_status_weighted(&mut self, status: &RoundStatus, stake: u64) -> BftAction {
+    pub fn on_round_status_weighted(
+        &mut self,
+        status: &RoundStatus,
+        stake: u64,
+        stake_registry: &StakeRegistry,
+    ) -> BftAction {
         if status.height > self.state.height {
             return BftAction::SyncNeeded {
                 peer_height: status.height,
@@ -679,7 +729,7 @@ impl BftEngine {
 
         if let Some(target) = self.f_plus_one_round()
             && target > self.state.round
-            && let Some(prevote) = self.catch_up_round(target)
+            && let Some(prevote) = self.catch_up_round(target, stake_registry)
         {
             return BftAction::BroadcastPrevote(prevote);
         }
@@ -691,7 +741,11 @@ impl BftEngine {
     /// This wrapper preserves the pre-#143 behaviour (trigger only on 2+ rounds
     /// ahead from a single peer, catch up to peer_round − 1) so existing
     /// integrations compile unchanged.
-    pub fn on_round_status(&mut self, status: &RoundStatus) -> BftAction {
+    pub fn on_round_status(
+        &mut self,
+        status: &RoundStatus,
+        stake_registry: &StakeRegistry,
+    ) -> BftAction {
         if status.height > self.state.height {
             return BftAction::SyncNeeded {
                 peer_height: status.height,
@@ -699,7 +753,7 @@ impl BftEngine {
         }
         if status.height == self.state.height
             && status.round > self.state.round + 1
-            && let Some(prevote) = self.catch_up_round(status.round - 1)
+            && let Some(prevote) = self.catch_up_round(status.round - 1, stake_registry)
         {
             return BftAction::BroadcastPrevote(prevote);
         }
@@ -1167,7 +1221,10 @@ mod tests {
         // prevote traffic into the engine.
         let block_bytes = b"arbitrary opaque block bytes for hash_win".to_vec();
         engine.stash_proposal_bytes("hash_win", block_bytes.clone());
-        assert!(engine.state.staging_block.is_some(), "staging slot populated");
+        assert!(
+            engine.state.staging_block.is_some(),
+            "staging slot populated"
+        );
 
         // Drive 2/3+ prevote quorum for hash_win. Threshold at
         // `supermajority_threshold(total)` — with 21 validators at
@@ -1197,7 +1254,10 @@ mod tests {
 
         // Accessor returns Some for the locked hash.
         let cached = engine.locked_proposal_bytes();
-        assert!(cached.is_some(), "accessor returns cached bytes when locked");
+        assert!(
+            cached.is_some(),
+            "accessor returns cached bytes when locked"
+        );
         let (cached_hash, cached_bytes) = cached.unwrap();
         assert_eq!(cached_hash, "hash_win");
         assert_eq!(cached_bytes, block_bytes);
@@ -1218,7 +1278,10 @@ mod tests {
             engine.state.locked_block.as_deref(),
             Some(&b"locked-bytes"[..])
         );
-        assert!(engine.state.staging_block.is_none(), "staging cleared on advance_round");
+        assert!(
+            engine.state.staging_block.is_none(),
+            "staging cleared on advance_round"
+        );
     }
 
     /// V2 regression: new_height clears both locked_block and staging_block.
@@ -1232,8 +1295,14 @@ mod tests {
         engine.new_height(101, engine.state.total_active_stake);
 
         assert!(engine.state.locked_hash.is_none());
-        assert!(engine.state.locked_block.is_none(), "locked_block cleared on new_height");
-        assert!(engine.state.staging_block.is_none(), "staging_block cleared on new_height");
+        assert!(
+            engine.state.locked_block.is_none(),
+            "locked_block cleared on new_height"
+        );
+        assert!(
+            engine.state.staging_block.is_none(),
+            "staging_block cleared on new_height"
+        );
     }
 
     /// V2 regression: `locked_proposal_bytes` returns None when not locked.
@@ -1332,10 +1401,7 @@ mod tests {
             let _ = engine.on_prevote_weighted(&pv, per_val);
         }
         assert_eq!(engine.state.locked_hash.as_deref(), Some("hash_A"));
-        assert_eq!(
-            engine.state.locked_block.as_deref(),
-            Some(&b"bytes_A"[..])
-        );
+        assert_eq!(engine.state.locked_block.as_deref(), Some(&b"bytes_A"[..]));
 
         // Round 1: simulate the validator stashing bytes for hash_C
         // (decoy — the wrong hash) but the network forming PoLC quorum
@@ -1366,7 +1432,11 @@ mod tests {
             engine.state.locked_block.is_none(),
             "PoLC to a non-staged hash must clear locked_block, not retain stale bytes from \
              a previous lock — got {:?}",
-            engine.state.locked_block.as_ref().map(|b| String::from_utf8_lossy(b).into_owned())
+            engine
+                .state
+                .locked_block
+                .as_ref()
+                .map(|b| String::from_utf8_lossy(b).into_owned())
         );
         assert!(
             engine.locked_proposal_bytes().is_none(),
@@ -1406,7 +1476,10 @@ mod tests {
             engine.state.locked_block.is_none(),
             "wrong-hash staging must be discarded, not promoted"
         );
-        assert!(engine.state.staging_block.is_none(), "staging consumed regardless");
+        assert!(
+            engine.state.staging_block.is_none(),
+            "staging consumed regardless"
+        );
     }
 
     #[test]
@@ -1419,7 +1492,7 @@ mod tests {
         // observe our participation in the caught-up round — otherwise
         // a restarted validator sits silent and 4-of-4 quorum drops to
         // 3-of-4.
-        let (mut engine, _) = setup();
+        let (mut engine, reg) = setup();
         assert_eq!(engine.round(), 0);
 
         // Peer at round 5 → we catch up to round 4 (peer_round - 1)
@@ -1429,7 +1502,7 @@ mod tests {
             validator: "0xval001".into(),
             signature: Vec::new(),
         };
-        let action = engine.on_round_status(&status);
+        let action = engine.on_round_status(&status, &reg);
         match action {
             BftAction::BroadcastPrevote(p) => {
                 assert_eq!(p.round, 4, "prevote must be for caught-up round");
@@ -1454,7 +1527,7 @@ mod tests {
             validator: "0xval001".into(),
             signature: Vec::new(),
         };
-        let _ = engine.on_round_status(&status);
+        let _ = engine.on_round_status(&status, &reg);
         assert!(
             engine.state.our_prevote_cast,
             "catch_up must mark our prevote cast"
@@ -1473,7 +1546,7 @@ mod tests {
     #[test]
     fn test_round_status_no_catch_up_when_only_1_ahead() {
         // Peer only 1 round ahead → no catch-up (normal timeout will sync)
-        let (mut engine, _) = setup();
+        let (mut engine, reg) = setup();
         assert_eq!(engine.round(), 0);
 
         let status = RoundStatus {
@@ -1482,14 +1555,14 @@ mod tests {
             validator: "0xval001".into(),
             signature: Vec::new(),
         };
-        let action = engine.on_round_status(&status);
+        let action = engine.on_round_status(&status, &reg);
         assert!(matches!(action, BftAction::Wait));
         assert_eq!(engine.round(), 0); // stays at 0
     }
 
     #[test]
     fn test_round_status_higher_height_triggers_sync() {
-        let (mut engine, _) = setup();
+        let (mut engine, reg) = setup();
         assert_eq!(engine.height(), 100);
 
         let status = RoundStatus {
@@ -1498,7 +1571,7 @@ mod tests {
             validator: "0xval001".into(),
             signature: Vec::new(),
         };
-        let action = engine.on_round_status(&status);
+        let action = engine.on_round_status(&status, &reg);
         match action {
             BftAction::SyncNeeded { peer_height } => assert_eq!(peer_height, 200),
             _ => panic!("expected SyncNeeded, got {:?}", action),
@@ -1508,7 +1581,7 @@ mod tests {
 
     #[test]
     fn test_round_status_lower_height_ignored() {
-        let (mut engine, _) = setup();
+        let (mut engine, reg) = setup();
         engine.new_height(200, engine.state.total_active_stake);
 
         let status = RoundStatus {
@@ -1517,14 +1590,14 @@ mod tests {
             validator: "0xval001".into(),
             signature: Vec::new(),
         };
-        let action = engine.on_round_status(&status);
+        let action = engine.on_round_status(&status, &reg);
         assert!(matches!(action, BftAction::Wait));
         assert_eq!(engine.round(), 0); // unchanged
     }
 
     #[test]
     fn test_round_status_same_round_noop() {
-        let (mut engine, _) = setup();
+        let (mut engine, reg) = setup();
         engine.state.round = 3;
 
         let status = RoundStatus {
@@ -1533,14 +1606,14 @@ mod tests {
             validator: "0xval001".into(),
             signature: Vec::new(),
         };
-        let action = engine.on_round_status(&status);
+        let action = engine.on_round_status(&status, &reg);
         assert!(matches!(action, BftAction::Wait));
         assert_eq!(engine.round(), 3); // unchanged
     }
 
     #[test]
     fn test_round_status_lower_round_ignored() {
-        let (mut engine, _) = setup();
+        let (mut engine, reg) = setup();
         engine.state.round = 5;
 
         let status = RoundStatus {
@@ -1549,7 +1622,7 @@ mod tests {
             validator: "0xval001".into(),
             signature: Vec::new(),
         };
-        let action = engine.on_round_status(&status);
+        let action = engine.on_round_status(&status, &reg);
         assert!(matches!(action, BftAction::Wait));
         assert_eq!(engine.round(), 5); // unchanged
     }
@@ -1567,7 +1640,7 @@ mod tests {
     fn test_partition_recovery_catches_up_via_round_status() {
         // RoundStatus from peers 2+ rounds ahead triggers catch-up to
         // peer_round - 1. This fixes the round desync stall.
-        let (mut engine, _) = setup();
+        let (mut engine, reg) = setup();
         assert_eq!(engine.round(), 0);
 
         // Receive round status from peer at round 3 → catch up to round 2
@@ -1577,7 +1650,7 @@ mod tests {
             validator: "0xval001".into(),
             signature: Vec::new(),
         };
-        engine.on_round_status(&status);
+        engine.on_round_status(&status, &reg);
         assert_eq!(engine.round(), 2); // caught up to peer - 1
 
         // Second peer also at round 3 → no further catch-up (already at 2)
@@ -1587,7 +1660,7 @@ mod tests {
             validator: "0xval002".into(),
             signature: Vec::new(),
         };
-        engine.on_round_status(&status2);
+        engine.on_round_status(&status2, &reg);
         assert_eq!(engine.round(), 2); // stays at 2
     }
 
@@ -1736,8 +1809,18 @@ mod tests {
     /// Shared fixture for issue-#143 tests: a 4-validator engine with
     /// equal stake (250 each, total 1000). f+1 threshold is 334 stake
     /// (= 1000/3 + 1), i.e. 2 validators crossing the one-third boundary.
-    fn setup_143() -> BftEngine {
-        BftEngine::new(100, "0xself".into(), 1000)
+    fn setup_143() -> (BftEngine, StakeRegistry) {
+        // Empty registry is intentional: the 143 tests focus on the
+        // f+1 catch-up trigger logic, not on proposer awareness. With
+        // an empty registry, `weighted_proposer` returns None, so the
+        // proposer-aware branch in `catch_up_round` does NOT short-
+        // circuit (it requires the local validator address to match
+        // the computed proposer), and these tests still exercise the
+        // non-proposer nil-prevote path they were written for.
+        (
+            BftEngine::new(100, "0xself".into(), 1000),
+            StakeRegistry::new(),
+        )
     }
 
     fn status(validator: &str, round: u32) -> RoundStatus {
@@ -1753,11 +1836,11 @@ mod tests {
     fn test_143_f_plus_one_peers_at_same_round_triggers_catch_up() {
         // 2 of 4 peers at round 1 → f+1 (2 peers × 250 stake = 500 > 334).
         // Our round is 0, so we should catch up to round 1.
-        let mut engine = setup_143();
+        let (mut engine, reg) = setup_143();
         assert_eq!(engine.round(), 0);
 
-        let _ = engine.on_round_status_weighted(&status("0xa", 1), 250);
-        let action = engine.on_round_status_weighted(&status("0xb", 1), 250);
+        let _ = engine.on_round_status_weighted(&status("0xa", 1), 250, &reg);
+        let action = engine.on_round_status_weighted(&status("0xb", 1), 250, &reg);
 
         assert!(
             matches!(action, BftAction::BroadcastPrevote(ref p) if p.round == 1 && p.block_hash.is_none()),
@@ -1773,8 +1856,8 @@ mod tests {
         // Only 1/4 peers (250/1000 = 25%) at round 1 — below the 1/3 threshold.
         // Our round stays at 0, matching the pre-#143 safety: we don't jump
         // on a single voice.
-        let mut engine = setup_143();
-        let action = engine.on_round_status_weighted(&status("0xa", 1), 250);
+        let (mut engine, reg) = setup_143();
+        let action = engine.on_round_status_weighted(&status("0xa", 1), 250, &reg);
         assert!(matches!(action, BftAction::Wait));
         assert_eq!(engine.round(), 0);
     }
@@ -1787,10 +1870,10 @@ mod tests {
         // The lone peer at round 5 does NOT drag us further — that's only
         // f (one voice), and a lying peer could equally well claim round
         // 5 without having reached it.
-        let mut engine = setup_143();
-        let a1 = engine.on_round_status_weighted(&status("0xa", 3), 250);
-        let a2 = engine.on_round_status_weighted(&status("0xb", 3), 250);
-        let a3 = engine.on_round_status_weighted(&status("0xc", 5), 250);
+        let (mut engine, reg) = setup_143();
+        let a1 = engine.on_round_status_weighted(&status("0xa", 3), 250, &reg);
+        let a2 = engine.on_round_status_weighted(&status("0xb", 3), 250, &reg);
+        let a3 = engine.on_round_status_weighted(&status("0xc", 5), 250, &reg);
 
         // First report: only 1 peer at round 3 → below threshold, no skip.
         assert!(matches!(a1, BftAction::Wait), "a1 = {:?}", a1);
@@ -1810,8 +1893,8 @@ mod tests {
     #[test]
     fn test_143_peer_at_same_round_does_not_trigger() {
         // A peer reporting OUR OWN round should never trigger a skip.
-        let mut engine = setup_143();
-        let action = engine.on_round_status_weighted(&status("0xa", 0), 250);
+        let (mut engine, reg) = setup_143();
+        let action = engine.on_round_status_weighted(&status("0xa", 0), 250, &reg);
         assert!(matches!(action, BftAction::Wait));
         assert_eq!(engine.round(), 0);
     }
@@ -1821,9 +1904,9 @@ mod tests {
         // Same peer reporting the same round twice must not double-count
         // their stake — otherwise a chatty peer could unilaterally trigger
         // a skip.
-        let mut engine = setup_143();
-        let a1 = engine.on_round_status_weighted(&status("0xa", 1), 250);
-        let a2 = engine.on_round_status_weighted(&status("0xa", 1), 250);
+        let (mut engine, reg) = setup_143();
+        let a1 = engine.on_round_status_weighted(&status("0xa", 1), 250, &reg);
+        let a2 = engine.on_round_status_weighted(&status("0xa", 1), 250, &reg);
         assert!(matches!(a1, BftAction::Wait));
         assert!(matches!(a2, BftAction::Wait));
         assert_eq!(engine.round(), 0);
@@ -1833,16 +1916,16 @@ mod tests {
     fn test_143_peer_stake_refresh_on_update() {
         // If a peer's stake changes across epoch boundaries, the next
         // RoundStatus from them should overwrite the cached stake.
-        let mut engine = setup_143();
+        let (mut engine, reg) = setup_143();
         // Peer first reports with very low stake — below threshold alone.
-        let _ = engine.on_round_status_weighted(&status("0xa", 1), 1);
+        let _ = engine.on_round_status_weighted(&status("0xa", 1), 1, &reg);
         // Second peer confirms at same round.
-        let action = engine.on_round_status_weighted(&status("0xb", 1), 250);
+        let action = engine.on_round_status_weighted(&status("0xb", 1), 250, &reg);
         // 1 + 250 = 251 stake, below 334 threshold — no skip yet.
         assert!(matches!(action, BftAction::Wait));
 
         // Peer 0xa reports again, this time with their actual 250 stake.
-        let action = engine.on_round_status_weighted(&status("0xa", 1), 250);
+        let action = engine.on_round_status_weighted(&status("0xa", 1), 250, &reg);
         assert!(
             matches!(action, BftAction::BroadcastPrevote(ref p) if p.round == 1),
             "stake refresh should unlock the skip, got {:?}",
@@ -1854,13 +1937,13 @@ mod tests {
     #[test]
     fn test_143_higher_height_still_triggers_sync() {
         // Higher-height RoundStatus bypasses the round-skip logic entirely.
-        let mut engine = setup_143();
-        let action = engine.on_round_status_weighted(&status("0xa", 0), 250);
+        let (mut engine, reg) = setup_143();
+        let action = engine.on_round_status_weighted(&status("0xa", 0), 250, &reg);
         assert!(matches!(action, BftAction::Wait));
 
         let mut s = status("0xa", 0);
         s.height = 101;
-        let action = engine.on_round_status_weighted(&s, 250);
+        let action = engine.on_round_status_weighted(&s, 250, &reg);
         assert!(
             matches!(action, BftAction::SyncNeeded { peer_height: 101 }),
             "higher height must return SyncNeeded, got {:?}",
@@ -1873,15 +1956,15 @@ mod tests {
         // After advancing to a new height, the peer_rounds cache must
         // reset — otherwise stale entries from height N could trigger a
         // spurious skip at height N+1.
-        let mut engine = setup_143();
-        let _ = engine.on_round_status_weighted(&status("0xa", 5), 250);
-        let _ = engine.on_round_status_weighted(&status("0xb", 5), 250);
+        let (mut engine, reg) = setup_143();
+        let _ = engine.on_round_status_weighted(&status("0xa", 5), 250, &reg);
+        let _ = engine.on_round_status_weighted(&status("0xb", 5), 250, &reg);
         assert_eq!(engine.round(), 5);
 
         engine.new_height(101, 1000);
         // At height 101 with fresh state, a single peer at round 1 must
         // NOT trigger a skip (cache was wiped).
-        let action = engine.on_round_status_weighted(&status("0xa", 1), 250);
+        let action = engine.on_round_status_weighted(&status("0xa", 1), 250, &reg);
         assert!(matches!(action, BftAction::Wait));
         assert_eq!(engine.round(), 0);
     }
@@ -1891,8 +1974,8 @@ mod tests {
         // The back-compat `on_round_status` wrapper preserves the pre-#143
         // single-peer "2+ rounds ahead" trigger for any call site that
         // hasn't migrated to the weighted API yet.
-        let mut engine = setup_143();
-        let action = engine.on_round_status(&status("0xa", 2));
+        let (mut engine, reg) = setup_143();
+        let action = engine.on_round_status(&status("0xa", 2), &reg);
         assert!(
             matches!(action, BftAction::BroadcastPrevote(ref p) if p.round == 1),
             "legacy path should catch up to peer_round - 1, got {:?}",
@@ -1953,7 +2036,7 @@ mod tests {
     /// hash are NOT included in the finalized block's justification
     /// (only the winning hash's backers should be counted).
     #[test]
-    
+
     fn test_finalize_emits_real_precommit_signatures() {
         let (mut engine, _) = setup();
         let total = engine.state.total_active_stake;
@@ -2026,10 +2109,19 @@ mod tests {
         }
 
         // Nil precommit and wrong-hash precommit MUST NOT appear.
-        let validators_in_just: Vec<&str> =
-            just.precommits.iter().map(|p| p.validator.as_str()).collect();
-        assert!(!validators_in_just.contains(&"0xval100"), "nil precommit leaked into justification");
-        assert!(!validators_in_just.contains(&"0xval101"), "wrong-hash precommit leaked into justification");
+        let validators_in_just: Vec<&str> = just
+            .precommits
+            .iter()
+            .map(|p| p.validator.as_str())
+            .collect();
+        assert!(
+            !validators_in_just.contains(&"0xval100"),
+            "nil precommit leaked into justification"
+        );
+        assert!(
+            !validators_in_just.contains(&"0xval101"),
+            "wrong-hash precommit leaked into justification"
+        );
 
         // And the reported block_hash matches the winning hash.
         assert_eq!(just.block_hash, winning_hash);
@@ -2202,6 +2294,250 @@ mod tests {
             engine.peer_supermajority_higher_round(),
             None,
             "peers at our own round must NOT trip the guard",
+        );
+    }
+
+    // ── 2026-05-09 finalization-dead fix: catch_up_round proposer awareness ──
+    //
+    // These tests pin the contract that `catch_up_round` must NOT cast a
+    // nil prevote when the catching-up validator is the proposer for the
+    // caught-up round. Without this, mainnet stalled at h=1,674,136 r=70+
+    // because the proposer's `on_own_proposal` short-circuited on the
+    // already-set `our_prevote_cast = true` and never broadcast a yes-
+    // prevote on its own block. Tally always undercounted by the proposer's
+    // 1.5 B stake; on a 4-validator mainnet that pushed the 4.001 B quorum
+    // out of reach forever.
+    //
+    // The non-proposer regression pin (test 6) ensures Issue #133's
+    // original intent — non-proposers DO emit a nil-prevote so they
+    // contribute to round quorum even though gossipsub never re-presents
+    // the round's proposal — still holds.
+
+    /// Build a 4-validator registry where each holds equal stake. Active
+    /// set sorts by stake desc, tiebreak by address asc, so the order is
+    /// `["0xval001", "0xval002", "0xval003", "0xval004"]`.
+    /// `weighted_proposer(height=100, round=r)` therefore returns
+    /// `active_set[(100 + r) % 4]`:
+    ///   round 0 → 0xval001
+    ///   round 1 → 0xval002
+    ///   round 2 → 0xval003
+    ///   round 3 → 0xval004
+    fn setup_4val() -> (StakeRegistry, u64) {
+        // MIN_SELF_STAKE = 1.5 T sentri = 1500 SRX. 4 validators × MIN_SELF_STAKE
+        // = 6 T total, threshold = 6 T * 2/3 + 1 = 4_000_000_000_001. Mainnet
+        // numbers are 4 × 1.5 B SRX (different scale, same arithmetic shape).
+        let mut reg = StakeRegistry::new();
+        for i in 1..=4 {
+            let addr = format!("0xval{:03}", i);
+            reg.register_validator(&addr, MIN_SELF_STAKE, 1000, 0)
+                .unwrap();
+        }
+        reg.update_active_set();
+        let total: u64 = reg
+            .active_set
+            .iter()
+            .filter_map(|a| reg.get_validator(a))
+            .map(|v| v.total_stake())
+            .sum();
+        (reg, total)
+    }
+
+    /// Test 1 — Non-proposer catch_up_round still returns nil prevote and
+    /// sets `our_prevote_cast = true`. Issue #133 path preserved.
+    #[test]
+    fn test_finalization_dead_fix_non_proposer_emits_nil_prevote() {
+        let (reg, total_stake) = setup_4val();
+        // round 1 proposer is 0xval002; we are 0xval001 (NOT proposer)
+        let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
+
+        let pv = engine.catch_up_round(1, &reg);
+
+        assert!(
+            pv.is_some(),
+            "non-proposer must emit a nil-prevote for the caught-up round"
+        );
+        let pv = pv.unwrap();
+        assert_eq!(pv.height, 100);
+        assert_eq!(pv.round, 1);
+        assert!(
+            pv.block_hash.is_none(),
+            "catch-up prevote must be nil (no block to vote for yet)"
+        );
+        assert_eq!(engine.state.round, 1);
+        assert_eq!(engine.state.phase, BftPhase::Prevote);
+        assert!(
+            engine.state.our_prevote_cast,
+            "non-proposer path MUST set our_prevote_cast so we don't double-vote when the proposal arrives later in the same round"
+        );
+    }
+
+    /// Test 2 — Proposer catch_up_round returns None (no nil prevote).
+    #[test]
+    fn test_finalization_dead_fix_proposer_returns_none() {
+        let (reg, total_stake) = setup_4val();
+        // round 1 proposer is 0xval002; we are 0xval002
+        let mut engine = BftEngine::new(100, "0xval002".into(), total_stake);
+
+        let pv = engine.catch_up_round(1, &reg);
+
+        assert!(
+            pv.is_none(),
+            "proposer for the caught-up round MUST NOT emit a catch-up nil-prevote — that would block the yes-prevote on its own block"
+        );
+    }
+
+    /// Test 3 — Proposer catch_up_round leaves engine in Propose with
+    /// `our_prevote_cast = false`, so `on_own_proposal -> accept_proposal`
+    /// can later produce a yes-prevote on the proposer's own block.
+    #[test]
+    fn test_finalization_dead_fix_proposer_state_after_catch_up() {
+        let (reg, total_stake) = setup_4val();
+        let mut engine = BftEngine::new(100, "0xval002".into(), total_stake);
+
+        let _ = engine.catch_up_round(1, &reg);
+
+        assert_eq!(engine.state.round, 1, "round counter still advances");
+        assert_eq!(
+            engine.state.phase,
+            BftPhase::Propose,
+            "proposer must remain in Propose so the validator-loop can build a block"
+        );
+        assert!(
+            !engine.state.our_prevote_cast,
+            "our_prevote_cast must be FALSE so accept_proposal will yes-prevote on our own block"
+        );
+    }
+
+    /// Test 4 — After the proposer-aware catch-up, calling
+    /// `on_own_proposal` returns `BroadcastPrevote(yes-prevote)`. This is
+    /// the auto-yes-prevote that mainnet was missing pre-fix.
+    #[test]
+    fn test_finalization_dead_fix_proposer_on_own_proposal_yes_prevotes() {
+        let (reg, total_stake) = setup_4val();
+        let mut engine = BftEngine::new(100, "0xval002".into(), total_stake);
+
+        let _ = engine.catch_up_round(1, &reg);
+        let action = engine.on_own_proposal("0xblockhash_round1");
+
+        match action {
+            BftAction::BroadcastPrevote(p) => {
+                assert_eq!(p.height, 100);
+                assert_eq!(p.round, 1);
+                assert_eq!(
+                    p.block_hash.as_deref(),
+                    Some("0xblockhash_round1"),
+                    "proposer's auto-prevote on its own block must be a YES prevote, not nil"
+                );
+                assert_eq!(p.validator, "0xval002");
+            }
+            other => panic!(
+                "expected BroadcastPrevote(yes-prevote on own block), got {:?}",
+                other
+            ),
+        }
+        assert!(
+            engine.state.our_prevote_cast,
+            "after on_own_proposal, our_prevote_cast must be set"
+        );
+    }
+
+    /// Test 5 — Full 4-validator quorum scenario with the fix in place.
+    /// Pre-fix: tally maxed at ~3.0 B (2 peer yes-prevotes only) on a
+    /// 4.001 B threshold and quorum was unreachable. Post-fix: proposer's
+    /// own yes-prevote (1.5 B) plus 2 peer yes-prevotes (3 B) = 4.5 B,
+    /// crosses 4.001 B threshold, advances to Precommit.
+    #[test]
+    fn test_finalization_dead_fix_quorum_reachable_with_proposer_self_prevote() {
+        let (reg, total_stake) = setup_4val();
+        // 4 × MIN_SELF_STAKE total. Threshold = total * 2/3 + 1.
+        assert_eq!(total_stake, MIN_SELF_STAKE * 4);
+        let stake = MIN_SELF_STAKE;
+
+        let mut engine = BftEngine::new(100, "0xval002".into(), total_stake);
+        let _ = engine.catch_up_round(1, &reg);
+
+        // Proposer auto-yes-prevote arrives via on_own_proposal — feed it
+        // back into the engine the same way the validator-loop does.
+        let block = "0xblockhash_round1";
+        let action = engine.on_own_proposal(block);
+        let our_prevote = match action {
+            BftAction::BroadcastPrevote(p) => p,
+            other => panic!("expected our auto-yes-prevote, got {:?}", other),
+        };
+
+        // Engine ingests its own prevote at proposer stake (1× MIN_SELF_STAKE,
+        // 1/4 of total) — still below the 2/3+1 threshold.
+        let action = engine.on_prevote_weighted(&our_prevote, stake);
+        assert!(
+            matches!(action, BftAction::Wait),
+            "1/4 of total stake alone is below the 2/3+1 threshold"
+        );
+        assert_eq!(engine.state.phase, BftPhase::Prevote);
+
+        // Peer 1 yes-prevotes (2/4 cumulative — still below threshold).
+        let pv_peer3 = Prevote {
+            height: 100,
+            round: 1,
+            block_hash: Some(block.into()),
+            validator: "0xval003".into(),
+            signature: vec![],
+        };
+        let action = engine.on_prevote_weighted(&pv_peer3, stake);
+        assert!(
+            matches!(action, BftAction::Wait),
+            "2/4 (proposer + 1 peer) is below the 2/3+1 threshold"
+        );
+
+        // Peer 2 yes-prevotes — 3/4 cumulative crosses 2/3+1 → Precommit.
+        let pv_peer4 = Prevote {
+            height: 100,
+            round: 1,
+            block_hash: Some(block.into()),
+            validator: "0xval004".into(),
+            signature: vec![],
+        };
+        let action = engine.on_prevote_weighted(&pv_peer4, stake);
+
+        assert!(
+            matches!(action, BftAction::BroadcastPrecommit(_)),
+            "3/4 stake (proposer + 2 peers) MUST reach quorum and trigger \
+             Precommit. Pre-fix: proposer's own prevote was missing, tally \
+             maxed at 2/4 stake, stalled forever. Got: {:?}",
+            action,
+        );
+        assert_eq!(engine.state.phase, BftPhase::Precommit);
+    }
+
+    /// Test 6 — Regression pin for Issue #133. Non-proposer that misses
+    /// the original proposal (gossipsub doesn't replay it) must still
+    /// emit a nil-prevote on catch-up so it contributes to round quorum
+    /// instead of stalling in `BftPhase::Propose` forever.
+    #[test]
+    fn test_finalization_dead_fix_issue_133_non_proposer_regression() {
+        let (reg, total_stake) = setup_4val();
+        // Round 2 proposer is 0xval003; we are 0xval001 (NOT proposer at r=2)
+        let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
+
+        // Sanity — pre-condition: we are at round 0
+        assert_eq!(engine.state.round, 0);
+
+        let pv = engine.catch_up_round(2, &reg);
+
+        assert!(
+            pv.is_some(),
+            "Issue #133: a non-proposer that catches up MUST emit a nil-prevote so the round can reach quorum without re-presenting the proposal"
+        );
+        let pv = pv.unwrap();
+        assert_eq!(pv.round, 2);
+        assert!(
+            pv.block_hash.is_none(),
+            "catch-up prevote is nil (we have no proposal bytes to vote on)"
+        );
+        assert_eq!(engine.state.round, 2);
+        assert_eq!(engine.state.phase, BftPhase::Prevote);
+        assert!(
+            engine.state.our_prevote_cast,
+            "must be set so a later on_proposal in the same round won't double-vote"
         );
     }
 }

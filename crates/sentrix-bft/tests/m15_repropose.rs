@@ -31,7 +31,8 @@ fn setup_four_val_registry() -> (StakeRegistry, Vec<String>, u64, u64) {
     let mut reg = StakeRegistry::new();
     let addresses: Vec<String> = (1..=4).map(|i| format!("0xval{:03}", i)).collect();
     for addr in &addresses {
-        reg.register_validator(addr, MIN_SELF_STAKE, 1000, 0).unwrap();
+        reg.register_validator(addr, MIN_SELF_STAKE, 1000, 0)
+            .unwrap();
     }
     reg.update_active_set();
 
@@ -171,12 +172,7 @@ fn test_m15_locked_validator_reproposes_cached_block() {
     // This is the M-15 contract: advance_round preserves locked_hash +
     // locked_block, only staging is reset.
     for (i, engine) in engines.iter().enumerate() {
-        assert_eq!(
-            engine.round(),
-            1,
-            "engine {} did not advance to round 1",
-            i
-        );
+        assert_eq!(engine.round(), 1, "engine {} did not advance to round 1", i);
         assert_eq!(
             engine.phase(),
             BftPhase::Propose,
@@ -251,7 +247,10 @@ fn test_m15_unlock_after_repropose_quorum() {
         .expect("R1 proposer must have cached bytes from R0 lock");
     let (re_hash, re_bytes) = cached;
     assert_eq!(re_hash, block_hash, "R1 proposer cache must match R0 lock");
-    assert_eq!(re_bytes, block_bytes, "R1 proposer cache bytes must match R0");
+    assert_eq!(
+        re_bytes, block_bytes,
+        "R1 proposer cache bytes must match R0"
+    );
 
     // Validator loop pattern: every receiving engine stashes bytes
     // BEFORE on_proposal — the engine's `BftMessage::Propose` handler

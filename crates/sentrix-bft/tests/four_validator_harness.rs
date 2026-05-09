@@ -16,11 +16,9 @@
 // but keep the happy-path test first-class — it's the smoke test
 // for "BFT engine + stake registry can agree on a block at all".
 
-use sentrix_bft::{
-    BftAction, BftEngine, BftPhase, Precommit, Prevote,
-};
-use sentrix_staking::staking::MIN_SELF_STAKE;
+use sentrix_bft::{BftAction, BftEngine, BftPhase, Precommit, Prevote};
 use sentrix_staking::StakeRegistry;
+use sentrix_staking::staking::MIN_SELF_STAKE;
 
 /// Build a 4-validator StakeRegistry with equal stakes + compute
 /// the per-validator weight + total active stake.
@@ -45,11 +43,7 @@ fn setup_four_val_registry() -> (StakeRegistry, Vec<String>, u64, u64) {
 }
 
 /// Spin up one engine per validator at the same (height, round=0).
-fn setup_four_engines(
-    addresses: &[String],
-    total_stake: u64,
-    height: u64,
-) -> Vec<BftEngine> {
+fn setup_four_engines(addresses: &[String], total_stake: u64, height: u64) -> Vec<BftEngine> {
     addresses
         .iter()
         .map(|addr| BftEngine::new(height, addr.clone(), total_stake))
@@ -130,7 +124,10 @@ fn happy_path_four_validators_finalize_height_100_round_0() {
     let proposer = reg
         .weighted_proposer(height, round)
         .expect("active set has 4 validators");
-    assert!(addresses.contains(&proposer), "proposer must be in active_set");
+    assert!(
+        addresses.contains(&proposer),
+        "proposer must be in active_set"
+    );
     let proposer_idx = addresses.iter().position(|a| a == &proposer).unwrap();
 
     // Every engine enters Propose phase. Drive each one through the
@@ -302,8 +299,7 @@ fn three_consecutive_heights_finalize() {
         for sender in &addresses {
             let pv = mk_prevote(height, round, Some(block_hash.clone()), sender);
             for engine in engines.iter_mut() {
-                if let BftAction::BroadcastPrecommit(pc) =
-                    engine.on_prevote_weighted(&pv, per_val)
+                if let BftAction::BroadcastPrecommit(pc) = engine.on_prevote_weighted(&pv, per_val)
                 {
                     precommits_seen.push(pc);
                 }
@@ -320,19 +316,13 @@ fn three_consecutive_heights_finalize() {
         let mut finalized = vec![false; engines.len()];
         for pc in &precommits_seen[..4] {
             for (i, engine) in engines.iter_mut().enumerate() {
-                if let BftAction::FinalizeBlock { .. } =
-                    engine.on_precommit_weighted(pc, per_val)
-                {
+                if let BftAction::FinalizeBlock { .. } = engine.on_precommit_weighted(pc, per_val) {
                     finalized[i] = true;
                 }
             }
         }
         for (i, f) in finalized.iter().enumerate() {
-            assert!(
-                *f,
-                "engine {} did not finalize at height {}",
-                i, height
-            );
+            assert!(*f, "engine {} did not finalize at height {}", i, height);
         }
 
         // Advance every engine to the next height. Real validator loop
