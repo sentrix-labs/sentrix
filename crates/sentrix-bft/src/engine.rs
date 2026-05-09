@@ -2708,4 +2708,203 @@ mod tests {
             "failed yes-prevote must not advance into a nil precommit for the same round"
         );
     }
+
+    #[test]
+    fn test_291_failed_precommit_enqueue_keeps_same_vote_retryable() {
+        let (_reg, total_stake) = setup_4val();
+        let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
+        let stake = MIN_SELF_STAKE;
+        let block = "0xblockhash_round0";
+
+        let our_prevote = match engine.on_own_proposal(block) {
+            BftAction::BroadcastPrevote(p) => p,
+            other => panic!("expected own prevote, got {other:?}"),
+        };
+        assert!(matches!(
+            engine.on_prevote_weighted(&our_prevote, stake),
+            BftAction::Wait
+        ));
+
+        let peer_2 = Prevote {
+            height: 100,
+            round: 0,
+            block_hash: Some(block.into()),
+            validator: "0xval002".into(),
+            signature: vec![],
+        };
+        assert!(matches!(
+            engine.on_prevote_weighted(&peer_2, stake),
+            BftAction::Wait
+        ));
+
+        let peer_3 = Prevote {
+            height: 100,
+            round: 0,
+            block_hash: Some(block.into()),
+            validator: "0xval003".into(),
+            signature: vec![],
+        };
+        let first_precommit = match engine.on_prevote_weighted(&peer_3, stake) {
+            BftAction::BroadcastPrecommit(p) => p,
+            other => panic!("expected precommit after quorum, got {other:?}"),
+        };
+
+        let retry = match engine.on_timeout() {
+            BftAction::BroadcastPrecommit(p) => p,
+            other => panic!("pending precommit should retry on timeout, got {other:?}"),
+        };
+        assert_eq!(retry, first_precommit);
+
+        let direct_retry = match engine.emit_precommit(first_precommit.clone()) {
+            BftAction::BroadcastPrecommit(p) => p,
+            other => panic!("same pending precommit should be reusable, got {other:?}"),
+        };
+        assert_eq!(direct_retry, first_precommit);
+    }
+
+    #[test]
+    fn test_291_conflicting_pending_prevote_blocks_new_vote() {
+        let (_reg, total_stake) = setup_4val();
+        let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
+
+        let original = match engine.on_own_proposal("0xblockhash_round0") {
+            BftAction::BroadcastPrevote(p) => p,
+            other => panic!("expected initial prevote, got {other:?}"),
+        };
+
+        let same_vote = match engine.emit_prevote(original.clone()) {
+            BftAction::BroadcastPrevote(p) => p,
+            other => panic!("same pending prevote should be reusable, got {other:?}"),
+        };
+        assert_eq!(same_vote, original);
+
+        let conflicting = Prevote {
+            block_hash: Some("0xother_block".into()),
+            ..original.clone()
+        };
+        assert!(matches!(
+            engine.emit_prevote(conflicting.clone()),
+            BftAction::Wait
+        ));
+        assert!(matches!(
+            engine.on_prevote_weighted(&conflicting, MIN_SELF_STAKE),
+            BftAction::Wait
+        ));
+        assert_eq!(engine.pending_prevote.as_ref(), Some(&original));
+    }
+
+    #[test]
+    fn test_291_conflicting_pending_precommit_blocks_new_vote() {
+        let (_reg, total_stake) = setup_4val();
+        let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
+
+        let original = Precommit {
+            height: 100,
+            round: 0,
+            block_hash: Some("0xblockhash_round0".into()),
+            validator: "0xval001".into(),
+            signature: vec![],
+        };
+        let first = match engine.emit_precommit(original.clone()) {
+            BftAction::BroadcastPrecommit(p) => p,
+            other => panic!("expected initial precommit, got {other:?}"),
+        };
+        assert_eq!(first, original);
+
+        let same_vote = match engine.emit_precommit(original.clone()) {
+            BftAction::BroadcastPrecommit(p) => p,
+            other => panic!("same pending precommit should be reusable, got {other:?}"),
+        };
+        assert_eq!(same_vote, original);
+
+        let conflicting = Precommit {
+            block_hash: None,
+            ..original.clone()
+        };
+        assert!(matches!(
+            engine.emit_precommit(conflicting.clone()),
+            BftAction::Wait
+        ));
+        assert!(matches!(
+            engine.on_precommit_weighted(&conflicting, MIN_SELF_STAKE),
+            BftAction::Wait
+        ));
+        assert_eq!(engine.pending_precommit.as_ref(), Some(&original));
+    }
+
+    #[test]
+    fn test_291_height_advance_clears_pending_votes() {
+        let (_reg, total_stake) = setup_4val();
+        let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
+
+        assert!(matches!(
+            engine.on_own_proposal("0xblockhash_round0"),
+            BftAction::BroadcastPrevote(_)
+        ));
+        assert!(matches!(
+            engine.emit_precommit(Precommit {
+                height: 100,
+                round: 0,
+                block_hash: Some("0xblockhash_round0".into()),
+                validator: "0xval001".into(),
+                signature: vec![],
+            }),
+            BftAction::BroadcastPrecommit(_)
+        ));
+
+        engine.new_height(101, total_stake);
+
+        assert!(engine.pending_prevote.is_none());
+        assert!(engine.pending_precommit.is_none());
+        assert_eq!(engine.state.height, 101);
+    }
+
+    #[test]
+    fn test_291_round_advance_and_catch_up_clear_pending_votes() {
+        let (reg, total_stake) = setup_4val();
+        let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
+
+        assert!(matches!(
+            engine.on_own_proposal("0xblockhash_round0"),
+            BftAction::BroadcastPrevote(_)
+        ));
+        assert!(matches!(
+            engine.emit_precommit(Precommit {
+                height: 100,
+                round: 0,
+                block_hash: Some("0xblockhash_round0".into()),
+                validator: "0xval001".into(),
+                signature: vec![],
+            }),
+            BftAction::BroadcastPrecommit(_)
+        ));
+
+        engine.advance_round();
+
+        assert!(engine.pending_prevote.is_none());
+        assert!(engine.pending_precommit.is_none());
+        assert_eq!(engine.state.round, 1);
+
+        assert!(matches!(
+            engine.on_own_proposal("0xblockhash_round1"),
+            BftAction::BroadcastPrevote(_)
+        ));
+        assert!(matches!(
+            engine.emit_precommit(Precommit {
+                height: 100,
+                round: 1,
+                block_hash: Some("0xblockhash_round1".into()),
+                validator: "0xval001".into(),
+                signature: vec![],
+            }),
+            BftAction::BroadcastPrecommit(_)
+        ));
+
+        let caught_up = engine.catch_up_round(2, &reg);
+
+        assert!(caught_up.is_some());
+        assert!(engine.pending_prevote.is_none());
+        assert!(engine.pending_precommit.is_none());
+        assert_eq!(engine.state.round, 2);
+    }
 }
