@@ -3,7 +3,10 @@
 use crate::blockchain::{Blockchain, CHAIN_WINDOW_SIZE};
 use sentrix_primitives::block::Block;
 use sentrix_primitives::error::{SentrixError, SentrixResult};
+use sentrix_primitives::transaction::PROTOCOL_TREASURY;
 use sentrix_storage::{ChainStorage, MdbxStorage};
+use sentrix_trie::{account_value_decode, address_to_key};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 pub struct Storage {
@@ -171,6 +174,49 @@ impl Storage {
         // rebuilt the index.
         bc.rebuild_mempool_sidecars();
 
+        // Patch B3 — trie-canonical reconciliation on load.
+        //
+        // The bincode `state` blob carries a snapshot of `accounts`,
+        // but under the pre-B1 non-atomic save flow (or any chain.db
+        // repaired with `state` and trie out of sync) the in-memory
+        // balances can drift from what the trie commits. The trie root
+        // is consensus-verified, so the trie is the source of truth;
+        // the blob is treated as a cache.
+        //
+        // For every protocol-system, validator, stake-related, and
+        // any-non-zero account, read the trie leaf at the loaded
+        // height, decode (balance, nonce), and overwrite the blob's
+        // value if they differ. Accounts with no trie leaf are left
+        // alone (covers the genesis/premine path that was never
+        // touched by `update_trie_for_block`).
+        //
+        // Errors propagate: a trie-lookup failure during reconcile
+        // means the trie is unreadable, not just that an account is
+        // absent — refuse to start so an operator surfaces it instead
+        // of silently running on inconsistent state.
+        let (checked, repaired) = Self::reconcile_accounts_from_trie(&mut bc)?;
+        if repaired > 0 {
+            tracing::warn!(
+                "load_blockchain B3: reconciled {}/{} accounts from trie at height {} \
+                 (blob was stale; trie is canonical)",
+                repaired,
+                checked,
+                bc.height()
+            );
+            // Persist the repaired state via the atomic B1 path so the
+            // next load is a no-op + the blob_height checkpoint advances.
+            self.chain
+                .save_blockchain(&bc, &bc.chain)
+                .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        } else {
+            tracing::debug!(
+                "load_blockchain B3: {}/{} accounts checked, none required reconcile at height {}",
+                repaired,
+                checked,
+                bc.height()
+            );
+        }
+
         // Patch B2 (v2.1.90 state-root determinism RCA): if persisted
         // chain height is ahead of the bincode blob's checkpoint
         // height, the on-disk view is inconsistent — `accounts` is
@@ -277,6 +323,125 @@ impl Storage {
     #[doc(hidden)]
     pub fn chain_for_test(&self) -> &sentrix_storage::ChainStorage {
         &self.chain
+    }
+
+    /// Patch B3 — reconcile in-memory `accounts` against the trie
+    /// leaves at the loaded height. Returns (checked, repaired).
+    ///
+    /// The trie at `bc.height()` is the consensus-verified source of
+    /// truth; the blob's `accounts` is a cache that can drift if a
+    /// previous save was non-atomic. For every account we expect the
+    /// trie to know about — protocol-system addresses, validators in
+    /// `stake_registry`, and any address with non-zero balance/nonce
+    /// in the blob — read the trie leaf and overwrite the blob's
+    /// (balance, nonce) if they differ.
+    ///
+    /// Addresses with no trie leaf (`Ok(None)`) are skipped: the trie
+    /// only stores accounts that have been touched by
+    /// `update_trie_for_block`, while `bc.accounts` may also carry
+    /// premine / genesis accounts that pre-date the first trie touch.
+    /// We must not zero those out.
+    ///
+    /// Trie-lookup errors (`Err(_)`) propagate: a corrupted trie is a
+    /// hard-fail, not silent fallback.
+    fn reconcile_accounts_from_trie(bc: &mut Blockchain) -> SentrixResult<(usize, usize)> {
+        // Build the candidate address set first — sorted + deduped so
+        // the reconcile order is deterministic across runs (helps debug
+        // logs and makes tests stable).
+        let mut addrs: BTreeSet<String> = BTreeSet::new();
+
+        // 1. Protocol-system sentinel.
+        addrs.insert(PROTOCOL_TREASURY.to_string());
+
+        // 2. Validators in stake_registry — both the active set and
+        //    the full validator map (so jailed/unbonding entries get
+        //    reconciled too if they have a trie leaf).
+        for addr in bc.stake_registry.active_set.iter() {
+            addrs.insert(addr.clone());
+        }
+        for addr in bc.stake_registry.validators.keys() {
+            addrs.insert(addr.clone());
+        }
+
+        // 3. Any account in the blob with non-zero balance or nonce.
+        //    Catches user accounts that have been touched at some point
+        //    in chain history; misses purely-zero accounts but those
+        //    have no state to drift on.
+        for (addr, acct) in bc.accounts.accounts.iter() {
+            if acct.balance > 0 || acct.nonce > 0 {
+                addrs.insert(addr.clone());
+            }
+        }
+
+        // Split-borrow: we need `&mut bc.state_trie` for `trie.get`
+        // (which mutates the cache) and `&mut bc.accounts` to apply
+        // any repairs. The struct fields are independent, so this
+        // satisfies the borrow checker.
+        let trie = bc.state_trie.as_mut().ok_or_else(|| {
+            SentrixError::Internal(
+                "B3 reconcile: state_trie is None — init_trie must run before reconcile"
+                    .to_string(),
+            )
+        })?;
+
+        // Phase 1: read all trie leaves into a buffer. This avoids
+        // holding the trie borrow while we mutate accounts in phase 2.
+        let mut trie_values: Vec<(String, Option<(u64, u64)>)> = Vec::with_capacity(addrs.len());
+        for addr in &addrs {
+            let key = address_to_key(addr);
+            let leaf = trie.get(&key).map_err(|e| {
+                SentrixError::Internal(format!(
+                    "B3 reconcile: trie lookup for {addr} failed at h={}: {e}",
+                    bc.chain.last().map(|b| b.index).unwrap_or(0)
+                ))
+            })?;
+            let decoded = leaf.and_then(|bytes| account_value_decode(&bytes));
+            trie_values.push((addr.clone(), decoded));
+        }
+
+        // Phase 2: apply repairs.
+        let height = bc.chain.last().map(|b| b.index).unwrap_or(0);
+        let mut checked = 0usize;
+        let mut repaired = 0usize;
+        for (addr, trie_view) in trie_values {
+            checked += 1;
+            let Some((trie_balance, trie_nonce)) = trie_view else {
+                // No trie leaf for this address — skip. Either it's a
+                // premine account that has never been touched, or it
+                // has zero state at this height. Either way, the blob
+                // is the only source of truth for it, so we leave it.
+                continue;
+            };
+            let (blob_balance, blob_nonce) = bc
+                .accounts
+                .accounts
+                .get(&addr)
+                .map(|a| (a.balance, a.nonce))
+                .unwrap_or((0, 0));
+            if trie_balance != blob_balance || trie_nonce != blob_nonce {
+                tracing::warn!(
+                    "B3 reconcile: account {} blob=(bal={},nonce={}) != trie=(bal={},nonce={}) \
+                     at h={} — overwriting blob from trie (canonical)",
+                    addr,
+                    blob_balance,
+                    blob_nonce,
+                    trie_balance,
+                    trie_nonce,
+                    height
+                );
+                let acct = bc.accounts.get_or_create(&addr);
+                acct.balance = trie_balance;
+                acct.nonce = trie_nonce;
+                repaired += 1;
+            }
+        }
+
+        // The reconcile path mutates `accounts.touched_in_block` as a
+        // side effect of `get_or_create`. Clear it so the next
+        // `apply_block_pass2` doesn't pick up a stale touch list.
+        bc.accounts.clear_touched_in_block();
+
+        Ok((checked, repaired))
     }
 
     // ── Utility ──────────────────────────────────────────

@@ -605,6 +605,143 @@ fn test_v2_1_90_atomic_txn_no_partial_state_on_skipped_save() {
     });
 }
 
+/// Patch B3 — trie-canonical reconciliation on load.
+///
+/// Scenario: a chain.db that was torn under the pre-B1 non-atomic
+/// persistence path. The on-disk view has block bytes + height +
+/// trie data consistent with chain head h=N, but the bincode `state`
+/// blob's `accounts` map is stale because one or more historical
+/// `save_blockchain` calls didn't fire after their preceding
+/// `save_block`. The blob also has no `blob_height` key (it pre-dates
+/// the B1 atomic-save change), so the B2 detector treats it as legacy
+/// and skips replay.
+///
+/// Without B3, applying block N+1 reads the stale `accounts` value and
+/// produces a different trie root than peers — the same bug class that
+/// caused split-brain on the live cluster.
+///
+/// With B3, `Storage::load_blockchain` reconciles in-memory account
+/// state against the trie's leaves at h=N before returning, so the
+/// next `apply_block_pass2` reads canonical balances regardless of
+/// blob staleness.
+#[test]
+fn test_v2_1_90_legacy_torn_chain_db_recovers_via_trie_reconcile() {
+    with_v2_env(|| {
+        let proposer = proposer_addr();
+
+        // Phase 1: build N blocks atomically (post-B1).
+        let (_dir, storage, mut producer) = setup_storage_and_chain();
+        let mdbx = storage.mdbx_arc();
+        producer.init_trie(Arc::clone(&mdbx)).unwrap();
+        producer.init_storage_handle(Arc::clone(&mdbx)).unwrap();
+        const N: u64 = 10;
+        for _ in 0..N {
+            let block = producer.create_block(&proposer).expect("create");
+            producer.add_block(block).expect("add");
+            storage.save_blockchain(&producer).expect("save");
+        }
+        let producer_root_n = producer.trie_root_at(N).map(hex::encode);
+        let canonical_treasury = producer
+            .accounts
+            .get_balance(sentrix_primitives::transaction::PROTOCOL_TREASURY);
+        drop(producer);
+
+        // Phase 2: corrupt the persisted blob — decrement
+        // PROTOCOL_TREASURY balance by K block-rewards, simulating a
+        // chain.db where K save_blockchain calls were skipped after
+        // their save_block under the pre-B1 non-atomic path.
+        const K: u64 = 5;
+        const BLOCK_REWARD: u64 = 100_000_000;
+        let drop_amount = K * BLOCK_REWARD;
+
+        let raw = mdbx
+            .get(sentrix_storage::tables::TABLE_STATE, b"state")
+            .expect("read state")
+            .expect("state present");
+        let mut bc_blob: Blockchain = serde_json::from_slice(&raw).expect("decode state");
+        let acct = bc_blob
+            .accounts
+            .accounts
+            .get_mut(sentrix_primitives::transaction::PROTOCOL_TREASURY)
+            .expect("treasury entry present in blob");
+        let pre = acct.balance;
+        assert!(pre >= drop_amount, "test setup: blob treasury too small");
+        acct.balance = pre - drop_amount;
+        let corrupt = serde_json::to_vec(&bc_blob).expect("encode state");
+        mdbx.put(sentrix_storage::tables::TABLE_STATE, b"state", &corrupt)
+            .expect("write corrupt state");
+
+        // Delete blob_height to simulate a chain.db that pre-dates the
+        // B1 atomic-save change. With the key absent, the B2 detector's
+        // `load_blob_height` returns None and the detector skips replay,
+        // leaving B3 reconciliation as the only repair path.
+        let _ = mdbx
+            .delete(sentrix_storage::tables::TABLE_STATE, b"blob_height")
+            .expect("delete blob_height");
+
+        // Phase 3: reload and apply block N+1.
+        let mut reloaded: Blockchain = storage
+            .load_blockchain()
+            .expect("load_blockchain")
+            .expect("state present");
+        reloaded.init_trie(Arc::clone(&mdbx)).unwrap();
+        reloaded.init_storage_handle(Arc::clone(&mdbx)).unwrap();
+
+        // After B3, the reconciler must have repaired the treasury
+        // balance from the trie. Sanity-check it matches the canonical
+        // pre-corruption value.
+        let post_reload_treasury = reloaded
+            .accounts
+            .get_balance(sentrix_primitives::transaction::PROTOCOL_TREASURY);
+        assert_eq!(
+            post_reload_treasury, canonical_treasury,
+            "B3 reconciliation must restore PROTOCOL_TREASURY from trie. \
+             Expected {canonical_treasury}, got {post_reload_treasury}. \
+             Pre-fix delta = {drop_amount} (K={K} block rewards)."
+        );
+
+        // Phase 4: control chain — never corrupted, replay all N blocks.
+        let dir_ctrl = TempDir::new().expect("tempdir");
+        let mdbx_ctrl = Arc::new(MdbxStorage::open(dir_ctrl.path()).expect("mdbx ctrl"));
+        let mut control = Blockchain::new("admin".to_string());
+        control.authority.add_validator_unchecked(
+            proposer.clone(),
+            "Validator 1".to_string(),
+            "pk1".to_string(),
+        );
+        control.init_trie(Arc::clone(&mdbx_ctrl)).unwrap();
+        for h in 1..=N {
+            let block = reloaded
+                .get_block_any(h)
+                .unwrap_or_else(|| panic!("missing block at h={h}"));
+            control.add_block_from_peer(block).expect("control replay");
+        }
+        // Sanity: control trie root at N matches producer's snapshot.
+        assert_eq!(
+            control.trie_root_at(N).map(hex::encode),
+            producer_root_n,
+            "control replay must match producer at h={N}"
+        );
+
+        // Phase 5: apply block N+1 on both sides; trie roots must match.
+        let block_n1 = control.create_block(&proposer).expect("create N+1");
+        let h_n1 = block_n1.index;
+        control
+            .add_block(block_n1.clone())
+            .expect("control add N+1");
+        reloaded
+            .add_block_from_peer(block_n1)
+            .expect("reloaded add N+1");
+
+        assert_eq!(
+            reloaded.trie_root_at(h_n1).map(hex::encode),
+            control.trie_root_at(h_n1).map(hex::encode),
+            "post-reconcile trie root at h={h_n1} must match control. \
+             B3 should have restored treasury from trie at load time."
+        );
+    });
+}
+
 /// Deterministic replay from persisted blocks: feed the same set of
 /// blocks through two fresh chains in different orders/cadences (one
 /// linear, one with periodic save_blockchain hiccups simulating pre-B1
