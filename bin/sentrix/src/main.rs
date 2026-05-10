@@ -1462,6 +1462,56 @@ async fn cmd_start(
     // docs/operations/guardian.md for the full reasoning and the
     // recommended supervisor policy.
 
+    // Fix A (2026-05-10) — async chain.db save off the BFT critical path.
+    // Pre-fix: validator-loop blocked on storage.save_blockchain inside the
+    // FinalizeBlock arm. With a ~5 GB mainnet chain.db that fsync + JSON
+    // serialise was 500 ms-1 s and held up the next round. Now we ship
+    // every finalized height onto a save_tx channel and a dedicated writer
+    // task drains it serially. Crash safety is preserved by the existing
+    // B2 load-replay path (PR #556): if we die between in-memory commit
+    // and the disk save, restart replays the missing block(s).
+    let save_buffer: usize = std::env::var("SENTRIX_SAVE_QUEUE_DEPTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64);
+    let (save_tx, mut save_rx) = tokio::sync::mpsc::channel::<u64>(save_buffer);
+    {
+        let writer_storage = storage.clone();
+        let writer_shared = shared.clone();
+        tokio::spawn(async move {
+            while let Some(target_height) = save_rx.recv().await {
+                // Drain coalesced heights: if the writer is behind, multiple
+                // FinalizeBlock pushes can stack up. One snapshot covers all
+                // of them since save_blockchain writes the full state blob.
+                let mut latest = target_height;
+                while let Ok(h) = save_rx.try_recv() {
+                    latest = h;
+                }
+                let bc = writer_shared.read().await;
+                let height_at_save = bc.height();
+                match writer_storage.save_blockchain(&bc) {
+                    Ok(()) => {
+                        tracing::debug!(
+                            target: "save_writer",
+                            "background save_blockchain ok queued_for=h{} caught_up_to=h{}",
+                            latest,
+                            height_at_save,
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            target: "save_writer",
+                            "background save_blockchain failed queued_for=h{} caught_up_to=h{}: {}",
+                            latest, height_at_save, e,
+                        );
+                    }
+                }
+                drop(bc);
+            }
+            tracing::info!(target: "save_writer", "save channel closed; writer exiting");
+        });
+    }
+
     // Validator loop — capture the JoinHandle so the graceful-shutdown
     // path (C-08) can await the task's exit before save_blockchain
     // snapshots state. Without the handle the process could exit mid
@@ -1470,6 +1520,7 @@ async fn cmd_start(
         println!("Validator mode: {}", wallet.address);
         let shared_clone = shared.clone();
         let storage_clone = storage.clone();
+        let save_tx_clone = save_tx.clone();
         let lp2p_clone = lp2p.clone();
         let shutdown_flag_clone = shutdown_flag.clone();
         let mut bft_rx = bft_rx; // move receiver into this task
@@ -2594,36 +2645,26 @@ async fn cmd_start(
 
                                                         drop(bc);
                                                         if let Some(ref saved_block) = updated {
-                                                            // H-09 + Patch B1 (v2.1.90): atomic
-                                                            // persist of block bytes, height,
-                                                            // hash index, and Blockchain blob
-                                                            // in one MDBX transaction. Replaces
-                                                            // the pre-fix save_block +
-                                                            // save_blockchain pair (which had a
-                                                            // crash window between them).
-                                                            let bc = shared_clone.read().await;
-                                                            if let Err(e) =
-                                                                storage_clone.save_blockchain(&bc)
-                                                            {
-                                                                tracing::error!(
-                                                                    "H-09: atomic save_blockchain \
-                                                                     failed at BFT block {} by {}: \
-                                                                     {}; skipping broadcast",
+                                                            // Fix A: queue the disk save on the
+                                                            // writer task instead of fsync-blocking
+                                                            // here. B2 load-replay recovers if we
+                                                            // crash between in-memory commit and
+                                                            // the queued save.
+                                                            if save_tx_clone.try_send(height).is_err() {
+                                                                tracing::warn!(
+                                                                    target: "save_writer",
+                                                                    "save queue full at h={}; \
+                                                                     B2 load-replay will catch up",
                                                                     height,
-                                                                    proposer,
-                                                                    e
                                                                 );
-                                                                drop(bc);
-                                                            } else {
-                                                                drop(bc);
-                                                                println!(
-                                                                    "Block {} produced by {}",
-                                                                    height, proposer
-                                                                );
-                                                                lp2p_clone
-                                                                    .broadcast_block(saved_block)
-                                                                    .await;
                                                             }
+                                                            println!(
+                                                                "Block {} produced by {}",
+                                                                height, proposer
+                                                            );
+                                                            lp2p_clone
+                                                                .broadcast_block(saved_block)
+                                                                .await;
                                                         }
                                                     }
                                                     Err(e) => tracing::warn!(
@@ -3124,7 +3165,11 @@ async fn cmd_start(
 
                                                 drop(bc);
                                                 if let Some(ref saved_block) = updated {
-                                                    // H-09: persist before broadcast.
+                                                    // H-09: persist block bytes before broadcast
+                                                    // (small write, kept sync). The expensive full
+                                                    // state snapshot moves to the writer queue
+                                                    // (Fix A); B2 load-replay covers a crash
+                                                    // between this point and the queued save.
                                                     if let Err(e) =
                                                         storage_clone.save_block(saved_block)
                                                     {
@@ -3140,18 +3185,14 @@ async fn cmd_start(
                                                             "Block {} produced by {}",
                                                             height, proposer
                                                         );
-                                                        let bc = shared_clone.read().await;
-                                                        if let Err(e) =
-                                                            storage_clone.save_blockchain(&bc)
-                                                        {
+                                                        if save_tx_clone.try_send(height).is_err() {
                                                             tracing::warn!(
-                                                                "save_blockchain snapshot \
-                                                                 failed at {}: {}",
+                                                                target: "save_writer",
+                                                                "save queue full at h={}; \
+                                                                 B2 load-replay will catch up",
                                                                 height,
-                                                                e
                                                             );
                                                         }
-                                                        drop(bc);
                                                         lp2p_clone
                                                             .broadcast_block(saved_block)
                                                             .await;
