@@ -29,10 +29,16 @@ pub(super) async fn root(State(state): State<SharedState>) -> Json<serde_json::V
     // explorers, wallets) need accurate consensus mode.
     let bc = state.read().await;
     let chain_id = bc.chain_id;
+    // Read the loaded genesis name so testnet binaries return
+    // "Sentrix Testnet" instead of pretending to be mainnet. Pre-fix
+    // the literal "Sentrix" string here was the same on every network
+    // — wallets that probe `/` for self-describe couldn't tell which
+    // rail they were on without checking chain_id.
+    let chain_name = bc.chain_name.clone();
     let consensus = if bc.voyager_activated { "DPoS+BFT" } else { "PoA" };
     drop(bc);
     Json(serde_json::json!({
-        "name": "Sentrix",
+        "name": chain_name,
         "version": env!("CARGO_PKG_VERSION"),
         "chain_id": chain_id,
         "consensus": consensus,

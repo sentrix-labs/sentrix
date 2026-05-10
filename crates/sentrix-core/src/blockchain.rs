@@ -458,6 +458,14 @@ pub struct Blockchain {
     pub mempool_sender_count: std::collections::HashMap<String, u32>,
     pub total_minted: u64,
     pub chain_id: u64, // kept pub — read-only constant used by external clients
+    /// Display name of this network (eg "Sentrix Chain", "Sentrix Testnet").
+    /// Sourced from the loaded genesis `[chain].name` so testnet binaries
+    /// don't lie about being mainnet on the `/` self-describe endpoint.
+    /// Default exists only because pre-genesis ctors (tests) skip the
+    /// genesis path; real boot always overwrites this in
+    /// `new_with_genesis`.
+    #[serde(default = "Blockchain::default_chain_name")]
+    pub chain_name: String,
     /// Binary Sparse Merkle Tree for account state.
     /// None until init_trie() is called; not persisted in MDBX state blob.
     #[serde(skip)]
@@ -624,6 +632,13 @@ fn default_block_source() -> crate::block_executor::BlockSource {
 }
 
 impl Blockchain {
+    /// Default for the `chain_name` serde-skip field — only matters for
+    /// pre-genesis state-blob deserialisations that predate the field.
+    /// Real boot always overwrites via `new_with_genesis`.
+    fn default_chain_name() -> String {
+        "Sentrix Chain".to_string()
+    }
+
     /// Construct a blockchain initialised from the embedded canonical mainnet
     /// genesis. Thin wrapper over [`Blockchain::new_with_genesis`].
     ///
@@ -658,6 +673,7 @@ impl Blockchain {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(genesis.chain.chain_id),
+            chain_name: genesis.chain.name.clone(),
             state_trie: None,
             mdbx_storage: None,
             stake_registry: sentrix_staking::staking::StakeRegistry::new(),
