@@ -42,23 +42,40 @@ pub static EVENT_TX_DROPPED: AtomicU64 = AtomicU64::new(0);
 
 /// 2026-05-05 v2.1.66: swarm-task progress counter. Incremented on
 /// every iteration of the run_swarm select! loop. Read by a separate
-/// watchdog tokio task — if the counter stays still for ≥30 s, the
-/// swarm task is wedged (most likely on `event_tx.send().await` if
-/// the validator-loop consumer is stuck, or on internal libp2p
-/// state-machine deadlock) and we trigger `std::process::abort()` so
-/// systemd `Restart=always` cycles cleanly without MDBX corruption.
+/// watchdog tokio task to detect silent-thread-death (counter stays
+/// still while validator main loop keeps ticking).
 ///
-/// Same pattern as the v2.1.60 heartbeat watchdog and v2.1.62 chain-
-/// height watchdog. Closes the silent-thread-death class observed at
-/// h=1392113 (2026-05-05 morning) and h=1398998 (2026-05-05 afternoon)
-/// where vps1's libp2p went unresponsive while the validator main
-/// loop kept ticking — peers' BFT prevote/precommit/proposal/round-
-/// status all timed out outbound to vps1 (`outbound failure to
-/// 12D3KooWSZ...JJE: Timeout while waiting for a response`) and the
-/// cluster lost a voter without any local signal that vps1 should
-/// restart. With this watchdog vps1 will self-abort + cycle back via
-/// systemd before the cluster crosses the quorum threshold.
+/// Closes the silent-thread-death class observed at h=1392113 and
+/// h=1398998 (both 2026-05-05) where vps1's libp2p went unresponsive
+/// while the validator main loop kept ticking — peers' BFT prevote/
+/// precommit/proposal/round-status all timed out outbound to vps1.
+///
+/// 2026-05-10: the action on stall is no longer process::abort by
+/// default. See `SwarmWatchdogAction` and `SWARM_STALL_TOTAL` /
+/// `SWARM_STALLED` below. Default action is WarnOnly so external
+/// supervisors (sentrix-guardian / systemd / docker `unless-stopped`)
+/// can decide whether and how to restart. In-process self-kill was
+/// hiding deeper liveness issues — see docs/debugging/bft-liveness.md.
 pub static SWARM_TICK: AtomicU64 = AtomicU64::new(0);
+
+/// 2026-05-10: cumulative count of swarm-task stall detections. Each
+/// increment corresponds to a `STALL_THRESHOLD` window where SWARM_TICK
+/// did not advance. Exposed as `sentrix_swarm_stall_total` for external
+/// monitoring. Replaces the hard-kill signal — restart decisions move
+/// to an external guardian.
+pub static SWARM_STALL_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// 2026-05-10: age in seconds of the last observed SWARM_TICK change.
+/// 0 means the counter advanced this tick. Exposed as
+/// `sentrix_swarm_last_tick_age_seconds`.
+pub static SWARM_LAST_TICK_AGE_SECONDS: AtomicU64 = AtomicU64::new(0);
+
+/// 2026-05-10: health flag — true while the swarm task is currently
+/// considered stalled (no SWARM_TICK progress for ≥ STALL_THRESHOLD).
+/// Cleared automatically when progress resumes. Read by the
+/// `/sentrix_status_extended` health endpoint.
+pub static SWARM_STALLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// 2026-05-05 v2.1.65: cumulative count of broadcasts dropped because
 /// the swarm cmd_tx channel was full (try_send → TrySendError::Full).
@@ -518,36 +535,52 @@ impl LibP2pNode {
 // ── Swarm watchdog action policy ─────────────────────────
 //
 // The swarm-task watchdog (spawned inside run_swarm) detects silent-thread-
-// death by polling SWARM_TICK. When it fires, the action is configurable so
-// we can run a "warn" experiment on testnet to isolate whether the hard kill
-// itself contributes to mesh churn vs actually catching real wedges.
+// death by polling SWARM_TICK. The action on detection is configurable.
 //
-// Default is `Abort` — zero behaviour change without the env set.
+// 2026-05-10: default changed from Abort → WarnOnly. The 6h warn-mode
+// testnet bake confirmed that:
+//   1. Hard-kill restart cycles were the dominant restart-churn source
+//      (74 cumulative restarts in 6h on abort-mode vs 0 on warn-mode).
+//   2. Removing the kill exposed a deeper BFT/libp2p round-cascade
+//      liveness issue that the kill had been masking via mesh reset.
+//
+// In-process self-kill is the wrong answer to liveness because it hides
+// the underlying cascade and produces false confidence. External
+// supervisors (sentrix-guardian / systemd / docker `unless-stopped`)
+// can still restart unhealthy nodes — the difference is they decide
+// based on observed health flags + stall counters, not on a black-box
+// 30s timer inside the process.
+//
+// `Abort` and `Exit` modes are kept available behind the env so
+// operators who knowingly want the historical kill behaviour can opt
+// in, but the default is now non-fatal.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SwarmWatchdogAction {
-    /// Log only. No process termination. Resets the stall baseline so we
-    /// don't re-fire every TICK. Used on testnet for diagnostic bakes.
+    /// Log only — increment SWARM_STALL_TOTAL, set SWARM_STALLED, reset
+    /// the stall baseline so we don't re-fire every TICK. Default since
+    /// 2026-05-10.
     WarnOnly,
-    /// `std::process::exit(1)` — graceful (runs destructors).
+    /// `std::process::exit(1)` — graceful (runs destructors). Opt-in.
     Exit,
-    /// `std::process::abort()` — current production behaviour. Drops the
-    /// process immediately so systemd/docker `restart=unless-stopped` cycles
-    /// it cleanly without giving the libp2p task time to do anything weird.
+    /// `std::process::abort()` — drops the process immediately so an
+    /// external supervisor cycles it. Opt-in; the historical default
+    /// pre-2026-05-10. Use only when you specifically want the kill
+    /// behaviour.
     Abort,
 }
 
 /// Parse `SENTRIX_SWARM_WATCHDOG_MODE`. Recognised values (case-insensitive):
-/// `abort`, `exit`, `warn`. Anything else (or unset) returns `Abort`. Invalid
-/// values log a warning so an operator typo on testnet doesn't silently fall
-/// back to a different behaviour than they expected.
+/// `abort`, `exit`, `warn`. Anything else (or unset) returns the default
+/// `WarnOnly`. Invalid values log a warning so an operator typo doesn't
+/// silently fall back to a different behaviour than they expected.
 pub(crate) fn parse_watchdog_mode(value: Option<&str>) -> SwarmWatchdogAction {
     let raw = match value {
         Some(s) => s.trim(),
-        None => return SwarmWatchdogAction::Abort,
+        None => return SwarmWatchdogAction::WarnOnly,
     };
     if raw.is_empty() {
-        return SwarmWatchdogAction::Abort;
+        return SwarmWatchdogAction::WarnOnly;
     }
     match raw.to_ascii_lowercase().as_str() {
         "abort" => SwarmWatchdogAction::Abort,
@@ -556,10 +589,10 @@ pub(crate) fn parse_watchdog_mode(value: Option<&str>) -> SwarmWatchdogAction {
         other => {
             tracing::warn!(
                 target: "swarm_watchdog",
-                "Unrecognised SENTRIX_SWARM_WATCHDOG_MODE='{}' — falling back to default (abort).",
+                "Unrecognised SENTRIX_SWARM_WATCHDOG_MODE='{}' — falling back to default (warn).",
                 other,
             );
-            SwarmWatchdogAction::Abort
+            SwarmWatchdogAction::WarnOnly
         }
     }
 }
@@ -686,24 +719,43 @@ async fn run_swarm(
                 continue;
             }
             let current = SWARM_TICK.load(Ordering::Acquire);
+            // Update tick-age gauge regardless of stall state so external
+            // monitors can see how stale the loop is in real time.
+            let age = last_changed.elapsed().as_secs();
+            SWARM_LAST_TICK_AGE_SECONDS.store(age, Ordering::Release);
             if current != last_seen {
                 last_seen = current;
                 last_changed = TokioInstant::now();
+                // Resumed progress — clear the health flag.
+                SWARM_STALLED.store(false, std::sync::atomic::Ordering::Release);
             } else if last_changed.elapsed() >= STALL_THRESHOLD {
-                tracing::error!(
+                // Always increment the cumulative counter and set the
+                // health flag — these are the signals an external
+                // supervisor consumes regardless of mode.
+                SWARM_STALL_TOTAL.fetch_add(1, Ordering::Relaxed);
+                SWARM_STALLED.store(true, std::sync::atomic::Ordering::Release);
+
+                tracing::warn!(
                     target: "swarm_watchdog",
                     "libp2p swarm task stalled — no select!-loop progress \
-                     for {}s (counter={}, mode={:?}). Silent-thread-death \
-                     class at h=1392113 / h=1398998 was where libp2p went \
-                     unresponsive while validator main loop kept ticking.",
-                    last_changed.elapsed().as_secs(), current, watchdog_mode,
+                     for {}s (counter={}, mode={:?}, stall_total={}). \
+                     Silent-thread-death class at h=1392113 / h=1398998 \
+                     was where libp2p went unresponsive while validator \
+                     main loop kept ticking. External supervisor can \
+                     decide whether to restart based on swarm_stalled + \
+                     stall_total.",
+                    last_changed.elapsed().as_secs(),
+                    current,
+                    watchdog_mode,
+                    SWARM_STALL_TOTAL.load(Ordering::Relaxed),
                 );
                 match watchdog_mode {
                     SwarmWatchdogAction::Abort => std::process::abort(),
                     SwarmWatchdogAction::Exit => std::process::exit(1),
                     SwarmWatchdogAction::WarnOnly => {
-                        // Reset baseline so we don't re-fire every tick;
-                        // the operator wanted only a warning, not a kill.
+                        // Reset the stall baseline so we don't re-fire
+                        // every tick. Health flag stays set until the
+                        // counter actually advances again (cleared above).
                         last_seen = current;
                         last_changed = TokioInstant::now();
                     }
@@ -2273,8 +2325,11 @@ mod tests {
     // ── Swarm watchdog mode parsing ────────────────────────────────
 
     #[test]
-    fn watchdog_mode_default_is_abort_when_unset() {
-        assert_eq!(parse_watchdog_mode(None), SwarmWatchdogAction::Abort);
+    fn watchdog_mode_default_is_warn_when_unset() {
+        // 2026-05-10: default flipped from Abort → WarnOnly. Validator
+        // runtime no longer self-kills on swarm stall; restart decisions
+        // move to an external supervisor.
+        assert_eq!(parse_watchdog_mode(None), SwarmWatchdogAction::WarnOnly);
     }
 
     #[test]
@@ -2299,22 +2354,22 @@ mod tests {
     }
 
     #[test]
-    fn watchdog_mode_invalid_falls_back_to_abort() {
-        // Typo / unknown value → safe default, not panic.
-        assert_eq!(parse_watchdog_mode(Some("nuke")), SwarmWatchdogAction::Abort);
-        assert_eq!(parse_watchdog_mode(Some("disable")), SwarmWatchdogAction::Abort);
-        assert_eq!(parse_watchdog_mode(Some("123")), SwarmWatchdogAction::Abort);
+    fn watchdog_mode_invalid_falls_back_to_default() {
+        // Typo / unknown value → safe default (warn), not panic.
+        assert_eq!(parse_watchdog_mode(Some("nuke")), SwarmWatchdogAction::WarnOnly);
+        assert_eq!(parse_watchdog_mode(Some("disable")), SwarmWatchdogAction::WarnOnly);
+        assert_eq!(parse_watchdog_mode(Some("123")), SwarmWatchdogAction::WarnOnly);
     }
 
     #[test]
-    fn watchdog_mode_empty_string_falls_back_to_abort() {
-        assert_eq!(parse_watchdog_mode(Some("")), SwarmWatchdogAction::Abort);
-        assert_eq!(parse_watchdog_mode(Some("   ")), SwarmWatchdogAction::Abort);
+    fn watchdog_mode_empty_string_falls_back_to_default() {
+        assert_eq!(parse_watchdog_mode(Some("")), SwarmWatchdogAction::WarnOnly);
+        assert_eq!(parse_watchdog_mode(Some("   ")), SwarmWatchdogAction::WarnOnly);
     }
 
     #[test]
     fn watchdog_mode_warn_does_not_terminate_process() {
-        // The whole point of the experiment: warn mode must NOT request
+        // The whole point of warn mode: it must NOT request process
         // termination. We verify by matching on the enum variant — the
         // runtime side only calls process::abort/exit on the kill variants.
         let action = parse_watchdog_mode(Some("warn"));
@@ -2323,6 +2378,19 @@ mod tests {
             SwarmWatchdogAction::Abort | SwarmWatchdogAction::Exit
         );
         assert!(!terminates, "warn mode must not request process termination");
+    }
+
+    #[test]
+    fn watchdog_default_does_not_terminate_process() {
+        // Strong invariant for mission requirement #1: default behaviour
+        // (no env set) must not self-kill. External supervisors are the
+        // only correct restart authority.
+        let action = parse_watchdog_mode(None);
+        let terminates = matches!(
+            action,
+            SwarmWatchdogAction::Abort | SwarmWatchdogAction::Exit
+        );
+        assert!(!terminates, "default watchdog mode must not request process termination");
     }
 
     #[test]
