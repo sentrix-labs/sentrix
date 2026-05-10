@@ -2,30 +2,30 @@
 
 Sentrix is fully MetaMask-compatible on both networks. Mainnet (chain ID 7119) and Testnet (chain ID 7120) both run Voyager DPoS+BFT consensus with EVM enabled — MetaMask reads balances, signs transactions, and deploys Solidity contracts on either network.
 
-## Add Sentrix Testnet to MetaMask
+## Add Sentrix Chain (mainnet) to MetaMask
 
 1. Open MetaMask → Settings → Networks → Add a network → Add a network manually
 2. Fill in:
 
    | Field | Value |
    |-------|-------|
-   | **Network Name** | Sentrix Testnet |
-   | **New RPC URL** | `https://testnet-rpc.sentrixchain.com/rpc` |
-   | **Chain ID** | `7120` |
-   | **Currency Symbol** | `SRX` |
-   | **Block Explorer URL** | `https://scan.sentrixchain.com` |
-
-3. Save. Switch to "Sentrix Testnet" in the network dropdown.
-
-## Add Sentrix Mainnet
-
-   | Field | Value |
-   |-------|-------|
-   | **Network Name** | Sentrix |
+   | **Network Name** | Sentrix Chain |
    | **New RPC URL** | `https://rpc.sentrixchain.com` |
    | **Chain ID** | `7119` |
    | **Currency Symbol** | `SRX` |
    | **Block Explorer URL** | `https://scan.sentrixchain.com` |
+
+3. Save. Switch to "Sentrix Chain" in the network dropdown.
+
+## Add Sentrix Testnet to MetaMask
+
+   | Field | Value |
+   |-------|-------|
+   | **Network Name** | Sentrix Testnet |
+   | **New RPC URL** | `https://testnet-rpc.sentrixchain.com` |
+   | **Chain ID** | `7120` |
+   | **Currency Symbol** | `SRX` |
+   | **Block Explorer URL** | `https://scan-testnet.sentrixchain.com` |
 
 Mainnet supports `eth_sendRawTransaction` and Solidity contract deployment since the 2026-04-25 Voyager activation. Use mainnet for production deployments and testnet for development.
 
@@ -54,12 +54,12 @@ The contract address appears in Remix and is queryable via `eth_getCode`.
 
 ```bash
 # Get deployed contract code
-curl -X POST https://testnet-rpc.sentrixchain.com/rpc \
+curl -X POST https://testnet-rpc.sentrixchain.com \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_getCode","params":["0xCONTRACT_ADDR","latest"],"id":1}'
 
 # Call a function (example: totalSupply() = 0x18160ddd)
-curl -X POST https://testnet-rpc.sentrixchain.com/rpc \
+curl -X POST https://testnet-rpc.sentrixchain.com \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_call","params":[{"to":"0xCONTRACT_ADDR","data":"0x18160ddd"},"latest"],"id":1}'
 ```
