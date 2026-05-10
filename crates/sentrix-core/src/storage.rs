@@ -57,6 +57,29 @@ impl Storage {
             }
         };
 
+        // Upgrade-path fix-up for chain_name. The field gets a serde
+        // default of "Sentrix Chain" so old state blobs deserialise
+        // cleanly, but on testnet that means the loaded value silently
+        // takes mainnet's name. Override from the canonical chain_id
+        // mapping so the self-describe endpoint reflects the network
+        // this binary is actually running. The very first save_blockchain
+        // after this fix-up persists the corrected name so subsequent
+        // boots find it already right.
+        let canonical = match bc.chain_id {
+            7119 => Some("Sentrix Chain"),
+            7120 => Some("Sentrix Testnet"),
+            _ => None,
+        };
+        if let Some(name) = canonical
+            && bc.chain_name != name
+        {
+            tracing::info!(
+                "chain_name fix-up on load: chain_id={} blob={:?} → {:?}",
+                bc.chain_id, bc.chain_name, name,
+            );
+            bc.chain_name = name.to_string();
+        }
+
         // Load only the sliding window (last CHAIN_WINDOW_SIZE blocks) into RAM.
         let height = self
             .chain
