@@ -13,42 +13,10 @@ use sentrix::storage::db::Storage;
 use sentrix::wallet::keystore::Keystore;
 use sentrix::wallet::wallet::Wallet;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 
 const DEFAULT_API_PORT: u16 = 8545;
-
-// 2026-05-10: validator-runtime liveness metrics. See also
-// `crates/sentrix-network/src/libp2p_node.rs::SWARM_STALL_TOTAL` and the
-// runtime self-kill removal note in docs/operations/guardian.md.
-//
-// These counters and flags replace the in-process abort behaviour that
-// previously fired on heartbeat-stall and chain-height-stall. External
-// supervisors (sentrix-guardian / systemd / docker) consume these to
-// decide whether to restart the process — that decision no longer
-// belongs inside the validator runtime itself.
-
-/// Cumulative count of validator-loop heartbeat stalls. Each increment
-/// = one `HEARTBEAT_STALL_THRESHOLD` window where the heartbeat counter
-/// did not advance.
-pub static VALIDATOR_HEARTBEAT_STALL_TOTAL: AtomicU64 = AtomicU64::new(0);
-
-/// Age in seconds of the last observed heartbeat advance. 0 means the
-/// counter advanced on this tick.
-pub static VALIDATOR_HEARTBEAT_AGE_SECONDS: AtomicU64 = AtomicU64::new(0);
-
-/// Cumulative count of chain-height stalls observed. Each increment =
-/// one `height_stall_threshold` window where bc.height() did not change.
-pub static BFT_HEIGHT_STALL_TOTAL: AtomicU64 = AtomicU64::new(0);
-
-/// Age in seconds of the last observed height advance. 0 means a block
-/// finalized on this tick.
-pub static BFT_HEIGHT_STALL_SECONDS: AtomicU64 = AtomicU64::new(0);
-
-/// Health flag — true while either the heartbeat or chain-height
-/// stall window is active. Cleared automatically when progress resumes.
-/// Read by `/sentrix_status_extended` and external supervisors.
-pub static BFT_LIVENESS_DEGRADED: AtomicBool = AtomicBool::new(false);
 
 fn get_api_port() -> u16 {
     std::env::var("SENTRIX_API_PORT")
@@ -1479,216 +1447,20 @@ async fn cmd_start(
         }
     }
 
-    // BFT engine watchdog — heartbeat counter incremented at the top of
-    // every validator-loop iteration; a separate task panics + aborts
-    // the process if the counter stays stale for STALL_THRESHOLD seconds.
+    // 2026-05-10: in-process validator-loop watchdog removed.
     //
-    // Closes the silent-thread-death class (2026-05-04 incident series):
-    // a tokio task gets wedged on a lock or channel send, the validator
-    // loop stops iterating but the process stays alive (panic supervisor
-    // doesn't fire because nothing panicked). BFT engine emits no logs,
-    // chain stalls cluster-wide because a non-voting validator drops the
-    // others below quorum. The fix-without-RCA pattern: detect liveness
-    // at the loop level + abort on stall + let systemd Restart=always
-    // cycle the process. The next peer-gossip from a healthy validator
-    // re-syncs us via the libp2p add-block path.
+    // Production blockchains (Tendermint/CometBFT, Geth, Cosmos SDK
+    // app chains) don't ship in-process self-kill watchdogs. Restart
+    // authority belongs to an external supervisor (systemd, docker,
+    // sentrix-guardian) that can decide based on observed metrics —
+    // /sentrix_status_extended exposes the chain head, peer count,
+    // channel-drop counters, and the supervisor consumes those.
     //
-    // Threshold pick: 60s. BFT round-step timeout is in the seconds, a
-    // healthy iteration runs many times per second, so 60s of zero
-    // increments is unambiguously wedged. False-positive cost is one
-    // restart (~30s of downtime) which is dominated by the cost of
-    // letting a stalled validator sit indefinitely (cluster halt).
-    let validator_heartbeat = Arc::new(AtomicU64::new(0));
-    if validator.is_some() {
-        let heartbeat = validator_heartbeat.clone();
-        let shutdown = shutdown_flag.clone();
-        // Capture sender handles so the watchdog can also surface channel
-        // depth — `Sender::capacity()` returns free slots, max - free =
-        // depth.
-        let event_tx_for_watchdog = event_tx.clone();
-        let bft_tx_for_watchdog = bft_tx.clone();
-        // Chain-height-stale watchdog needs a Blockchain handle to read
-        // the latest finalized height. Read-only; takes the read lock
-        // for ~microseconds per tick.
-        let shared_for_watchdog = shared.clone();
-        tokio::spawn(async move {
-            use tokio::time::{Duration, sleep};
-            // Heartbeat watchdog — catches validator loop totally stopped
-            // iterating (silent thread death class). Loop iterates many
-            // times per second when healthy, so 60 s of zero increments
-            // is unambiguously wedged.
-            const HEARTBEAT_STALL_THRESHOLD: Duration = Duration::from_secs(60);
-            const HEARTBEAT_WARN_THRESHOLD: Duration = Duration::from_secs(20);
-            // Chain-height watchdog — catches the case where the loop IS
-            // iterating (heartbeat advances) but BFT can't reach finality
-            // (round-step rebroadcast cycle without finalize). Today's
-            // 2026-05-04 incident pattern: process alive + emitting
-            // libp2p outbound-failure logs every 2 s but height didn't
-            // move for 30+ min. Operator force-stopped, systemd
-            // SIGKILL'd, MDBX corrupted mid-write.
-            //
-            // 90 s threshold is generous: a healthy 4-validator BFT
-            // produces a block every 1 s, so 90 s of no-finalize = 90
-            // missed slots = real stall. False-positive cost is one
-            // restart; missed-detection cost is operator-triggered
-            // SIGKILL → MDBX_CORRUPTED → forced rsync recovery (today's
-            // failure mode that motivated this watchdog).
-            // v2.1.85: env-var override. Default 90s is fine for steady-state
-            // 1s-block production but kills validators mid-recovery (round-skip
-            // cycles can take >90s when the cluster is converging from a halt).
-            // Operators in recovery scenarios can set
-            // HEIGHT_STALL_THRESHOLD_SEC=600 to give BFT room to finish round
-            // transitions. Pre-v2.1.85 was hardcoded 90s; see v44 incident
-            // 2026-05-07 for the failure mode this override addresses.
-            let height_stall_secs: u64 = std::env::var("HEIGHT_STALL_THRESHOLD_SEC")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(90);
-            let height_stall_threshold = Duration::from_secs(height_stall_secs);
-            let height_warn_threshold =
-                Duration::from_secs(height_stall_secs.saturating_mul(1).max(30) / 3);
-            const TICK: Duration = Duration::from_secs(5);
-            const CHANNEL_GAUGE_TICK: Duration = Duration::from_secs(30);
-            const CHANNEL_PRESSURE_PCT: usize = 25;
-
-            let mut last_seen = heartbeat.load(Ordering::Acquire);
-            let mut last_changed = tokio::time::Instant::now();
-            let mut last_height: u64 = {
-                let bc = shared_for_watchdog.read().await;
-                bc.height()
-            };
-            let mut last_height_changed = tokio::time::Instant::now();
-            let mut last_gauge = tokio::time::Instant::now();
-            loop {
-                sleep(TICK).await;
-                if shutdown.load(Ordering::Acquire) {
-                    return;
-                }
-
-                // ── Heartbeat watchdog (loop-stop) ──
-                //
-                // 2026-05-10: this used to call std::process::abort() at
-                // HEARTBEAT_STALL_THRESHOLD. The hard-kill was removed
-                // because (a) the 6h warn-mode bake on testnet showed the
-                // kill was hiding a deeper BFT/libp2p round-cascade
-                // liveness issue, and (b) restart authority belongs to an
-                // external supervisor that can decide based on observed
-                // health flags + counters, not on a fixed timer inside
-                // the validator runtime. See docs/operations/guardian.md.
-                let current = heartbeat.load(Ordering::Acquire);
-                let hb_age = last_changed.elapsed().as_secs();
-                VALIDATOR_HEARTBEAT_AGE_SECONDS.store(hb_age, Ordering::Release);
-                if current != last_seen {
-                    last_seen = current;
-                    last_changed = tokio::time::Instant::now();
-                } else {
-                    let stale = last_changed.elapsed();
-                    if stale >= HEARTBEAT_STALL_THRESHOLD {
-                        let event_depth =
-                            event_tx_for_watchdog.max_capacity() - event_tx_for_watchdog.capacity();
-                        let bft_depth =
-                            bft_tx_for_watchdog.max_capacity() - bft_tx_for_watchdog.capacity();
-                        VALIDATOR_HEARTBEAT_STALL_TOTAL.fetch_add(1, Ordering::Relaxed);
-                        BFT_LIVENESS_DEGRADED.store(true, Ordering::Release);
-                        tracing::warn!(
-                            target: "validator_watchdog",
-                            "validator loop heartbeat stale for {}s (counter={}, \
-                             event_tx_depth={}/{}, bft_tx_depth={}/{}, stall_total={}) \
-                             — BFT engine may be wedged. External supervisor can \
-                             restart based on bft_liveness_degraded + heartbeat_stall_total. \
-                             Runtime will not self-kill.",
-                            stale.as_secs(), current,
-                            event_depth, event_tx_for_watchdog.max_capacity(),
-                            bft_depth, bft_tx_for_watchdog.max_capacity(),
-                            VALIDATOR_HEARTBEAT_STALL_TOTAL.load(Ordering::Relaxed),
-                        );
-                        // Reset the baseline so we don't re-warn on every
-                        // 5s tick while the stall persists. The health
-                        // flag stays set until the heartbeat actually
-                        // advances (cleared above on counter-change).
-                        last_seen = current;
-                        last_changed = tokio::time::Instant::now();
-                    } else if stale >= HEARTBEAT_WARN_THRESHOLD {
-                        tracing::warn!(
-                            target: "validator_watchdog",
-                            "validator loop heartbeat stale for {}s (counter={}) — \
-                             stall threshold {}s",
-                            stale.as_secs(), current, HEARTBEAT_STALL_THRESHOLD.as_secs(),
-                        );
-                    }
-                }
-
-                // ── Chain-height watchdog (BFT-stuck) ──
-                //
-                // Same 2026-05-10 change: hard-kill removed, replaced
-                // with metrics + warn + degraded health flag. The BFT
-                // round-cascade pattern that the kill was masking is
-                // documented in docs/debugging/bft-liveness.md.
-                let current_height = {
-                    let bc = shared_for_watchdog.read().await;
-                    bc.height()
-                };
-                let height_age = last_height_changed.elapsed().as_secs();
-                BFT_HEIGHT_STALL_SECONDS.store(height_age, Ordering::Release);
-                if current_height != last_height {
-                    last_height = current_height;
-                    last_height_changed = tokio::time::Instant::now();
-                    // Resumed progress — both watchdogs agree health is
-                    // restored only when both heartbeat AND height
-                    // advance, but this side just clears its slice.
-                    BFT_LIVENESS_DEGRADED.store(false, Ordering::Release);
-                } else {
-                    let stale = last_height_changed.elapsed();
-                    if stale >= height_stall_threshold {
-                        BFT_HEIGHT_STALL_TOTAL.fetch_add(1, Ordering::Relaxed);
-                        BFT_LIVENESS_DEGRADED.store(true, Ordering::Release);
-                        tracing::warn!(
-                            target: "validator_watchdog",
-                            "chain height stuck at {} for {}s — BFT not finalizing. \
-                             height_stall_total={}, bft_liveness_degraded=true. \
-                             Runtime will not self-kill — external supervisor decides.",
-                            current_height, stale.as_secs(),
-                            BFT_HEIGHT_STALL_TOTAL.load(Ordering::Relaxed),
-                        );
-                        // Reset baseline so we don't re-warn every tick.
-                        last_height_changed = tokio::time::Instant::now();
-                    } else if stale >= height_warn_threshold {
-                        tracing::warn!(
-                            target: "validator_watchdog",
-                            "chain height stuck at {} for {}s — stall threshold {}s",
-                            current_height, stale.as_secs(),
-                            height_stall_threshold.as_secs(),
-                        );
-                    }
-                }
-
-                // ── Channel-depth gauge ──
-                if last_gauge.elapsed() >= CHANNEL_GAUGE_TICK {
-                    last_gauge = tokio::time::Instant::now();
-                    let event_max = event_tx_for_watchdog.max_capacity();
-                    let bft_max = bft_tx_for_watchdog.max_capacity();
-                    let event_depth = event_max - event_tx_for_watchdog.capacity();
-                    let bft_depth = bft_max - bft_tx_for_watchdog.capacity();
-                    let event_pct = event_depth * 100 / event_max.max(1);
-                    let bft_pct = bft_depth * 100 / bft_max.max(1);
-                    if event_pct >= CHANNEL_PRESSURE_PCT || bft_pct >= CHANNEL_PRESSURE_PCT {
-                        tracing::warn!(
-                            target: "channel_depth",
-                            "backpressure: event_tx={}% ({}/{}) bft_tx={}% ({}/{})",
-                            event_pct, event_depth, event_max,
-                            bft_pct, bft_depth, bft_max,
-                        );
-                    } else {
-                        tracing::debug!(
-                            target: "channel_depth",
-                            "event_tx={}/{} bft_tx={}/{}",
-                            event_depth, event_max, bft_depth, bft_max,
-                        );
-                    }
-                }
-            }
-        });
-    }
+    // The earlier in-process watchdog was added during incident
+    // response and worked, but it hid the underlying BFT/libp2p
+    // liveness issues by short-cycling the process. See PR #561 +
+    // docs/operations/guardian.md for the full reasoning and the
+    // recommended supervisor policy.
 
     // Validator loop — capture the JoinHandle so the graceful-shutdown
     // path (C-08) can await the task's exit before save_blockchain
@@ -1888,18 +1660,7 @@ async fn cmd_start(
             const ADVERT_BROADCAST_INTERVAL: tokio::time::Duration =
                 tokio::time::Duration::from_secs(600); // 10 minutes
 
-            // Move heartbeat counter into the spawned task so the watchdog
-            // task can observe liveness without sharing the validator's
-            // internal state.
-            let heartbeat = validator_heartbeat.clone();
             loop {
-                // Watchdog liveness signal — incremented every iteration.
-                // The watchdog task spawned earlier panics + aborts if this
-                // counter stays still for >60s, catching any wedge that
-                // would otherwise let the process drift on while BFT goes
-                // silent (the silent-thread-death pattern from 2026-05-04).
-                heartbeat.fetch_add(1, Ordering::Release);
-
                 if shutdown_flag_clone.load(Ordering::Acquire) {
                     tracing::info!("Validator loop: shutdown flag set — exiting");
                     break;
