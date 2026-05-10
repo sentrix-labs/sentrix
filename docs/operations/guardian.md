@@ -1,89 +1,86 @@
-# Validator restart authority — guardian model
+# Validator restart authority — external supervisor model
 
 ## Summary
 
-The Sentrix validator runtime does **not** call `process::abort()` or
-`process::exit()` to recover from liveness stalls. Restart authority
-lives **outside** the validator process, in an external supervisor:
+The Sentrix validator runtime does **not** ship an in-process watchdog
+that can kill the process on liveness stalls. Restart authority lives
+**outside** the validator process, in an external supervisor:
 
 - `systemd` with `Restart=always` on the production validator units, or
 - `docker` with `restart: unless-stopped` on the testnet docker stack, or
 - a dedicated `sentrix-guardian` daemon for richer policy
 
-The runtime emits health flags and counters; the supervisor reads them
-and decides whether to restart.
-
-## Why this changed (2026-05-10)
-
-Before this change, three watchdogs inside the validator process called
-`std::process::abort()` on stall:
-
-- **Swarm-task watchdog** (libp2p select-loop progress) — 30 s threshold
-- **Validator-loop heartbeat watchdog** — 60 s threshold
-- **Chain-height watchdog** — 90 s default threshold (env-tunable)
-
-The 6 h testnet bake on 2026-05-10 demonstrated that these aborts were
-**masking** a deeper BFT/libp2p round-cascade liveness issue rather than
-fixing it. Each abort cycle reset the libp2p mesh, which incidentally
-broke validators out of nil-precommit cascades — but it produced false
-confidence: the underlying bug was never visible in production logs
-because the kills always cleared it before it persisted.
-
-When the kills were disabled (`SENTRIX_SWARM_WATCHDOG_MODE=warn`):
-
-- Restart count dropped from 74 / 6 h → 0
-- BFT round cascades became visible (round 5, 8, 11, 18+)
-- Block-time degraded from 0.82 s/blk avg → 2.83 s/blk avg
-- 0 safety regressions (no double-finalize, no equivocation, no
-  invalid-prev)
-
-The conclusion: in-process self-kill is the **wrong tool** for
-recovering from a consensus-layer liveness issue. It hides the bug and
-makes it harder to diagnose. The right tool is a metric and an
-external supervisor.
+This matches the pattern used by Tendermint / CometBFT, Geth, and
+Cosmos SDK app chains. The runtime's job is to expose health metrics;
+the supervisor's job is to decide when to restart.
 
 ## What the runtime exposes
 
-### Counters (cumulative, never decrement)
+The chain head, peer count, channel-drop counters, and similar gauges
+are available through `/sentrix_status_extended`. An external monitor
+polls that endpoint and decides when to act.
 
-| Metric                             | Source                          | Meaning                                                |
-| ---------------------------------- | ------------------------------- | ------------------------------------------------------ |
-| `sentrix_swarm_stall_total`        | `sentrix-network::libp2p_node`  | Each `STALL_THRESHOLD` (30 s) window with no progress. |
-| `sentrix_heartbeat_stall_total`    | `bin/sentrix::main`             | Each `HEARTBEAT_STALL_THRESHOLD` (60 s) window.        |
-| `sentrix_bft_height_stall_total`   | `bin/sentrix::main`             | Each `height_stall_threshold` (90 s default) window.   |
+The most useful raw signals:
 
-### Gauges (current state)
+- `latest_height` — chain tip from this node's view.
+- `peer_count` — verified libp2p peers.
+- `EVENT_TX_DROPPED`, `BFT_TX_DROPPED`, `DROPPED_BFT_BROADCASTS` —
+  cumulative back-pressure drops at the network/BFT boundary.
+- `INBOUND_SILENCE_DISCONNECTS` — peers force-disconnected by the
+  inbound-silence detector (libp2p peer management, not self-kill).
+- `SWARM_TICK` — incremented every iteration of the libp2p select!
+  loop. An external supervisor can compute "tick age" by subtracting
+  successive values and comparing against wall-clock.
 
-| Metric                                | Meaning                                                              |
-| ------------------------------------- | -------------------------------------------------------------------- |
-| `sentrix_swarm_last_tick_age_seconds` | Seconds since the libp2p select! loop last advanced.                 |
-| `sentrix_validator_heartbeat_age`     | Seconds since the validator loop heartbeat last advanced.            |
-| `sentrix_bft_height_stall_seconds`    | Seconds since `bc.height()` last advanced.                           |
+## What used to be in the runtime, and why it isn't any more
 
-### Health flags (boolean)
+There were three in-process watchdogs at one point:
 
-| Flag                       | Meaning                                                                      |
-| -------------------------- | ---------------------------------------------------------------------------- |
-| `swarm_stalled`            | `true` while the swarm task has been stuck > `STALL_THRESHOLD`.              |
-| `bft_liveness_degraded`    | `true` while heartbeat or height stall is currently active.                  |
+- libp2p swarm-task watchdog — fired `process::abort()` if SWARM_TICK
+  stayed still for ~30 s.
+- Validator-loop heartbeat watchdog — same, but on a per-iteration
+  counter inside the validator main loop.
+- Chain-height watchdog — same, but on `bc.height()`.
 
-Flags are **automatically cleared** when the underlying counter advances
-again — no operator intervention needed to reset them. They are exposed
-via the `/sentrix_status_extended` RPC endpoint.
+Operationally they worked: each kill cycle let `systemd Restart=always`
+bring the process back, the libp2p mesh re-handshook, and the chain
+broke out of whatever stuck state it was in. They were added during
+real incidents and stopped real halts.
+
+But two things were wrong with them:
+
+1. They short-cycled the process every time consensus had a bad
+   minute. That hid the underlying bugs — operators kept seeing
+   "validator restarted, chain is fine" instead of seeing the actual
+   nil-cascade or libp2p mesh stall in production logs. The fix
+   was to remove the kill so the bugs become visible (PR #559 →
+   PR #561).
+2. No production blockchain ships in-process self-kill. The right
+   tool for "process is unhealthy, please restart" is the supervisor
+   layer (systemd, docker, k8s, sentrix-guardian). Putting it in the
+   chain code is mixing concerns.
+
+The 6 h `SENTRIX_SWARM_WATCHDOG_MODE=warn` testnet bake on 2026-05-10
+proved the analysis: with kills disabled, restart count dropped from
+74 / 6 h to 0, no safety regression, but the BFT round-cascade pattern
+became immediately visible. That cascade was then fixed properly in
+the engine (PR #561 Patch B — `catch_up_round` no longer eager-nil-votes).
+
+After that, the watchdogs themselves were removed (this commit).
 
 ## Recommended supervisor policy
 
 These are starting thresholds. Tune for your deployment.
 
-| Severity   | Condition                                                              | Action                                       |
-| ---------- | ---------------------------------------------------------------------- | -------------------------------------------- |
-| `warn`     | `bft_height_stall_seconds > 120`                                       | Page on-call, collect logs.                  |
-| `critical` | `bft_height_stall_seconds > 300` AND BFT round > 10                    | Collect logs, then restart the unit.         |
-| `critical` | `swarm_stalled` is true AND `swarm_stall_total` increased twice in 5 m | Collect logs, then restart the unit.         |
+| Severity   | Condition                                                      | Action                                  |
+| ---------- | -------------------------------------------------------------- | --------------------------------------- |
+| `warn`     | `latest_height` unchanged for > 120 s                          | Page on-call, collect logs.             |
+| `critical` | `latest_height` unchanged for > 300 s                          | Collect logs, then restart the unit.    |
+| `critical` | `EVENT_TX_DROPPED` increases by >1000 in 5 min                 | Collect logs, then restart the unit.    |
+| `critical` | `peer_count` drops to 0 and stays there > 60 s                 | Collect logs, then restart the unit.    |
 
-**Always collect logs before restart.** The whole point of removing
-the in-process kill was to keep the failure mode observable. A blind
-auto-restart loses the diagnostic value.
+**Always collect logs before restart.** Auto-restart loops without log
+capture is the failure mode that produced the original problem.
 
 A minimal log-collection step:
 
@@ -101,27 +98,26 @@ docker logs --since 5m sentrix-testnet-val1 \
 
 Restart only after the log is on disk.
 
-## Opting back in to in-process kill (not recommended)
+## What stays in the runtime
 
-If a deployment really needs the historical kill behaviour (single-host
-homelab, no external supervisor available), set:
+The runtime still does panic-on-bug — a Rust panic in any tokio task
+hits a process-level panic hook that prints the panic + backtrace and
+aborts. That is **not** a watchdog. It signals corrupted state /
+broken invariant, the same way `panic!` works in Tendermint or any
+other Rust/Go chain. The supervisor cycles the process the same way
+it would for any other crash.
 
-```
-SENTRIX_SWARM_WATCHDOG_MODE=abort
-```
-
-This restores `std::process::abort()` on the libp2p stall path. The
-heartbeat and chain-height watchdogs in the validator runtime no longer
-have an env-flag for kill mode — they are warn-only by design. If you
-want them to terminate the process, your external supervisor should
-enforce that based on the published health flags.
+Genesis-init failure (e.g. premine credit overflow on cold-start)
+still calls `process::exit(1)`. That is also not a watchdog — it's
+"can't even reach a chain that's possible to run, stop now". The
+supervisor will retry on its own schedule.
 
 ## What guardian is **not**
 
 - Not a consensus participant. Guardian only restarts processes; it
   never touches BFT state, votes, or chain.db.
-- Not a fork resolver. Forks are handled by the BFT engine + state-fp
+- Not a fork resolver. Forks are handled by the BFT engine + STATE-FP
   trace + chain.db rsync from canonical, all upstream of guardian.
-- Not a substitute for fixing the underlying BFT/libp2p liveness
-  issues. Guardian is a band-aid that makes operations sustainable
-  while the deeper fixes are in flight.
+- Not a substitute for fixing real BFT/libp2p liveness issues.
+  Guardian's job is to make sure the runtime stays running; making
+  the runtime *stop needing to be restarted* is engineering work.
