@@ -515,6 +515,55 @@ impl LibP2pNode {
     }
 }
 
+// ── Swarm watchdog action policy ─────────────────────────
+//
+// The swarm-task watchdog (spawned inside run_swarm) detects silent-thread-
+// death by polling SWARM_TICK. When it fires, the action is configurable so
+// we can run a "warn" experiment on testnet to isolate whether the hard kill
+// itself contributes to mesh churn vs actually catching real wedges.
+//
+// Default is `Abort` — zero behaviour change without the env set.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SwarmWatchdogAction {
+    /// Log only. No process termination. Resets the stall baseline so we
+    /// don't re-fire every TICK. Used on testnet for diagnostic bakes.
+    WarnOnly,
+    /// `std::process::exit(1)` — graceful (runs destructors).
+    Exit,
+    /// `std::process::abort()` — current production behaviour. Drops the
+    /// process immediately so systemd/docker `restart=unless-stopped` cycles
+    /// it cleanly without giving the libp2p task time to do anything weird.
+    Abort,
+}
+
+/// Parse `SENTRIX_SWARM_WATCHDOG_MODE`. Recognised values (case-insensitive):
+/// `abort`, `exit`, `warn`. Anything else (or unset) returns `Abort`. Invalid
+/// values log a warning so an operator typo on testnet doesn't silently fall
+/// back to a different behaviour than they expected.
+pub(crate) fn parse_watchdog_mode(value: Option<&str>) -> SwarmWatchdogAction {
+    let raw = match value {
+        Some(s) => s.trim(),
+        None => return SwarmWatchdogAction::Abort,
+    };
+    if raw.is_empty() {
+        return SwarmWatchdogAction::Abort;
+    }
+    match raw.to_ascii_lowercase().as_str() {
+        "abort" => SwarmWatchdogAction::Abort,
+        "exit" => SwarmWatchdogAction::Exit,
+        "warn" => SwarmWatchdogAction::WarnOnly,
+        other => {
+            tracing::warn!(
+                target: "swarm_watchdog",
+                "Unrecognised SENTRIX_SWARM_WATCHDOG_MODE='{}' — falling back to default (abort).",
+                other,
+            );
+            SwarmWatchdogAction::Abort
+        }
+    }
+}
+
 // ── Swarm event loop ─────────────────────────────────────
 
 // large_futures: the Swarm owns SentrixBehaviour which has internal caches;
@@ -604,9 +653,19 @@ async fn run_swarm(
     // 2026-05-05 v2.1.66: spawn the swarm-task watchdog. It reads
     // SWARM_TICK every 5 s; if the counter stays still for ≥30 s past
     // the startup grace, the swarm select! loop has wedged and we
-    // abort. sync_interval (30 s) and kad_interval (60 s) ticks alone
-    // keep SWARM_TICK incrementing during quiet periods so we don't
-    // false-positive on a chain with no traffic.
+    // act per SENTRIX_SWARM_WATCHDOG_MODE. sync_interval (30 s) and
+    // kad_interval (60 s) ticks alone keep SWARM_TICK incrementing
+    // during quiet periods so we don't false-positive on a chain with
+    // no traffic.
+    //
+    // 2026-05-10: the kill action is now configurable via env so we
+    // can run a "warn" experiment on testnet to isolate whether the
+    // hard kill itself is contributing to mesh churn vs catching a
+    // real silent-thread-death. Default stays "abort" — zero behaviour
+    // change without the env set.
+    let watchdog_mode = parse_watchdog_mode(
+        std::env::var("SENTRIX_SWARM_WATCHDOG_MODE").ok().as_deref(),
+    );
     tokio::spawn(async move {
         use tokio::time::{Duration, Instant as TokioInstant, sleep};
         const STALL_THRESHOLD: Duration = Duration::from_secs(30);
@@ -633,14 +692,22 @@ async fn run_swarm(
             } else if last_changed.elapsed() >= STALL_THRESHOLD {
                 tracing::error!(
                     target: "swarm_watchdog",
-                    "FATAL: libp2p swarm task stalled — no select!-loop progress \
-                     for {}s (counter={}). Aborting cleanly so systemd restarts \
-                     (closes silent-thread-death class at h=1392113 / h=1398998 \
-                     where libp2p went unresponsive while validator main loop \
-                     kept ticking).",
-                    last_changed.elapsed().as_secs(), current,
+                    "libp2p swarm task stalled — no select!-loop progress \
+                     for {}s (counter={}, mode={:?}). Silent-thread-death \
+                     class at h=1392113 / h=1398998 was where libp2p went \
+                     unresponsive while validator main loop kept ticking.",
+                    last_changed.elapsed().as_secs(), current, watchdog_mode,
                 );
-                std::process::abort();
+                match watchdog_mode {
+                    SwarmWatchdogAction::Abort => std::process::abort(),
+                    SwarmWatchdogAction::Exit => std::process::exit(1),
+                    SwarmWatchdogAction::WarnOnly => {
+                        // Reset baseline so we don't re-fire every tick;
+                        // the operator wanted only a warning, not a kill.
+                        last_seen = current;
+                        last_changed = TokioInstant::now();
+                    }
+                }
             }
         }
     });
@@ -2201,5 +2268,72 @@ mod tests {
         let block =
             sentrix_primitives::block::Block::new(0, "0".to_string(), vec![], "v1".to_string());
         node.broadcast_block(&block).await; // must not panic
+    }
+
+    // ── Swarm watchdog mode parsing ────────────────────────────────
+
+    #[test]
+    fn watchdog_mode_default_is_abort_when_unset() {
+        assert_eq!(parse_watchdog_mode(None), SwarmWatchdogAction::Abort);
+    }
+
+    #[test]
+    fn watchdog_mode_recognises_abort_exit_warn() {
+        assert_eq!(parse_watchdog_mode(Some("abort")), SwarmWatchdogAction::Abort);
+        assert_eq!(parse_watchdog_mode(Some("exit")), SwarmWatchdogAction::Exit);
+        assert_eq!(parse_watchdog_mode(Some("warn")), SwarmWatchdogAction::WarnOnly);
+    }
+
+    #[test]
+    fn watchdog_mode_is_case_insensitive() {
+        assert_eq!(parse_watchdog_mode(Some("ABORT")), SwarmWatchdogAction::Abort);
+        assert_eq!(parse_watchdog_mode(Some("Exit")), SwarmWatchdogAction::Exit);
+        assert_eq!(parse_watchdog_mode(Some("WARN")), SwarmWatchdogAction::WarnOnly);
+        assert_eq!(parse_watchdog_mode(Some("Warn")), SwarmWatchdogAction::WarnOnly);
+    }
+
+    #[test]
+    fn watchdog_mode_trims_whitespace() {
+        assert_eq!(parse_watchdog_mode(Some("  warn  ")), SwarmWatchdogAction::WarnOnly);
+        assert_eq!(parse_watchdog_mode(Some("\texit\n")), SwarmWatchdogAction::Exit);
+    }
+
+    #[test]
+    fn watchdog_mode_invalid_falls_back_to_abort() {
+        // Typo / unknown value → safe default, not panic.
+        assert_eq!(parse_watchdog_mode(Some("nuke")), SwarmWatchdogAction::Abort);
+        assert_eq!(parse_watchdog_mode(Some("disable")), SwarmWatchdogAction::Abort);
+        assert_eq!(parse_watchdog_mode(Some("123")), SwarmWatchdogAction::Abort);
+    }
+
+    #[test]
+    fn watchdog_mode_empty_string_falls_back_to_abort() {
+        assert_eq!(parse_watchdog_mode(Some("")), SwarmWatchdogAction::Abort);
+        assert_eq!(parse_watchdog_mode(Some("   ")), SwarmWatchdogAction::Abort);
+    }
+
+    #[test]
+    fn watchdog_mode_warn_does_not_terminate_process() {
+        // The whole point of the experiment: warn mode must NOT request
+        // termination. We verify by matching on the enum variant — the
+        // runtime side only calls process::abort/exit on the kill variants.
+        let action = parse_watchdog_mode(Some("warn"));
+        let terminates = matches!(
+            action,
+            SwarmWatchdogAction::Abort | SwarmWatchdogAction::Exit
+        );
+        assert!(!terminates, "warn mode must not request process termination");
+    }
+
+    #[test]
+    fn watchdog_mode_kill_variants_request_termination() {
+        for v in ["abort", "exit"] {
+            let action = parse_watchdog_mode(Some(v));
+            let terminates = matches!(
+                action,
+                SwarmWatchdogAction::Abort | SwarmWatchdogAction::Exit
+            );
+            assert!(terminates, "{} mode must request process termination", v);
+        }
     }
 }
