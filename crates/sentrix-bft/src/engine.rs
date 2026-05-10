@@ -85,6 +85,18 @@ impl BftEngine {
         }
     }
 
+    /// 2026-05-10: accessor for the validator-loop's vote-rebroadcast tick.
+    /// Mirror of the proposal rebroadcast logic — periodically re-issues
+    /// our last cast vote so peers that missed the initial RR delivery
+    /// see it. Same bytes = same signature, no double-vote risk.
+    pub fn pending_prevote(&self) -> Option<&Prevote> {
+        self.pending_prevote.as_ref()
+    }
+
+    pub fn pending_precommit(&self) -> Option<&Precommit> {
+        self.pending_precommit.as_ref()
+    }
+
     /// Reset for a new height
     pub fn new_height(&mut self, height: u64, total_active_stake: u64) {
         self.state.advance_height(height, total_active_stake);

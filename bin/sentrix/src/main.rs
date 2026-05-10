@@ -1615,6 +1615,24 @@ async fn cmd_start(
             // enough peers have acked, without spamming the network.
             let mut proposal_broadcast_at: Option<std::time::Instant> = None;
             let mut proposal_rebroadcast_count: u32 = 0;
+            // 2026-05-10: vote rebroadcast tracking. Mirrors the proposal
+            // rebroadcast above. Earlier we found cascade rounds where one
+            // peer's prevote never reached one of the four validators
+            // (single-attempt request-response delivery, no built-in retry
+            // beyond the proposer's proposal rebroadcast). The receiver hit
+            // prevote_timeout without seeing the supermajority and nil-
+            // precommitted, then everyone cascaded.
+            //
+            // Re-broadcasting the SAME signed Prevote / Precommit at a
+            // periodic tick during their respective phases gives a missed
+            // peer ~6 more chances inside the 12 s phase budget. Same bytes
+            // = same signature, no double-vote risk.
+            let mut prevote_broadcast_at: Option<std::time::Instant> = None;
+            let mut prevote_rebroadcast_count: u32 = 0;
+            let mut last_prevote_round: (u64, u32) = (0, 0);
+            let mut precommit_broadcast_at: Option<std::time::Instant> = None;
+            let mut precommit_rebroadcast_count: u32 = 0;
+            let mut last_precommit_round: (u64, u32) = (0, 0);
             // v2.1.89: stash the originally-signed Proposal struct so the
             // #1d rebroadcast tick replays byte-identical bytes instead of
             // rebuilding + re-signing. Pre-fix, the rebroadcast path called
@@ -3283,6 +3301,72 @@ async fn cmd_start(
                             proposal_rebroadcast_count,
                             MAX_REBROADCASTS
                         );
+                    }
+
+                    // 2026-05-10: prevote / precommit rebroadcast (same
+                    // 2 s × 7 attempts pattern as proposal). Closes the
+                    // single-attempt RR delivery gap that produced
+                    // round-cascades when one peer's vote didn't reach
+                    // one of the four validators. Reset tracking when the
+                    // engine moves to a new (height, round).
+                    let cur_hr = (bft.height(), bft.round());
+                    if last_prevote_round != cur_hr {
+                        last_prevote_round = cur_hr;
+                        prevote_broadcast_at = None;
+                        prevote_rebroadcast_count = 0;
+                    }
+                    if last_precommit_round != cur_hr {
+                        last_precommit_round = cur_hr;
+                        precommit_broadcast_at = None;
+                        precommit_rebroadcast_count = 0;
+                    }
+                    if let Some(pv) = bft.pending_prevote()
+                        && pv.height == bft.height()
+                        && pv.round == bft.round()
+                        && matches!(bft.phase(), BftPhase::Prevote)
+                        && prevote_rebroadcast_count < MAX_REBROADCASTS
+                    {
+                        let due = match prevote_broadcast_at {
+                            None => true,
+                            Some(t) => t.elapsed() >= REBROADCAST_INTERVAL,
+                        };
+                        if due {
+                            lp2p_clone.broadcast_bft_prevote(pv).await;
+                            prevote_broadcast_at = Some(std::time::Instant::now());
+                            prevote_rebroadcast_count += 1;
+                            tracing::debug!(
+                                target: "bft_vote_rebroadcast",
+                                "rebroadcast prevote at height={} round={} attempt={}/{}",
+                                bft.height(),
+                                bft.round(),
+                                prevote_rebroadcast_count,
+                                MAX_REBROADCASTS
+                            );
+                        }
+                    }
+                    if let Some(pc) = bft.pending_precommit()
+                        && pc.height == bft.height()
+                        && pc.round == bft.round()
+                        && matches!(bft.phase(), BftPhase::Precommit)
+                        && precommit_rebroadcast_count < MAX_REBROADCASTS
+                    {
+                        let due = match precommit_broadcast_at {
+                            None => true,
+                            Some(t) => t.elapsed() >= REBROADCAST_INTERVAL,
+                        };
+                        if due {
+                            lp2p_clone.broadcast_bft_precommit(pc).await;
+                            precommit_broadcast_at = Some(std::time::Instant::now());
+                            precommit_rebroadcast_count += 1;
+                            tracing::debug!(
+                                target: "bft_vote_rebroadcast",
+                                "rebroadcast precommit at height={} round={} attempt={}/{}",
+                                bft.height(),
+                                bft.round(),
+                                precommit_rebroadcast_count,
+                                MAX_REBROADCASTS
+                            );
+                        }
                     }
 
                     // Check for BFT timeouts
