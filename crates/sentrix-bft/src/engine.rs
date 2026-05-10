@@ -168,14 +168,42 @@ impl BftEngine {
         }
         self.phase_start = Instant::now();
 
-        // 2026-05-09 finalization-dead fix: if we are the proposer for
-        // the caught-up round, do NOT enter the Prevote/nil-cast path.
-        // The validator-loop will detect the proposer slot via
-        // `is_proposer(...)`, build a proposal, and rely on
-        // `on_own_proposal -> accept_proposal -> BroadcastPrevote` to
-        // emit our yes-prevote. That path requires `phase == Propose`
-        // and `our_prevote_cast == false`, both of which `advance_round`
-        // already established above.
+        // 2026-05-10 nil-cascade fix: leave the engine in `phase=Propose`
+        // with `our_prevote_cast=false` regardless of whether we are the
+        // round's proposer. This applies to both proposer and non-proposer
+        // catch-up paths.
+        //
+        // Why we used to nil-prevote eagerly (Issue #133):
+        // gossipsub is fire-and-forget — if we missed round-N's proposal
+        // during a libp2p hiccup, it would never be re-delivered, and the
+        // engine would wait forever in Propose. The eager nil-vote let us
+        // contribute to quorum immediately so the round could either reach
+        // a 3/4 nil-precommit majority and skip, or finalize off our 3/4
+        // block-prevote without us.
+        //
+        // Why that backfired in observed testnet cascades:
+        // when round-N's proposal DID arrive after catch_up_round had
+        // already entered Prevote with nil, `on_proposal` returned Wait
+        // because `phase != Propose`. The nil-vote stuck for the whole
+        // round. Same pattern firing on every catch_up across a slow
+        // libp2p mesh produced the round 5 / 8 / 11+ cascades we saw on
+        // 2026-05-10 testnet.
+        //
+        // Why staying in Propose is safe:
+        // `on_timeout` already nil-prevotes from Propose phase if no
+        // proposal arrives within `propose_timeout(round)` (20s + 1s/round,
+        // capped at 30s). The validator-loop calls `is_timed_out()` every
+        // tick, so the nil-vote fallback is reliable. The original
+        // "wait forever" risk from #133 doesn't apply once on_timeout is
+        // wired correctly — and it has been since v2.1.60's heartbeat
+        // watchdog, which made the validator-loop tick rate observable.
+        //
+        // The trade-off:
+        // we contribute to quorum ~20s later in the worst case (proposal
+        // never arrives) but actually accept late-but-valid proposals,
+        // which the eager-nil path made impossible. The 20s delay is
+        // already absorbed by propose_timeout — net effect on cascade-free
+        // rounds is zero, and the cascade case improves dramatically.
         if stake_registry
             .weighted_proposer(self.state.height, self.state.round)
             .as_deref()
@@ -183,25 +211,19 @@ impl BftEngine {
         {
             tracing::debug!(
                 target: "bft_catch_up",
-                "catch_up_round: we are proposer at h={} r={} — skip nil-prevote, leave phase=Propose",
+                "catch_up_round: we are proposer at h={} r={} — leave phase=Propose, validator-loop will build the block",
                 self.state.height,
                 self.state.round,
             );
-            return None;
+        } else {
+            tracing::debug!(
+                target: "bft_catch_up",
+                "catch_up_round: non-proposer at h={} r={} — leave phase=Propose so a late-but-valid proposal can still be accepted; on_timeout will nil-prevote after propose_timeout if it never arrives",
+                self.state.height,
+                self.state.round,
+            );
         }
-
-        // Non-proposer path (Issue #133): enter Prevote with nil vote
-        // so we contribute to quorum immediately instead of waiting
-        // (forever) for a proposal that gossipsub will not re-deliver.
-        self.state.phase = BftPhase::Prevote;
-        self.state.our_prevote_cast = true;
-        Some(Prevote {
-            height: self.state.height,
-            round: self.state.round,
-            block_hash: None,
-            validator: self.our_address.clone(),
-            signature: vec![], // caller signs before broadcast
-        })
+        None
     }
 
     /// Are we the proposer for current height+round?
@@ -1593,11 +1615,13 @@ mod tests {
         // RoundStatus triggers catch-up to peer_round - 1 when peer is 2+ ahead.
         // This prevents the round desync stall without causing leapfrog.
         //
-        // Issue #133: after catch_up, the engine now emits a nil prevote
-        // (BftAction::BroadcastPrevote with block_hash = None) so peers
-        // observe our participation in the caught-up round — otherwise
-        // a restarted validator sits silent and 4-of-4 quorum drops to
-        // 3-of-4.
+        // 2026-05-10: catch_up_round no longer emits an eager nil-prevote.
+        // It advances the round and leaves the engine in `BftPhase::Propose`
+        // with `our_prevote_cast = false`, ready to accept a late-but-valid
+        // proposal. If no proposal arrives within `propose_timeout(round)`
+        // the validator-loop's `on_timeout` call still emits the nil-vote
+        // fallback, so the original Issue #133 "wait forever" risk is
+        // preserved through that path. See the comment in `catch_up_round`.
         let (mut engine, reg) = setup();
         assert_eq!(engine.round(), 0);
 
@@ -1609,23 +1633,30 @@ mod tests {
             signature: Vec::new(),
         };
         let action = engine.on_round_status(&status, &reg);
-        match action {
-            BftAction::BroadcastPrevote(p) => {
-                assert_eq!(p.round, 4, "prevote must be for caught-up round");
-                assert_eq!(
-                    p.block_hash, None,
-                    "must be nil prevote — we have no proposal"
-                );
-            }
-            other => panic!("expected BroadcastPrevote(nil), got {other:?}"),
-        }
+        assert!(
+            matches!(action, BftAction::Wait),
+            "catch_up no longer eager-nil-votes; got {action:?}"
+        );
         assert_eq!(engine.round(), 4); // caught up to peer - 1
+        assert_eq!(
+            engine.state.phase,
+            BftPhase::Propose,
+            "stay in Propose so a late proposal can be accepted"
+        );
+        assert!(
+            !engine.state.our_prevote_cast,
+            "our_prevote_cast stays false after catch_up so late proposal can drive a real prevote"
+        );
     }
 
-    // Issue #133: after catch_up, our_prevote_cast must be set so a late
-    // proposal for this round does NOT trigger a double-vote.
+    // 2026-05-10: catch_up no longer pre-empts the prevote, so the original
+    // "double-vote prevention via our_prevote_cast" intent of this test no
+    // longer applies. The test now pins the new contract: catch_up leaves
+    // the engine ready to accept a late proposal, and the actual
+    // double-vote protection lives in the LastSignBytes guard at the
+    // signing layer (PR #541), not in the engine state machine.
     #[test]
-    fn test_133_catch_up_sets_our_prevote_cast_prevents_double_vote() {
+    fn test_133_catch_up_does_not_block_late_proposal() {
         let (mut engine, reg) = setup();
         let status = RoundStatus {
             height: 100,
@@ -1635,18 +1666,28 @@ mod tests {
         };
         let _ = engine.on_round_status(&status, &reg);
         assert!(
-            engine.state.our_prevote_cast,
-            "catch_up must mark our prevote cast"
+            !engine.state.our_prevote_cast,
+            "catch_up must NOT mark our prevote cast — late proposal still needs to be accepted"
         );
-        assert_eq!(engine.state.phase, BftPhase::Prevote);
+        assert_eq!(engine.state.phase, BftPhase::Propose);
+        assert_eq!(engine.round(), 4);
 
-        // Late proposal for the same round must NOT cause a second prevote.
+        // Late proposal for the same round → engine accepts and emits a
+        // real prevote for the block. (Double-vote prevention happens at
+        // the signing layer via LastSignBytes guard, not here.)
         let proposer = reg.weighted_proposer(engine.height(), 4).unwrap();
         let action = engine.on_proposal("late_hash", &proposer, &reg);
-        assert!(
-            matches!(action, BftAction::Wait),
-            "late proposal must not trigger second prevote when our_prevote_cast is set; got {action:?}"
-        );
+        match action {
+            BftAction::BroadcastPrevote(p) => {
+                assert_eq!(p.round, 4, "prevote is for the caught-up round");
+                assert_eq!(
+                    p.block_hash.as_deref(),
+                    Some("late_hash"),
+                    "engine must vote for the late proposal, not nil"
+                );
+            }
+            other => panic!("expected BroadcastPrevote for late proposal, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1942,6 +1983,10 @@ mod tests {
     fn test_143_f_plus_one_peers_at_same_round_triggers_catch_up() {
         // 2 of 4 peers at round 1 → f+1 (2 peers × 250 stake = 500 > 334).
         // Our round is 0, so we should catch up to round 1.
+        //
+        // 2026-05-10: catch_up no longer eager-nil-votes (see catch_up_round
+        // comment). Engine still advances to round 1 but stays in Propose
+        // so a late-but-valid proposal can drive a real prevote.
         let (mut engine, reg) = setup_143();
         assert_eq!(engine.round(), 0);
 
@@ -1949,12 +1994,13 @@ mod tests {
         let action = engine.on_round_status_weighted(&status("0xb", 1), 250, &reg);
 
         assert!(
-            matches!(action, BftAction::BroadcastPrevote(ref p) if p.round == 1 && p.block_hash.is_none()),
-            "expected nil prevote at round 1 after f+1 peers reported, got {:?}",
+            matches!(action, BftAction::Wait),
+            "f+1 catch-up advances the round but no longer eager-nil-votes; got {:?}",
             action,
         );
         assert_eq!(engine.round(), 1);
-        assert!(engine.state.our_prevote_cast);
+        assert_eq!(engine.state.phase, BftPhase::Propose);
+        assert!(!engine.state.our_prevote_cast);
     }
 
     #[test]
@@ -1985,15 +2031,16 @@ mod tests {
         assert!(matches!(a1, BftAction::Wait), "a1 = {:?}", a1);
         // Second report: 2 peers at round 3 → cumulative 500 stake, crosses
         // the 334 threshold, so we jump to round 3.
-        assert!(
-            matches!(a2, BftAction::BroadcastPrevote(ref p) if p.round == 3),
-            "expected catch-up to round 3 at a2, got {:?}",
-            a2,
-        );
+        //
+        // 2026-05-10: catch_up returns Wait (no eager nil-vote). Round is
+        // still bumped via the underlying advance_round.
+        assert!(matches!(a2, BftAction::Wait), "a2 = {:?}", a2);
         // Third report: one peer at round 5 is below threshold on its own,
         // so we stay at round 3. This is the anti-single-liar property.
         assert!(matches!(a3, BftAction::Wait), "a3 = {:?}", a3);
         assert_eq!(engine.round(), 3);
+        assert_eq!(engine.state.phase, BftPhase::Propose);
+        assert!(!engine.state.our_prevote_cast);
     }
 
     #[test]
@@ -2031,13 +2078,16 @@ mod tests {
         assert!(matches!(action, BftAction::Wait));
 
         // Peer 0xa reports again, this time with their actual 250 stake.
+        // 2026-05-10: catch_up returns Wait; round still advances.
         let action = engine.on_round_status_weighted(&status("0xa", 1), 250, &reg);
         assert!(
-            matches!(action, BftAction::BroadcastPrevote(ref p) if p.round == 1),
-            "stake refresh should unlock the skip, got {:?}",
+            matches!(action, BftAction::Wait),
+            "stake refresh advances round but no eager nil-vote; got {:?}",
             action,
         );
         assert_eq!(engine.round(), 1);
+        assert_eq!(engine.state.phase, BftPhase::Propose);
+        assert!(!engine.state.our_prevote_cast);
     }
 
     #[test]
@@ -2080,13 +2130,15 @@ mod tests {
         // The back-compat `on_round_status` wrapper preserves the pre-#143
         // single-peer "2+ rounds ahead" trigger for any call site that
         // hasn't migrated to the weighted API yet.
+        //
+        // 2026-05-10: catch_up returns Wait now (no eager nil-vote).
+        // Round still advances to peer_round - 1.
         let (mut engine, reg) = setup_143();
         let action = engine.on_round_status(&status("0xa", 2), &reg);
-        assert!(
-            matches!(action, BftAction::BroadcastPrevote(ref p) if p.round == 1),
-            "legacy path should catch up to peer_round - 1, got {:?}",
-            action,
-        );
+        assert!(matches!(action, BftAction::Wait), "got {:?}", action);
+        assert_eq!(engine.round(), 1, "legacy path catches up to peer_round - 1");
+        assert_eq!(engine.state.phase, BftPhase::Propose);
+        assert!(!engine.state.our_prevote_cast);
     }
 
     /// V3 regression: `on_proposal` must reject a proposal whose
@@ -2448,10 +2500,17 @@ mod tests {
         (reg, total)
     }
 
-    /// Test 1 — Non-proposer catch_up_round still returns nil prevote and
-    /// sets `our_prevote_cast = true`. Issue #133 path preserved.
+    /// Test 1 — Non-proposer catch_up_round leaves the engine ready to
+    /// accept a late proposal: round bumped, phase=Propose,
+    /// our_prevote_cast=false, no nil-vote emitted.
+    ///
+    /// 2026-05-10: changed from the previous "must emit nil-prevote"
+    /// contract. The eager nil-vote was producing nil-precommit cascades
+    /// when a late-but-valid proposal arrived shortly after catch-up.
+    /// Nil-vote fallback now happens via `on_timeout` after
+    /// `propose_timeout(round)` if no proposal arrives.
     #[test]
-    fn test_finalization_dead_fix_non_proposer_emits_nil_prevote() {
+    fn test_finalization_dead_fix_non_proposer_does_not_eager_nil_vote() {
         let (reg, total_stake) = setup_4val();
         // round 1 proposer is 0xval002; we are 0xval001 (NOT proposer)
         let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
@@ -2459,21 +2518,18 @@ mod tests {
         let pv = engine.catch_up_round(1, &reg);
 
         assert!(
-            pv.is_some(),
-            "non-proposer must emit a nil-prevote for the caught-up round"
+            pv.is_none(),
+            "non-proposer no longer eager-nil-votes on catch-up"
         );
-        let pv = pv.unwrap();
-        assert_eq!(pv.height, 100);
-        assert_eq!(pv.round, 1);
-        assert!(
-            pv.block_hash.is_none(),
-            "catch-up prevote must be nil (no block to vote for yet)"
+        assert_eq!(engine.state.round, 1, "round counter still advances");
+        assert_eq!(
+            engine.state.phase,
+            BftPhase::Propose,
+            "stay in Propose so a late proposal can drive a real prevote"
         );
-        assert_eq!(engine.state.round, 1);
-        assert_eq!(engine.state.phase, BftPhase::Prevote);
         assert!(
-            engine.state.our_prevote_cast,
-            "non-proposer path MUST set our_prevote_cast so we don't double-vote when the proposal arrives later in the same round"
+            !engine.state.our_prevote_cast,
+            "our_prevote_cast stays false until a real proposal (or timeout) drives the vote"
         );
     }
 
@@ -2614,12 +2670,15 @@ mod tests {
         assert_eq!(engine.state.phase, BftPhase::Precommit);
     }
 
-    /// Test 6 — Regression pin for Issue #133. Non-proposer that misses
-    /// the original proposal (gossipsub doesn't replay it) must still
-    /// emit a nil-prevote on catch-up so it contributes to round quorum
-    /// instead of stalling in `BftPhase::Propose` forever.
+    /// Test 6 — Issue #133 fallback now lives in `on_timeout`, not in
+    /// catch_up_round. After catch_up the engine sits in Propose; if no
+    /// proposal arrives within `propose_timeout(round)`, the validator-
+    /// loop's regular `is_timed_out + on_timeout` cycle emits the nil-
+    /// vote. The "wait forever" risk from #133 is therefore handled
+    /// without paying the eager-nil cascade cost when proposals do
+    /// arrive late.
     #[test]
-    fn test_finalization_dead_fix_issue_133_non_proposer_regression() {
+    fn test_finalization_dead_fix_issue_133_timeout_fallback_emits_nil() {
         let (reg, total_stake) = setup_4val();
         // Round 2 proposer is 0xval003; we are 0xval001 (NOT proposer at r=2)
         let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
@@ -2628,23 +2687,36 @@ mod tests {
         assert_eq!(engine.state.round, 0);
 
         let pv = engine.catch_up_round(2, &reg);
-
-        assert!(
-            pv.is_some(),
-            "Issue #133: a non-proposer that catches up MUST emit a nil-prevote so the round can reach quorum without re-presenting the proposal"
-        );
-        let pv = pv.unwrap();
-        assert_eq!(pv.round, 2);
-        assert!(
-            pv.block_hash.is_none(),
-            "catch-up prevote is nil (we have no proposal bytes to vote on)"
-        );
+        assert!(pv.is_none(), "no eager nil-vote on catch-up");
         assert_eq!(engine.state.round, 2);
+        assert_eq!(engine.state.phase, BftPhase::Propose);
+
+        // Force the propose-phase timeout by rewinding `phase_start` past
+        // `propose_timeout(round=2)` (the engine uses Instant::now under
+        // the hood; we approximate by calling on_timeout directly with a
+        // pre-aged phase_start).
+        engine.phase_start = Instant::now()
+            .checked_sub(propose_timeout(engine.state.round))
+            .expect("Instant arithmetic")
+            .checked_sub(Duration::from_secs(1))
+            .expect("Instant arithmetic");
+
+        let action = engine.on_timeout();
+        match action {
+            BftAction::BroadcastPrevote(p) => {
+                assert_eq!(p.round, 2);
+                assert!(
+                    p.block_hash.is_none(),
+                    "fallback nil-vote emitted by on_timeout when no proposal arrived"
+                );
+            }
+            other => panic!(
+                "expected BroadcastPrevote(nil) from on_timeout fallback, got {:?}",
+                other
+            ),
+        }
         assert_eq!(engine.state.phase, BftPhase::Prevote);
-        assert!(
-            engine.state.our_prevote_cast,
-            "must be set so a later on_proposal in the same round won't double-vote"
-        );
+        assert!(engine.state.our_prevote_cast);
     }
 
     /// v2.1.91 regression target: if the caller fails to enqueue the
@@ -2902,7 +2974,10 @@ mod tests {
 
         let caught_up = engine.catch_up_round(2, &reg);
 
-        assert!(caught_up.is_some());
+        // 2026-05-10: catch_up_round no longer eager-nil-votes, so the
+        // returned Option<Prevote> is None. The pending-vote-clearing
+        // contract this test pins still holds.
+        assert!(caught_up.is_none());
         assert!(engine.pending_prevote.is_none());
         assert!(engine.pending_precommit.is_none());
         assert_eq!(engine.state.round, 2);

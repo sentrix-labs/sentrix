@@ -18,6 +18,38 @@ use tokio::sync::RwLock;
 
 const DEFAULT_API_PORT: u16 = 8545;
 
+// 2026-05-10: validator-runtime liveness metrics. See also
+// `crates/sentrix-network/src/libp2p_node.rs::SWARM_STALL_TOTAL` and the
+// runtime self-kill removal note in docs/operations/guardian.md.
+//
+// These counters and flags replace the in-process abort behaviour that
+// previously fired on heartbeat-stall and chain-height-stall. External
+// supervisors (sentrix-guardian / systemd / docker) consume these to
+// decide whether to restart the process — that decision no longer
+// belongs inside the validator runtime itself.
+
+/// Cumulative count of validator-loop heartbeat stalls. Each increment
+/// = one `HEARTBEAT_STALL_THRESHOLD` window where the heartbeat counter
+/// did not advance.
+pub static VALIDATOR_HEARTBEAT_STALL_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Age in seconds of the last observed heartbeat advance. 0 means the
+/// counter advanced on this tick.
+pub static VALIDATOR_HEARTBEAT_AGE_SECONDS: AtomicU64 = AtomicU64::new(0);
+
+/// Cumulative count of chain-height stalls observed. Each increment =
+/// one `height_stall_threshold` window where bc.height() did not change.
+pub static BFT_HEIGHT_STALL_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Age in seconds of the last observed height advance. 0 means a block
+/// finalized on this tick.
+pub static BFT_HEIGHT_STALL_SECONDS: AtomicU64 = AtomicU64::new(0);
+
+/// Health flag — true while either the heartbeat or chain-height
+/// stall window is active. Cleared automatically when progress resumes.
+/// Read by `/sentrix_status_extended` and external supervisors.
+pub static BFT_LIVENESS_DEGRADED: AtomicBool = AtomicBool::new(false);
+
 fn get_api_port() -> u16 {
     std::env::var("SENTRIX_API_PORT")
         .ok()
@@ -1534,7 +1566,18 @@ async fn cmd_start(
                 }
 
                 // ── Heartbeat watchdog (loop-stop) ──
+                //
+                // 2026-05-10: this used to call std::process::abort() at
+                // HEARTBEAT_STALL_THRESHOLD. The hard-kill was removed
+                // because (a) the 6h warn-mode bake on testnet showed the
+                // kill was hiding a deeper BFT/libp2p round-cascade
+                // liveness issue, and (b) restart authority belongs to an
+                // external supervisor that can decide based on observed
+                // health flags + counters, not on a fixed timer inside
+                // the validator runtime. See docs/operations/guardian.md.
                 let current = heartbeat.load(Ordering::Acquire);
+                let hb_age = last_changed.elapsed().as_secs();
+                VALIDATOR_HEARTBEAT_AGE_SECONDS.store(hb_age, Ordering::Release);
                 if current != last_seen {
                     last_seen = current;
                     last_changed = tokio::time::Instant::now();
@@ -1545,49 +1588,74 @@ async fn cmd_start(
                             event_tx_for_watchdog.max_capacity() - event_tx_for_watchdog.capacity();
                         let bft_depth =
                             bft_tx_for_watchdog.max_capacity() - bft_tx_for_watchdog.capacity();
-                        tracing::error!(
+                        VALIDATOR_HEARTBEAT_STALL_TOTAL.fetch_add(1, Ordering::Relaxed);
+                        BFT_LIVENESS_DEGRADED.store(true, Ordering::Release);
+                        tracing::warn!(
                             target: "validator_watchdog",
-                            "FATAL: validator loop heartbeat stale for {}s (counter={}, \
-                             event_tx_depth={}/{}, bft_tx_depth={}/{}) \
-                             — BFT engine wedged. Aborting so systemd restarts cleanly.",
+                            "validator loop heartbeat stale for {}s (counter={}, \
+                             event_tx_depth={}/{}, bft_tx_depth={}/{}, stall_total={}) \
+                             — BFT engine may be wedged. External supervisor can \
+                             restart based on bft_liveness_degraded + heartbeat_stall_total. \
+                             Runtime will not self-kill.",
                             stale.as_secs(), current,
                             event_depth, event_tx_for_watchdog.max_capacity(),
                             bft_depth, bft_tx_for_watchdog.max_capacity(),
+                            VALIDATOR_HEARTBEAT_STALL_TOTAL.load(Ordering::Relaxed),
                         );
-                        std::process::abort();
+                        // Reset the baseline so we don't re-warn on every
+                        // 5s tick while the stall persists. The health
+                        // flag stays set until the heartbeat actually
+                        // advances (cleared above on counter-change).
+                        last_seen = current;
+                        last_changed = tokio::time::Instant::now();
                     } else if stale >= HEARTBEAT_WARN_THRESHOLD {
                         tracing::warn!(
                             target: "validator_watchdog",
                             "validator loop heartbeat stale for {}s (counter={}) — \
-                             abort threshold {}s",
+                             stall threshold {}s",
                             stale.as_secs(), current, HEARTBEAT_STALL_THRESHOLD.as_secs(),
                         );
                     }
                 }
 
                 // ── Chain-height watchdog (BFT-stuck) ──
+                //
+                // Same 2026-05-10 change: hard-kill removed, replaced
+                // with metrics + warn + degraded health flag. The BFT
+                // round-cascade pattern that the kill was masking is
+                // documented in docs/debugging/bft-liveness.md.
                 let current_height = {
                     let bc = shared_for_watchdog.read().await;
                     bc.height()
                 };
+                let height_age = last_height_changed.elapsed().as_secs();
+                BFT_HEIGHT_STALL_SECONDS.store(height_age, Ordering::Release);
                 if current_height != last_height {
                     last_height = current_height;
                     last_height_changed = tokio::time::Instant::now();
+                    // Resumed progress — both watchdogs agree health is
+                    // restored only when both heartbeat AND height
+                    // advance, but this side just clears its slice.
+                    BFT_LIVENESS_DEGRADED.store(false, Ordering::Release);
                 } else {
                     let stale = last_height_changed.elapsed();
                     if stale >= height_stall_threshold {
-                        tracing::error!(
+                        BFT_HEIGHT_STALL_TOTAL.fetch_add(1, Ordering::Relaxed);
+                        BFT_LIVENESS_DEGRADED.store(true, Ordering::Release);
+                        tracing::warn!(
                             target: "validator_watchdog",
-                            "FATAL: chain height stuck at {} for {}s — BFT can't finalize. \
-                             Aborting cleanly so systemd restarts (avoids operator SIGKILL \
-                             window that has corrupted MDBX in past incidents).",
+                            "chain height stuck at {} for {}s — BFT not finalizing. \
+                             height_stall_total={}, bft_liveness_degraded=true. \
+                             Runtime will not self-kill — external supervisor decides.",
                             current_height, stale.as_secs(),
+                            BFT_HEIGHT_STALL_TOTAL.load(Ordering::Relaxed),
                         );
-                        std::process::abort();
+                        // Reset baseline so we don't re-warn every tick.
+                        last_height_changed = tokio::time::Instant::now();
                     } else if stale >= height_warn_threshold {
                         tracing::warn!(
                             target: "validator_watchdog",
-                            "chain height stuck at {} for {}s — abort threshold {}s",
+                            "chain height stuck at {} for {}s — stall threshold {}s",
                             current_height, stale.as_secs(),
                             height_stall_threshold.as_secs(),
                         );
