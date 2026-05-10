@@ -1695,6 +1695,15 @@ async fn cmd_start(
             // is the correct invariant: a rebroadcast is the same message,
             // not a new one.
             let mut last_signed_proposal: Option<Proposal> = None;
+            // Fix C (speculative block-build) — after we finalize block N
+            // and apply its state, if we're the deterministic proposer for
+            // N+1 round 0 we pre-build the next block + sign its proposal
+            // inside the same write-lock cycle. The validator-loop's next
+            // round_start handler consumes this stash and skips the
+            // ~100-200 ms build step. Stale stashes (round != 0, height
+            // mismatch, post-epoch-boundary) fall back to the normal
+            // build_or_reuse_proposal path. Tuple: (height, block, proposal).
+            let mut speculative_proposal: Option<(u64, Block, Proposal)> = None;
             // Pioneer mode: track last block time for a fine-grained poll loop.
             // Poll every PIONEER_TICK, but only attempt to build a block when
             // at least BLOCK_TIME_SECS has elapsed since the last one. Gives
@@ -2254,14 +2263,36 @@ async fn cmd_start(
                         // and re-broadcasts the cached block if we're locked, which is
                         // what unsticks the chain when an earlier round's prevote
                         // supermajority didn't precommit.
+                        //
+                        // Fix C: consume the speculative pre-built proposal from the
+                        // prior FinalizeBlock arm if it matches (height, round=0,
+                        // not locked at a different hash). Saves the create_block_voyager
+                        // + bincode::serialize + sign roundtrip that otherwise lives
+                        // on the BFT critical path.
                         let mut bc = shared_clone.write().await;
-                        match build_or_reuse_proposal(
-                            &bft,
-                            &mut bc,
-                            &wallet.address,
-                            &validator_secret_key,
-                            next_height,
-                        ) {
+                        let stash = speculative_proposal.take().filter(|(h, _, _)| {
+                            *h == next_height
+                                && bft.round() == 0
+                                && bft.locked_proposal_bytes().is_none()
+                        });
+                        let built = match stash {
+                            Some((_, block, proposal)) => {
+                                tracing::info!(
+                                    target: "speculative_build",
+                                    "consumed pre-built proposal h={} (skipped build)",
+                                    next_height,
+                                );
+                                Some((block, proposal))
+                            }
+                            None => build_or_reuse_proposal(
+                                &bft,
+                                &mut bc,
+                                &wallet.address,
+                                &validator_secret_key,
+                                next_height,
+                            ),
+                        };
+                        match built {
                             Some((block, proposal)) => {
                                 let block_hash = block.hash.clone();
                                 let block_data = proposal.block_data.clone();
@@ -2642,6 +2673,49 @@ async fn cmd_start(
                                                             height,
                                                             round
                                                         );
+
+                                                        // Fix C: speculative block-build for N+1.
+                                                        // State is at height N here (just applied),
+                                                        // active_set has been re-derived if this was
+                                                        // an epoch boundary, so weighted_proposer for
+                                                        // N+1 round 0 is now stable. If it's us, pre-
+                                                        // build the proposal so the next round_start
+                                                        // can skip the ~100-200 ms build step.
+                                                        let next_h = bc.height().saturating_add(1);
+                                                        let we_next = bc
+                                                            .stake_registry
+                                                            .weighted_proposer(next_h, 0)
+                                                            .as_deref()
+                                                            == Some(wallet.address.as_str());
+                                                        if we_next {
+                                                            match bc.create_block_voyager(&wallet.address) {
+                                                                Ok(block) => {
+                                                                    let block_hash = block.hash.clone();
+                                                                    let block_data = bincode::serialize(&block).unwrap_or_default();
+                                                                    let mut prop = Proposal {
+                                                                        height: next_h,
+                                                                        round: 0,
+                                                                        block_hash,
+                                                                        block_data,
+                                                                        proposer: wallet.address.clone(),
+                                                                        signature: vec![],
+                                                                    };
+                                                                    prop.sign(&validator_secret_key);
+                                                                    tracing::debug!(
+                                                                        target: "speculative_build",
+                                                                        "pre-built proposal h={} from FinalizeBlock(self) arm",
+                                                                        next_h,
+                                                                    );
+                                                                    speculative_proposal = Some((next_h, block, prop));
+                                                                }
+                                                                Err(e) => tracing::warn!(
+                                                                    "speculative build for h={} failed: {}",
+                                                                    next_h, e,
+                                                                ),
+                                                            }
+                                                        } else {
+                                                            speculative_proposal = None;
+                                                        }
 
                                                         drop(bc);
                                                         if let Some(ref saved_block) = updated {
@@ -3162,6 +3236,46 @@ async fn cmd_start(
                                                     height,
                                                     round
                                                 );
+
+                                                // Fix C: speculative pre-build N+1 on the peer-
+                                                // finalize path too — if this validator is the
+                                                // proposer for N+1 round 0 we save the build cost
+                                                // when the next round_start fires.
+                                                let next_h_pf = bc.height().saturating_add(1);
+                                                let we_next_pf = bc
+                                                    .stake_registry
+                                                    .weighted_proposer(next_h_pf, 0)
+                                                    .as_deref()
+                                                    == Some(wallet.address.as_str());
+                                                if we_next_pf {
+                                                    match bc.create_block_voyager(&wallet.address) {
+                                                        Ok(block) => {
+                                                            let block_hash = block.hash.clone();
+                                                            let block_data = bincode::serialize(&block).unwrap_or_default();
+                                                            let mut prop = Proposal {
+                                                                height: next_h_pf,
+                                                                round: 0,
+                                                                block_hash,
+                                                                block_data,
+                                                                proposer: wallet.address.clone(),
+                                                                signature: vec![],
+                                                            };
+                                                            prop.sign(&validator_secret_key);
+                                                            tracing::debug!(
+                                                                target: "speculative_build",
+                                                                "pre-built proposal h={} from FinalizeBlock(peer) arm",
+                                                                next_h_pf,
+                                                            );
+                                                            speculative_proposal = Some((next_h_pf, block, prop));
+                                                        }
+                                                        Err(e) => tracing::warn!(
+                                                            "speculative build for h={} failed: {}",
+                                                            next_h_pf, e,
+                                                        ),
+                                                    }
+                                                } else {
+                                                    speculative_proposal = None;
+                                                }
 
                                                 drop(bc);
                                                 if let Some(ref saved_block) = updated {
