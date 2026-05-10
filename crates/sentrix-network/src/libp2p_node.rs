@@ -114,8 +114,12 @@ use libp2p::{
 use tokio::sync::mpsc;
 
 use crate::behaviour::{
+    BFT_PRECOMMIT_TOPIC, BFT_PREVOTE_TOPIC, BFT_PROPOSAL_TOPIC, BFT_ROUND_STATUS_TOPIC,
     BLOCKS_TOPIC, GossipBlock, GossipTransaction, SentrixBehaviour, SentrixBehaviourEvent,
     SentrixRequest, SentrixResponse, TXS_TOPIC, VALIDATOR_ADVERTS_TOPIC,
+};
+use sentrix_wire::{
+    GossipBftPrecommit, GossipBftPrevote, GossipBftProposal, GossipBftRoundStatus,
 };
 use crate::node::{NodeEvent, SharedBlockchain};
 use sentrix_primitives::block::Block;
@@ -155,11 +159,17 @@ const BAN_DURATION_SECS: u64 = 300;
 enum SwarmCommand {
     Listen(Multiaddr),
     ConnectPeer(Multiaddr),
-    Broadcast(SentrixRequest),
     /// Publish a block via gossipsub.
     GossipBlock(Box<Block>),
     /// Publish a transaction via gossipsub.
     GossipTx(Transaction),
+    // BFT consensus messages — gossipsub mesh as of 2026-05-10 (was
+    // per-peer request-response). Mesh fan-out + IHAVE/IWANT retry
+    // replace our manual rebroadcast tick for missed votes on WAN.
+    GossipBftProposal(Box<sentrix_bft::messages::Proposal>),
+    GossipBftPrevote(Box<sentrix_bft::messages::Prevote>),
+    GossipBftPrecommit(Box<sentrix_bft::messages::Precommit>),
+    GossipBftRoundStatus(Box<sentrix_bft::messages::RoundStatus>),
     /// Add a peer address to Kademlia DHT.
     AddKadPeer(PeerId, Multiaddr),
     /// Trigger a Kademlia bootstrap (random walk).
@@ -349,26 +359,26 @@ impl LibP2pNode {
 
     /// Broadcast a BFT proposal to all verified peers.
     pub async fn broadcast_bft_proposal(&self, proposal: &sentrix_bft::messages::Proposal) {
-        let req = SentrixRequest::BftProposal {
-            proposal: Box::new(proposal.clone()),
-        };
-        self.send_swarm_cmd(SwarmCommand::Broadcast(req), "bft proposal");
+        self.send_swarm_cmd(
+            SwarmCommand::GossipBftProposal(Box::new(proposal.clone())),
+            "bft proposal",
+        );
     }
 
     /// Broadcast a BFT prevote to all verified peers.
     pub async fn broadcast_bft_prevote(&self, prevote: &sentrix_bft::messages::Prevote) {
-        let req = SentrixRequest::BftPrevote {
-            prevote: prevote.clone(),
-        };
-        self.send_swarm_cmd(SwarmCommand::Broadcast(req), "bft prevote");
+        self.send_swarm_cmd(
+            SwarmCommand::GossipBftPrevote(Box::new(prevote.clone())),
+            "bft prevote",
+        );
     }
 
     /// Broadcast a BFT precommit to all verified peers.
     pub async fn broadcast_bft_precommit(&self, precommit: &sentrix_bft::messages::Precommit) {
-        let req = SentrixRequest::BftPrecommit {
-            precommit: precommit.clone(),
-        };
-        self.send_swarm_cmd(SwarmCommand::Broadcast(req), "bft precommit");
+        self.send_swarm_cmd(
+            SwarmCommand::GossipBftPrecommit(Box::new(precommit.clone())),
+            "bft precommit",
+        );
     }
 
     /// Broadcast our current BFT round status so peers can sync rounds.
@@ -416,10 +426,10 @@ impl LibP2pNode {
     }
 
     pub async fn broadcast_bft_round_status(&self, status: &sentrix_bft::messages::RoundStatus) {
-        let req = SentrixRequest::BftRoundStatus {
-            status: status.clone(),
-        };
-        self.send_swarm_cmd(SwarmCommand::Broadcast(req), "bft round status");
+        self.send_swarm_cmd(
+            SwarmCommand::GossipBftRoundStatus(Box::new(status.clone())),
+            "bft round status",
+        );
     }
 
     /// Re-dial bootstrap peers that may have disconnected.
@@ -611,23 +621,6 @@ async fn run_swarm(
                             tracing::warn!("libp2p dial {} failed: {}", addr, e);
                         }
                     }
-                    Some(SwarmCommand::Broadcast(req)) => {
-                        let peers: Vec<PeerId> = verified_peers.iter().cloned().collect();
-                        let variant = req.variant_name();
-                        if peers.is_empty() {
-                            tracing::warn!(
-                                "BFT/network: Broadcast {} dropped - no verified peers yet (handshake may still be in flight)",
-                                variant
-                            );
-                        }
-                        for peer_id in peers {
-                            let req_id = swarm
-                                .behaviour_mut()
-                                .rr
-                                .send_request(&peer_id, req.clone());
-                            pending_variants.insert(req_id, variant);
-                        }
-                    }
                     Some(SwarmCommand::GossipBlock(block)) => {
                         let topic = gossipsub::IdentTopic::new(BLOCKS_TOPIC);
                         let msg = GossipBlock { block: *block };
@@ -650,6 +643,54 @@ async fn run_swarm(
                                 }
                             }
                             Err(e) => tracing::warn!("gossip tx serialize failed: {}", e),
+                        }
+                    }
+                    Some(SwarmCommand::GossipBftProposal(proposal)) => {
+                        let topic = gossipsub::IdentTopic::new(BFT_PROPOSAL_TOPIC);
+                        let env = GossipBftProposal { proposal };
+                        match bincode::serialize(&env) {
+                            Ok(data) => {
+                                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                                    tracing::debug!("gossipsub publish bft proposal failed: {}", e);
+                                }
+                            }
+                            Err(e) => tracing::warn!("gossip bft proposal serialize failed: {}", e),
+                        }
+                    }
+                    Some(SwarmCommand::GossipBftPrevote(prevote)) => {
+                        let topic = gossipsub::IdentTopic::new(BFT_PREVOTE_TOPIC);
+                        let env = GossipBftPrevote { prevote: *prevote };
+                        match bincode::serialize(&env) {
+                            Ok(data) => {
+                                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                                    tracing::debug!("gossipsub publish bft prevote failed: {}", e);
+                                }
+                            }
+                            Err(e) => tracing::warn!("gossip bft prevote serialize failed: {}", e),
+                        }
+                    }
+                    Some(SwarmCommand::GossipBftPrecommit(precommit)) => {
+                        let topic = gossipsub::IdentTopic::new(BFT_PRECOMMIT_TOPIC);
+                        let env = GossipBftPrecommit { precommit: *precommit };
+                        match bincode::serialize(&env) {
+                            Ok(data) => {
+                                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                                    tracing::debug!("gossipsub publish bft precommit failed: {}", e);
+                                }
+                            }
+                            Err(e) => tracing::warn!("gossip bft precommit serialize failed: {}", e),
+                        }
+                    }
+                    Some(SwarmCommand::GossipBftRoundStatus(status)) => {
+                        let topic = gossipsub::IdentTopic::new(BFT_ROUND_STATUS_TOPIC);
+                        let env = GossipBftRoundStatus { status: *status };
+                        match bincode::serialize(&env) {
+                            Ok(data) => {
+                                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                                    tracing::debug!("gossipsub publish bft round-status failed: {}", e);
+                                }
+                            }
+                            Err(e) => tracing::warn!("gossip bft round-status serialize failed: {}", e),
                         }
                     }
                     Some(SwarmCommand::GossipValidatorAdvert(advert)) => {
@@ -1096,6 +1137,98 @@ async fn on_swarm_event(
                         });
                     }
                     Err(e) => tracing::warn!("gossip: bad tx message: {}", e),
+                }
+            } else if topic == BFT_PROPOSAL_TOPIC {
+                match bincode::deserialize::<GossipBftProposal>(&message.data) {
+                    Ok(env) => {
+                        let proposal = *env.proposal;
+                        if !proposal.verify_sig() {
+                            tracing::warn!(
+                                "gossip bft proposal: bad signature from {}",
+                                &proposal.proposer
+                            );
+                            return;
+                        }
+                        if !is_active_bft_signer(blockchain, &proposal.proposer).await {
+                            tracing::warn!(
+                                "gossip bft proposal: dropping non-validator {}",
+                                &proposal.proposer
+                            );
+                            return;
+                        }
+                        try_send_event(event_tx, NodeEvent::BftProposal(proposal), "BftProposal");
+                    }
+                    Err(e) => tracing::debug!("gossip bft proposal: bad bincode: {}", e),
+                }
+            } else if topic == BFT_PREVOTE_TOPIC {
+                match bincode::deserialize::<GossipBftPrevote>(&message.data) {
+                    Ok(env) => {
+                        let prevote = env.prevote;
+                        if !prevote.verify_sig() {
+                            tracing::warn!(
+                                "gossip bft prevote: bad signature from {}",
+                                &prevote.validator
+                            );
+                            return;
+                        }
+                        if !is_active_bft_signer(blockchain, &prevote.validator).await {
+                            tracing::warn!(
+                                "gossip bft prevote: dropping non-validator {}",
+                                &prevote.validator
+                            );
+                            return;
+                        }
+                        try_send_event(event_tx, NodeEvent::BftPrevote(prevote), "BftPrevote");
+                    }
+                    Err(e) => tracing::debug!("gossip bft prevote: bad bincode: {}", e),
+                }
+            } else if topic == BFT_PRECOMMIT_TOPIC {
+                match bincode::deserialize::<GossipBftPrecommit>(&message.data) {
+                    Ok(env) => {
+                        let precommit = env.precommit;
+                        if !precommit.verify_sig() {
+                            tracing::warn!(
+                                "gossip bft precommit: bad signature from {}",
+                                &precommit.validator
+                            );
+                            return;
+                        }
+                        if !is_active_bft_signer(blockchain, &precommit.validator).await {
+                            tracing::warn!(
+                                "gossip bft precommit: dropping non-validator {}",
+                                &precommit.validator
+                            );
+                            return;
+                        }
+                        try_send_event(event_tx, NodeEvent::BftPrecommit(precommit), "BftPrecommit");
+                    }
+                    Err(e) => tracing::debug!("gossip bft precommit: bad bincode: {}", e),
+                }
+            } else if topic == BFT_ROUND_STATUS_TOPIC {
+                match bincode::deserialize::<GossipBftRoundStatus>(&message.data) {
+                    Ok(env) => {
+                        let status = env.status;
+                        if !status.verify_sig() {
+                            tracing::warn!(
+                                "gossip bft round-status: bad signature from {}",
+                                &status.validator
+                            );
+                            return;
+                        }
+                        if !is_active_bft_signer(blockchain, &status.validator).await {
+                            tracing::warn!(
+                                "gossip bft round-status: dropping non-validator {}",
+                                &status.validator
+                            );
+                            return;
+                        }
+                        try_send_event(
+                            event_tx,
+                            NodeEvent::BftRoundStatus(status),
+                            "BftRoundStatus",
+                        );
+                    }
+                    Err(e) => tracing::debug!("gossip bft round-status: bad bincode: {}", e),
                 }
             } else if topic == VALIDATOR_ADVERTS_TOPIC {
                 // L1 peer auto-discovery — verify + cache.

@@ -1627,12 +1627,11 @@ async fn cmd_start(
             // periodic tick during their respective phases gives a missed
             // peer ~6 more chances inside the 12 s phase budget. Same bytes
             // = same signature, no double-vote risk.
-            let mut prevote_broadcast_at: Option<std::time::Instant> = None;
-            let mut prevote_rebroadcast_count: u32 = 0;
-            let mut last_prevote_round: (u64, u32) = (0, 0);
-            let mut precommit_broadcast_at: Option<std::time::Instant> = None;
-            let mut precommit_rebroadcast_count: u32 = 0;
-            let mut last_precommit_round: (u64, u32) = (0, 0);
+            // Vote rebroadcast state used to live here (REBROADCAST_INTERVAL
+            // 0.5s × 6 attempts, mirrored for prevote + precommit). Dropped
+            // 2026-05-10 with the gossipsub-for-BFT switch: gossipsub mesh
+            // already retransmits missed votes via IHAVE/IWANT, so the
+            // validator-side tick became double work.
             // v2.1.89: stash the originally-signed Proposal struct so the
             // #1d rebroadcast tick replays byte-identical bytes instead of
             // rebuilding + re-signing. Pre-fix, the rebroadcast path called
@@ -3303,71 +3302,11 @@ async fn cmd_start(
                         );
                     }
 
-                    // 2026-05-10: prevote / precommit rebroadcast (same
-                    // 2 s × 7 attempts pattern as proposal). Closes the
-                    // single-attempt RR delivery gap that produced
-                    // round-cascades when one peer's vote didn't reach
-                    // one of the four validators. Reset tracking when the
-                    // engine moves to a new (height, round).
-                    let cur_hr = (bft.height(), bft.round());
-                    if last_prevote_round != cur_hr {
-                        last_prevote_round = cur_hr;
-                        prevote_broadcast_at = None;
-                        prevote_rebroadcast_count = 0;
-                    }
-                    if last_precommit_round != cur_hr {
-                        last_precommit_round = cur_hr;
-                        precommit_broadcast_at = None;
-                        precommit_rebroadcast_count = 0;
-                    }
-                    if let Some(pv) = bft.pending_prevote()
-                        && pv.height == bft.height()
-                        && pv.round == bft.round()
-                        && matches!(bft.phase(), BftPhase::Prevote)
-                        && prevote_rebroadcast_count < MAX_REBROADCASTS
-                    {
-                        let due = match prevote_broadcast_at {
-                            None => true,
-                            Some(t) => t.elapsed() >= REBROADCAST_INTERVAL,
-                        };
-                        if due {
-                            lp2p_clone.broadcast_bft_prevote(pv).await;
-                            prevote_broadcast_at = Some(std::time::Instant::now());
-                            prevote_rebroadcast_count += 1;
-                            tracing::debug!(
-                                target: "bft_vote_rebroadcast",
-                                "rebroadcast prevote at height={} round={} attempt={}/{}",
-                                bft.height(),
-                                bft.round(),
-                                prevote_rebroadcast_count,
-                                MAX_REBROADCASTS
-                            );
-                        }
-                    }
-                    if let Some(pc) = bft.pending_precommit()
-                        && pc.height == bft.height()
-                        && pc.round == bft.round()
-                        && matches!(bft.phase(), BftPhase::Precommit)
-                        && precommit_rebroadcast_count < MAX_REBROADCASTS
-                    {
-                        let due = match precommit_broadcast_at {
-                            None => true,
-                            Some(t) => t.elapsed() >= REBROADCAST_INTERVAL,
-                        };
-                        if due {
-                            lp2p_clone.broadcast_bft_precommit(pc).await;
-                            precommit_broadcast_at = Some(std::time::Instant::now());
-                            precommit_rebroadcast_count += 1;
-                            tracing::debug!(
-                                target: "bft_vote_rebroadcast",
-                                "rebroadcast precommit at height={} round={} attempt={}/{}",
-                                bft.height(),
-                                bft.round(),
-                                precommit_rebroadcast_count,
-                                MAX_REBROADCASTS
-                            );
-                        }
-                    }
+                    // Vote rebroadcast tick (prevote + precommit) lived here
+                    // until 2026-05-10. Removed when BFT votes moved from
+                    // request-response to gossipsub — the mesh handles
+                    // retransmission via IHAVE/IWANT and there's no point
+                    // double-publishing from the validator loop.
 
                     // Check for BFT timeouts
                     if bft.is_timed_out() {

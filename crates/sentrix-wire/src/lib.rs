@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 /// variants so peers can negotiate compatible versions. Currently 2.0.0 —
 /// same as the sentrix binary major.minor, but intentionally tracked
 /// separately so we don't have to bump the binary to bump the wire version.
-pub const SENTRIX_PROTOCOL: &str = "/sentrix/2.0.0";
+pub const SENTRIX_PROTOCOL: &str = "/sentrix/2.1.0";
 
 // ── Gossipsub topic names ────────────────────────────────
 
@@ -50,6 +50,16 @@ pub const TXS_TOPIC: &str = "sentrix/txs/1";
 /// topic so other validators can dial them without needing a static
 /// `--peers` bootstrap list.
 pub const VALIDATOR_ADVERTS_TOPIC: &str = "sentrix/validator-adverts/1";
+
+// BFT consensus topics — switched from per-peer request-response to
+// gossipsub mesh 2026-05-10 (v2.1.92). Each phase has its own topic so
+// the mesh score / IHAVE-IWANT bookkeeping stays per-message-class; the
+// validator-loop publishes one message per (h, r, phase) per validator
+// and gossipsub handles fan-out + lazy push retransmits.
+pub const BFT_PROPOSAL_TOPIC: &str = "sentrix/bft/proposal/1";
+pub const BFT_PREVOTE_TOPIC: &str = "sentrix/bft/prevote/1";
+pub const BFT_PRECOMMIT_TOPIC: &str = "sentrix/bft/precommit/1";
+pub const BFT_ROUND_STATUS_TOPIC: &str = "sentrix/bft/round-status/1";
 
 /// Hard cap on a single wire message (10 MiB). Callers doing their own
 /// framing should enforce this too.
@@ -147,6 +157,33 @@ pub struct GossipBlock {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GossipTransaction {
     pub transaction: Transaction,
+}
+
+/// Envelope for BFT block-proposal gossipsub messages on
+/// [`BFT_PROPOSAL_TOPIC`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GossipBftProposal {
+    pub proposal: Box<Proposal>,
+}
+
+/// Envelope for BFT prevote gossipsub messages on [`BFT_PREVOTE_TOPIC`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GossipBftPrevote {
+    pub prevote: Prevote,
+}
+
+/// Envelope for BFT precommit gossipsub messages on
+/// [`BFT_PRECOMMIT_TOPIC`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GossipBftPrecommit {
+    pub precommit: Precommit,
+}
+
+/// Envelope for BFT round-status gossipsub messages on
+/// [`BFT_ROUND_STATUS_TOPIC`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GossipBftRoundStatus {
+    pub status: RoundStatus,
 }
 
 // ── Validator multiaddr advertisement (L1 peer auto-discovery) ─────
@@ -295,8 +332,10 @@ mod tests {
 
     /// Pin the protocol version string — change requires deliberate bump.
     #[test]
-    fn test_protocol_version_is_2_0_0() {
-        assert_eq!(SENTRIX_PROTOCOL, "/sentrix/2.0.0");
+    fn test_protocol_version_is_2_1_0() {
+        // 2026-05-10: bumped 2.0.0 → 2.1.0 alongside the gossipsub-for-BFT
+        // switch so old peers (RR-only) can't accidentally interop.
+        assert_eq!(SENTRIX_PROTOCOL, "/sentrix/2.1.0");
     }
 
     /// Pin the topic names — callers (explorers, dApps) subscribe by string.
@@ -304,6 +343,10 @@ mod tests {
     fn test_topic_names_stable() {
         assert_eq!(BLOCKS_TOPIC, "sentrix/blocks/1");
         assert_eq!(TXS_TOPIC, "sentrix/txs/1");
+        assert_eq!(BFT_PROPOSAL_TOPIC, "sentrix/bft/proposal/1");
+        assert_eq!(BFT_PREVOTE_TOPIC, "sentrix/bft/prevote/1");
+        assert_eq!(BFT_PRECOMMIT_TOPIC, "sentrix/bft/precommit/1");
+        assert_eq!(BFT_ROUND_STATUS_TOPIC, "sentrix/bft/round-status/1");
     }
 
     /// Pin the message size cap so callers doing their own framing
@@ -559,5 +602,57 @@ mod tests {
 
         let valid = sample_advert();
         assert!(valid.validate_shape().is_ok(), "sample advert shape is valid");
+    }
+
+    // ── BFT gossipsub envelope roundtrips ──────────────────
+    //
+    // Pin bincode layout for the four BFT topic envelopes. If any of
+    // these tests start failing, the network just silently broke for
+    // every peer running an older binary.
+
+    #[test]
+    fn test_gossip_bft_prevote_roundtrip() {
+        let pv = Prevote {
+            height: 42,
+            round: 1,
+            block_hash: Some("0xabc123".to_string()),
+            validator: concat!("0", "x", "00000000000000000000", "00000000000000000005").to_string(),
+            signature: vec![0u8; 65],
+        };
+        let env = GossipBftPrevote { prevote: pv.clone() };
+        let bytes = bincode::serialize(&env).expect("encode");
+        let decoded: GossipBftPrevote = bincode::deserialize(&bytes).expect("decode");
+        assert_eq!(decoded.prevote, pv);
+    }
+
+    #[test]
+    fn test_gossip_bft_precommit_roundtrip() {
+        let pc = Precommit {
+            height: 100,
+            round: 3,
+            block_hash: None,
+            validator: concat!("0", "x", "00000000000000000000", "00000000000000000007").to_string(),
+            signature: vec![1u8; 65],
+        };
+        let env = GossipBftPrecommit { precommit: pc.clone() };
+        let bytes = bincode::serialize(&env).expect("encode");
+        let decoded: GossipBftPrecommit = bincode::deserialize(&bytes).expect("decode");
+        assert_eq!(decoded.precommit, pc);
+    }
+
+    #[test]
+    fn test_gossip_bft_round_status_roundtrip() {
+        let rs = RoundStatus {
+            height: 555,
+            round: 2,
+            validator: concat!("0", "x", "00000000000000000000", "00000000000000000009").to_string(),
+            signature: vec![2u8; 65],
+        };
+        let env = GossipBftRoundStatus { status: rs.clone() };
+        let bytes = bincode::serialize(&env).expect("encode");
+        let decoded: GossipBftRoundStatus = bincode::deserialize(&bytes).expect("decode");
+        assert_eq!(decoded.status.height, rs.height);
+        assert_eq!(decoded.status.round, rs.round);
+        assert_eq!(decoded.status.validator, rs.validator);
     }
 }

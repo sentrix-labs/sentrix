@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 // keep working during the migration window. Follow-up PR will switch all
 // imports to the canonical `sentrix_wire::*` path and drop these shims.
 pub use sentrix_wire::{
+    BFT_PRECOMMIT_TOPIC, BFT_PREVOTE_TOPIC, BFT_PROPOSAL_TOPIC, BFT_ROUND_STATUS_TOPIC,
     BLOCKS_TOPIC, MAX_MESSAGE_BYTES, SENTRIX_PROTOCOL, TXS_TOPIC, VALIDATOR_ADVERTS_TOPIC,
 };
 
@@ -343,6 +344,20 @@ impl SentrixBehaviour {
         gossipsub
             .subscribe(&adverts_topic)
             .expect("subscribe validator-adverts");
+        // BFT mesh — every node subscribes so non-validators can relay
+        // votes via gossipsub (mesh fan-out, IHAVE/IWANT retries).
+        gossipsub
+            .subscribe(&gossipsub::IdentTopic::new(BFT_PROPOSAL_TOPIC))
+            .expect("subscribe bft-proposal");
+        gossipsub
+            .subscribe(&gossipsub::IdentTopic::new(BFT_PREVOTE_TOPIC))
+            .expect("subscribe bft-prevote");
+        gossipsub
+            .subscribe(&gossipsub::IdentTopic::new(BFT_PRECOMMIT_TOPIC))
+            .expect("subscribe bft-precommit");
+        gossipsub
+            .subscribe(&gossipsub::IdentTopic::new(BFT_ROUND_STATUS_TOPIC))
+            .expect("subscribe bft-round-status");
 
         // Request-response for sync + handshake
         let rr_config = request_response::Config::default()
@@ -399,6 +414,18 @@ impl SentrixBehaviour {
         gossipsub
             .subscribe(&adverts_topic)
             .expect("subscribe validator-adverts");
+        gossipsub
+            .subscribe(&gossipsub::IdentTopic::new(BFT_PROPOSAL_TOPIC))
+            .expect("subscribe bft-proposal");
+        gossipsub
+            .subscribe(&gossipsub::IdentTopic::new(BFT_PREVOTE_TOPIC))
+            .expect("subscribe bft-prevote");
+        gossipsub
+            .subscribe(&gossipsub::IdentTopic::new(BFT_PRECOMMIT_TOPIC))
+            .expect("subscribe bft-precommit");
+        gossipsub
+            .subscribe(&gossipsub::IdentTopic::new(BFT_ROUND_STATUS_TOPIC))
+            .expect("subscribe bft-round-status");
 
         // Request-response
         let rr_config = request_response::Config::default()
