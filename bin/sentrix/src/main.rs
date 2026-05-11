@@ -1558,7 +1558,7 @@ async fn cmd_start(
         }
         Some(tokio::spawn(async move {
             use sentrix::core::bft::{BftAction, BftEngine, BftPhase};
-            use sentrix::core::bft_messages::{BftMessage, Proposal};
+            use sentrix::core::bft_messages::{BftMessage, Prevote, Proposal};
             use sentrix::core::block::Block;
 
             // V2 M-15 Step 4+5 helper: produce a signed Proposal for the
@@ -1586,13 +1586,32 @@ async fn cmd_start(
                                 height,
                                 bft.round()
                             );
+                            // F-D Variant A v3: embed proposer's own
+                            // UNSIGNED prevote so receivers credit the
+                            // proposer's vote at proposal-arrival time
+                            // instead of waiting for the standalone
+                            // gossipsub prevote hop. Authenticity flows
+                            // from the proposal's outer signature; the
+                            // prevote stays unsigned to avoid poisoning
+                            // the LastSignBytes guard at step=1 before
+                            // proposal.sign() records step=0 (the bug
+                            // that broke reverted PR #572).
+                            let cur_round = bft.round();
+                            let proposer_prevote = Some(Prevote {
+                                height,
+                                round: cur_round,
+                                block_hash: Some(cached_hash.clone()),
+                                validator: wallet_address.to_string(),
+                                signature: vec![],
+                            });
                             let mut proposal = Proposal {
                                 height,
-                                round: bft.round(),
+                                round: cur_round,
                                 block_hash: cached_hash,
                                 block_data: cached_bytes,
                                 proposer: wallet_address.to_string(),
                                 signature: vec![],
+                                proposer_prevote,
                             };
                             proposal.sign(validator_sk);
                             return Some((block, proposal));
@@ -1609,13 +1628,25 @@ async fn cmd_start(
                     Ok(block) => {
                         let block_hash = block.hash.clone();
                         let block_data = bincode::serialize(&block).unwrap_or_default();
+                        let cur_round = bft.round();
+                        // F-D Variant A v3: embed proposer's own UNSIGNED
+                        // prevote. See cached-hash branch above for the
+                        // signing-order rationale.
+                        let proposer_prevote = Some(Prevote {
+                            height,
+                            round: cur_round,
+                            block_hash: Some(block_hash.clone()),
+                            validator: wallet_address.to_string(),
+                            signature: vec![],
+                        });
                         let mut proposal = Proposal {
                             height,
-                            round: bft.round(),
+                            round: cur_round,
                             block_hash,
                             block_data,
                             proposer: wallet_address.to_string(),
                             signature: vec![],
+                            proposer_prevote,
                         };
                         proposal.sign(validator_sk);
                         Some((block, proposal))
@@ -2692,6 +2723,15 @@ async fn cmd_start(
                                                                 Ok(block) => {
                                                                     let block_hash = block.hash.clone();
                                                                     let block_data = bincode::serialize(&block).unwrap_or_default();
+                                                                    // F-D Variant A v3 embedded
+                                                                    // unsigned proposer prevote.
+                                                                    let proposer_prevote = Some(Prevote {
+                                                                        height: next_h,
+                                                                        round: 0,
+                                                                        block_hash: Some(block_hash.clone()),
+                                                                        validator: wallet.address.clone(),
+                                                                        signature: vec![],
+                                                                    });
                                                                     let mut prop = Proposal {
                                                                         height: next_h,
                                                                         round: 0,
@@ -2699,6 +2739,7 @@ async fn cmd_start(
                                                                         block_data,
                                                                         proposer: wallet.address.clone(),
                                                                         signature: vec![],
+                                                                        proposer_prevote,
                                                                     };
                                                                     prop.sign(&validator_secret_key);
                                                                     tracing::debug!(
@@ -3252,6 +3293,15 @@ async fn cmd_start(
                                                         Ok(block) => {
                                                             let block_hash = block.hash.clone();
                                                             let block_data = bincode::serialize(&block).unwrap_or_default();
+                                                            // F-D Variant A v3 embedded
+                                                            // unsigned proposer prevote.
+                                                            let proposer_prevote = Some(Prevote {
+                                                                height: next_h_pf,
+                                                                round: 0,
+                                                                block_hash: Some(block_hash.clone()),
+                                                                validator: wallet.address.clone(),
+                                                                signature: vec![],
+                                                            });
                                                             let mut prop = Proposal {
                                                                 height: next_h_pf,
                                                                 round: 0,
@@ -3259,6 +3309,7 @@ async fn cmd_start(
                                                                 block_data,
                                                                 proposer: wallet.address.clone(),
                                                                 signature: vec![],
+                                                                proposer_prevote,
                                                             };
                                                             prop.sign(&validator_secret_key);
                                                             tracing::debug!(

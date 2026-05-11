@@ -14,6 +14,33 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-05-11 — proposer-prevote piggy-back, redesigned (wire-incompatible)
+
+**Wire-incompatible**: `SENTRIX_PROTOCOL` bumped `/sentrix/2.1.0` → `/sentrix/2.2.0`. Halt-all + simul-start required. Mixed 2.1.x / 2.2.0 cluster will halt because a 2.1.x decoder rejects the extra trailing bytes on the new `Proposal` struct.
+
+**The change**: the proposer's own prevote for the block it just proposed rides inside the `Proposal` envelope as a struct field, **unsigned**. Receivers extract it after the outer proposal signature verifies, run a structural check (`proposer_prevote.validator == proposal.proposer`, `(h, r, block_hash)` match), and dispatch it as a regular `BftPrevote` event. The engine credits the proposer's vote at proposal-arrival time without waiting for the standalone gossipsub prevote hop.
+
+**Why unsigned**: the earlier PR #572 attempt signed the embedded prevote and broke the proposer's own proposal signature. Calling `prevote.sign(sk)` writes `(h, r, step=Prevote=1)` to `last-sign.json`. The subsequent `prop.sign(sk)` at `step=Proposal=0` then trips the LastSignBytes guard's `attempted <= last_signed` check and leaves the proposal signature empty. Testnet halted at h=3,196,667; reverted via PR #573.
+
+The redesign keeps the embedded prevote unsigned. Authenticity flows entirely from the proposal's outer signature: once `proposal.verify_sig()` passes, the signer's identity is established, and the structural `validator == proposer` check binds the embedded prevote to that identity. The engine boundary does not call `verify_sig` on the synthesised prevote.
+
+**Saving**: in a 4-validator quorum at WAN, the proposer's prevote needed one full gossipsub mesh hop to reach the other 3 validators. Variant A removes that hop for the proposer's vote (~50-200 ms per round under typical load; more under congestion).
+
+**Backward compatibility**: receivers running 2.1.x cannot decode the new Proposal struct (bincode trailing bytes). Hence the protocol bump and halt-all simul-start.
+
+**Files**:
+- `crates/sentrix-bft/src/messages.rs` — `Proposal.proposer_prevote` field + 3 unit tests including a regression test for the PR #572 sign-order trap.
+- `crates/sentrix-network/src/libp2p_node.rs` — receiver-side extract + structural-check + dispatch on both gossipsub and request-response paths.
+- `bin/sentrix/src/main.rs` — proposer-side embed (4 call sites: locked-proposal reuse, fresh-proposal build, speculative pre-build on FinalizeBlock-self arm, speculative pre-build on FinalizeBlock-peer arm).
+- `crates/sentrix-wire/src/lib.rs` — protocol bump + the version-pin test.
+- 17 × `Cargo.toml` — workspace 2.1.94 → 2.2.0; `sentrix-faucet` stays on 2.1.91.
+
+**Tests**: 119 sentrix-bft passing (+`test_proposal_sign_with_embedded_unsigned_prevote_succeeds`, +`test_proposal_unsigned_embedded_prevote_roundtrip`, +`test_proposal_without_embedded_prevote_decodes`); 18 sentrix-wire passing. `RUSTFLAGS="-D warnings" cargo check --workspace --release` clean.
+
+**Ops plan**:
+1. Testnet bake via `fast-deploy.sh testnet`; verify `finalize_trace` shows zero `precommit_count<3` rounds, no `bad signature` warnings, no `DoubleSignAttempt` errors, and that the bt distribution shifts left vs the v2.1.92 baseline. **A few hours minimum** per consensus-discipline rule.
+2. Mainnet halt-all + simul-start via `fast-deploy.sh mainnet`. State-root alignment pre-flight required. Canonical chain.db rsync ready as recovery path.
+
 ## [2.1.86] — 2026-05-08 — LastSignBytes guard same-bytes-replay exemption
 
 Closes the rebroadcast bug class that kept `LAST_SIGN_GUARD_PATH` env-disabled cluster-wide since v2.1.84/v2.1.85.

@@ -1037,6 +1037,40 @@ async fn on_swarm_event(
                             );
                             return;
                         }
+                        // F-D Variant A v3: if the proposal carries the
+                        // proposer's UNSIGNED self-prevote, dispatch it as
+                        // a regular BftPrevote so the engine counts the
+                        // proposer's vote at proposal-arrival time without
+                        // waiting for the standalone gossipsub prevote.
+                        // Authenticity flows from the outer proposal
+                        // signature already verified above; the embedded
+                        // prevote stays unsigned by design (signing it
+                        // before proposal.sign() would poison the
+                        // LastSignBytes guard at step=1 and reject the
+                        // proposal sign at step=0 — see reverted PR #572).
+                        // Structural checks: signer == proposer, and the
+                        // (h, r, block_hash) triple matches the proposal.
+                        if let Some(pv) = proposal.proposer_prevote.clone() {
+                            let triple_matches = pv.height == proposal.height
+                                && pv.round == proposal.round
+                                && pv.block_hash.as_deref() == Some(proposal.block_hash.as_str());
+                            if pv.validator != proposal.proposer {
+                                tracing::warn!(
+                                    "gossip bft proposal: embedded prevote signer {} != proposer {} — dropping",
+                                    &pv.validator, &proposal.proposer,
+                                );
+                            } else if !triple_matches {
+                                tracing::warn!(
+                                    "gossip bft proposal: embedded prevote (h,r,hash) mismatch — dropping",
+                                );
+                            } else {
+                                try_send_event(
+                                    event_tx,
+                                    NodeEvent::BftPrevote(pv),
+                                    "BftPrevote(embedded)",
+                                );
+                            }
+                        }
                         try_send_event(event_tx, NodeEvent::BftProposal(proposal), "BftProposal");
                     }
                     Err(e) => tracing::debug!("gossip bft proposal: bad bincode: {}", e),
@@ -1619,6 +1653,28 @@ async fn on_inbound_request(
                     &proposal.proposer
                 );
                 return;
+            }
+            // F-D Variant A v3 piggy-back path — same logic as the
+            // gossipsub BftProposal branch above. Kept in sync explicitly
+            // because the request-response path is the legacy fallback
+            // when a peer is on a binary that hasn't subscribed to the
+            // BFT gossipsub mesh yet.
+            if let Some(pv) = proposal.proposer_prevote.clone() {
+                let triple_matches = pv.height == proposal.height
+                    && pv.round == proposal.round
+                    && pv.block_hash.as_deref() == Some(proposal.block_hash.as_str());
+                if pv.validator != proposal.proposer {
+                    tracing::warn!(
+                        "libp2p rr bft proposal: embedded prevote signer {} != proposer {} — dropping",
+                        &pv.validator, &proposal.proposer,
+                    );
+                } else if !triple_matches {
+                    tracing::warn!(
+                        "libp2p rr bft proposal: embedded prevote (h,r,hash) mismatch — dropping",
+                    );
+                } else {
+                    try_send_event(event_tx, NodeEvent::BftPrevote(pv), "BftPrevote(embedded)");
+                }
             }
             try_send_event(event_tx, NodeEvent::BftProposal(*proposal), "BftProposal");
         }
