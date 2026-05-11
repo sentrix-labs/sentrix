@@ -3470,9 +3470,17 @@ async fn cmd_start(
                     // need the proposal even after we've moved to prevote
                     // collection so they can validate the prevotes they're
                     // receiving from us.
+                    // v2.2.2: tightened 2s → 500ms after mainnet bt RCA 2026-05-11.
+                    // Round trace at h=1,690,662 (mainnet WAN vps3↔vps6) showed
+                    // a dropped proposal costing ~1.5s before the 2s retry
+                    // fired; with ~30% of rounds hitting at least one drop on
+                    // the public-IPv4 path, mean bt sat at 2.5 s/blk vs the
+                    // sub-1s target. Tighter retry brings recovery inside one
+                    // round window. Total budget stays 14 s for cold-start
+                    // peers — MAX_REBROADCASTS rises in lockstep.
                     const REBROADCAST_INTERVAL: std::time::Duration =
-                        std::time::Duration::from_secs(2);
-                    const MAX_REBROADCASTS: u32 = 7;
+                        std::time::Duration::from_millis(500);
+                    const MAX_REBROADCASTS: u32 = 28;
                     // v2.1.89 fix: replay the originally-signed proposal verbatim
                     // instead of rebuilding + re-signing. The pre-fix path called
                     // `bincode::serialize(block)` and `proposal.sign()` afresh on
