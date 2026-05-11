@@ -197,8 +197,8 @@ impl MdbxStorage {
     ///
     /// Replaces the `iter(...).into_iter().filter(...)` pattern that
     /// materialised every entry in the table (and was the root of the
-    /// per-block O(total_logs) scan in the bloom builder + `eth_getLogs`
-    /// + `eth_getTransactionReceipt` paths). MDBX `set_range` seeks
+    /// per-block O(total_logs) scan in the bloom builder, `eth_getLogs`,
+    /// and `eth_getTransactionReceipt` paths). MDBX `set_range` seeks
     /// directly to the first key >= `prefix`; the walk stops the first
     /// time a key no longer starts with `prefix` (MDBX keys are
     /// lexicographically sorted, so all matches are contiguous).
