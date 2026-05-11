@@ -1398,24 +1398,21 @@ impl Blockchain {
                 self.execute_evm_tx_in_block(tx, block.index, &block.hash, tx_index)?;
             }
         }
-        // Sprint 2: compute + persist per-block logs bloom. Cheap enough to
-        // re-scan the height-prefix range because EVM txs per block are
-        // bounded; keeps the bloom exactly aligned with TABLE_LOGS without a
-        // parallel in-memory accumulator.
+        // Sprint 2: compute + persist per-block logs bloom. Walks the
+        // 8-byte height prefix in TABLE_LOGS via a cursor (single
+        // sequential read, no Vec materialisation of the entire log
+        // table — see 2026-05-11 audit finding D-G3 for the prior
+        // O(total_logs) per-block scan that this replaces).
         if let Some(storage) = self.mdbx_storage.as_ref() {
             use sentrix_evm::{StoredLog, add_log_to_bloom, empty_bloom};
             let mut bloom = empty_bloom();
             let prefix = block.index.to_be_bytes();
-            if let Ok(entries) = storage.iter(sentrix_storage::tables::TABLE_LOGS) {
-                for (k, v) in entries {
-                    if k.len() >= 8
-                        && k[..8] == prefix
-                        && let Ok(log) = bincode::deserialize::<StoredLog>(&v)
-                    {
-                        add_log_to_bloom(&mut bloom, &log.address, &log.topics);
-                    }
+            let _ = storage.iter_range(sentrix_storage::tables::TABLE_LOGS, &prefix, |_k, v| {
+                if let Ok(log) = bincode::deserialize::<StoredLog>(v) {
+                    add_log_to_bloom(&mut bloom, &log.address, &log.topics);
                 }
-            }
+                true
+            });
             // TABLE_BLOOM is a query-side optimization (feeds
             // `eth_getLogs` fast-path); a put failure is non-consensus
             // (block still commits, logs still stored in TABLE_LOGS,

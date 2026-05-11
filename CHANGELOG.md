@@ -14,6 +14,30 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.1] — 2026-05-11 — perf: cursor-based log table scans (audit D-G3)
+
+**No wire change. No consensus change. Rolling deploy safe.**
+
+Replaces three `storage.iter(TABLE_LOGS)` full-table materialisations with cursor-range walks:
+
+1. **`crates/sentrix-core/src/block_executor.rs` per-block bloom build.** Was: every block apply pulled the entire `TABLE_LOGS` contents into a `Vec<(Vec<u8>, Vec<u8>)>`, then filtered by 8-byte height prefix. At 1M logs total that's ~200 MB allocated per block (~200-byte values × 1M entries) just to keep the few hundred that match. Now: `storage.iter_range(TABLE_LOGS, &height.to_be_bytes(), |..|..)` seeks via MDBX `set_range` to the first key >= the height prefix and walks only the contiguous run of matching keys.
+2. **`crates/sentrix-rpc/src/jsonrpc/helpers.rs::collect_logs`.** Was: every `eth_getLogs` call materialised the entire log table. Now: `iter_from(TABLE_LOGS, &from.to_be_bytes(), ..)` cursor-walks from the requested start height, stops the first time the decoded height exceeds `to`.
+3. **`crates/sentrix-rpc/src/jsonrpc/helpers.rs::load_logs_for_tx`.** Was: every `eth_getTransactionReceipt` call materialised the entire log table to filter for one tx's logs. Now: same `iter_range` prefix walk.
+
+Per-call cost drops from `O(total_logs_in_chain)` to `O(logs_in_requested_range)`.
+
+**Why it matters:** invisible while mainnet had ~100 EVM logs total. Would have quadratic-collapsed the validator the moment CoinBlast / DEX activity drove TABLE_LOGS into the millions. Audit at `audits/2026-05-11-postdeploy-audit.md` (operator-private) finding D-G3 documents the failure mode in detail.
+
+**Storage API additions** (both in `MdbxStorage`):
+- `iter_range(table, prefix, |k, v| -> bool)` — walks contiguous run of keys starting with `prefix`. Callback returns `false` to break early.
+- `iter_from(table, start_key, |k, v| -> bool)` — walks from `start_key` (or first key >= it) until callback returns `false`. Range upper bound is caller-decoded.
+
+Both add no Vec allocation. `MdbxStorage::iter` (the legacy whole-table materialiser) keeps a docstring warning steering future callers to the cursor variants.
+
+**Tests:** 4 new regression tests in `crates/sentrix-storage/src/mdbx.rs::tests` pin the cursor semantics (prefix scoping, no-match no-op, early-break, iter_from upward walk with stop condition). 23 storage tests pass; workspace `cargo check --workspace --release` clean with `-D warnings`.
+
+**Workspace 2.2.0 → 2.2.1.** Patch bump; no wire-format change.
+
 ## [2.2.0] — 2026-05-11 — proposer-prevote piggy-back, redesigned (wire-incompatible)
 
 **Wire-incompatible**: `SENTRIX_PROTOCOL` bumped `/sentrix/2.1.0` → `/sentrix/2.2.0`. Halt-all + simul-start required. Mixed 2.1.x / 2.2.0 cluster will halt because a 2.1.x decoder rejects the extra trailing bytes on the new `Proposal` struct.
