@@ -25,8 +25,8 @@ static SYNC_SKIPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// `event_tx.send(...).await` which BLOCKED until the consumer drained
 /// — that pattern wedged the entire swarm task whenever the validator
 /// main loop fell behind, producing the silent-halt class observed
-/// at h=1,400,218 (2026-05-05 afternoon) where vps5's prevote was
-/// never broadcast despite the BFT engine producing the BroadcastPrevote
+/// at h=1,400,218 (2026-05-05 afternoon) where the affected validator's
+/// prevote was never broadcast despite the BFT engine producing the BroadcastPrevote
 /// action and `DROPPED_BFT_BROADCASTS` (cmd_tx counter) staying at 0.
 ///
 /// v2.1.67 switches to `try_send` + drop-on-Full + this counter.
@@ -56,8 +56,8 @@ pub static SWARM_TICK: AtomicU64 = AtomicU64::new(0);
 /// 2026-05-05: under memory pressure the swarm task drained slower
 /// than the validator loop produced, the channel saturated, prevote/
 /// precommit were dropped silently, and engine.our_prevote_cast was
-/// already set to true so no retry happened — peer mesh saw vps5 as
-/// silent while local engine thought it had voted.
+/// already set to true so no retry happened — peer mesh saw the
+/// affected validator as silent while local engine thought it had voted.
 ///
 /// Channel cap was bumped 256 → 4096 in the same patch which should
 /// resolve the immediate symptom; this counter is the canary for next
@@ -213,8 +213,8 @@ impl LibP2pNode {
         // ~256 the channel filled silently → try_send returned Full →
         // BFT prevote/precommit DROPPED at the network boundary while
         // engine.our_prevote_cast was already set to true → silent thread
-        // death pattern (vps5 at h=1392113 on 2026-05-05; see
-        // audits/2026-05-05-h1392113-silent-halt-investigation-handoff.md).
+        // death pattern (affected validator at h=1392113 on 2026-05-05;
+        // see audits/2026-05-05-h1392113-silent-halt-investigation-handoff.md).
         // 4096 mirrors the v2.1.61 fix for event_tx + bft_tx and gives
         // ~5 min margin at the observed peak rate.
         let (cmd_tx, cmd_rx) = mpsc::channel::<SwarmCommand>(4096);
@@ -1319,8 +1319,8 @@ async fn on_rr_event(
 // handler tokio task at main.rs:3407) fell behind on draining. That wedge
 // pattern produced silent halts: the swarm task couldn't deliver inbound
 // BFT messages to the BFT engine AND couldn't process outbound broadcast
-// commands either, so vps5 looked silent on the wire while local engine
-// state believed it was operating. The h=1,400,218 halt on 2026-05-05
+// commands either, so the affected validator looked silent on the wire
+// while local engine state believed it was operating. The h=1,400,218 halt on 2026-05-05
 // matched this pattern (DROPPED_BFT_BROADCASTS=0 ruled out cmd_tx; no
 // libp2p outbound failures ruled out request_response per-peer wedge;
 // only the swarm-task internal stall fit).

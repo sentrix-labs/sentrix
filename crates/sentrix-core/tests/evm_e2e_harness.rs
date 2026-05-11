@@ -25,7 +25,7 @@
 //!
 //! Run: `cargo test -p sentrix-core --test evm_e2e_harness`
 //!
-//! Audit reference: founder-private/audits/2026-05-06-rust-workspace-security-audit.md
+//! Audit reference: internal Sentrix Labs rust-workspace security audit (2026-05-06).
 
 use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy};
 use alloy_eips::eip2718::Encodable2718;

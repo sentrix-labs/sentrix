@@ -5,6 +5,11 @@ All notable changes to Sentrix are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> **Validator naming in incident narratives:** historical entries reference
+> individual mainnet validator hosts as `validator A/B/C/D`. The labels are
+> stable within this document; the underlying host-to-label mapping is
+> operator-private.
+
 ---
 
 ## [Unreleased]
@@ -29,7 +34,7 @@ Files: `crates/sentrix-bft/src/last_sign_guard.rs` (+143 lines), `crates/sentrix
 
 Single-purpose release: ships PR #534's `emit_state_fingerprint` in the apply path, gated on `SENTRIX_STATE_FINGERPRINT=1`. When enabled, every block-apply emits a deterministic SHA-256 of AccountDB content (sorted balances, nonces, code-hashes, storage, plus `total_burned` + `total_minted`) as `[STATE-FP] h=<height> acc=<hex8> fp=<hex8>` to stderr. Default-off — zero overhead when env var unset.
 
-The motivation is the recurring state_root v2 drift halts: tonight's investigation localised the split as `{vps2, vps3}` vs `{vps1, vps5}` starting h=1,648,001 but couldn't pinpoint the source-code path producing non-deterministic AccountDB content. With the trace enabled cluster-wide, the next halt's `journalctl | grep STATE-FP` immediately surfaces the first block whose fingerprint diverges across hosts; from there the per-account diff (via `tools/state-diff/`) names the drifting balance/nonce/storage entry.
+The motivation is the recurring state_root v2 drift halts: tonight's investigation localised the split as `{validator B, validator C}` vs `{validator A, validator D}` starting h=1,648,001 but couldn't pinpoint the source-code path producing non-deterministic AccountDB content. With the trace enabled cluster-wide, the next halt's `journalctl | grep STATE-FP` immediately surfaces the first block whose fingerprint diverges across hosts; from there the per-account diff (via `tools/state-diff/`) names the drifting balance/nonce/storage entry.
 
 Built via `rust:1.94-bullseye`, sha256 `843b7f2fceee26f5e9baf56486510aac6aab997983829fbe7b2a8223325127f6`. Deployed cluster-wide and verified: all four mainnet hosts agree on STATE-FP for h=1,649,020..1,649,047 immediately post-deploy, confirming the trace itself is deterministic when the chain is healthy.
 
@@ -231,7 +236,7 @@ Two patches combined into a single commit (both touch the same regions in `bin/s
 
 Fix: in both `BftAction::FinalizeBlock` arms (self-propose `bin/sentrix/src/main.rs:2326`, peer-propose `:2862`), early-return if `bc.height() >= action.height` — block already on chain via libp2p, skip local write, mark `proposed_block = None`, break, let the outer `need_new_round` reset the BFT engine to `bc.height() + 1` on the next iteration. Plus added a greppable `libp2p NewBlock: applying block N from peer; chain will advance, BFT engine will resync via need_new_round on next validator iter` log line at the libp2p-apply path so the race is journalctl-traceable.
 
-Mainnet impact: after rolling deploy, vps5 (the silent halter the night before) re-entered the proposer rotation, finalize_trace shows the new chain-already-advanced branch firing on every dual-finalize sequence (precommit_count=3 → 4 cascade), zero watchdog warns, zero NRestarts.
+Mainnet impact: after rolling deploy, validator D (the silent halter the night before) re-entered the proposer rotation, finalize_trace shows the new chain-already-advanced branch firing on every dual-finalize sequence (precommit_count=3 → 4 cascade), zero watchdog warns, zero NRestarts.
 
 ## [2.1.61] — 2026-05-04 — BFT message-channel buffers + channel-depth metric
 
@@ -303,7 +308,7 @@ Three closely-related fixes catching live binaries up to source:
 
 ## [2.1.51] — 2026-05-02 — Explicit MDBX max_size + growth_step
 
-Default libmdbx geometry has a small upper_size and grows in tiny increments. When chain.db crossed the geometric ceiling, every trie write started failing with `MDBX_MAP_FULL: Environment mapsize limit reached`. The validators that hit it (vps1+vps5 first — independent write history pre-rsync) couldn't persist new state, but their in-memory blockchain advanced anyway. They proposed blocks built on unpersisted state; peers (vps2+vps3) computed different state_root and rejected → 2v2 BFT split-brain along Foundation+Beacon vs Treasury+Core → halt.
+Default libmdbx geometry has a small upper_size and grows in tiny increments. When chain.db crossed the geometric ceiling, every trie write started failing with `MDBX_MAP_FULL: Environment mapsize limit reached`. The validators that hit it (validator A + validator D first — independent write history pre-rsync) couldn't persist new state, but their in-memory blockchain advanced anyway. They proposed blocks built on unpersisted state; peers (validator B + validator C) computed different state_root and rejected → 2v2 BFT split-brain along Foundation+Beacon vs Treasury+Core → halt.
 
 Pattern repeated on 2026-05-01 at h≈1,180k / 1,191k / 1,192k / 1,195k / 1,197k. Earlier theory (EVM value-transfer plumbing in v2.1.49) was ruled out by deploying v2.1.50 with `EVM_VALUE_TRANSFER_HEIGHT=u64::MAX` (forced disabled) and seeing the divergence recur — the apply path was clean; the storage layer was the cause.
 
@@ -311,7 +316,7 @@ Fix: explicit `max_size = 64 GiB` and `growth_step = 1 GiB` on MDBX env open. 64
 
 ## [2.1.50] — 2026-05-02 — Fork-gate EVM value-transfer plumbing (rollback by env var)
 
-PR #439's flat-shipping of `envelope.value()` into the Pass-2 EVM apply TxEnv produced 3 mainnet halts on 2026-05-01 (h≈1.18M / 1.19M / 1.19M). Each halt was a deterministic 2v2 split-brain along the same factional lines (vps1+vps5 vs vps2+vps3) and recurred ~24 min after every restart. Pattern matched the eager-write divergence shape the v2.1.48 FinalizeBlock guard was meant to catch — but the guard does not recover when the underlying apply path itself produces validator-specific state on every value-bearing tx.
+PR #439's flat-shipping of `envelope.value()` into the Pass-2 EVM apply TxEnv produced 3 mainnet halts on 2026-05-01 (h≈1.18M / 1.19M / 1.19M). Each halt was a deterministic 2v2 split-brain along the same factional lines (validator A + validator D vs validator B + validator C) and recurred ~24 min after every restart. Pattern matched the eager-write divergence shape the v2.1.48 FinalizeBlock guard was meant to catch — but the guard does not recover when the underlying apply path itself produces validator-specific state on every value-bearing tx.
 
 Fix: gate the value plumbing behind `EVM_VALUE_TRANSFER_HEIGHT`, default `u64::MAX` (disabled). Pre-fork: `TxEnv.value` forced to ZERO — matches v2.1.48 EVM behaviour, divergence-free. Post-fork: envelope value flows through to revm. Activation procedure mirrors every other consensus fork: pick a height, set the env var on all four validators simultaneously, halt-all + simul-start. (Eventual root cause turned out to be MDBX_MAP_FULL — see v2.1.51 — so this gate has stayed at u64::MAX without consequence.)
 
@@ -327,7 +332,7 @@ Workspace bump for PR #439's value-transfer plumbing. Symptom-level: `wagmi.useS
 
 ## [2.1.48] — 2026-04-30 — BFT FinalizeBlock hash-mismatch guard (closes recurring chain.db divergence)
 
-> **Closes the recurring chain.db divergence bug** that produced the ~30-min mainnet halts at h=773012 (vps5, 2026-04-28), h=921604 + h=932488 (2026-04-29), and h=1014804 + h=1015365 (2026-04-30, twice in one day). The audit at `audits/2026-04-30-eager-write-investigation.md` traces the actual mechanism: BFT engine's `FinalizeBlock` action carried the supermajority `block_hash` for the round, but the validator-loop handler discarded it (`block_hash: _`) and `.take()`'d whatever was stashed in `proposed_block`. If the validator missed the actual round-N proposal but the cluster's round-N precommits crossed our local supermajority threshold, we'd write a stale stash (a previous round's block) attached to the current round's justification. Next height's `parent_hash` references the cluster-canonical hash; our local height's hash doesn't match; libp2p sync rejects forward blocks with `Invalid block: invalid previous hash`; BFT can't progress. Recovery required chain.db rsync from a canonical peer + halt-all + simul-start.
+> **Closes the recurring chain.db divergence bug** that produced the ~30-min mainnet halts at h=773012 (validator D, 2026-04-28), h=921604 + h=932488 (2026-04-29), and h=1014804 + h=1015365 (2026-04-30, twice in one day). The audit at `audits/2026-04-30-eager-write-investigation.md` traces the actual mechanism: BFT engine's `FinalizeBlock` action carried the supermajority `block_hash` for the round, but the validator-loop handler discarded it (`block_hash: _`) and `.take()`'d whatever was stashed in `proposed_block`. If the validator missed the actual round-N proposal but the cluster's round-N precommits crossed our local supermajority threshold, we'd write a stale stash (a previous round's block) attached to the current round's justification. Next height's `parent_hash` references the cluster-canonical hash; our local height's hash doesn't match; libp2p sync rejects forward blocks with `Invalid block: invalid previous hash`; BFT can't progress. Recovery required chain.db rsync from a canonical peer + halt-all + simul-start.
 
 ### Fixed
 
@@ -340,7 +345,7 @@ Workspace bump for PR #439's value-transfer plumbing. Symptom-level: `wagmi.useS
 
 ### Operational notes
 
-- Deployed via halt-all + scp + simul-start. vps2's `chain.db` was corrupted during the failed glibc-2.38 attempt and recovered via tar-pipe rsync from vps1 canonical (`05b6b374ce01857e8556058d2688ab05`).
+- Deployed via halt-all + scp + simul-start. Validator B's `chain.db` was corrupted during the failed glibc-2.38 attempt and recovered via tar-pipe rsync from validator A canonical (`05b6b374ce01857e8556058d2688ab05`).
 - All four mainnet validators on `v2.1.48`, advancing in lockstep at h≈1019300+ post-deploy.
 
 ---

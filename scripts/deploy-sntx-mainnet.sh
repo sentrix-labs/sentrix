@@ -51,19 +51,20 @@ fi
 
 # ── Build the tiny helper if not already present ────────
 HELPER_DIR="${SENTRIX_HELPER_DIR:-/tmp/sntx-deploy-helper}"
+SENTRIX_REPO="${SENTRIX_REPO:-$HOME/sentrix}"
 if [[ ! -x "${HELPER_DIR}/target/release/sntx-deploy-helper" ]]; then
     echo "==> Building signing helper at ${HELPER_DIR}"
     rm -rf "${HELPER_DIR}"
     mkdir -p "${HELPER_DIR}/src"
-    cat > "${HELPER_DIR}/Cargo.toml" <<'EOF'
+    cat > "${HELPER_DIR}/Cargo.toml" <<EOF
 [package]
 name = "sntx-deploy-helper"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-sentrix-primitives = { path = "/home/sentriscloud/sentrix/crates/sentrix-primitives" }
-sentrix-wallet = { path = "/home/sentriscloud/sentrix/crates/sentrix-wallet" }
+sentrix-primitives = { path = "${SENTRIX_REPO}/crates/sentrix-primitives" }
+sentrix-wallet = { path = "${SENTRIX_REPO}/crates/sentrix-wallet" }
 anyhow = "1"
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "blocking"] }

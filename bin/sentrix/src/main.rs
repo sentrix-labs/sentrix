@@ -1689,8 +1689,8 @@ async fn cmd_start(
             // `bincode::serialize(block)` and `proposal.sign()` afresh; that
             // worked most of the time, but produced occasional "bad
             // signature" rejections on peers that had already accepted the
-            // first emit (smoking-gun trace at 2026-05-08 23:32:41 vps3 →
-            // vps6 foundation). Stashing + replaying the original signed
+            // first emit (trace at 2026-05-08 23:32:41, proposer → peer
+            // foundation). Stashing + replaying the original signed
             // Proposal removes the re-encode/re-sign step entirely, which
             // is the correct invariant: a rebroadcast is the same message,
             // not a new one.
@@ -2476,7 +2476,7 @@ async fn cmd_start(
                                             }
 
                                             // 2026-04-30 hash-mismatch guard: the bug behind the
-                                            // recurring vps3 / vps5 chain.db divergences (see
+                                            // recurring validator-pair chain.db divergences (see
                                             // audits/2026-04-30-eager-write-investigation.md).
                                             // proposed_block may hold a block from an earlier
                                             // round that didn't finalise; if no new proposal
@@ -3428,8 +3428,8 @@ async fn cmd_start(
                     // every retry; even though the signing payload only covers
                     // (height, round, block_hash) and ECDSA over secp256k1 is
                     // RFC-6979 deterministic, the rebuild path produced occasional
-                    // bad-signature rejections on peers — the smoking gun trace
-                    // 2026-05-08 23:32:41 vps3 → vps6 foundation. Replaying the
+                    // bad-signature rejections on peers — trace 2026-05-08
+                    // 23:32:41, proposer → peer foundation. Replaying the
                     // saved Proposal struct sidesteps every re-encode/re-sign
                     // hazard: same bytes, same signature, byte-for-byte identical
                     // wire image. Only fires when the saved proposal still

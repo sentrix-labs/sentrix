@@ -218,38 +218,30 @@ fn decode_tip_hash_short(s: &str) -> Option<u32> {
 }
 
 fn parse_targets() -> Vec<Target> {
-    // Targets via env or hardcoded defaults for current Pattern B topology.
-    // Format: SENTRIX_TARGETS="name:network:url,name:network:url,..."
-    if let Ok(s) = std::env::var("SENTRIX_TARGETS") {
-        return s
-            .split(',')
-            .filter_map(|item| {
-                let parts: Vec<&str> = item.splitn(3, ':').collect();
-                if parts.len() == 3 {
-                    Some(Target {
-                        name: parts[0].into(),
-                        network: parts[1].into(),
-                        url: parts[2].into(),
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
-    }
-    // Defaults: 4 mainnet validators + 4 testnet validators
-    vec![
-        Target { name: "core".into(),       network: "mainnet".into(), url: "http://10.20.0.4:8545".into() },
-        Target { name: "foundation".into(), network: "mainnet".into(), url: "http://10.20.0.6:8545".into() },
-        Target { name: "treasury".into(),   network: "mainnet".into(), url: "http://10.20.0.6:8549".into() },
-        Target { name: "beacon".into(),     network: "mainnet".into(), url: "http://10.20.0.6:8553".into() },
-        Target { name: "fullnode-1".into(), network: "mainnet".into(), url: "http://10.20.0.6:8557".into() },
-        Target { name: "fullnode-2".into(), network: "mainnet".into(), url: "http://10.20.0.6:8561".into() },
-        Target { name: "val1".into(),       network: "testnet".into(), url: "http://127.0.0.1:9545".into() },
-        Target { name: "val2".into(),       network: "testnet".into(), url: "http://127.0.0.1:9546".into() },
-        Target { name: "val3".into(),       network: "testnet".into(), url: "http://127.0.0.1:9547".into() },
-        Target { name: "val4".into(),       network: "testnet".into(), url: "http://127.0.0.1:9548".into() },
-    ]
+    // Targets via SENTRIX_TARGETS env var.
+    // Format: "name:network:url,name:network:url,..."
+    // splitn(3, ':') keeps `://` and port-colons in the URL tail intact.
+    //
+    // Production deploys set this in the systemd unit env; the binary
+    // starts with an empty target list if unset (no implicit topology
+    // baked into the binary).
+    let Ok(s) = std::env::var("SENTRIX_TARGETS") else {
+        return Vec::new();
+    };
+    s.split(',')
+        .filter_map(|item| {
+            let parts: Vec<&str> = item.splitn(3, ':').collect();
+            if parts.len() == 3 {
+                Some(Target {
+                    name: parts[0].into(),
+                    network: parts[1].into(),
+                    url: parts[2].into(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[tokio::main]
@@ -332,16 +324,10 @@ mod tests {
     fn parse_targets_all_scenarios() {
         // SAFETY: single-test scope, no concurrent env access in this body.
         unsafe {
-            // ── 1. Default topology (env unset) ──
+            // ── 1. Empty default (env unset, no topology baked in) ──
             std::env::remove_var("SENTRIX_TARGETS");
             let t = parse_targets();
-            // 6 mainnet (4 vals + 2 fullnodes) + 4 testnet = 10
-            assert_eq!(t.len(), 10);
-            let mainnet = t.iter().filter(|x| x.network == "mainnet").count();
-            let testnet = t.iter().filter(|x| x.network == "testnet").count();
-            assert_eq!(mainnet, 6);
-            assert_eq!(testnet, 4);
-            assert!(t.iter().all(|x| x.url.starts_with("http://")));
+            assert!(t.is_empty());
 
             // ── 2. Env override with 3 well-formed targets ──
             std::env::set_var(
