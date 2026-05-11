@@ -1558,7 +1558,7 @@ async fn cmd_start(
         }
         Some(tokio::spawn(async move {
             use sentrix::core::bft::{BftAction, BftEngine, BftPhase};
-            use sentrix::core::bft_messages::{BftMessage, Proposal};
+            use sentrix::core::bft_messages::{BftMessage, Prevote, Proposal};
             use sentrix::core::block::Block;
 
             // V2 M-15 Step 4+5 helper: produce a signed Proposal for the
@@ -1570,6 +1570,31 @@ async fn cmd_start(
             // existing `create_block_voyager` path.
             //
             // Design: audits/v2-locked-block-repropose-implementation-plan.md
+            // Build + sign the proposer's own prevote for `block_hash` so it
+            // can travel inside the proposal envelope (Variant A piggy-back).
+            // Receivers count proposer's vote immediately from the proposal
+            // message and skip waiting for a separate BftPrevote gossipsub
+            // hop. Standalone broadcast still fires via on_own_proposal so
+            // peers on older binaries continue to count the vote (engine
+            // dedups by signer+height+round).
+            fn build_proposer_prevote(
+                height: u64,
+                round: u32,
+                block_hash: &str,
+                wallet_address: &str,
+                validator_sk: &secp256k1::SecretKey,
+            ) -> Prevote {
+                let mut prevote = Prevote {
+                    height,
+                    round,
+                    block_hash: Some(block_hash.to_string()),
+                    validator: wallet_address.to_string(),
+                    signature: vec![],
+                };
+                prevote.sign(validator_sk);
+                prevote
+            }
+
             fn build_or_reuse_proposal(
                 bft: &BftEngine,
                 bc: &mut Blockchain,
@@ -1577,6 +1602,7 @@ async fn cmd_start(
                 validator_sk: &secp256k1::SecretKey,
                 height: u64,
             ) -> Option<(Block, Proposal)> {
+                let round = bft.round();
                 if let Some((cached_hash, cached_bytes)) = bft.locked_proposal_bytes() {
                     match bincode::deserialize::<Block>(&cached_bytes) {
                         Ok(block) => {
@@ -1584,15 +1610,23 @@ async fn cmd_start(
                                 "V2 M-15: re-proposing locked block {:.16}... at height {} round {}",
                                 cached_hash,
                                 height,
-                                bft.round()
+                                round
+                            );
+                            let proposer_prevote = build_proposer_prevote(
+                                height,
+                                round,
+                                &cached_hash,
+                                wallet_address,
+                                validator_sk,
                             );
                             let mut proposal = Proposal {
                                 height,
-                                round: bft.round(),
+                                round,
                                 block_hash: cached_hash,
                                 block_data: cached_bytes,
                                 proposer: wallet_address.to_string(),
                                 signature: vec![],
+                                proposer_prevote: Some(proposer_prevote),
                             };
                             proposal.sign(validator_sk);
                             return Some((block, proposal));
@@ -1609,13 +1643,21 @@ async fn cmd_start(
                     Ok(block) => {
                         let block_hash = block.hash.clone();
                         let block_data = bincode::serialize(&block).unwrap_or_default();
+                        let proposer_prevote = build_proposer_prevote(
+                            height,
+                            round,
+                            &block_hash,
+                            wallet_address,
+                            validator_sk,
+                        );
                         let mut proposal = Proposal {
                             height,
-                            round: bft.round(),
+                            round,
                             block_hash,
                             block_data,
                             proposer: wallet_address.to_string(),
                             signature: vec![],
+                            proposer_prevote: Some(proposer_prevote),
                         };
                         proposal.sign(validator_sk);
                         Some((block, proposal))
@@ -2692,6 +2734,13 @@ async fn cmd_start(
                                                                 Ok(block) => {
                                                                     let block_hash = block.hash.clone();
                                                                     let block_data = bincode::serialize(&block).unwrap_or_default();
+                                                                    let proposer_prevote = build_proposer_prevote(
+                                                                        next_h,
+                                                                        0,
+                                                                        &block_hash,
+                                                                        &wallet.address,
+                                                                        &validator_secret_key,
+                                                                    );
                                                                     let mut prop = Proposal {
                                                                         height: next_h,
                                                                         round: 0,
@@ -2699,6 +2748,7 @@ async fn cmd_start(
                                                                         block_data,
                                                                         proposer: wallet.address.clone(),
                                                                         signature: vec![],
+                                                                        proposer_prevote: Some(proposer_prevote),
                                                                     };
                                                                     prop.sign(&validator_secret_key);
                                                                     tracing::debug!(
@@ -3252,6 +3302,13 @@ async fn cmd_start(
                                                         Ok(block) => {
                                                             let block_hash = block.hash.clone();
                                                             let block_data = bincode::serialize(&block).unwrap_or_default();
+                                                            let proposer_prevote = build_proposer_prevote(
+                                                                next_h_pf,
+                                                                0,
+                                                                &block_hash,
+                                                                &wallet.address,
+                                                                &validator_secret_key,
+                                                            );
                                                             let mut prop = Proposal {
                                                                 height: next_h_pf,
                                                                 round: 0,
@@ -3259,6 +3316,7 @@ async fn cmd_start(
                                                                 block_data,
                                                                 proposer: wallet.address.clone(),
                                                                 signature: vec![],
+                                                                proposer_prevote: Some(proposer_prevote),
                                                             };
                                                             prop.sign(&validator_secret_key);
                                                             tracing::debug!(
