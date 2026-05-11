@@ -1609,35 +1609,19 @@ impl Blockchain {
     ///   Phase 1 — immutable borrows of `chain` and `accounts` → collect owned data.
     ///   Phase 2 — mutable borrow of `state_trie` → insert + commit.
     pub fn update_trie_for_block(&mut self) -> SentrixResult<Option<[u8; 32]>> {
-        // [DEBUG] always-on eprintln — captures real flow during testnet
-        // activation rehearsal forensic. Remove before mainnet redeploy.
-        let _dbg_block_index = self.chain.last().map(|b| b.index).unwrap_or(0);
-        let _dbg_v2h = std::env::var("STATE_ROOT_V2_HEIGHT").unwrap_or_default();
-        eprintln!(
-            "[V2-DBG] update_trie_for_block ENTRY block_index={} STATE_ROOT_V2_HEIGHT_env={:?}",
-            _dbg_block_index, _dbg_v2h
-        );
-
-        // Option B canonical-treasury rebase — fire BEFORE the trie-init
-        // check so it runs independent of trie readiness. Targets the
+        // STATE_ROOT_V2 canonical-treasury rebase — runs BEFORE the trie-init
+        // check so it fires independent of trie readiness. Targets the
         // exact activation block; force-sets in-memory PROTOCOL_TREASURY
-        // to the operator-set canonical so all 4 validators agree on
-        // the value the trie is about to commit. Detailed runbook lives
-        // a few hundred lines down in the touch-list section. Without
-        // either env var, this is a no-op.
+        // to the operator-set canonical so all validators agree on the
+        // value the trie is about to commit. Without either env var,
+        // this is a no-op. See touch-list section below for the full
+        // post-mortem on the original 2026-05-06 first-activation fork.
         let state_root_v2_height_for_rebase = std::env::var("STATE_ROOT_V2_HEIGHT")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(u64::MAX);
         let activation_block_index = self.chain.last().map(|b| b.index);
-        eprintln!(
-            "[V2-DBG] activation_block_index={:?} state_root_v2_height_for_rebase={} treasury_in_mem={}",
-            activation_block_index,
-            state_root_v2_height_for_rebase,
-            self.accounts.get_balance(PROTOCOL_TREASURY)
-        );
         if activation_block_index == Some(state_root_v2_height_for_rebase) {
-            eprintln!("[V2-DBG] AT ACTIVATION BLOCK — checking canonical env");
             if let Some(canonical) = std::env::var("STATE_ROOT_V2_TREASURY_BALANCE")
                 .ok()
                 .and_then(|s| s.parse::<u64>().ok())
@@ -1658,12 +1642,7 @@ impl Blockchain {
                     );
                 }
                 self.accounts.set_balance(PROTOCOL_TREASURY, canonical);
-                eprintln!(
-                    "[V2-DBG] REBASE FIRED: PROTOCOL_TREASURY now = {} (post set_balance)",
-                    self.accounts.get_balance(PROTOCOL_TREASURY)
-                );
             } else {
-                eprintln!("[V2-DBG] activation height matched but STATE_ROOT_V2_TREASURY_BALANCE NOT set");
                 tracing::warn!(
                     "STATE_ROOT_V2 activation at h={} WITHOUT \
                      STATE_ROOT_V2_TREASURY_BALANCE override — fork risk if \
@@ -1672,11 +1651,6 @@ impl Blockchain {
                     state_root_v2_height_for_rebase
                 );
             }
-        } else {
-            eprintln!(
-                "[V2-DBG] NOT at activation block — block_index={:?} != v2_height={}",
-                activation_block_index, state_root_v2_height_for_rebase
-            );
         }
 
         if self.state_trie.is_none() {
@@ -1798,10 +1772,6 @@ impl Blockchain {
                 .unwrap_or(u64::MAX);
             if block.index >= state_root_v2_height {
                 addrs.push(PROTOCOL_TREASURY.to_string());
-                eprintln!(
-                    "[V2-DBG] block.index={} >= v2_height={} — PROTOCOL_TREASURY added to addrs",
-                    block.index, state_root_v2_height
-                );
             }
             (addrs, block.index)
         };
@@ -1822,13 +1792,9 @@ impl Blockchain {
         } else {
             touched_addrs
         };
-        eprintln!(
-            "[V2-DBG] post-touch list: block_index={} touched_addrs_count={} treasury_in_mem={}",
-            block_index, touched_addrs.len(), self.accounts.get_balance(PROTOCOL_TREASURY)
-        );
         // All borrows on `self.chain` released here.
-        // (Option B canonical-treasury rebase already fired at function
-        // entry — see top of update_trie_for_block.)
+        // (Canonical-treasury rebase already fired at function entry —
+        // see top of update_trie_for_block.)
 
         // Phase 1b: snapshot current balances + nonces (immutable borrow of `accounts`)
         // CRITICAL: Use BTreeSet (sorted, deterministic) — NOT HashSet (random per-process).
@@ -1847,16 +1813,6 @@ impl Blockchain {
             })
             .collect();
         // Borrow of `accounts` ends after collect().
-        eprintln!(
-            "[V2-DBG] updates Vec built: {} entries at block_index={}",
-            updates.len(), block_index
-        );
-        for (addr, balance, nonce) in &updates {
-            eprintln!(
-                "[V2-DBG]   addr={} balance={} nonce={}",
-                addr, balance, nonce
-            );
-        }
 
         if trace {
             eprintln!("[trie-trace] update_trie_for_block at h={block_index}");
@@ -1907,10 +1863,6 @@ impl Blockchain {
         if trace {
             eprintln!("[trie-trace] commit at h={block_index} → root={}", hex::encode(root));
         }
-        eprintln!(
-            "[V2-DBG] FINAL trie root at block_index={}: 0x{}",
-            block_index, hex::encode(root)
-        );
         Ok(Some(root))
     }
 
