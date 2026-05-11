@@ -1037,32 +1037,6 @@ async fn on_swarm_event(
                             );
                             return;
                         }
-                        // Variant A piggy-back: if the proposal carries the
-                        // proposer's own prevote, dispatch it as a regular
-                        // prevote event so the engine counts the proposer's
-                        // vote without waiting for a separate gossipsub hop.
-                        // Engine dedups by signer+height+round so the
-                        // proposer's standalone prevote arriving later is a
-                        // no-op.
-                        if let Some(pv) = proposal.proposer_prevote.clone() {
-                            if pv.validator != proposal.proposer {
-                                tracing::warn!(
-                                    "gossip bft proposal: embedded prevote signer {} != proposer {}",
-                                    &pv.validator, &proposal.proposer
-                                );
-                            } else if !pv.verify_sig() {
-                                tracing::warn!(
-                                    "gossip bft proposal: embedded prevote bad signature from {}",
-                                    &pv.validator
-                                );
-                            } else {
-                                try_send_event(
-                                    event_tx,
-                                    NodeEvent::BftPrevote(pv),
-                                    "BftPrevote(embedded)",
-                                );
-                            }
-                        }
                         try_send_event(event_tx, NodeEvent::BftProposal(proposal), "BftProposal");
                     }
                     Err(e) => tracing::debug!("gossip bft proposal: bad bincode: {}", e),

@@ -104,12 +104,6 @@ pub struct Proposal {
     pub block_data: Vec<u8>, // bincode-encoded Block
     pub proposer: String,    // validator address
     pub signature: Vec<u8>,  // ed25519 signature over (height, round, block_hash)
-    /// Proposer's own prevote for this block, bundled so receivers can count
-    /// the proposer's vote immediately from the proposal message and skip
-    /// waiting for a separate BftPrevote gossipsub broadcast. `None` for
-    /// legacy encodings (serde default); new proposers always set it.
-    #[serde(default)]
-    pub proposer_prevote: Option<Prevote>,
 }
 
 impl Proposal {
@@ -733,66 +727,10 @@ mod tests {
             block_data: vec![1, 2, 3],
             proposer: wallet.address.clone(),
             signature: vec![],
-            proposer_prevote: None,
         };
         prop.sign(&sk);
         assert_eq!(prop.signature.len(), 65);
         assert!(prop.verify_sig());
-    }
-
-    #[test]
-    fn test_proposal_with_embedded_prevote_roundtrip() {
-        let wallet = make_wallet();
-        let sk = wallet.get_secret_key().unwrap();
-        let mut prevote = Prevote {
-            height: 300,
-            round: 0,
-            block_hash: Some("hash_ghi".into()),
-            validator: wallet.address.clone(),
-            signature: vec![],
-        };
-        prevote.sign(&sk);
-        let mut prop = Proposal {
-            height: 300,
-            round: 0,
-            block_hash: "hash_ghi".into(),
-            block_data: vec![1, 2, 3],
-            proposer: wallet.address.clone(),
-            signature: vec![],
-            proposer_prevote: Some(prevote.clone()),
-        };
-        prop.sign(&sk);
-        let bytes = bincode::serialize(&prop).expect("encode");
-        let decoded: Proposal = bincode::deserialize(&bytes).expect("decode");
-        assert!(decoded.verify_sig());
-        assert_eq!(decoded.proposer_prevote.as_ref().unwrap(), &prevote);
-        assert!(decoded.proposer_prevote.unwrap().verify_sig());
-    }
-
-    #[test]
-    fn test_legacy_proposal_without_prevote_decodes() {
-        // Forward-compat: encoder writes the new struct with None and
-        // a decoder built against the same code reads None back. Older
-        // encoders that wrote the pre-field layout deserialise via
-        // serde-default; this test pins the None case round-trips
-        // cleanly so a regression in the field's serde attributes is
-        // caught without a wire-format harness.
-        let wallet = make_wallet();
-        let sk = wallet.get_secret_key().unwrap();
-        let mut prop = Proposal {
-            height: 1,
-            round: 0,
-            block_hash: "h".into(),
-            block_data: vec![],
-            proposer: wallet.address.clone(),
-            signature: vec![],
-            proposer_prevote: None,
-        };
-        prop.sign(&sk);
-        let bytes = bincode::serialize(&prop).expect("encode");
-        let decoded: Proposal = bincode::deserialize(&bytes).expect("decode");
-        assert!(decoded.verify_sig());
-        assert!(decoded.proposer_prevote.is_none());
     }
 
     #[test]

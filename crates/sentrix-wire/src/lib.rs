@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 /// variants so peers can negotiate compatible versions. Currently 2.0.0 —
 /// same as the sentrix binary major.minor, but intentionally tracked
 /// separately so we don't have to bump the binary to bump the wire version.
-pub const SENTRIX_PROTOCOL: &str = "/sentrix/2.2.0";
+pub const SENTRIX_PROTOCOL: &str = "/sentrix/2.1.0";
 
 // ── Gossipsub topic names ────────────────────────────────
 
@@ -332,12 +332,10 @@ mod tests {
 
     /// Pin the protocol version string — change requires deliberate bump.
     #[test]
-    fn test_protocol_version_is_2_2_0() {
-        // 2026-05-11: bumped 2.1.0 → 2.2.0 alongside the proposer-prevote
-        // piggy-back so old peers (which decode the Proposal struct
-        // without the new `proposer_prevote` field) can't accidentally
-        // interop and bincode-fail on trailing bytes.
-        assert_eq!(SENTRIX_PROTOCOL, "/sentrix/2.2.0");
+    fn test_protocol_version_is_2_1_0() {
+        // 2026-05-10: bumped 2.0.0 → 2.1.0 alongside the gossipsub-for-BFT
+        // switch so old peers (RR-only) can't accidentally interop.
+        assert_eq!(SENTRIX_PROTOCOL, "/sentrix/2.1.0");
     }
 
     /// Pin the topic names — callers (explorers, dApps) subscribe by string.
