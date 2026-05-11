@@ -172,6 +172,12 @@ impl MdbxStorage {
     // ── Iteration ───────────────────────────────────────────
 
     /// Iterate all key-value pairs in a table (ordered by key).
+    ///
+    /// Materialises the entire table into a `Vec`. Fine for small admin
+    /// tables (table list, validator set, etc.). Do NOT use for
+    /// `TABLE_LOGS` / `TABLE_RECEIPTS` / any unbounded-growth table —
+    /// see `iter_range` / `iter_from` for cursor-based scans that don't
+    /// allocate the world.
     pub fn iter(&self, table: &str) -> StorageResult<Vec<(Vec<u8>, Vec<u8>)>> {
         let tx = self.db.begin_ro_txn()?;
         let tbl = tx.open_table(Some(table))?;
@@ -182,6 +188,75 @@ impl MdbxStorage {
             results.push((key.to_vec(), value.to_vec()));
         }
         Ok(results)
+    }
+
+    /// Cursor-based range scan with a single sequential walk and no
+    /// intermediate `Vec` allocation. Calls `f(key, value)` for every
+    /// entry whose key starts with `prefix`, in key-sorted order.
+    /// Callback returns `false` to break early.
+    ///
+    /// Replaces the `iter(...).into_iter().filter(...)` pattern that
+    /// materialised every entry in the table (and was the root of the
+    /// per-block O(total_logs) scan in the bloom builder + `eth_getLogs`
+    /// + `eth_getTransactionReceipt` paths). MDBX `set_range` seeks
+    /// directly to the first key >= `prefix`; the walk stops the first
+    /// time a key no longer starts with `prefix` (MDBX keys are
+    /// lexicographically sorted, so all matches are contiguous).
+    pub fn iter_range<F>(&self, table: &str, prefix: &[u8], mut f: F) -> StorageResult<()>
+    where
+        F: FnMut(&[u8], &[u8]) -> bool,
+    {
+        let tx = self.db.begin_ro_txn()?;
+        let tbl = tx.open_table(Some(table))?;
+        let mut cursor = tx.cursor(&tbl)?;
+        let first: Option<(Vec<u8>, Vec<u8>)> = cursor.set_range(prefix)?;
+        let Some((k, v)) = first else {
+            return Ok(());
+        };
+        if !k.starts_with(prefix) {
+            return Ok(());
+        }
+        if !f(&k, &v) {
+            return Ok(());
+        }
+        while let Some((k, v)) = cursor.next::<Vec<u8>, Vec<u8>>()? {
+            if !k.starts_with(prefix) {
+                break;
+            }
+            if !f(&k, &v) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Cursor walk starting at `start_key` (or first key >= `start_key`),
+    /// no prefix constraint. Callback returns `false` to break.
+    ///
+    /// Use this when the stop condition is value-derived rather than a
+    /// fixed key prefix — e.g. range-walking by block height where the
+    /// caller decodes the height out of the key and stops at an
+    /// upper bound.
+    pub fn iter_from<F>(&self, table: &str, start_key: &[u8], mut f: F) -> StorageResult<()>
+    where
+        F: FnMut(&[u8], &[u8]) -> bool,
+    {
+        let tx = self.db.begin_ro_txn()?;
+        let tbl = tx.open_table(Some(table))?;
+        let mut cursor = tx.cursor(&tbl)?;
+        let first: Option<(Vec<u8>, Vec<u8>)> = cursor.set_range(start_key)?;
+        let Some((k, v)) = first else {
+            return Ok(());
+        };
+        if !f(&k, &v) {
+            return Ok(());
+        }
+        while let Some((k, v)) = cursor.next::<Vec<u8>, Vec<u8>>()? {
+            if !f(&k, &v) {
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// Count entries in a table.
@@ -409,5 +484,104 @@ mod tests {
         let loaded: Block = storage.get_bincode(TABLE_BLOCKS, &key).unwrap().unwrap();
         assert_eq!(loaded.index, 0);
         assert_eq!(loaded.hash, block.hash);
+    }
+
+    // Regression tests for the audit D-G3 fix (per-block bloom build +
+    // eth_getLogs + eth_getTransactionReceipt previously did
+    // `storage.iter(TABLE_LOGS)` and pulled every log in the chain into
+    // RAM; replaced by `iter_range` / `iter_from` cursor walks).
+
+    #[test]
+    fn test_iter_range_walks_prefix_only() {
+        let (_dir, storage) = temp_storage();
+        // Two heights × two logs each. Keys: 8-byte BE height || 8 bytes
+        // of per-tx noise so each entry is unique.
+        for height in [1u64, 2, 3] {
+            for idx in 0u8..3 {
+                let mut k = Vec::with_capacity(16);
+                k.extend_from_slice(&height.to_be_bytes());
+                k.extend_from_slice(&[idx; 8]);
+                storage
+                    .put(TABLE_META, &k, &[height as u8, idx])
+                    .unwrap();
+            }
+        }
+        let prefix = 2u64.to_be_bytes();
+        let mut seen = Vec::new();
+        storage
+            .iter_range(TABLE_META, &prefix, |k, v| {
+                seen.push((k.to_vec(), v.to_vec()));
+                true
+            })
+            .unwrap();
+        assert_eq!(seen.len(), 3, "should only see the 3 entries at height=2");
+        for (k, _) in &seen {
+            assert_eq!(&k[..8], &prefix, "every yielded key must start with prefix");
+        }
+    }
+
+    #[test]
+    fn test_iter_range_no_match_is_no_op() {
+        let (_dir, storage) = temp_storage();
+        // Insert a few keys at height=1; query height=9 → no walk.
+        for idx in 0u8..3 {
+            let mut k = Vec::with_capacity(16);
+            k.extend_from_slice(&1u64.to_be_bytes());
+            k.extend_from_slice(&[idx; 8]);
+            storage.put(TABLE_META, &k, &[idx]).unwrap();
+        }
+        let mut seen = 0;
+        storage
+            .iter_range(TABLE_META, &9u64.to_be_bytes(), |_k, _v| {
+                seen += 1;
+                true
+            })
+            .unwrap();
+        assert_eq!(seen, 0);
+    }
+
+    #[test]
+    fn test_iter_range_early_break() {
+        let (_dir, storage) = temp_storage();
+        for idx in 0u8..5 {
+            let mut k = Vec::with_capacity(16);
+            k.extend_from_slice(&5u64.to_be_bytes());
+            k.extend_from_slice(&[idx; 8]);
+            storage.put(TABLE_META, &k, &[idx]).unwrap();
+        }
+        let mut count = 0;
+        storage
+            .iter_range(TABLE_META, &5u64.to_be_bytes(), |_k, _v| {
+                count += 1;
+                count < 3 // stop after the 3rd entry
+            })
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_iter_from_walks_upward_with_stop_condition() {
+        let (_dir, storage) = temp_storage();
+        // Heights 1..=10, one entry each. Walk from height=3,
+        // stop when height > 7. Expect 5 entries (3, 4, 5, 6, 7).
+        for height in 1u64..=10 {
+            storage
+                .put(TABLE_META, &height.to_be_bytes(), &[height as u8])
+                .unwrap();
+        }
+        let mut heights = Vec::new();
+        storage
+            .iter_from(TABLE_META, &3u64.to_be_bytes(), |k, _v| {
+                let mut h_bytes = [0u8; 8];
+                h_bytes.copy_from_slice(&k[..8]);
+                let h = u64::from_be_bytes(h_bytes);
+                if h > 7 {
+                    return false; // stop
+                }
+                heights.push(h);
+                true
+            })
+            .unwrap();
+        assert_eq!(heights, vec![3, 4, 5, 6, 7]);
     }
 }

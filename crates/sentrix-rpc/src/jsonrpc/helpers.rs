@@ -204,42 +204,42 @@ pub(super) fn collect_logs(
         Some(s) => s,
         None => return Vec::new(),
     };
-    let all = match storage.iter(sentrix_storage::tables::TABLE_LOGS) {
-        Ok(v) => v,
-        Err(_) => return Vec::new(),
-    };
+    // Cursor-based range walk: seek to first key >= from.to_be_bytes(),
+    // step forward until height > to. No allocation of the whole log
+    // table — see 2026-05-11 audit D-G3.
+    let start_key = from.to_be_bytes();
     let mut out = Vec::new();
-    for (k, v) in all {
+    let _ = storage.iter_from(sentrix_storage::tables::TABLE_LOGS, &start_key, |k, v| {
         if k.len() < 16 {
-            continue;
+            return true;
         }
         let mut h_bytes = [0u8; 8];
         h_bytes.copy_from_slice(&k[..8]);
         let height = u64::from_be_bytes(h_bytes);
-        if height < from || height > to {
-            continue;
+        if height > to {
+            return false; // walked past the requested range
         }
-        if let Some(bloom_bytes) = storage
-            .get(sentrix_storage::tables::TABLE_BLOOM, &h_bytes)
-            .ok()
-            .flatten()
+        if !addrs.is_empty()
+            && let Some(bloom_bytes) = storage
+                .get(sentrix_storage::tables::TABLE_BLOOM, &h_bytes)
+                .ok()
+                .flatten()
             && bloom_bytes.len() == 256
-            && !addrs.is_empty()
         {
             let mut bloom = [0u8; 256];
             bloom.copy_from_slice(&bloom_bytes);
             let any_hit = addrs.iter().any(|a| sentrix_evm::bloom_contains(&bloom, a));
             if !any_hit {
-                continue;
+                return true; // skip this entry, keep walking
             }
         }
-        let Ok(log) = sentrix_codec::decode::<sentrix_evm::StoredLog>(&v) else {
-            continue;
-        };
-        if log_matches(&log, addrs, topics) {
+        if let Ok(log) = sentrix_codec::decode::<sentrix_evm::StoredLog>(v)
+            && log_matches(&log, addrs, topics)
+        {
             out.push(log.to_rpc_json());
         }
-    }
+        true
+    });
     out
 }
 
@@ -258,24 +258,20 @@ pub(super) fn load_logs_for_tx(
         None => return (Vec::new(), "0x".to_string() + &"00".repeat(256)),
     };
     let prefix = block_height.to_be_bytes();
-    let entries = match storage.iter(sentrix_storage::tables::TABLE_LOGS) {
-        Ok(v) => v,
-        Err(_) => return (Vec::new(), "0x".to_string() + &"00".repeat(256)),
-    };
     let mut logs = Vec::new();
     let mut bloom = sentrix_evm::empty_bloom();
-    for (k, v) in entries {
-        if k.len() < 8 || k[..8] != prefix {
-            continue;
-        }
-        let Ok(log) = sentrix_codec::decode::<sentrix_evm::StoredLog>(&v) else {
-            continue;
-        };
-        if log.tx_hash == target_hash {
+    // Cursor walk over this block's height prefix — single sequential
+    // read of `block_height`'s log entries, no whole-table materialisation
+    // (audit D-G3, 2026-05-11).
+    let _ = storage.iter_range(sentrix_storage::tables::TABLE_LOGS, &prefix, |_k, v| {
+        if let Ok(log) = sentrix_codec::decode::<sentrix_evm::StoredLog>(v)
+            && log.tx_hash == target_hash
+        {
             sentrix_evm::add_log_to_bloom(&mut bloom, &log.address, &log.topics);
             logs.push(log.to_rpc_json());
         }
-    }
+        true
+    });
     (logs, format!("0x{}", hex::encode(bloom)))
 }
 
