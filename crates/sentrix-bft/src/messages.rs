@@ -104,6 +104,31 @@ pub struct Proposal {
     pub block_data: Vec<u8>, // bincode-encoded Block
     pub proposer: String,    // validator address
     pub signature: Vec<u8>,  // ed25519 signature over (height, round, block_hash)
+    /// Proposer's own prevote for this block, bundled UNSIGNED so receivers
+    /// can credit the proposer's vote at proposal-arrival time instead of
+    /// waiting for the standalone gossipsub prevote hop.
+    ///
+    /// Trust chain: the outer proposal `signature` covers `(height, round,
+    /// block_hash)` — once that verifies, the receiver knows the signer is
+    /// the proposer. The embedded prevote is then trusted via the
+    /// structural check `proposer_prevote.validator == self.proposer`. The
+    /// embedded prevote itself carries an empty `signature` field on the
+    /// wire — receivers MUST NOT call `verify_sig` on it; the proposal's
+    /// outer signature is the only authenticity anchor.
+    ///
+    /// Why unsigned: signing the embedded prevote before `Proposal::sign`
+    /// would poison the LastSignBytes guard's step ordering (prevote=1
+    /// recorded before proposal=0) and refuse the proposal sign as a
+    /// "double-vote attempt". See `project_proposer_prevote_signorder_trap`
+    /// memory + reverted PR #572 for the original failure mode.
+    ///
+    /// `#[serde(default)]` lets legacy decoders that haven't been rebuilt
+    /// after the v2.2.0 schema bump pretend the field was absent. The
+    /// SENTRIX_PROTOCOL bump means peers actually negotiate at the wire
+    /// level — this is belt-and-suspenders for in-process decoding paths
+    /// (snapshots, replay tooling) that may lag the wire bump.
+    #[serde(default)]
+    pub proposer_prevote: Option<Prevote>,
 }
 
 impl Proposal {
@@ -727,10 +752,110 @@ mod tests {
             block_data: vec![1, 2, 3],
             proposer: wallet.address.clone(),
             signature: vec![],
+            proposer_prevote: None,
         };
         prop.sign(&sk);
         assert_eq!(prop.signature.len(), 65);
         assert!(prop.verify_sig());
+    }
+
+    // Regression test for the v2.2.0-design pitfall (reverted PR #572).
+    // The proposer must be able to embed an UNSIGNED prevote and still
+    // sign the proposal successfully. The earlier design signed the
+    // embedded prevote first which poisoned the LastSignBytes guard at
+    // step=Prevote=1, so the subsequent proposal.sign() at step=Proposal=0
+    // failed with DoubleSignAttempt and left the proposal signature empty.
+    //
+    // This test pins the invariant: prop.sign() AFTER embedding an
+    // unsigned prevote must produce a non-empty signature and verify.
+    // If a future change reintroduces inner-prevote signing, this test
+    // fails immediately rather than waiting for a testnet halt to
+    // surface it.
+    #[test]
+    fn test_proposal_sign_with_embedded_unsigned_prevote_succeeds() {
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let unsigned_prevote = Prevote {
+            height: 300,
+            round: 0,
+            block_hash: Some("hash_ghi".into()),
+            validator: wallet.address.clone(),
+            signature: vec![], // unsigned by design — DO NOT call .sign() here
+        };
+        let mut prop = Proposal {
+            height: 300,
+            round: 0,
+            block_hash: "hash_ghi".into(),
+            block_data: vec![1, 2, 3],
+            proposer: wallet.address.clone(),
+            signature: vec![],
+            proposer_prevote: Some(unsigned_prevote),
+        };
+        prop.sign(&sk);
+        assert!(
+            !prop.signature.is_empty(),
+            "proposal signature must not be empty after sign() — peers would reject"
+        );
+        assert!(
+            prop.verify_sig(),
+            "proposal signature must verify — outer trust anchor for embedded prevote"
+        );
+        // The embedded prevote stays unsigned on the wire — receivers
+        // derive its authenticity from the proposal's outer signature,
+        // NOT from a prevote.verify_sig() call.
+        assert!(prop.proposer_prevote.as_ref().unwrap().signature.is_empty());
+    }
+
+    #[test]
+    fn test_proposal_unsigned_embedded_prevote_roundtrip() {
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let unsigned_prevote = Prevote {
+            height: 300,
+            round: 0,
+            block_hash: Some("hash_ghi".into()),
+            validator: wallet.address.clone(),
+            signature: vec![],
+        };
+        let mut prop = Proposal {
+            height: 300,
+            round: 0,
+            block_hash: "hash_ghi".into(),
+            block_data: vec![1, 2, 3],
+            proposer: wallet.address.clone(),
+            signature: vec![],
+            proposer_prevote: Some(unsigned_prevote.clone()),
+        };
+        prop.sign(&sk);
+        let bytes = bincode::serialize(&prop).expect("encode");
+        let decoded: Proposal = bincode::deserialize(&bytes).expect("decode");
+        assert!(decoded.verify_sig());
+        let decoded_pv = decoded.proposer_prevote.expect("prevote present");
+        assert_eq!(decoded_pv, unsigned_prevote);
+        assert!(decoded_pv.signature.is_empty()); // stayed unsigned across the wire
+    }
+
+    #[test]
+    fn test_proposal_without_embedded_prevote_decodes() {
+        // Forward-compat shape: None case round-trips so a regression in
+        // the field's serde(default) attribute is caught locally without
+        // needing a wire-format harness.
+        let wallet = make_wallet();
+        let sk = wallet.get_secret_key().unwrap();
+        let mut prop = Proposal {
+            height: 1,
+            round: 0,
+            block_hash: "h".into(),
+            block_data: vec![],
+            proposer: wallet.address.clone(),
+            signature: vec![],
+            proposer_prevote: None,
+        };
+        prop.sign(&sk);
+        let bytes = bincode::serialize(&prop).expect("encode");
+        let decoded: Proposal = bincode::deserialize(&bytes).expect("decode");
+        assert!(decoded.verify_sig());
+        assert!(decoded.proposer_prevote.is_none());
     }
 
     #[test]
