@@ -2,9 +2,9 @@
 # install-testnet-watchdog.sh — One-shot installer for the testnet
 # livelock watchdog on Core node.
 #
-# Run locally on build host (or whoever has satya_master SSH). Copies the
-# watchdog script to Core node, writes a systemd oneshot service + timer
-# pair, enables the timer. Idempotent — safe to re-run.
+# Run locally on the build host (or whoever has the operator SSH key).
+# Copies the watchdog script to Core node, writes a systemd oneshot
+# service + timer pair, enables the timer. Idempotent — safe to re-run.
 
 set -euo pipefail
 
@@ -15,7 +15,7 @@ if [[ -z "$CORE_HOST" ]]; then
     echo "CORE_HOST not set — export CORE_HOST=<user>@<ip> before running" >&2
     exit 2
 fi
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/satya_master}"
+SSH_KEY="${SSH_KEY:?SSH_KEY must be set — path to operator SSH key}"
 SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=accept-new $CORE_HOST"
 
 [[ -f "$WATCHDOG_SCRIPT" ]] || { echo "missing $WATCHDOG_SCRIPT"; exit 1; }

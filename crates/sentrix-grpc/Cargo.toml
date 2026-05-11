@@ -6,8 +6,8 @@ license = "BUSL-1.1"
 description = "Tonic gRPC supplement transport for Sentrix Chain (parallel to JSON-RPC eth_*)"
 
 # 2026-05-05 v0.1 skeleton — handlers in src/lib.rs return tonic::Status::unimplemented
-# until main.rs integration lands. Reference design doc:
-# founder-private/audits/2026-05-05-grpc-service-proto-draft.md.
+# until main.rs integration lands. Reference design: internal Sentrix
+# Labs gRPC service-proto draft (2026-05-05).
 
 [lib]
 path = "src/lib.rs"

@@ -130,7 +130,7 @@ sudo systemctl start sentrix-watchdog.service
 cat /var/lib/sentrix-watchdog/state.json | jq
 
 # Trigger manual recovery (skip waiting for stall threshold)
-~/founder-private/scripts/recover-mainnet.sh
+<operator-private>/scripts/recover-mainnet.sh
 
 # Disable temporarily (planned maintenance)
 sudo systemctl stop sentrix-watchdog.timer
@@ -145,7 +145,7 @@ sudo systemctl stop sentrix-watchdog.timer
 
 ## See also
 
-- [`runbooks/mainnet-watchdog.md`](https://github.com/satyakwok/sentrixfounder-private/blob/main/runbooks/mainnet-watchdog.md) — operator runbook (private)
+- mainnet-watchdog runbook — see operator runbook (private)
 - [Monitoring](./MONITORING) — Prometheus + Grafana setup overview
 - [Emergency Rollback](./EMERGENCY_ROLLBACK) — when to restore from off-host backup
 - [Testnet Recovery](./TESTNET_RECOVERY) — testnet-only recovery patterns

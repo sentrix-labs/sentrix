@@ -18,8 +18,9 @@ use std::path::Path;
 /// `MDBX_MAP_FULL`. The validators that hit it can't persist new state,
 /// in-memory blockchain advances anyway, they propose blocks with stale
 /// state, peers reject → 2v2 split-brain → BFT halt. Independent write
-/// histories across the fleet (vps1+vps5 vs vps2+vps3) made the failure
-/// deterministically factional even on byte-identical post-rsync chain.db.
+/// histories across the fleet (validator-pair A vs validator-pair B)
+/// made the failure deterministically factional even on byte-identical
+/// post-rsync chain.db.
 ///
 /// 64 GB upper bound covers ~20× current chain.db size at expected growth
 /// rate (3 GB / 1.2M blocks ≈ 2.5 µB / block × 5y projection at 1 block/s

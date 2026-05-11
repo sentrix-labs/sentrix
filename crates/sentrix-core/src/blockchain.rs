@@ -151,11 +151,12 @@ const ADD_SELF_STAKE_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// Why gated: shipped flat in v2.1.49, recurred the eager-write divergence
 /// pattern that v2.1.48's FinalizeBlock guard was meant to close. Three
 /// 2v2 split-brain halts on 2026-05-01 (h≈1180k / 1191k / 1192k) all
-/// followed the same shape — vps1+vps5 finalize one hash, vps2+vps3 the
-/// other. Faction split was deterministic across recoveries, suggesting
-/// the value-transfer apply path produces validator-specific divergence
-/// (likely revm/wei-sentri rounding interaction or block-context
-/// non-determinism — RCA pending in `audits/2026-05-01-evm-value-transfer-divergence.md`).
+/// followed the same shape — validator-pair A finalizes one hash,
+/// validator-pair B the other. Faction split was deterministic across
+/// recoveries, suggesting the value-transfer apply path produces
+/// validator-specific divergence (likely revm/wei-sentri rounding
+/// interaction or block-context non-determinism — RCA pending in
+/// `audits/2026-05-01-evm-value-transfer-divergence.md`).
 ///
 /// Until that RCA lands, default disabled mirrors v2.1.48 behaviour.
 /// Operator activates with halt-all + simul-start after the bug is
@@ -246,7 +247,7 @@ pub fn warn_if_jail_consensus_armed() {
              non-determinism (incidents: h=892799 / 2026-04-29, h=979199 / \
              2026-04-30). Set env to 18446744073709551615 unless you have \
              explicitly verified the canonical-only LivenessTracker fix \
-             has shipped. See founder-private/AUDIT_REPORT_2026_04_29.md.",
+             has shipped. See internal Sentrix Labs audit (2026-04-29).",
             height
         );
         // Eprintln backup so the warning is also visible without RUST_LOG
@@ -1722,16 +1723,16 @@ impl Blockchain {
             // blocks, because the very bug this fix targets was the
             // mechanism that prevented consensus from detecting drift.
             // Snapshot at activation:
-            //   vps1: 1036005.66 SRX
-            //   vps2: 1035994.66 SRX (~11 SRX less)
-            //   vps3: 1035916.66 SRX (~89 SRX less)
-            //   vps5: 1036005.66 SRX (matches vps1)
+            //   validator A: 1036005.66 SRX
+            //   validator B: 1035994.66 SRX (~11 SRX less)
+            //   validator C: 1035916.66 SRX (~89 SRX less)
+            //   validator D: 1036005.66 SRX (matches A)
             //
             // Activation makes each node insert its OWN local balance
-            // into the trie, so the 2-of-4 split (vps1+vps5 vs vps2+vps3)
-            // produced two competing state_roots. BFT couldn't reach
-            // 3-of-4 majority. Recovery: chain.db rsync from canonical
-            // (vps1) to the drifted nodes, restart with v2 disabled.
+            // into the trie, so the 2-of-4 split (A+D vs B+C) produced
+            // two competing state_roots. BFT couldn't reach 3-of-4
+            // majority. Recovery: chain.db rsync from canonical (A) to
+            // the drifted nodes, restart with v2 disabled.
             //
             // Lesson: the simple touch-list addition is NOT a self-
             // sufficient fix. Reactivation requires ONE of these

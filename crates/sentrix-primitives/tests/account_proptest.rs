@@ -25,7 +25,7 @@
 //!
 //! Run with: `cargo test -p sentrix-primitives --test account_proptest`
 //!
-//! Audit reference: founder-private/audits/2026-05-06-rust-workspace-security-audit.md
+//! Audit reference: internal Sentrix Labs rust-workspace security audit (2026-05-06).
 
 use proptest::prelude::*;
 use sentrix_primitives::account::AccountDB;

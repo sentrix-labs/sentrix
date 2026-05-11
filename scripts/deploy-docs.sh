@@ -7,8 +7,8 @@
 # Idempotent — safe to re-run. ~30s on warm caches.
 set -euo pipefail
 
-REPO=/home/sentriscloud/sentrix
-WEB_ROOT=/var/www/docs-sentrixchain
+REPO="${REPO:-$HOME/sentrix}"
+WEB_ROOT="${WEB_ROOT:-/var/www/docs-sentrixchain}"
 DOCS_DIR="${REPO}/docs-site"
 
 echo "==> deploy-docs.sh — $(date -Iseconds)"
