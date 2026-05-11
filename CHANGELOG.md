@@ -14,24 +14,6 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [2.2.0] — 2026-05-11 — proposer-prevote piggy-back (wire-incompatible)
-
-**Wire-incompatible**: `SENTRIX_PROTOCOL` bumped `/sentrix/2.1.0` → `/sentrix/2.2.0`. Halt-all + simul-start required. Mixed 2.1.x / 2.2.0 cluster will halt: the new `Proposal` struct carries an extra `proposer_prevote: Option<Prevote>` field, which a 2.1.x decoder reads as trailing bytes and rejects via bincode.
-
-**The change**: the proposer's own prevote for the block it just proposed is now bundled inside the `Proposal` envelope. Receivers extract it on arrival, verify the signature matches the proposer, and feed it into the BFT engine's prevote tally as a regular `BftPrevote` event — same dedupe path as a standalone prevote. The proposer's standalone gossipsub prevote still fires (via `on_own_proposal`), but the standalone arrival is now a dedupe no-op rather than the critical-path message.
-
-**Why**: in a 4-validator quorum at 1 s block target, the proposer's prevote was the most-delayed vote at every round — the proposer needed one full gossipsub mesh hop to deliver its own vote to itself's BFT engine. Variant A removes that hop. Expected wall-clock saving per round: 1 RTT of gossipsub propagation (~50-200 ms at WAN, more under load).
-
-**Backwards compat**: `Option<Prevote>` defaults to `None` via `#[serde(default)]` for any future change, but bincode itself isn't tolerant of trailing-byte additions on existing wires — hence the protocol bump rather than a silent rollout. The proposer-side change is gated on the type field existing, which means stage-by-stage upgrades won't fan out malformed bytes during the simul-start window.
-
-**Includes pending v2.1.92 / v2.1.93 changes** (CHANGELOG entries below already cover them): inbound-silence watchdog removed (PR #568), V2-DBG `eprintln` cleanup (PR #570), public-repo internal-ref scrub (PR #571). Cluster is currently on v2.1.92; v2.1.93 was never deployed, so the next halt-all carries v2.1.92 → v2.2.0 in one step.
-
-**Files**: `crates/sentrix-bft/src/messages.rs` (Proposal struct + 2 tests), `crates/sentrix-network/src/libp2p_node.rs` (receiver-side extract + dispatch), `bin/sentrix/src/main.rs` (proposer-side build + embed at 4 call sites), `crates/sentrix-wire/src/lib.rs` (protocol bump). Workspace version 2.1.93 → 2.2.0 across 17 Cargo.toml files; `sentrix-faucet` stays on 2.1.91 (independent lifecycle).
-
-**Tests**: 118 sentrix-bft passing (+`test_proposal_with_embedded_prevote_roundtrip`, +`test_legacy_proposal_without_prevote_decodes`); 18 sentrix-wire passing.
-
-**Ops**: testnet bake mandatory per consensus-discipline rule before mainnet halt-all. Run testnet a few hours minimum; verify finalize_trace shows zero `precommit_count<3` rounds and bt distribution shifts left.
-
 ## [2.1.86] — 2026-05-08 — LastSignBytes guard same-bytes-replay exemption
 
 Closes the rebroadcast bug class that kept `LAST_SIGN_GUARD_PATH` env-disabled cluster-wide since v2.1.84/v2.1.85.
