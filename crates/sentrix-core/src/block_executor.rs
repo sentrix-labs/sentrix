@@ -1619,6 +1619,18 @@ impl Blockchain {
                                 // continuity is preserved.
                                 last.state_root = Some(received_root);
                                 self.maybe_prune_trie();
+                                // Mirror the end-of-function profile emit so
+                                // SENTRIX_APPLY_PROFILE=1 still records timing
+                                // on the legacy-tolerated path. Without this,
+                                // pre-cutoff replay leaves a gap in the
+                                // apply-profile log.
+                                emit_apply_profile(
+                                    profile_t0,
+                                    profile_t1,
+                                    profile_t2,
+                                    profile_height,
+                                    profile_txs,
+                                );
                                 return Ok(());
                             }
 
@@ -1671,19 +1683,7 @@ impl Blockchain {
         emit_state_fingerprint(self, self.height());
 
         // Per-block apply-phase profile (see top of fn for rationale).
-        if let (Some(t0), Some(t1), Some(t2)) = (profile_t0, profile_t1, profile_t2) {
-            let t3 = std::time::Instant::now();
-            tracing::info!(
-                target: "apply_profile",
-                "apply-profile h={} txs={} tx_apply={}ms trie={}ms post={}ms total={}ms",
-                profile_height,
-                profile_txs,
-                t1.duration_since(t0).as_millis(),
-                t2.duration_since(t1).as_millis(),
-                t3.duration_since(t2).as_millis(),
-                t3.duration_since(t0).as_millis(),
-            );
-        }
+        emit_apply_profile(profile_t0, profile_t1, profile_t2, profile_height, profile_txs);
 
         Ok(())
     }
@@ -1732,6 +1732,36 @@ impl Blockchain {
 ///   [STATE-FP] h=<height> acc=<8-byte-hex> fp=<8-byte-hex>
 ///
 /// Cost when enabled: ~O(N) sha256 over AccountDB content per block,
+/// Per-block apply-phase profile emitter. Single exit point for the
+/// `apply-profile h=... txs=... tx_apply=...ms trie=...ms post=...ms total=...ms`
+/// log line, so every return path through `apply_block_pass2` records
+/// timing when SENTRIX_APPLY_PROFILE=1. Pre-helper, the legacy-tolerated
+/// branch returned without emitting — replay of pre-cutoff blocks left a
+/// gap in the profile log.
+///
+/// No-op when any of the three timestamps is None (profiling disabled).
+fn emit_apply_profile(
+    t0: Option<std::time::Instant>,
+    t1: Option<std::time::Instant>,
+    t2: Option<std::time::Instant>,
+    height: u64,
+    txs: usize,
+) {
+    if let (Some(t0), Some(t1), Some(t2)) = (t0, t1, t2) {
+        let t3 = std::time::Instant::now();
+        tracing::info!(
+            target: "apply_profile",
+            "apply-profile h={} txs={} tx_apply={}ms trie={}ms post={}ms total={}ms",
+            height,
+            txs,
+            t1.duration_since(t0).as_millis(),
+            t2.duration_since(t1).as_millis(),
+            t3.duration_since(t2).as_millis(),
+            t3.duration_since(t0).as_millis(),
+        );
+    }
+}
+
 /// where N = total accounts + contract storage entries. At Sentrix
 /// mainnet scale (~tens of thousands of accounts, sparse contract
 /// storage) this adds ~1-2 ms per block. Acceptable for debug runs.
