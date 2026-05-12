@@ -1,0 +1,64 @@
+name: Docker image
+
+# Build + push the Sentrix validator binary as a docker image to GHCR
+# (ghcr.io/sentrix-labs/sentrix). Triggered on tag push so a v2.2.10 tag
+# produces ghcr.io/sentrix-labs/sentrix:v2.2.10 + :latest. Operators can
+# then `docker pull` instead of compile-from-source.
+#
+# Build baseline matches release.yml (rust:1.95-bullseye / glibc 2.31), so
+# the docker image binary == the SLSA-attested binary published on the
+# Releases page. Same supply chain story, lower-friction distribution.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Manual smoke-test path. Building from main produces a :main-<short-sha>
+  # tag instead of a semver one.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write       # push to ghcr.io/sentrix-labs/*
+
+jobs:
+  build-push:
+    name: Build + push to GHCR
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ghcr.io/sentrix-labs/sentrix
+          tags: |
+            # tag push v2.2.10 -> :v2.2.10 + :2.2.10 + :2.2 + :latest
+            type=semver,pattern={{version}},prefix=v
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # main + manual dispatch -> :main-<sha>
+            type=raw,value=main-{{sha}},enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build + push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Use GHA cache mount to amortise the multi-minute compile across
+          # runs. Same cargo artefacts reused across patch-version bumps.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
