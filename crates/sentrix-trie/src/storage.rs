@@ -180,30 +180,33 @@ impl TrieStorage {
     }
 
     /// Prune old trie roots, keeping only the last `keep` versions.
+    ///
+    /// Walks `TABLE_TRIE_ROOTS` via a streaming cursor (`iter_from`) so the
+    /// full table never lands in a `Vec<(Vec<u8>, Vec<u8>)>` — see the
+    /// `iter_from` callsite rationale; same class of fix as PR #575 for
+    /// the logs/receipts paths.
     pub fn prune_old_roots(&self, latest_version: u64, keep: u64) -> SentrixResult<usize> {
         if latest_version <= keep {
             return Ok(0);
         }
         let cutoff = latest_version - keep;
-        let mut removed = 0usize;
-
-        let entries = self
-            .mdbx
-            .iter(tables::TABLE_TRIE_ROOTS)
-            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
 
         let mut to_delete: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        for (k, v) in &entries {
-            if k.len() == 8 {
-                let mut buf = [0u8; 8];
-                buf.copy_from_slice(k);
-                let version = u64::from_be_bytes(buf);
-                if version <= cutoff {
-                    to_delete.push((k.clone(), v.clone()));
+        self.mdbx
+            .iter_from(tables::TABLE_TRIE_ROOTS, &[], |k, v| {
+                if k.len() == 8 {
+                    let mut buf = [0u8; 8];
+                    buf.copy_from_slice(k);
+                    let version = u64::from_be_bytes(buf);
+                    if version <= cutoff {
+                        to_delete.push((k.to_vec(), v.to_vec()));
+                    }
                 }
-            }
-        }
+                true
+            })
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
 
+        let mut removed = 0usize;
         for (key, root_hash) in &to_delete {
             self.mdbx
                 .delete(tables::TABLE_TRIE_ROOTS, key.as_slice())
@@ -230,26 +233,35 @@ impl TrieStorage {
     }
 
     /// Shared helper: scan an MDBX table for hashes not in `live_hashes` and remove them.
+    ///
+    /// Streams the table via `iter_from` so only the orphan-hash subset
+    /// (32 bytes each) lands in memory, not every `(key, value)` pair.
+    /// Earned via the 2026-05-12 fullnode wedge: `iter()` materialised a
+    /// `Vec<(Vec<u8>, Vec<u8>)>` of the entire `TABLE_TRIE_NODES`, which
+    /// on a 4.8 GB chain.db inside a 4 GiB container froze the chain-apply
+    /// loop for ~16+ min at every 1000-block prune boundary. The cursor
+    /// walk keeps a single MDBX RO txn open for the same duration but
+    /// avoids the per-row Vec allocation amortisation that was the
+    /// actual stall cause.
     fn gc_table(
         &self,
         table: &str,
         live_hashes: &std::collections::HashSet<NodeHash>,
     ) -> SentrixResult<usize> {
-        let entries = self
-            .mdbx
-            .iter(table)
+        let mut to_delete: Vec<NodeHash> = Vec::new();
+        self.mdbx
+            .iter_from(table, &[], |k, _v| {
+                if k.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(k);
+                    if !live_hashes.contains(&arr) {
+                        to_delete.push(arr);
+                    }
+                }
+                true
+            })
             .map_err(|e| SentrixError::StorageError(e.to_string()))?;
 
-        let mut to_delete: Vec<NodeHash> = Vec::new();
-        for (k, _) in &entries {
-            if k.len() == 32 {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(k);
-                if !live_hashes.contains(&arr) {
-                    to_delete.push(arr);
-                }
-            }
-        }
         let count = to_delete.len();
         for hash in &to_delete {
             self.mdbx
