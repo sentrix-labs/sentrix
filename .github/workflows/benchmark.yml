@@ -55,6 +55,15 @@ jobs:
           cargo bench --bench trie_insert -p sentrix-trie -- --output-format bencher \
             | tee bench-output.txt
 
+      - name: Reset cargo-modified files before bench-results checkout
+        # github-action-benchmark's first step is `git switch bench-results`,
+        # which aborts if Cargo.lock (or anything else) is dirty from the
+        # bench run. Reset working tree but keep bench-output.txt for the
+        # next step.
+        run: |
+          git checkout -- Cargo.lock || true
+          git stash --include-untracked -- '*.rs' '*.toml' || true
+
       - name: Store + compare against baseline
         uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1
         with:
