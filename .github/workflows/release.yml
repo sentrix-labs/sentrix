@@ -53,7 +53,7 @@ jobs:
 
       - name: Generate SBOM (workspace)
         run: |
-          cargo cyclonedx --format json --output-pattern bom --override-filename sentrix-sbom.cdx
+          cargo cyclonedx --format json --override-filename sentrix-sbom.cdx
           ls -la sentrix-sbom*
 
       - uses: actions/upload-artifact@v5
