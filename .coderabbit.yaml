@@ -59,7 +59,7 @@ reviews:
           bounded channels with try_send + drop counters (silent-thread-death
           guard, see v2.1.65 / v2.1.67 / v2.1.68 history).
 
-    - path: "crates/sentrix-core/src/block_executor*"
+    - path: "crates/sentrix-core/src/block_executor**"
       instructions: |
         CONSENSUS-CRITICAL — apply these review constraints:
         - **Suggestions ONLY, never propose destructive rewrites.** Do not delete

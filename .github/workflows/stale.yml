@@ -31,7 +31,7 @@ jobs:
           stale-issue-label: stale
           stale-pr-label: stale
           exempt-issue-labels: 'pinned,bug,security,P0,P1'
-          exempt-pr-labels: 'pinned,security,P0,P1'
+          exempt-pr-labels: 'pinned,bug,security,P0,P1'
           stale-issue-message: |
             This issue has been idle for 90 days. Marking as `stale` —
             will auto-close in 14 days unless updated. If still relevant,

@@ -20,10 +20,13 @@ fuzz_target!(|data: &[u8]| {
     // re-encode and confirm the encoding matches. (Some encodings have
     // canonical forms; roundtrip stability is the invariant.)
     if let Ok(msg) = decode::<BftMessage>(data) {
-        let reencoded = match encode(&msg) {
-            Ok(b) => b,
-            Err(_) => return,
-        };
+        // If decode succeeded, encode MUST succeed — every decodable
+        // BftMessage is also encodable (one-to-one wire format). A
+        // failure here = serde asymmetry bug; surface it as a fuzz
+        // crash rather than silently exiting.
+        let reencoded = encode(&msg).unwrap_or_else(|e| {
+            panic!("encode failed after successful decode (asymmetry bug) for {:?}: {:?}", msg, e)
+        });
         let msg2: BftMessage = match decode(&reencoded) {
             Ok(m) => m,
             Err(_) => panic!("re-encoded message failed to decode: {:?}", msg),
