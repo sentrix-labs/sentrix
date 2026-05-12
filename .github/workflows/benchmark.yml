@@ -1,0 +1,73 @@
+name: benchmark
+
+# Microbench regression detection. Runs criterion benches on PR + compares
+# against the main-branch baseline persisted in the `bench-results` branch.
+# Posts a comment on the PR if any bench is >150% slower than baseline.
+#
+# Threshold is intentionally permissive (150% not 110%) because GHA runner
+# performance varies per-machine — a strict gate trips on machine noise
+# more than real regressions. Tighten later once we have weeks of baseline
+# variance data.
+#
+# First-time setup: an initial run on main creates the baseline. Subsequent
+# main-merges update it. PRs compare against the latest main baseline.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/sentrix-trie/**'
+      - 'crates/sentrix-core/**'
+      - 'crates/sentrix-evm/**'
+      - 'crates/sentrix-bft/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/sentrix-trie/**'
+      - 'crates/sentrix-core/**'
+      - 'crates/sentrix-evm/**'
+      - 'crates/sentrix-bft/**'
+      - 'crates/sentrix-trie/benches/**'
+
+permissions:
+  contents: write       # to push baseline to bench-results branch
+  pull-requests: write  # to comment on PR
+
+jobs:
+  bench:
+    name: criterion regression check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install protoc (transitive build dep)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libclang-dev clang
+
+      - name: Run criterion benches
+        run: |
+          # Criterion's `--output-format bencher` matches the format
+          # github-action-benchmark expects. Single bench file for now;
+          # expand the bench list here as more crates add criterion harnesses.
+          cargo bench --bench trie_insert -p sentrix-trie -- --output-format bencher \
+            | tee bench-output.txt
+
+      - name: Store + compare against baseline
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1
+        with:
+          name: sentrix-trie benches
+          tool: cargo
+          output-file-path: bench-output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # On main push: update baseline + push to bench-results branch.
+          # On PR: compare against baseline + comment.
+          auto-push: ${{ github.event_name == 'push' }}
+          gh-pages-branch: bench-results
+          benchmark-data-dir-path: bench
+          alert-threshold: '150%'
+          fail-on-alert: false   # warn on PR comment; don't hard-block
+          comment-on-alert: true
+          summary-always: true
