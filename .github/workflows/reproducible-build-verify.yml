@@ -1,0 +1,110 @@
+name: Reproducible build verify
+
+# Rebuild the release binary on a fresh runner (Docker rust:1.95-bullseye,
+# same as release.yml) and confirm the sha256 matches the official release
+# artifact for the tag. Required for SLSA Level 4 (we ship Level 3 today
+# via actions/attest-build-provenance@v2; Level 4 needs deterministic
+# rebuild verification).
+#
+# Strategy: on a fresh ubuntu-22.04 runner, build the binary the same way
+# release.yml does, compute sha256, then download the release artifact's
+# sha256 from release notes and diff. Failure = the binary on the Releases
+# page can't be reproduced from source — supply-chain alarm.
+#
+# Runs:
+#  - workflow_dispatch (manual smoke-test before a SLSA L4 attestation push)
+#  - schedule (weekly cron — catches reproducibility regressions from
+#    toolchain updates that touched our build path)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to reproduce (e.g. v2.2.9). Defaults to latest.'
+        required: false
+        type: string
+  schedule:
+    # Weekly Sunday 04:00 UTC. Off-peak, doesn't compete with the regular
+    # release cycle.
+    - cron: '0 4 * * 0'
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    name: Rebuild + sha256 diff
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Determine target tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG=$(gh release view --repo sentrix-labs/sentrix --json tagName --jq .tagName)
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Reproducing release: ${TAG}"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Rebuild binary in rust:1.95-bullseye (mirrors release.yml)
+        run: |
+          docker run --rm -v $PWD:/work -e CARGO_TARGET_DIR=/work/target-docker \
+            rust:1.95-bullseye \
+            sh -c 'apt-get update -qq && apt-get install -y -qq libclang-dev clang protobuf-compiler >/dev/null 2>&1 && cd /work && cargo build --release -p sentrix-node'
+
+      - name: Compute local sha256
+        id: local
+        run: |
+          set -euo pipefail
+          SHA=$(sha256sum target-docker/release/sentrix | awk '{print $1}')
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "Local sha256: ${SHA}"
+
+      - name: Fetch published release binary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release download "${{ steps.tag.outputs.tag }}" \
+            --repo sentrix-labs/sentrix \
+            --pattern sentrix \
+            --output ./released-sentrix
+
+      - name: Compute published sha256
+        id: published
+        run: |
+          set -euo pipefail
+          SHA=$(sha256sum ./released-sentrix | awk '{print $1}')
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "Published sha256: ${SHA}"
+
+      - name: Compare
+        run: |
+          set -euo pipefail
+          LOCAL="${{ steps.local.outputs.sha }}"
+          PUBLISHED="${{ steps.published.outputs.sha }}"
+          if [[ "${LOCAL}" == "${PUBLISHED}" ]]; then
+            echo "✅ REPRODUCIBLE — local rebuild matches published binary"
+            echo "    tag:       ${{ steps.tag.outputs.tag }}"
+            echo "    sha256:    ${LOCAL}"
+          else
+            echo "❌ REPRODUCIBILITY FAILURE"
+            echo "    tag:        ${{ steps.tag.outputs.tag }}"
+            echo "    local:      ${LOCAL}"
+            echo "    published:  ${PUBLISHED}"
+            echo ""
+            echo "The binary on the Releases page CANNOT be reproduced from"
+            echo "source on a fresh runner with the same toolchain image."
+            echo "Possible causes: toolchain image floated (rust:1.95-bullseye"
+            echo "got a glibc bump), embedded timestamp in binary, build.rs"
+            echo "non-determinism. Investigate before next release."
+            exit 1
+          fi
