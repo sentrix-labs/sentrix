@@ -148,11 +148,17 @@ jobs:
           gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
             gh release create "${GITHUB_REF_NAME}" --generate-notes --notes "Binary sha256: \`${BIN_SHA}\`"
 
-          # Upload artifacts (--clobber overwrites if release was created earlier)
+          # Upload artifacts. The sign job uploads signatures preserving the
+          # original `./bin/` and `./sbom/` directory layout, so after download
+          # the actual files live under _artifacts/sigs/bin/ and
+          # _artifacts/sigs/sbom/. Glob each leaf explicitly instead of using
+          # `_artifacts/sigs/*` which would expand to the two subdirectories
+          # and trip gh upload with "is a directory".
           gh release upload "${GITHUB_REF_NAME}" \
             ./_artifacts/bin/sentrix \
             ./_artifacts/sbom/sentrix-sbom.cdx.json \
-            ./_artifacts/sigs/* \
+            ./_artifacts/sigs/bin/* \
+            ./_artifacts/sigs/sbom/* \
             --clobber
 
       - name: Verify reproducibility line in release notes

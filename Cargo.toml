@@ -2,14 +2,24 @@
 resolver = "2"
 members = [".", "crates/sentrix-primitives", "crates/sentrix-wallet", "crates/sentrix-trie", "crates/sentrix-staking", "crates/sentrix-evm", "crates/sentrix-bft", "crates/sentrix-codec", "crates/sentrix-core", "crates/sentrix-network", "crates/sentrix-precompiles", "crates/sentrix-rpc", "crates/sentrix-rpc-types", "crates/sentrix-storage", "crates/sentrix-wire", "crates/sentrix-grpc", "crates/sentrix-prom-exporter", "bin/sentrix", "bin/sentrix-faucet"]
 
-[package]
-name = "sentrix"
-version = "2.2.8"
+# Single source of truth for fields every workspace member shares.
+# Future version bumps = edit `version` here only; each member inherits via
+# `version.workspace = true`. Same goes for edition/license/repository so
+# they can't drift across crates.
+[workspace.package]
+version = "2.2.9"
 edition = "2024"
 license = "BUSL-1.1"
+repository = "https://github.com/sentrix-labs/sentrix"
+
+[package]
+name = "sentrix"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Fast, secure Layer-1 blockchain built in Rust"
 homepage = "https://sentrix.sentriscloud.com"
-repository = "https://github.com/sentrix-labs/sentrix"
 keywords = ["blockchain", "layer1", "poa", "dpos", "bft"]
 categories = ["cryptography::cryptocurrencies"]
 

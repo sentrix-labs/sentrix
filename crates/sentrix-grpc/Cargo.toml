@@ -1,8 +1,8 @@
 [package]
 name = "sentrix-grpc"
-version = "2.2.8"
-edition = "2024"
-license = "BUSL-1.1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Tonic gRPC supplement transport for Sentrix Chain (parallel to JSON-RPC eth_*)"
 
 # 2026-05-05 v0.1 skeleton — handlers in src/lib.rs return tonic::Status::unimplemented
