@@ -1889,7 +1889,16 @@ impl Blockchain {
     /// block applies. PRUNE_RUNNING gates overlap so a slow prune doesn't
     /// queue behind itself when the next boundary fires.
     pub fn maybe_prune_trie(&self) {
-        const TRIE_PRUNE_EVERY: u64 = 1000;
+        // 2026-05-12: bumped 1000 → 5000 because the per-1000-block
+        // prune walk takes 10–20 min on mainnet's 4.8 GB chain.db, and
+        // during the delete-batch phase MDBX write contention pushes
+        // bt from 2 s/blk to 5–10 s/blk. Stretching the interval 5×
+        // means fewer-but-longer contention windows (per hour) and
+        // more uninterrupted steady-state. TRIE_KEEP_VERSIONS unchanged
+        // — we still retain the last 1000 historical roots for any
+        // archive-node use; the deletion batch each prune just covers
+        // a larger range of older versions (~4000 instead of ~0–1000).
+        const TRIE_PRUNE_EVERY: u64 = 5000;
         const TRIE_KEEP_VERSIONS: u64 = 1000;
 
         let height = self.height();
