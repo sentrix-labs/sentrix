@@ -421,7 +421,10 @@ impl SentrixTrie {
     /// Persist the current root under `version` (block height) and advance the trie version.
     /// Call once per block after all inserts for that block are done.
     pub fn commit(&mut self, version: u64) -> SentrixResult<NodeHash> {
-        self.cache.storage.store_root(version, &self.root)?;
+        // Drain the per-block write buffer + store the root in one MDBX
+        // transaction. Atomic — a crash mid-commit either lands the full
+        // (nodes, values, root, reverse-index) tuple or none of it.
+        self.cache.flush_pending(version, &self.root)?;
         self.version = version;
         Ok(self.root)
     }
@@ -1246,6 +1249,9 @@ mod tests {
             let val = account_value_bytes(1_000_000 * i as u64, i as u64);
             trie.insert(&key, &val).unwrap();
         }
+        // commit() flushes the pending node + value buffer to MDBX —
+        // verify_integrity walks MDBX directly so commit must precede it.
+        trie.commit(0).unwrap();
         trie.verify_integrity().unwrap();
     }
 
@@ -1261,6 +1267,8 @@ mod tests {
             let key = address_to_key(&addr);
             trie.insert(&key, &account_value_bytes(1_000 * i as u64, 0)).unwrap();
         }
+        // Flush pending writes to MDBX before we can damage them.
+        trie.commit(0).unwrap();
 
         // The root is an Internal node — delete it (or one of its children)
         // to simulate orphan reference.
@@ -1287,6 +1295,8 @@ mod tests {
         let key = address_to_key(addr);
         let val = account_value_bytes(777, 0);
         trie.insert(&key, &val).unwrap();
+        // Flush pending writes to MDBX so storage.load_node sees them.
+        trie.commit(0).unwrap();
 
         // Walk from root to find the single Leaf and delete its value.
         let mut node_hash = trie.root;

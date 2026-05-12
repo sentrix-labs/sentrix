@@ -75,6 +75,63 @@ impl TrieStorage {
         Ok(())
     }
 
+    /// Flush a buffer of (node, value) writes plus the new root + reverse-index
+    /// entry in a single MDBX transaction. Replaces the per-node + per-value
+    /// individual `put()` calls that opened a fresh MDBX transaction each —
+    /// ~2560 writes per typical mainnet block × ~150 µs per transaction
+    /// = the bulk of the trie phase in `apply_profile`. Batched, the same
+    /// 2560 puts share one transaction and one fsync.
+    ///
+    /// Atomicity is critical: the root advance must land in the same MDBX
+    /// commit as the node/value writes it references, otherwise a crash
+    /// between flushing nodes and storing the root would leave us with a
+    /// fresh root pointing into the previous block's node set on next boot.
+    /// Single tx fixes this by construction.
+    pub fn flush_trie_batch(
+        &self,
+        pending_nodes: &[(NodeHash, TrieNode)],
+        pending_values: &[(NodeHash, Vec<u8>)],
+        version: u64,
+        root: &NodeHash,
+    ) -> SentrixResult<()> {
+        let batch = self
+            .mdbx
+            .begin_write()
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+
+        for (hash, node) in pending_nodes {
+            let bytes = bincode::serialize(node)
+                .map_err(|e| SentrixError::SerializationError(e.to_string()))?;
+            batch
+                .put(tables::TABLE_TRIE_NODES, hash, &bytes)
+                .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        }
+        for (hash, value) in pending_values {
+            batch
+                .put(tables::TABLE_TRIE_VALUES, hash, value)
+                .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        }
+        batch
+            .put(
+                tables::TABLE_TRIE_ROOTS,
+                &version.to_be_bytes(),
+                root.as_slice(),
+            )
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        batch
+            .put(
+                tables::TABLE_TRIE_COMMITTED,
+                root.as_slice(),
+                &version.to_be_bytes(),
+            )
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+
+        batch
+            .commit()
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        Ok(())
+    }
+
     pub fn load_node(&self, hash: &NodeHash) -> SentrixResult<Option<TrieNode>> {
         match self
             .mdbx
