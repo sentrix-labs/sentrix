@@ -622,6 +622,27 @@ impl Blockchain {
     /// from `add_block` after Pass 1 has validated the block and the
     /// caller has taken a `BlockchainSnapshot` for rollback.
     fn apply_block_pass2(&mut self, block: Block) -> SentrixResult<()> {
+        // Per-block apply profile. Env-gated zero-cost when off
+        // (var_os check + Instant::now allocations skipped). When
+        // SENTRIX_APPLY_PROFILE=1, emits one tracing::info line per
+        // block at function exit with phase breakdowns:
+        //   apply-profile h=<height> txs=<n> tx_apply=<ms> trie=<ms> post=<ms> total=<ms>
+        // tx_apply = coinbase + tx loop + state mutations (everything
+        // before update_trie_for_block). trie = update_trie_for_block
+        // duration. post = state_root stamp + state_root check + prune
+        // dispatch. The prune itself runs on a background thread (v2.2.4)
+        // so its walk time is NOT included here.
+        let apply_profile = std::env::var_os("SENTRIX_APPLY_PROFILE")
+            .is_some_and(|v| v == "1");
+        let profile_t0 = if apply_profile {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+        // Capture before `block` gets moved into self.chain mid-fn.
+        let profile_height = block.index;
+        let profile_txs = block.transactions.len();
+
         // EXTENDED_TOUCH_LIST fork (2026-05-07): clear the per-block
         // accumulator at start so each block sees a fresh set. Mutators
         // populate `accounts.touched_in_block` during apply;
@@ -1509,6 +1530,7 @@ impl Blockchain {
 
         // Update state trie after block commit, stamp state_root on the block header,
         // and verify the sender's committed root when receiving from peers.
+        let profile_t1 = profile_t0.map(|_| std::time::Instant::now());
         let trie_root = self.update_trie_for_block().map_err(|e| {
             SentrixError::Internal(format!(
                 "trie update failed at block {}: {}",
@@ -1516,6 +1538,7 @@ impl Blockchain {
                 e
             ))
         })?;
+        let profile_t2 = profile_t0.map(|_| std::time::Instant::now());
 
         if let Some(computed_root) = trie_root
             && let Some(last) = self.chain.last_mut()
@@ -1646,6 +1669,21 @@ impl Blockchain {
         // without a localised cause — this gives us the first per-block
         // fingerprint to compare across the fleet at next halt.
         emit_state_fingerprint(self, self.height());
+
+        // Per-block apply-phase profile (see top of fn for rationale).
+        if let (Some(t0), Some(t1), Some(t2)) = (profile_t0, profile_t1, profile_t2) {
+            let t3 = std::time::Instant::now();
+            tracing::info!(
+                target: "apply_profile",
+                "apply-profile h={} txs={} tx_apply={}ms trie={}ms post={}ms total={}ms",
+                profile_height,
+                profile_txs,
+                t1.duration_since(t0).as_millis(),
+                t2.duration_since(t1).as_millis(),
+                t3.duration_since(t2).as_millis(),
+                t3.duration_since(t0).as_millis(),
+            );
+        }
 
         Ok(())
     }
