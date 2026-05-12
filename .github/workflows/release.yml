@@ -116,6 +116,10 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [build, sbom, sign]
     steps:
+      # gh release uses local git to figure out which repo to target;
+      # without a checkout the call errors with "not a git repository".
+      - uses: actions/checkout@v5
+
       - uses: actions/download-artifact@v5
         with:
           name: sentrix-binary
