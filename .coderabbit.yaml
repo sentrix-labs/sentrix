@@ -1,0 +1,51 @@
+language: en-US
+early_access: false
+reviews:
+  profile: assertive
+  high_level_summary: true
+  poem: false
+  review_status: false
+  changed_files_summary: false
+  collapse_walkthrough: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+      - dev
+  path_filters:
+    - "!**/CHANGELOG.md"
+    - "!**/*.lock"
+    - "!**/target/**"
+    - "!**/node_modules/**"
+    - "!**/.gitignore"
+    - "!docs/**"
+  path_instructions:
+    - path: "crates/sentrix-bft/**"
+      instructions: |
+        BFT consensus engine. Critical correctness rules:
+        - Equivocation prevention: never sign two messages at the same (height, round, step) with different LastSignBytes.
+        - Round-advance must be deterministic across validators given identical input.
+        - No panics in the engine loop — every error path returns via Result.
+        - Vote / proposal serialization: signing payload must be byte-stable across versions.
+        - Concurrent access: shared state across engine + libp2p task uses bounded channels with try_send + drop counters (silent-thread-death guard, see v2.1.65 / v2.1.67 / v2.1.68 history).
+    - path: "crates/sentrix-core/src/block_executor*"
+      instructions: |
+        Block executor. State-apply MUST be deterministic — sorted HashMap iteration, no time-of-day reads, no system entropy. See v2.1.87 (state-apply HashMap iteration sort fix).
+    - path: "crates/sentrix-staking/**"
+      instructions: |
+        DPoS + slashing. Stake registry mutations must be trie-aware (no force-unjail bypassing trie update — see PR #384/#385). LivenessTracker.record_signed must be idempotent per (validator, height).
+    - path: "crates/sentrix-evm/**"
+      instructions: |
+        EVM via revm. Watch for: gas accounting drift, EIP-1559 base-fee math, value-transfer credit correctness.
+    - path: "crates/sentrix-network/**"
+      instructions: |
+        libp2p. send_swarm_cmd MUST use try_send (non-blocking) with bounded channel + DROPPED_BFT_BROADCASTS counter. Never await on cmd_tx.
+    - path: "crates/sentrix-storage/**"
+      instructions: |
+        MDBX wrapper. Atomicity on write batches; explicit max_size + growth_step (see v2.1.51); never live-rsync the env.
+    - path: "bin/sentrix/src/main.rs"
+      instructions: |
+        Validator main loop. Heartbeat + chain-height-stale watchdog must fire on stuck loop. FinalizeBlock arms must early-return on bc.height advance race (see v2.1.63 fix).
+chat:
+  auto_reply: true
