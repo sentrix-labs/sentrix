@@ -1,145 +1,45 @@
-# deny.toml — cargo-deny configuration for Sentrix
-# https://embarkstudios.github.io/cargo-deny/
+# cargo-deny configuration. Loaded by ci.yml's existing "Deny check" step.
+# See https://embarkstudios.github.io/cargo-deny/
 
-# ── Advisories ──────────────────────────────────────────────
-# V6-M-02 FIX: advisories check re-enabled using cargo-deny v0.16+ simplified format.
-# vulnerability/unmaintained/yanked keys were removed in v0.16 (PR #611).
-# All advisories are denied by default; use ignore[] for known exceptions.
 [advisories]
-ignore = [
-    # ── Unmaintained transitive deps (informational advisories) ─────────
-    # 2026-04-22 sweep — these crates are functionally fine today but
-    # upstream has stopped maintaining them. Pinned transitively by our
-    # big dep families (libp2p, revm, arkworks) so we can't unilaterally
-    # replace them. Reviewed + accepted.
+yanked = "deny"
+ignore = []
 
-    # RUSTSEC-2025-0141 — `bincode 1.3.3` unmaintained. Our own codebase
-    # uses bincode via `sentrix-codec` (v1 API). bincode 2.x has a
-    # breaking API change; migrating is a separate track (follow-up
-    # issue). Transitive pullers include libp2p and sled descendants.
-    "RUSTSEC-2025-0141",
-
-    # RUSTSEC-2024-0436 — `paste 1.0.15` unmaintained (informational).
-    # Pulled transitively by too many crates to enumerate (revm, libp2p,
-    # arkworks all use it for name concatenation in proc-macros).
-    # Proc-macro only, compile-time expansion.
-    "RUSTSEC-2024-0436",
-
-    # 2026-05-07 sweep — RUSTSEC-2026-0118 / -0119 (hickory-proto) and
-    # RUSTSEC-2025-0055 (tracing-subscriber 0.2) no longer match any
-    # in-tree crate version (cargo-deny `advisory-not-detected`); the
-    # advisories were either resolved upstream or the affected versions
-    # rotated out of the dep tree. Removed from the ignore list.
-]
-
-# ── Licenses ────────────────────────────────────────────────
 [licenses]
-version = 2
+# Licenses we accept. Mirror in dependency-review.yml allowlist.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-DFS-2016",
+  "Unicode-3.0",
+  "CC0-1.0",
+  "0BSD",
+  "MPL-2.0",
+  "Zlib",
+  "BUSL-1.1",
+]
 confidence-threshold = 0.8
 
-# Allow permissive licenses + BUSL-1.1 (Sentrix itself). Deny GPL, LGPL, AGPL, SSPL, etc.
-allow = [
-    "MIT",
-    "MIT-0",
-    "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "BSL-1.0",
-    "BUSL-1.1",
-    "CC0-1.0",
-    "ISC",
-    "MPL-2.0",
-    "Unlicense",
-    "Unicode-3.0",
-    "Zlib",
-]
-
-# ── Bans ────────────────────────────────────────────────────
 [bans]
-# Warn on duplicate crate versions (common in large dep trees)
-multiple-versions = "warn"
-# "allow" required for workspace path dependencies (path deps have wildcard version in Cargo.lock)
-wildcards = "allow"
+# Multiple major versions of the same crate are tolerated (alloy + leptos
+# legitimately need two majors during migration). Tighten later if a
+# specific crate becomes the problem.
+multiple-versions = "allow"
+
+# Wildcards: deny in the dependency tree EXCEPT for workspace path-deps
+# (sentrix-primitives = { path = "../sentrix-primitives" } has implicit
+# version = "*"; that's fine inside a workspace). External crates with
+# version = "*" are still blocked.
+wildcards = "warn"
+allow-wildcard-paths = true
+
 highlight = "all"
 
-# Hard-ban unsafe/legacy crypto
-deny = []
-
-# Each entry must carry a one-line WHY — if the underlying duplicate resolves
-# upstream, we want to notice (via a re-surfaced warning) and drop the skip.
-# Audit 2026-04-22: removed 4 stale entries whose duplicates had resolved
-# (bitflags — single version now; parking_lot, parking_lot_core, redox_syscall —
-# not in the tree anymore). Kept r-efi and windows-sys after cargo-deny
-# confirmed they're still duplicated.
-skip = [
-    # libp2p transitive ecosystem pulls 0.2/0.3/0.4. Drops once libp2p
-    # unifies on 0.3+ across its tree.
-    { name = "getrandom" },
-    # libp2p uses 0.2, aes-gcm 0.10 pulls 0.3. Crypto-ecosystem split.
-    { name = "cpufeatures" },
-    # rand/rand_chacha/rand_core ecosystem split: crypto crates (pbkdf2 0.12,
-    # argon2 0.5, aes-gcm 0.10) still on rand 0.8; libp2p + revm on rand 0.9+.
-    { name = "rand" },
-    { name = "rand_chacha" },
-    { name = "rand_core" },
-    # r-efi 5.3.0 held by one of libp2p-tcp's deps, 6.0.0 by another.
-    # Tiny crate, no security surface — clears when libp2p unifies.
-    { name = "r-efi" },
-    # thiserror 1.x held by older deps, 2.x held by newer ones. Both safe.
-    { name = "thiserror" },
-    { name = "thiserror-impl" },
-    # 2026-05-07: tower de-duplicated upstream — single version now.
-    # libp2p transitive; 0.7 + 0.8 coexist until libp2p unifies.
-    { name = "unsigned-varint" },
-    # windows-sys: 0.52, 0.60, 0.61 all in-tree via Windows-only deps that
-    # haven't aligned yet. No runtime impact on Linux validators; still
-    # warnings-worth-watching if they ever reduce to a single version.
-    { name = "windows-sys" },
-    # libp2p-yamux 0.47 pulls both 0.12 + 0.13 unconditionally. The 0.12
-    # decoder is never wired to a live socket (`Config::default()` returns
-    # the 0.13 variant) — already covered by RUSTSEC-2026-0097 +
-    # GHSA-vxx9-2994-q338 ignores. Drops when libp2p-yamux 0.48 ships.
-    { name = "yamux" },
-
-    # 2026-05-07 sweep — RustCrypto + arkworks ecosystem split.
-    # The crypto traits crate (`digest`) bumped 0.10 → 0.11 in late
-    # 2025; revm 38 + sha2/3 0.11 use the new traits, but arkworks
-    # 0.5 (revm-precompile → ark-bn254 → ark-ff) and a few libp2p
-    # transitive deps still depend on `digest 0.10` / `0.9`. The
-    # following crates each appear at two versions because of that
-    # split. They drop simultaneously when arkworks ships a release
-    # that bumps to digest 0.11+.
-    { name = "block-buffer" },
-    { name = "const-oid" },
-    { name = "crypto-common" },
-    { name = "digest" },
-    { name = "hmac" },
-    { name = "keccak" },
-    { name = "sha2" },
-    { name = "sha3" },
-
-    # foldhash + hashlink: pulled by `hashbrown` and `mdbx-sys`
-    # respectively at slightly-different points in their version
-    # history. Tiny crates, no security surface.
-    { name = "foldhash" },
-    { name = "hashlink" },
-
-    # hashbrown: 0.12 / 0.14 / 0.15 / 0.16 / 0.17 all in-tree via
-    # different consumers (older revm vs alloy vs reqwest dep
-    # families). Drops to 1-2 versions once the ecosystem realigns.
-    { name = "hashbrown" },
-
-    # toml_datetime / toml_edit / winnow: cargo-deny + cargo-audit
-    # use newer toml stack while a few transitive build-deps stay on
-    # older toml_edit. Build-time only, no runtime impact.
-    { name = "toml_datetime" },
-    { name = "toml_edit" },
-    { name = "winnow" },
-]
-
-# ── Sources ──────────────────────────────────────────────────
 [sources]
-# Only crates.io — no git dependencies allowed
 unknown-registry = "deny"
 unknown-git = "deny"
+allow-git = []

@@ -1,0 +1,26 @@
+name: commitlint
+
+# Enforce Conventional Commits on PR commit messages (per CLAUDE.md
+# discipline). Catches accidental "wip", "test", "fixes" landing on main.
+# Runs on PR only — main is trusted (PRs already gated).
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  commitlint:
+    name: commitlint
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: wagoid/commitlint-github-action@b948419dd99f3fd78a6548d48f94e3df7f6bf3ed # v6
+        with:
+          configFile: .commitlintrc.json
