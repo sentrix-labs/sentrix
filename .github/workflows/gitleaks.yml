@@ -1,0 +1,45 @@
+name: gitleaks
+
+# Secret-scan every PR + every push to main + manual on demand. Catches
+# credentials accidentally committed (API keys, signed RPC URLs,
+# private-key fixtures, hardcoded JWTs) before they hit shared history.
+#
+# Uses the gitleaks BINARY directly — gitleaks-action@v2 is paid for
+# GitHub Organizations since 2023; the binary itself is open-source MIT
+# and has no such restriction. Pinned to v8.30.1 (latest release as of
+# 2026-05-10). Bump deliberately, not via dependabot, so a regex change
+# upstream doesn't silently break a passing build.
+#
+# Non-blocking on findings (exits with `|| echo ::warning::`). Required
+# branch protection still gates that the scan ran; surface findings
+# show up as PR check warnings + workflow summary so an operator can
+# decide whether to redact and force-push or accept the finding.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: gitleaks (secret scan)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # full history so commit-range scan covers the whole tree
+      - name: Install gitleaks
+        run: |
+          GITLEAKS_VERSION=8.30.1
+          wget -q "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          sudo mv gitleaks /usr/local/bin/
+          gitleaks version
+      - name: Run gitleaks
+        run: |
+          gitleaks detect --source . --redact --verbose \
+            || echo "::warning::gitleaks findings (non-blocking)"
