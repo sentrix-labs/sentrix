@@ -1,0 +1,66 @@
+[package]
+name = "sentrix-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Tell cargo this directory is NOT part of the parent workspace. Fuzz
+# targets compile as standalone binaries against the parent crates via
+# path = "..". Required by cargo-fuzz.
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Real crates we fuzz — pulled by relative path. Must list every crate
+# any target depends on.
+sentrix-primitives = { path = "../crates/sentrix-primitives" }
+sentrix-bft = { path = "../crates/sentrix-bft" }
+sentrix-codec = { path = "../crates/sentrix-codec" }
+sentrix-wallet = { path = "../crates/sentrix-wallet" }
+
+# Helpers
+arbitrary = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "tx_signing_payload"
+path = "fuzz_targets/tx_signing_payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bft_message_roundtrip"
+path = "fuzz_targets/bft_message_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "codec_decode"
+path = "fuzz_targets/codec_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tx_decode"
+path = "fuzz_targets/tx_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keystore_load"
+path = "fuzz_targets/keystore_load.rs"
+test = false
+doc = false
+bench = false
+
+# Empty workspace table = this Cargo.toml is its own workspace root,
+# not inherited from ../Cargo.toml. Required because cargo-fuzz uses
+# nightly-only features (#![no_main], libfuzzer-sys) that we don't
+# want polluting the main workspace builds.
+[workspace]

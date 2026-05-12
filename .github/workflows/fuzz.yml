@@ -1,0 +1,112 @@
+name: fuzz
+
+# Continuous fuzzing of consensus-critical surfaces. Catches the class of
+# bug a unit test misses: adversarial peer input that triggers panic /
+# unbounded allocation / non-deterministic output. Every target encodes
+# one INVARIANT a malicious validator should not be able to break.
+#
+# Two trigger modes:
+#  - PR (short, ~3 min per target) when consensus-touching files changed.
+#    Quick gate to catch regressions introduced in the PR.
+#  - Nightly cron (30 min per target) for deeper exploration. Corpus
+#    accumulates across runs via GHA cache.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/sentrix-bft/**'
+      - 'crates/sentrix-codec/**'
+      - 'crates/sentrix-primitives/**'
+      - 'crates/sentrix-wallet/**'
+      - 'fuzz/**'
+  schedule:
+    - cron: '13 3 * * *'  # nightly 03:13 UTC
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: 'Fuzz duration per target (seconds)'
+        required: false
+        default: '300'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-22.04
+    strategy:
+      # Don't fail-fast — one target crashing shouldn't hide whether the
+      # others would also crash. Each is independent.
+      fail-fast: false
+      matrix:
+        target:
+          - tx_signing_payload
+          - bft_message_roundtrip
+          - codec_decode
+          - tx_decode
+          - keystore_load
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install nightly Rust (cargo-fuzz needs it)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable -> overridden below
+        with:
+          toolchain: nightly
+          components: rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            .
+            fuzz
+
+      - name: Install protoc (transitively needed by sentrix-grpc)
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libclang-dev clang
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --quiet
+
+      - name: Determine fuzz duration
+        id: duration
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            # Nightly: 30 min per target. Five targets = 2.5 hr CI budget,
+            # ubuntu-22.04 default timeout is 6 hr.
+            echo "seconds=1800" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "seconds=${{ inputs.duration_seconds }}" >> "$GITHUB_OUTPUT"
+          else
+            # PR: 3 min per target. Quick smoke; nightly does the deep run.
+            echo "seconds=180" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run fuzz target
+        id: run
+        env:
+          SECONDS_RUN: ${{ steps.duration.outputs.seconds }}
+        run: |
+          set -euo pipefail
+          cd fuzz
+          # cargo-fuzz exits non-zero on first crash. -max_total_time
+          # caps the libFuzzer loop; -timeout caps single-input runs to
+          # catch infinite loops faster than waiting for the whole budget.
+          cargo +nightly fuzz run "${{ matrix.target }}" \
+            -- \
+            -max_total_time="${SECONDS_RUN}" \
+            -timeout=30 \
+            -print_final_stats=1
+
+      - name: Upload crash artifacts on failure
+        if: failure() && steps.run.conclusion == 'failure'
+        uses: actions/upload-artifact@v5
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}/
+            fuzz/corpus/${{ matrix.target }}/
+          retention-days: 14
+          if-no-files-found: ignore

@@ -1,0 +1,6 @@
+target/
+artifacts/
+# Corpus accumulates locally; CI caches it via Swatinem/rust-cache.
+# Committing it would bloat the repo by MBs per run.
+corpus/*/*
+!corpus/*/.gitkeep
