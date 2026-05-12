@@ -3,7 +3,7 @@ name = "sentrix-evm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "EVM execution layer (revm 37) for Sentrix blockchain"
+description = "EVM execution layer (revm 38) for Sentrix blockchain"
 repository.workspace = true
 
 [dependencies]
