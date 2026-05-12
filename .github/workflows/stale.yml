@@ -1,0 +1,43 @@
+name: Stale issues and PRs
+
+# Auto-close stale community contributions and triage items. Keeps the
+# backlog readable without manual gardening.
+#
+# - Issues: 90 days no activity → "stale" label warning, +14 more days
+#   no activity → closed
+# - PRs:    60 days no activity → "stale" label, +14 more days → closed
+# - Pinned + bug + security labels exempt
+
+on:
+  schedule:
+    - cron: '23 4 * * *'  # daily, off-peak UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    name: Mark + close stale
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/stale@5bef64f19d7facfb25b37b414482c7164d639639 # v9
+        with:
+          days-before-issue-stale: 90
+          days-before-issue-close: 14
+          days-before-pr-stale: 60
+          days-before-pr-close: 14
+          stale-issue-label: stale
+          stale-pr-label: stale
+          exempt-issue-labels: 'pinned,bug,security,P0,P1'
+          exempt-pr-labels: 'pinned,security,P0,P1'
+          stale-issue-message: |
+            This issue has been idle for 90 days. Marking as `stale` —
+            will auto-close in 14 days unless updated. If still relevant,
+            add a comment or remove the `stale` label.
+          stale-pr-message: |
+            This PR has been idle for 60 days. Marking as `stale` —
+            will auto-close in 14 days unless updated. Push a commit
+            or comment to keep it open.
+          operations-per-run: 100

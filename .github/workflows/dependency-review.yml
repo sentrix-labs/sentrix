@@ -1,0 +1,31 @@
+name: Dependency review
+
+# Runs GitHub's dependency-review-action on PRs. Diffs the lockfile changes
+# in the PR vs the base branch and BLOCKS merge if newly-introduced
+# dependencies have vulnerabilities OR licenses outside our allowlist.
+#
+# Pair with Dependabot: Dependabot opens upgrade PRs; this gate enforces
+# nothing bad slips in through manual deps changes that bypass Dependabot.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write  # so the action can post a summary comment
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+        with:
+          # Block merge on these severities; show all in comment.
+          fail-on-severity: high
+          # License allowlist mirrors deny.toml. Add to both when adding a license.
+          allow-licenses: MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Unicode-DFS-2016, Unicode-3.0, CC0-1.0, 0BSD, MPL-2.0, Zlib, BUSL-1.1
+          comment-summary-in-pr: on-failure
