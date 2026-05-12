@@ -15,6 +15,7 @@ use sentrix_trie::tree::SentrixTrie;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // ── Chain constants ──────────────────────────────────────
 //
@@ -1875,6 +1876,18 @@ impl Blockchain {
     ///
     /// Pruning failure is logged but never propagated — a failed prune leaves
     /// extra storage on disk but does not break consensus.
+    ///
+    /// 2026-05-12 (v2.2.4): prune now runs on its own OS thread instead of
+    /// inline. apply_block_pass2 calls this while holding the Blockchain
+    /// write lock from the gossip-block apply task in libp2p_node; the
+    /// cursor walk in gc_orphaned_nodes is O(N) over the trie node table
+    /// (millions of entries on mainnet) and was holding chain.write() for
+    /// tens of seconds at every 1000-block boundary, freezing the apply
+    /// loop and producing the recurring "silent fullnode wedge". By
+    /// dispatching to std::thread we release the write lock immediately;
+    /// the prune work proceeds against MDBX in parallel with the next
+    /// block applies. PRUNE_RUNNING gates overlap so a slow prune doesn't
+    /// queue behind itself when the next boundary fires.
     pub fn maybe_prune_trie(&self) {
         const TRIE_PRUNE_EVERY: u64 = 1000;
         const TRIE_KEEP_VERSIONS: u64 = 1000;
@@ -1884,30 +1897,67 @@ impl Blockchain {
             return;
         }
 
-        let Some(trie) = self.state_trie.as_ref() else {
+        if PRUNE_RUNNING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            tracing::info!(
+                "trie prune at height {} skipped: previous prune still running",
+                height
+            );
+            return;
+        }
+
+        let Some(trie) = self.state_trie.as_ref().cloned() else {
+            PRUNE_RUNNING.store(false, Ordering::Release);
             return;
         };
 
-        match trie.prune(TRIE_KEEP_VERSIONS) {
-            Ok((roots, nodes)) if roots > 0 || nodes > 0 => {
-                tracing::info!(
-                    "trie maintenance at height {}: retired {} old roots, GC'd {} nodes/values",
-                    height,
-                    roots,
-                    nodes
-                );
-            }
-            Ok(_) => {} // nothing to do
-            Err(e) => {
-                tracing::warn!(
-                    "trie prune at height {} failed: {} (storage will continue to grow until next successful prune)",
-                    height,
-                    e
-                );
-            }
-        }
+        std::thread::Builder::new()
+            .name(format!("trie-prune-h{}", height))
+            .spawn(move || {
+                let outcome = trie.prune(TRIE_KEEP_VERSIONS);
+                PRUNE_RUNNING.store(false, Ordering::Release);
+                match outcome {
+                    Ok((roots, nodes)) if roots > 0 || nodes > 0 => {
+                        tracing::info!(
+                            "trie maintenance at height {}: retired {} old roots, GC'd {} nodes/values",
+                            height,
+                            roots,
+                            nodes
+                        );
+                    }
+                    Ok(_) => {} // nothing to do
+                    Err(e) => {
+                        tracing::warn!(
+                            "trie prune at height {} failed: {} (storage will continue to grow until next successful prune)",
+                            height,
+                            e
+                        );
+                    }
+                }
+            })
+            .map_or_else(
+                |e| {
+                    PRUNE_RUNNING.store(false, Ordering::Release);
+                    tracing::warn!(
+                        "trie prune at height {} could not spawn background thread: {}",
+                        height,
+                        e
+                    );
+                },
+                |_handle| {},
+            );
     }
 }
+
+/// Guard: only one trie prune in flight at a time. Set true at the start
+/// of `maybe_prune_trie` via compare_exchange; the spawned thread clears
+/// it on completion (success or error). If a second 1000-block boundary
+/// fires while a prior prune is still walking, we skip the second cycle
+/// — storage will continue to grow until the next successful prune, same
+/// as the existing "failed prune" semantics documented above.
+static PRUNE_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 mod tests {

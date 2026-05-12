@@ -14,6 +14,16 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.4] — 2026-05-12 — fix: dispatch trie prune to background thread
+
+**No wire change. No consensus change. Halt-all + simul-start deploy (same lane as 2.2.3).**
+
+`Blockchain::maybe_prune_trie` (called every 1000 blocks from `apply_block_pass2`) now spawns the prune on its own OS thread instead of running inline. Apply path releases the `chain.write()` lock immediately; the cursor walk in `gc_orphaned_nodes` proceeds against MDBX in parallel with the next block applies. A `PRUNE_RUNNING` `AtomicBool` gates overlap — if a second 1000-block boundary fires while a prior prune is still walking, the second cycle is skipped (same semantics as the existing "failed prune" path: storage grows until the next successful prune).
+
+**Why the 2.2.3 fix wasn't enough:** the cursor walk in `gc_table` is O(N) over the trie node table (millions of entries on a fullnode that's been replaying from snapshot). Switching `iter()` → `iter_from()` removed the memory spike but the walk duration was unchanged. Holding `chain.write()` for that whole walk still froze the apply loop at every 1000-block prune boundary — which is why mainnet fullnodes kept wedging post-2.2.3 even though their RSS stayed low.
+
+Found 2026-05-12 immediately after the 2.2.3 deploy when fullnodes wedged again at the next 1000-block boundary (last `STATE-FP` h=1,701,999, then silent for 20+ min until force-recreate). 2.2.4 moves the lock-holding work off the apply path.
+
 ## [2.2.3] — 2026-05-12 — perf: stream trie GC via cursor walks
 
 **No wire change. No consensus change. Halt-all + simul-start deploy (storage path, same as 2.2.1).**
