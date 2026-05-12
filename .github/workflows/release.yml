@@ -151,25 +151,34 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BIN_SHA: ${{ needs.build.outputs.bin_sha }}
         run: |
-          # Append verification block to release notes
-          gh release edit "${GITHUB_REF_NAME}" --notes-file - <<NOTES
-$(gh release view "${GITHUB_REF_NAME}" --json body --jq '.body')
+          # Append verification block to release notes.
+          # - YAML scalar requires every here-doc line to stay indented (>=10
+          #   spaces) so the `|` block doesn't terminate
+          # - `sed` strips the 10-space prefix before piping to gh
+          # - Unquoted `<<NOTES` lets bash expand ${BIN_SHA} → real hash
+          # - Markdown triple-backticks + bash line-continuations are
+          #   backslash-escaped so they survive the heredoc parser and end
+          #   up rendered literally in the published release notes
+          {
+            gh release view "${GITHUB_REF_NAME}" --json body --jq '.body'
+            sed 's/^          //' <<NOTES
 
-## Verify
+          ## Verify
 
-\`\`\`bash
-# Binary checksum
-echo "${BIN_SHA}  sentrix" | sha256sum -c
+          \`\`\`bash
+          # Binary checksum
+          echo "${BIN_SHA}  sentrix" | sha256sum -c
 
-# Cosign keyless verify (binary)
-cosign verify-blob \\
-  --certificate-identity-regexp "https://github.com/sentrix-labs/sentrix" \\
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \\
-  --signature sentrix.sig \\
-  --certificate sentrix.crt \\
-  sentrix
+          # Cosign keyless verify (binary)
+          cosign verify-blob \\
+            --certificate-identity-regexp "https://github.com/sentrix-labs/sentrix" \\
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \\
+            --signature sentrix.sig \\
+            --certificate sentrix.crt \\
+            sentrix
 
-# SLSA build provenance
-gh attestation verify --owner sentrix-labs sentrix
-\`\`\`
-NOTES
+          # SLSA build provenance
+          gh attestation verify --owner sentrix-labs sentrix
+          \`\`\`
+          NOTES
+          } | gh release edit "${GITHUB_REF_NAME}" --notes-file -
