@@ -14,6 +14,22 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.3] — 2026-05-12 — perf: stream trie GC via cursor walks
+
+**No wire change. No consensus change. Halt-all + simul-start deploy (storage path, same as 2.2.1).**
+
+`crates/sentrix-trie/src/storage.rs::gc_table` (called from `gc_orphaned_nodes` during `maybe_prune_trie`) used to call `self.mdbx.iter(table)`, which builds a `Vec<(Vec<u8>, Vec<u8>)>` of the entire `TABLE_TRIE_NODES` and `TABLE_TRIE_VALUES` before the GC loop starts. Same materialisation problem fixed in 2.2.1 for the logs path.
+
+`prune_old_roots` gets the same treatment on `TABLE_TRIE_ROOTS` for consistency (smaller table, not the OOM driver, but same class of fix).
+
+**Why it matters:** at every 1000-block prune boundary on a fullnode container (4.8 GB chain.db inside a 4 GiB memory limit), the alloc froze the block-apply loop for 16+ min — `chain.write()` was held the whole time so `STATE-FP` for the boundary block never emitted. Looked like silent thread death but it was just a stuck alloc. Validators have 8 GiB headroom and didn't hit it. Found 2026-05-12 while diagnosing two recurring fullnode RPC wedges.
+
+## [2.2.2] — 2026-05-11 — perf: tighten BFT proposal rebroadcast 2s → 500ms
+
+**No wire change. No consensus change. Timer-constant only.**
+
+`bin/sentrix/src/main.rs:3473`: `REBROADCAST_INTERVAL` 2s → 500ms, `MAX_REBROADCASTS` 7 → 28. Recovers dropped proposals inside one round window instead of waiting 2s. Mainnet bt 2.5 → 2.05 s/blk steady (-18%).
+
 ## [2.2.1] — 2026-05-11 — perf: cursor-based log table scans (audit D-G3)
 
 **No wire change. No consensus change. Rolling deploy safe.**
