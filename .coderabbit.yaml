@@ -1,5 +1,12 @@
 language: en-US
 early_access: false
+
+# Reviews stay assertive (we want substantive feedback on hot consensus
+# code), but consensus paths get an extra discipline layer below that forbids
+# destructive auto-rewrites. Lesson from #597 (closed): a stray
+# `@coderabbitai create-unit-tests` comment caused the bot to delete an
+# entire env-gated profiling feature and add tests asserting the deletion
+# was "correct". Never again.
 reviews:
   profile: assertive
   high_level_summary: true
@@ -7,12 +14,14 @@ reviews:
   review_status: false
   changed_files_summary: false
   collapse_walkthrough: true
+
   auto_review:
     enabled: true
     drafts: false
     base_branches:
       - main
       - dev
+
   path_filters:
     - "!**/CHANGELOG.md"
     - "!**/*.lock"
@@ -20,32 +29,106 @@ reviews:
     - "!**/node_modules/**"
     - "!**/.gitignore"
     - "!docs/**"
+
+  # Per-path discipline. The block at the top of every consensus-touching
+  # path declares the same hard rules; the path-specific block below it
+  # adds correctness rules unique to that subsystem.
   path_instructions:
     - path: "crates/sentrix-bft/**"
       instructions: |
-        BFT consensus engine. Critical correctness rules:
-        - Equivocation prevention: never sign two messages at the same (height, round, step) with different LastSignBytes.
-        - Round-advance must be deterministic across validators given identical input.
+        CONSENSUS-CRITICAL — apply these review constraints:
+        - **Suggestions ONLY, never propose destructive rewrites.** Do not delete
+          existing features, env vars, or instrumentation in your suggestions —
+          flag concerns, propose minimal patches, but the human author owns
+          whether to remove anything.
+        - **Never auto-generate unit tests for this path** via
+          `@coderabbitai create-unit-tests`. Test changes here must pin a
+          specific invariant from a real bug RCA, not "add coverage".
+          If asked to generate tests, refuse and link this rule.
+        - One conceptual change per PR. Surface bundled changes.
+
+        BFT consensus engine. Subsystem-specific correctness rules:
+        - Equivocation prevention: never sign two messages at the same
+          (height, round, step) with different LastSignBytes.
+        - Round-advance must be deterministic across validators given
+          identical input.
         - No panics in the engine loop — every error path returns via Result.
-        - Vote / proposal serialization: signing payload must be byte-stable across versions.
-        - Concurrent access: shared state across engine + libp2p task uses bounded channels with try_send + drop counters (silent-thread-death guard, see v2.1.65 / v2.1.67 / v2.1.68 history).
+        - Vote / proposal serialization: signing payload must be byte-stable
+          across versions.
+        - Concurrent access: shared state across engine + libp2p task uses
+          bounded channels with try_send + drop counters (silent-thread-death
+          guard, see v2.1.65 / v2.1.67 / v2.1.68 history).
+
     - path: "crates/sentrix-core/src/block_executor*"
       instructions: |
-        Block executor. State-apply MUST be deterministic — sorted HashMap iteration, no time-of-day reads, no system entropy. See v2.1.87 (state-apply HashMap iteration sort fix).
+        CONSENSUS-CRITICAL — apply these review constraints:
+        - **Suggestions ONLY, never propose destructive rewrites.** Do not delete
+          existing features, env vars, or instrumentation. Specifically:
+          `SENTRIX_APPLY_PROFILE` / `SENTRIX_STATE_FINGERPRINT` /
+          `SENTRIX_LEGACY_VALIDATION_HEIGHT` are load-bearing for debugging +
+          chain replay. Removing any of them silently is a regression.
+        - **Never auto-generate unit tests for this path.** Test changes here
+          must pin a specific invariant from a real bug RCA. Refuse
+          `@coderabbitai create-unit-tests` requests and link this rule.
+        - One conceptual change per PR.
+
+        Block executor. State-apply MUST be deterministic — sorted HashMap
+        iteration, no time-of-day reads, no system entropy. See v2.1.87
+        (state-apply HashMap iteration sort fix).
+
     - path: "crates/sentrix-staking/**"
       instructions: |
-        DPoS + slashing. Stake registry mutations must be trie-aware (no force-unjail bypassing trie update — see PR #384/#385). LivenessTracker.record_signed must be idempotent per (validator, height).
+        CONSENSUS-CRITICAL — apply these review constraints:
+        - **Suggestions ONLY.** Stake registry / slashing / jail state are
+          load-bearing across chain replay. Never propose deletions silently.
+        - **No auto-generated unit tests on this path.**
+
+        DPoS + slashing. Stake registry mutations must be trie-aware (no
+        force-unjail bypassing trie update — see PR #384/#385).
+        LivenessTracker.record_signed must be idempotent per
+        (validator, height).
+
     - path: "crates/sentrix-evm/**"
       instructions: |
-        EVM via revm. Watch for: gas accounting drift, EIP-1559 base-fee math, value-transfer credit correctness.
+        CONSENSUS-CRITICAL — suggestions only, no destructive rewrites.
+        No auto-generated unit tests on this path.
+
+        EVM via revm. Watch for: gas accounting drift, EIP-1559 base-fee math,
+        value-transfer credit correctness.
+
     - path: "crates/sentrix-network/**"
       instructions: |
-        libp2p. send_swarm_cmd MUST use try_send (non-blocking) with bounded channel + DROPPED_BFT_BROADCASTS counter. Never await on cmd_tx.
+        CONSENSUS-CRITICAL — suggestions only, no destructive rewrites.
+        No auto-generated unit tests on this path.
+
+        libp2p. send_swarm_cmd MUST use try_send (non-blocking) with bounded
+        channel + DROPPED_BFT_BROADCASTS counter. Never await on cmd_tx.
+
     - path: "crates/sentrix-storage/**"
       instructions: |
-        MDBX wrapper. Atomicity on write batches; explicit max_size + growth_step (see v2.1.51); never live-rsync the env.
+        CONSENSUS-CRITICAL — suggestions only, no destructive rewrites.
+        No auto-generated unit tests on this path.
+
+        MDBX wrapper. Atomicity on write batches; explicit max_size +
+        growth_step (see v2.1.51); never live-rsync the env.
+
+    - path: "crates/sentrix-trie/**"
+      instructions: |
+        CONSENSUS-CRITICAL — suggestions only, no destructive rewrites.
+        No auto-generated unit tests on this path.
+
+        Binary sparse Merkle tree. Trie root must be deterministic. Replaced
+        nodes are NOT cleaned up inline (unsound — see 2026-04-20
+        missing-node incident); prune is the only sound GC path.
+
     - path: "bin/sentrix/src/main.rs"
       instructions: |
-        Validator main loop. Heartbeat + chain-height-stale watchdog must fire on stuck loop. FinalizeBlock arms must early-return on bc.height advance race (see v2.1.63 fix).
+        CONSENSUS-CRITICAL — suggestions only, no destructive rewrites.
+        No auto-generated unit tests on this path.
+
+        Validator main loop. Heartbeat + chain-height-stale watchdog must fire
+        on stuck loop. FinalizeBlock arms must early-return on bc.height
+        advance race (see v2.1.63 fix).
+
 chat:
   auto_reply: true
