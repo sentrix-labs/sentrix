@@ -622,27 +622,6 @@ impl Blockchain {
     /// from `add_block` after Pass 1 has validated the block and the
     /// caller has taken a `BlockchainSnapshot` for rollback.
     fn apply_block_pass2(&mut self, block: Block) -> SentrixResult<()> {
-        // Per-block apply profile. Env-gated zero-cost when off
-        // (var_os check + Instant::now allocations skipped). When
-        // SENTRIX_APPLY_PROFILE=1, emits one tracing::info line per
-        // block at function exit with phase breakdowns:
-        //   apply-profile h=<height> txs=<n> tx_apply=<ms> trie=<ms> post=<ms> total=<ms>
-        // tx_apply = coinbase + tx loop + state mutations (everything
-        // before update_trie_for_block). trie = update_trie_for_block
-        // duration. post = state_root stamp + state_root check + prune
-        // dispatch. The prune itself runs on a background thread (v2.2.4)
-        // so its walk time is NOT included here.
-        let apply_profile = std::env::var_os("SENTRIX_APPLY_PROFILE")
-            .is_some_and(|v| v == "1");
-        let profile_t0 = if apply_profile {
-            Some(std::time::Instant::now())
-        } else {
-            None
-        };
-        // Capture before `block` gets moved into self.chain mid-fn.
-        let profile_height = block.index;
-        let profile_txs = block.transactions.len();
-
         // EXTENDED_TOUCH_LIST fork (2026-05-07): clear the per-block
         // accumulator at start so each block sees a fresh set. Mutators
         // populate `accounts.touched_in_block` during apply;
@@ -1530,7 +1509,6 @@ impl Blockchain {
 
         // Update state trie after block commit, stamp state_root on the block header,
         // and verify the sender's committed root when receiving from peers.
-        let profile_t1 = profile_t0.map(|_| std::time::Instant::now());
         let trie_root = self.update_trie_for_block().map_err(|e| {
             SentrixError::Internal(format!(
                 "trie update failed at block {}: {}",
@@ -1538,7 +1516,6 @@ impl Blockchain {
                 e
             ))
         })?;
-        let profile_t2 = profile_t0.map(|_| std::time::Instant::now());
 
         if let Some(computed_root) = trie_root
             && let Some(last) = self.chain.last_mut()
@@ -1669,21 +1646,6 @@ impl Blockchain {
         // without a localised cause — this gives us the first per-block
         // fingerprint to compare across the fleet at next halt.
         emit_state_fingerprint(self, self.height());
-
-        // Per-block apply-phase profile (see top of fn for rationale).
-        if let (Some(t0), Some(t1), Some(t2)) = (profile_t0, profile_t1, profile_t2) {
-            let t3 = std::time::Instant::now();
-            tracing::info!(
-                target: "apply_profile",
-                "apply-profile h={} txs={} tx_apply={}ms trie={}ms post={}ms total={}ms",
-                profile_height,
-                profile_txs,
-                t1.duration_since(t0).as_millis(),
-                t2.duration_since(t1).as_millis(),
-                t3.duration_since(t2).as_millis(),
-                t3.duration_since(t0).as_millis(),
-            );
-        }
 
         Ok(())
     }
@@ -2483,10 +2445,164 @@ mod tests {
         }
     }
 
+    // ── SENTRIX_APPLY_PROFILE removal regression (PR: remove profiling from apply_block_pass2) ──
+
+    /// The SENTRIX_APPLY_PROFILE env var was removed from apply_block_pass2.
+    /// Setting it to "1" must be a silent no-op — the block must still apply
+    /// correctly and the chain height must advance exactly once.
+    #[test]
+    fn test_sentrix_apply_profile_env_var_is_inert() {
+        let _guard = crate::test_util::env_test_lock();
+        unsafe {
+            std::env::set_var("SENTRIX_APPLY_PROFILE", "1");
+        }
+
+        let mut bc = setup();
+        let height_before = bc.height();
+
+        let block = bc.create_block("v1").unwrap();
+        bc.add_block(block).expect("add_block must succeed with SENTRIX_APPLY_PROFILE=1");
+
+        assert_eq!(
+            bc.height(),
+            height_before + 1,
+            "chain height must advance exactly once regardless of SENTRIX_APPLY_PROFILE"
+        );
+
+        unsafe {
+            std::env::remove_var("SENTRIX_APPLY_PROFILE");
+        }
+    }
+
+    /// Setting SENTRIX_APPLY_PROFILE to "0" must also be a silent no-op.
+    /// Verifies that the removal did not leave any branch that still reads
+    /// the env var for a "disabled" path.
+    #[test]
+    fn test_sentrix_apply_profile_zero_value_is_inert() {
+        let _guard = crate::test_util::env_test_lock();
+        unsafe {
+            std::env::set_var("SENTRIX_APPLY_PROFILE", "0");
+        }
+
+        let mut bc = setup();
+        let height_before = bc.height();
+
+        let block = bc.create_block("v1").unwrap();
+        bc.add_block(block).expect("add_block must succeed with SENTRIX_APPLY_PROFILE=0");
+
+        assert_eq!(bc.height(), height_before + 1);
+
+        unsafe {
+            std::env::remove_var("SENTRIX_APPLY_PROFILE");
+        }
+    }
+
+    /// Block state (height, validator balance, total_minted) must be identical
+    /// regardless of whether SENTRIX_APPLY_PROFILE is set. This pins that the
+    /// profiling code had zero semantic effect on state and confirms the removal
+    /// is safe.
+    #[test]
+    fn test_apply_block_pass2_state_identical_with_and_without_profile_env() {
+        let _guard = crate::test_util::env_test_lock();
+
+        // Chain A: env var unset
+        unsafe {
+            std::env::remove_var("SENTRIX_APPLY_PROFILE");
+        }
+        let mut bc_a = setup();
+        let block_a = bc_a.create_block("v1").unwrap();
+        bc_a.add_block(block_a).expect("chain A: add_block without profile env");
+        let height_a = bc_a.height();
+        let balance_a = bc_a.accounts.get_balance("v1");
+        let minted_a = bc_a.total_minted;
+
+        // Chain B: env var set to "1"
+        unsafe {
+            std::env::set_var("SENTRIX_APPLY_PROFILE", "1");
+        }
+        let mut bc_b = setup();
+        let block_b = bc_b.create_block("v1").unwrap();
+        bc_b.add_block(block_b).expect("chain B: add_block with SENTRIX_APPLY_PROFILE=1");
+        let height_b = bc_b.height();
+        let balance_b = bc_b.accounts.get_balance("v1");
+        let minted_b = bc_b.total_minted;
+
+        unsafe {
+            std::env::remove_var("SENTRIX_APPLY_PROFILE");
+        }
+
+        assert_eq!(
+            height_a, height_b,
+            "height must be identical with and without SENTRIX_APPLY_PROFILE"
+        );
+        assert_eq!(
+            balance_a, balance_b,
+            "validator balance must be identical with and without SENTRIX_APPLY_PROFILE"
+        );
+        assert_eq!(
+            minted_a, minted_b,
+            "total_minted must be identical with and without SENTRIX_APPLY_PROFILE"
+        );
+    }
+
+    /// Regression: coinbase reward is credited correctly even without the
+    /// profiling timing variables that previously surrounded the credit call.
+    /// Before the removal, profile_height and profile_txs were captured before
+    /// the coinbase credit; this test confirms the credit still happens.
+    #[test]
+    fn test_apply_block_pass2_coinbase_credited_without_profiling() {
+        let _guard = crate::test_util::env_test_lock();
+        unsafe {
+            std::env::remove_var("SENTRIX_APPLY_PROFILE");
+        }
+
+        let mut bc = setup();
+        let reward = bc.get_block_reward();
+        let balance_before = bc.accounts.get_balance("v1");
+        let minted_before = bc.total_minted;
+
+        let block = bc.create_block("v1").unwrap();
+        bc.add_block(block).expect("add_block must succeed");
+
+        assert_eq!(
+            bc.accounts.get_balance("v1"),
+            balance_before + reward,
+            "coinbase reward must be credited to validator"
+        );
+        assert_eq!(
+            bc.total_minted,
+            minted_before + reward,
+            "total_minted must reflect the newly minted coinbase"
+        );
+    }
+
+    /// Boundary / negative case: SENTRIX_APPLY_PROFILE set to an arbitrary
+    /// non-"1" string must not cause a panic or alter block execution.
+    #[test]
+    fn test_sentrix_apply_profile_arbitrary_value_is_inert() {
+        let _guard = crate::test_util::env_test_lock();
+        unsafe {
+            std::env::set_var("SENTRIX_APPLY_PROFILE", "yes_please_profile");
+        }
+
+        let mut bc = setup();
+        let height_before = bc.height();
+
+        let block = bc.create_block("v1").unwrap();
+        bc.add_block(block)
+            .expect("add_block must not panic on arbitrary SENTRIX_APPLY_PROFILE value");
+
+        assert_eq!(bc.height(), height_before + 1);
+
+        unsafe {
+            std::env::remove_var("SENTRIX_APPLY_PROFILE");
+        }
+    }
+
     /// Phase D Q4 required-presence: post-fork at boundary with downtime
     /// evidence locally, a block missing the JailEvidenceBundle is rejected.
     #[test]
-    fn test_phase_d_q4_required_presence_rejects_missing_bundle() {
+
         let _guard = crate::test_util::env_test_lock();
         unsafe {
             std::env::set_var("VOYAGER_REWARD_V2_HEIGHT", "0");
