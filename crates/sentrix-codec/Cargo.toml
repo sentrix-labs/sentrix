@@ -1,10 +1,10 @@
 [package]
 name = "sentrix-codec"
-version = "2.2.8"
-edition = "2024"
-license = "BUSL-1.1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Centralised encoding: bincode + hex wrappers for Sentrix"
-repository = "https://github.com/sentrix-labs/sentrix"
+repository.workspace = true
 
 [dependencies]
 bincode = "1.3"

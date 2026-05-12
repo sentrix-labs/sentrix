@@ -1,10 +1,10 @@
 [package]
 name = "sentrix-wire"
-version = "2.2.8"
-edition = "2024"
-license = "BUSL-1.1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Sentrix libp2p wire protocol types — request/response enums, gossipsub envelopes, protocol version + topic constants. No libp2p dep."
-repository = "https://github.com/sentrix-labs/sentrix"
+repository.workspace = true
 
 # Why this crate exists
 # -------------------------

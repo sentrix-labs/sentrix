@@ -1,10 +1,10 @@
 [package]
 name = "sentrix-wallet"
-version = "2.2.8"
-edition = "2024"
-license = "BUSL-1.1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Wallet, keystore encryption, and signing for Sentrix blockchain"
-repository = "https://github.com/sentrix-labs/sentrix"
+repository.workspace = true
 
 [dependencies]
 sentrix-primitives = { path = "../sentrix-primitives" }

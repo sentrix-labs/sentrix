@@ -1,10 +1,10 @@
 [package]
 name = "sentrix-precompiles"
-version = "2.2.8"
-edition = "2024"
-license = "BUSL-1.1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Sentrix-specific EVM precompile addresses (staking, slashing, ...)"
-repository = "https://github.com/sentrix-labs/sentrix"
+repository.workspace = true
 
 [dependencies]
 alloy-primitives = "1.5"
