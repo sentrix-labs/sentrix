@@ -413,3 +413,54 @@ fn test_h3_pre_fork_supply_leak_documented() {
         "pre-fork: drop must exceed value + fee due to wei-side gas leak"
     );
 }
+
+/// #580 — recipient credit. The H3 supply test above pins the SENDER side
+/// of a value-bearing EVM tx; this pins the RECIPIENT side. Both fork
+/// gates active → recipient.balance must equal exactly the value sent
+/// (whole-sentri aligned, no rounding loss on the credit path).
+#[test]
+fn test_580_value_transfer_credits_recipient_exactly() {
+    let (_dir, _mdbx, mut bc) = setup_evm_active_chain_with_h3(true);
+    let (sk, pk) = deterministic_keypair(5);
+    let sender_str = format!("0x{}", hex::encode(evm_address(&pk).as_slice()));
+    bc.accounts.credit(&sender_str, 100_000_000_000).unwrap();
+
+    let value = 100_000_000u64; // 1 SRX
+    let recipient_str = format!("0x{}", hex::encode([0xab_u8; 20]));
+    let recipient_before = bc.accounts.get_balance(&recipient_str);
+
+    submit_evm_value_transfer(&mut bc, &sk, &pk, value, 0);
+
+    let recipient_after = bc.accounts.get_balance(&recipient_str);
+    assert_eq!(
+        recipient_after - recipient_before,
+        value,
+        "recipient credited exactly value (got {}, expected {})",
+        recipient_after - recipient_before,
+        value,
+    );
+}
+
+/// #580 — determinism. Two fresh chains applying the same value-bearing
+/// EVM tx must reach identical state_root. This is the consensus
+/// invariant the gate-removal hinges on; if it fails, value transfers
+/// would fork the chain on activation.
+#[test]
+fn test_580_value_transfer_state_root_deterministic_across_runs() {
+    let run = || -> String {
+        let (_dir, _mdbx, mut bc) = setup_evm_active_chain_with_h3(true);
+        let (sk, pk) = deterministic_keypair(6);
+        let sender_str = format!("0x{}", hex::encode(evm_address(&pk).as_slice()));
+        bc.accounts.credit(&sender_str, 100_000_000_000).unwrap();
+        submit_evm_value_transfer(&mut bc, &sk, &pk, 100_000_000, 0);
+        bc.trie_root_at(1).map(hex::encode).unwrap_or_default()
+    };
+
+    let r1 = run();
+    let r2 = run();
+    assert!(!r1.is_empty(), "trie root must be set after block apply");
+    assert_eq!(
+        r1, r2,
+        "state_root for value-transfer block must be deterministic across runs",
+    );
+}
