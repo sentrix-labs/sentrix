@@ -3,7 +3,7 @@ name = "sentrix-proto"
 # Independent semver — proto crate evolves on its own cadence, decoupled from
 # the chain workspace version. Pre-1.0 alpha while the schema is still
 # settling; bump to 1.0.0 when sentrix.v1 is stable.
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -15,8 +15,20 @@ readme = "README.md"
 [lib]
 path = "src/lib.rs"
 
+[features]
+# `transport` pulls tonic's hyper-based transport stack (for client + server
+# Channels). It depends on tokio-net / mio which DON'T compile on
+# `wasm32-unknown-unknown`, so it's opt-out via `default-features = false`
+# for browser consumers. Native (server, native client) keeps it on.
+default = ["transport"]
+transport = ["tonic/transport"]
+
 [dependencies]
-tonic = { version = "0.14", features = ["transport"] }
+# `default-features = false` so consumers control whether `transport` ships;
+# `codegen` is the only feature needed to materialise the generated types
+# and stubs (prost integration is provided by the separate `tonic-prost`
+# crate).
+tonic = { version = "0.14", default-features = false, features = ["codegen"] }
 prost = "0.14"
 tonic-prost = "0.14"
 
