@@ -27,10 +27,14 @@ pub use crate::tokenomics::{
     max_supply_srx,
 };
 
-// ── Other chain constants ────────────────────────────────
-pub const BLOCK_TIME_SECS: u64 = 1;
-pub const MAX_TX_PER_BLOCK: usize = 5000;
-pub const CHAIN_ID: u64 = 7119; // default; overridable via SENTRIX_CHAIN_ID env
+// Chain parameter consts + chain-id accessor live in `crate::chain_params`
+// now — re-export so existing `crate::blockchain::{BLOCK_TIME_SECS,
+// MAX_TX_PER_BLOCK, CHAIN_ID, HASH_VERSION, CHAIN_WINDOW_SIZE, get_chain_id}`
+// import paths still resolve unchanged.
+pub use crate::chain_params::{
+    BLOCK_TIME_SECS, CHAIN_ID, CHAIN_WINDOW_SIZE, HASH_VERSION, MAX_TX_PER_BLOCK,
+    get_chain_id,
+};
 
 // Fork-height accessors live in `crate::fork_heights` now — re-export so
 // every existing caller path (`crate::blockchain::get_*_height(...)`) keeps
@@ -43,22 +47,11 @@ pub use crate::fork_heights::{
     warn_if_jail_consensus_armed,
 };
 
-/// Read chain_id from SENTRIX_CHAIN_ID env var, fallback to 7119.
-pub fn get_chain_id() -> u64 {
-    std::env::var("SENTRIX_CHAIN_ID")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(CHAIN_ID)
-}
-// Hash algorithm version — reserved for future hash algorithm migration
-pub const HASH_VERSION: u8 = 1; // 1 = SHA-256 (current)
 
 // Mempool consts live in `crate::mempool` now (next to the only code
 // that uses them) — re-export so `crate::blockchain::MAX_MEMPOOL_SIZE`
 // etc. still resolve for any path that was relying on it.
 pub use crate::mempool::{MAX_MEMPOOL_PER_SENDER, MAX_MEMPOOL_SIZE, MEMPOOL_MAX_AGE_SECS};
-// Sliding window size — only last N blocks kept in RAM; older blocks stay in MDBX storage
-pub const CHAIN_WINDOW_SIZE: usize = 1_000;
 
 // Address validation + protocol-reserved address constants live in
 // `crate::address` now — re-export so the existing import paths
