@@ -81,11 +81,39 @@ impl Blockchain {
         }
         let mdbx = self.mdbx_storage.as_ref()?;
         let key = format!("block:{}", index);
-        let bytes = mdbx
-            .get(tables::TABLE_META, key.as_bytes())
-            .ok()
-            .flatten()?;
-        serde_json::from_slice(&bytes).ok()
+        // Pre-fix this chain was `mdbx.get(...).ok().flatten()?` +
+        // `serde_json::from_slice(&bytes).ok()` which lumped MDBX I/O
+        // errors and JSON decode failures into the same silent-None
+        // path as a legitimate miss. CR on PR #660 flagged that —
+        // an operator with a corrupt MDBX row or a binary skew (block
+        // JSON shape change without migration) had no observable
+        // signal. Keep the `Option<Block>` signature so the ~10
+        // callers (libp2p_node `GetBlocks`, explorer.rs, eth.rs) don't
+        // all need to change; surface errors via tracing::warn before
+        // collapsing to None.
+        let bytes = match mdbx.get(tables::TABLE_META, key.as_bytes()) {
+            Ok(Some(b)) => b,
+            Ok(None) => return None,
+            Err(e) => {
+                tracing::warn!(
+                    "get_block_any({}): MDBX read error on TABLE_META: {}",
+                    index,
+                    e
+                );
+                return None;
+            }
+        };
+        match serde_json::from_slice::<Block>(&bytes) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                tracing::warn!(
+                    "get_block_any({}): block JSON decode error: {}",
+                    index,
+                    e
+                );
+                None
+            }
+        }
     }
 
     /// Fork-aware block reward at the current height. Reads through the
