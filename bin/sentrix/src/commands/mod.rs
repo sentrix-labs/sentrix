@@ -10,5 +10,6 @@
 pub mod chain;
 pub mod misc;
 pub mod state;
+pub mod token;
 pub mod validator;
 pub mod wallet;
