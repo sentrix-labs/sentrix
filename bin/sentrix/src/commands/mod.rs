@@ -8,5 +8,6 @@
 //! directly. Everything else moves here, one logical group per file.
 
 pub mod chain;
+pub mod state;
 pub mod validator;
 pub mod wallet;
