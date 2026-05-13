@@ -295,20 +295,6 @@ impl Blockchain {
     // same crate, so all the original `bc.method(…)` call sites keep
     // resolving unchanged.
 
-    // ── Chain state queries ──────────────────────────────
-
-    // Height is derived from the last block's index, not chain.len()-1.
-    // The chain is a sliding window so chain.len() ≤ CHAIN_WINDOW_SIZE.
-    pub fn height(&self) -> u64 {
-        self.chain.last().map(|b| b.index).unwrap_or(0)
-    }
-
-    /// First block index currently held in the in-memory window.
-    /// Blocks with index < chain_window_start() are only in MDBX storage.
-    pub fn chain_window_start(&self) -> u64 {
-        self.chain.first().map(|b| b.index).unwrap_or(0)
-    }
-
     // ── Fork-height predicates ──────────────────────────────
     //
     // The substance + docs for each predicate live in
@@ -476,9 +462,11 @@ impl Blockchain {
     }
 
     // Tokenomics emission math — substance lives in `crate::tokenomics`.
-    // These delegators keep the existing `bc.max_supply_for(h)` /
-    // `bc.halving_interval_for(h)` / `Blockchain::halvings_at(h)` call
-    // sites working (sentrix-rpc, internal get_block_reward, tests).
+    // These delegators keep `bc.max_supply_for(h)` / `bc.halving_interval_for(h)`
+    // call sites working (sentrix-rpc). The previous `Blockchain::halvings_at`
+    // wrapper was removed when `get_block_reward` moved to
+    // `crate::blockchain_block_accessors`; tests in this file call
+    // `crate::tokenomics::halvings_at` directly now.
 
     pub fn max_supply_for(&self, height: u64) -> u64 {
         crate::tokenomics::max_supply_for(height)
@@ -486,10 +474,6 @@ impl Blockchain {
 
     pub fn halving_interval_for(&self, height: u64) -> u64 {
         crate::tokenomics::halving_interval_for(height)
-    }
-
-    fn halvings_at(height: u64) -> u32 {
-        crate::tokenomics::halvings_at(height)
     }
 
     /// Is the given height at or after the EVM fork?
@@ -567,84 +551,6 @@ impl Blockchain {
         );
 
         Ok(())
-    }
-
-    // Returns Err instead of panicking when chain is empty
-    pub fn latest_block(&self) -> SentrixResult<&Block> {
-        self.chain
-            .last()
-            .ok_or_else(|| SentrixError::NotFound("chain is empty".to_string()))
-    }
-
-    // Returns None for blocks outside the in-memory window — use storage for historical access
-    pub fn get_block(&self, index: u64) -> Option<&Block> {
-        let window_start = self.chain_window_start();
-        if index < window_start {
-            return None; // evicted from window — use storage for historical access
-        }
-        self.chain.get((index - window_start) as usize)
-    }
-
-    pub fn get_block_by_hash(&self, hash: &str) -> Option<&Block> {
-        self.chain.iter().find(|b| b.hash == hash)
-    }
-
-    /// Block lookup that transparently falls back to MDBX storage for
-    /// blocks evicted from the in-memory sliding window. Returns an
-    /// owned `Block` (cloning in the window case, fresh deserialise in
-    /// the storage case).
-    ///
-    /// Added for BACKLOG #14: the `GetBlocks` request-response handler
-    /// used to call `get_block` directly and silently dropped every
-    /// request for blocks older than `CHAIN_WINDOW_SIZE`, stranding
-    /// fresh or forensic-restored peers that needed a deep history
-    /// back-fill. Live validators keep full history in MDBX, so this
-    /// fallback just serves what already exists on disk.
-    ///
-    /// Returns None only when both the in-memory window misses AND the
-    /// MDBX store has no block at that index (i.e. the block was never
-    /// produced or the storage handle was never bound — fresh test
-    /// Blockchains with no `mdbx_storage` hit the latter).
-    pub fn get_block_any(&self, index: u64) -> Option<Block> {
-        if let Some(b) = self.get_block(index) {
-            return Some(b.clone());
-        }
-        let mdbx = self.mdbx_storage.as_ref()?;
-        let key = format!("block:{}", index);
-        let bytes = mdbx
-            .get(tables::TABLE_META, key.as_bytes())
-            .ok()
-            .flatten()?;
-        serde_json::from_slice(&bytes).ok()
-    }
-
-    // ── Supply & reward ──────────────────────────────────
-    pub fn get_block_reward(&self) -> u64 {
-        let h = self.height();
-        // Tokenomics-fork-aware: pre-fork uses MAX_SUPPLY (210M) +
-        // 42M halving interval; post-fork uses MAX_SUPPLY_V2 (315M) +
-        // 126M halving interval. See `is_tokenomics_v2_height` for
-        // activation semantics.
-        let max_supply = self.max_supply_for(h);
-        let remaining = max_supply.saturating_sub(self.total_minted);
-        if remaining == 0 {
-            return 0;
-        }
-
-        // P1: halving bit-shift overflow guard. `u64 >> 64+` is undefined
-        // in Rust (panics in debug, implementation-defined in release).
-        // `halvings_at` clamps to u32::MAX so checked_shr returns None at
-        // ≥64 and the reward is zero (matching "halved to nothing"
-        // semantics). Pre-fork: ~21×42M blocks (~28 years at 1s) to reach
-        // 64 halvings. Post-fork: ~21×126M blocks (~84 years).
-        let halvings: u32 = Self::halvings_at(h);
-        let reward = BLOCK_REWARD.checked_shr(halvings).unwrap_or(0);
-
-        if reward == 0 {
-            return 0;
-        }
-
-        reward.min(remaining)
     }
 
     // ── Chain validation ─────────────────────────────────
@@ -794,18 +700,18 @@ mod tests {
         }
 
         // Pre-fork (h=99): v1 schedule. h/42M = 0 halvings → reward = 1 SRX.
-        assert_eq!(Blockchain::halvings_at(99), 0);
+        assert_eq!(crate::tokenomics::halvings_at(99), 0);
 
         // At fork boundary (h=100): v2 schedule activates. (h - fork) / 126M
         // = 0 / 126M = 0 halvings. Smooth transition: reward stays 1 SRX.
-        assert_eq!(Blockchain::halvings_at(100), 0);
+        assert_eq!(crate::tokenomics::halvings_at(100), 0);
 
         // Post-fork era 0: still 0 halvings until fork+126M.
-        assert_eq!(Blockchain::halvings_at(100 + 126_000_000 - 1), 0);
+        assert_eq!(crate::tokenomics::halvings_at(100 + 126_000_000 - 1), 0);
 
         // Post-fork era 1: at fork+126M, halvings = 1. Reward halves to 0.5.
-        assert_eq!(Blockchain::halvings_at(100 + 126_000_000), 1);
-        assert_eq!(Blockchain::halvings_at(100 + 2 * 126_000_000), 2);
+        assert_eq!(crate::tokenomics::halvings_at(100 + 126_000_000), 1);
+        assert_eq!(crate::tokenomics::halvings_at(100 + 2 * 126_000_000), 2);
 
         // Cap dispatch: pre-fork queries return 210M, post-fork return 315M.
         // Need a Blockchain instance for the helper (it's &self).
