@@ -10,6 +10,7 @@ pub mod authority;
 pub mod block_executor;
 pub mod block_producer;
 pub mod blockchain;
+pub mod blockchain_block_accessors;
 pub mod blockchain_storage_io;
 pub mod blockchain_trie_ops;
 pub mod chain_params;
