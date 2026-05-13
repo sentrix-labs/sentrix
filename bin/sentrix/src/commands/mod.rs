@@ -8,6 +8,7 @@
 //! directly. Everything else moves here, one logical group per file.
 
 pub mod chain;
+pub mod init;
 pub mod mempool;
 pub mod misc;
 pub mod state;
