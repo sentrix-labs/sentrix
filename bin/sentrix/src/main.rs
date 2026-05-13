@@ -6,7 +6,7 @@ use libp2p::Multiaddr;
 use sentrix::api::events::EventBus;
 use sentrix::api::routes::{SharedState, create_router_with_bus};
 use sentrix::core::blockchain::{BLOCK_TIME_SECS, Blockchain};
-use sentrix::core::transaction::{PROTOCOL_TREASURY, TOKEN_OP_ADDRESS, TokenOp, Transaction};
+use sentrix::core::transaction::PROTOCOL_TREASURY;
 use sentrix::network::libp2p_node::{LibP2pNode, make_multiaddr};
 use sentrix::network::node::{DEFAULT_PORT, NodeEvent};
 use sentrix::storage::db::Storage;
@@ -731,7 +731,7 @@ async fn main() -> anyhow::Result<()> {
                 fee,
             } => {
                 let key = resolve_key(deployer_key, "SENTRIX_DEPLOYER_KEY", "deployer key")?;
-                cmd_token_deploy(&name, &symbol, decimals, supply, &key, fee)?;
+                commands::token::cmd_token_deploy(&name, &symbol, decimals, supply, &key, fee)?;
             }
             TokenCommands::Transfer {
                 contract,
@@ -741,7 +741,7 @@ async fn main() -> anyhow::Result<()> {
                 gas,
             } => {
                 let key = resolve_key(from_key, "SENTRIX_FROM_KEY", "from key")?;
-                cmd_token_transfer(&contract, &to, amount, &key, gas)?;
+                commands::token::cmd_token_transfer(&contract, &to, amount, &key, gas)?;
             }
             TokenCommands::Burn {
                 contract,
@@ -750,15 +750,15 @@ async fn main() -> anyhow::Result<()> {
                 gas,
             } => {
                 let key = resolve_key(from_key, "SENTRIX_FROM_KEY", "from key")?;
-                cmd_token_burn(&contract, amount, &key, gas)?;
+                commands::token::cmd_token_burn(&contract, amount, &key, gas)?;
             }
             TokenCommands::Balance { contract, address } => {
-                cmd_token_balance(&contract, &address)?;
+                commands::token::cmd_token_balance(&contract, &address)?;
             }
             TokenCommands::Info { contract } => {
-                cmd_token_info(&contract)?;
+                commands::token::cmd_token_info(&contract)?;
             }
-            TokenCommands::List => cmd_token_list()?,
+            TokenCommands::List => commands::token::cmd_token_list()?,
         },
 
         Commands::State { action } => match action {
@@ -3585,161 +3585,6 @@ fn cmd_mempool_stats() -> anyhow::Result<()> {
         .load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
     println!("Mempool size: {} transactions", bc.mempool_size());
-    Ok(())
-}
-
-// ── Token commands ───────────────────────────────────────
-
-fn cli_create_token_tx(
-    bc: &mut Blockchain,
-    wallet: &Wallet,
-    token_op: TokenOp,
-    fee: u64,
-) -> anyhow::Result<String> {
-    let sk = wallet.get_secret_key()?;
-    let pk = wallet.get_public_key()?;
-    let nonce = bc.accounts.get_nonce(&wallet.address);
-    let data = token_op.encode()?;
-    let tx = Transaction::new(
-        wallet.address.clone(),
-        TOKEN_OP_ADDRESS.to_string(),
-        0,
-        fee,
-        nonce,
-        data,
-        bc.chain_id,
-        &sk,
-        &pk,
-    )?;
-    let txid = tx.txid.clone();
-    bc.add_to_mempool(tx)?;
-    Ok(txid)
-}
-
-fn cmd_token_deploy(
-    name: &str,
-    symbol: &str,
-    decimals: u8,
-    supply: u64,
-    deployer_key: &str,
-    fee: u64,
-) -> anyhow::Result<()> {
-    let storage = Storage::open(&get_db_path())?;
-    let mut bc = storage
-        .load_blockchain()?
-        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
-    let wallet = Wallet::from_private_key(deployer_key)?;
-    let token_op = TokenOp::Deploy {
-        name: name.to_string(),
-        symbol: symbol.to_string(),
-        decimals,
-        supply,
-        max_supply: 0,
-    };
-    let txid = cli_create_token_tx(&mut bc, &wallet, token_op, fee)?;
-    storage.save_blockchain(&bc)?;
-    println!("Token deploy transaction submitted to mempool!");
-    println!("  TxID:     {}", txid);
-    println!("  Name:     {}", name);
-    println!("  Symbol:   {}", symbol);
-    println!("  Supply:   {}", supply);
-    println!("  Status:   pending (will execute when block is mined)");
-    Ok(())
-}
-
-fn cmd_token_transfer(
-    contract: &str,
-    to: &str,
-    amount: u64,
-    from_key: &str,
-    gas: u64,
-) -> anyhow::Result<()> {
-    let storage = Storage::open(&get_db_path())?;
-    let mut bc = storage
-        .load_blockchain()?
-        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
-    let wallet = Wallet::from_private_key(from_key)?;
-    let token_op = TokenOp::Transfer {
-        contract: contract.to_string(),
-        to: to.to_string(),
-        amount,
-    };
-    let txid = cli_create_token_tx(&mut bc, &wallet, token_op, gas)?;
-    storage.save_blockchain(&bc)?;
-    println!("Token transfer transaction submitted to mempool!");
-    println!("  TxID:     {}", txid);
-    println!("  From:     {}", wallet.address);
-    println!("  To:       {}", to);
-    println!("  Amount:   {}", amount);
-    println!("  Contract: {}", contract);
-    println!("  Status:   pending (will execute when block is mined)");
-    Ok(())
-}
-
-fn cmd_token_burn(contract: &str, amount: u64, from_key: &str, gas: u64) -> anyhow::Result<()> {
-    let storage = Storage::open(&get_db_path())?;
-    let mut bc = storage
-        .load_blockchain()?
-        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
-    let wallet = Wallet::from_private_key(from_key)?;
-    let token_op = TokenOp::Burn {
-        contract: contract.to_string(),
-        amount,
-    };
-    let txid = cli_create_token_tx(&mut bc, &wallet, token_op, gas)?;
-    storage.save_blockchain(&bc)?;
-    println!("Token burn transaction submitted to mempool!");
-    println!("  TxID:     {}", txid);
-    println!("  From:     {}", wallet.address);
-    println!("  Amount:   {} burned", amount);
-    println!("  Contract: {}", contract);
-    println!("  Status:   pending (will execute when block is mined)");
-    Ok(())
-}
-
-fn cmd_token_balance(contract: &str, address: &str) -> anyhow::Result<()> {
-    let storage = Storage::open(&get_db_path())?;
-    let bc = storage
-        .load_blockchain()?
-        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
-    let balance = bc.token_balance(contract, address);
-    println!("Token balance:");
-    println!("  Address:  {}", address);
-    println!("  Contract: {}", contract);
-    println!("  Balance:  {}", balance);
-    Ok(())
-}
-
-fn cmd_token_info(contract: &str) -> anyhow::Result<()> {
-    let storage = Storage::open(&get_db_path())?;
-    let bc = storage
-        .load_blockchain()?
-        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
-    let info = bc.token_info(contract)?;
-    println!("{}", serde_json::to_string_pretty(&info)?);
-    Ok(())
-}
-
-fn cmd_token_list() -> anyhow::Result<()> {
-    let storage = Storage::open(&get_db_path())?;
-    let bc = storage
-        .load_blockchain()?
-        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
-    let tokens = bc.list_tokens();
-    if tokens.is_empty() {
-        println!("No tokens deployed yet.");
-        return Ok(());
-    }
-    println!("Deployed tokens ({}):", tokens.len());
-    for token in &tokens {
-        println!(
-            "  [{}] {} ({}) — supply: {}",
-            token["contract_address"].as_str().unwrap_or(""),
-            token["name"].as_str().unwrap_or(""),
-            token["symbol"].as_str().unwrap_or(""),
-            token["total_supply"],
-        );
-    }
     Ok(())
 }
 
