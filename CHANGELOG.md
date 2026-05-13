@@ -8,7 +8,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > **Validator naming in incident narratives:** historical entries reference
 > individual mainnet validator hosts as `validator A/B/C/D`. The labels are
 > stable within this document; the underlying host-to-label mapping is
-> operator-private.
+> not published.
 
 ---
 
@@ -60,7 +60,7 @@ Replaces three `storage.iter(TABLE_LOGS)` full-table materialisations with curso
 
 Per-call cost drops from `O(total_logs_in_chain)` to `O(logs_in_requested_range)`.
 
-**Why it matters:** invisible while mainnet had ~100 EVM logs total. Would have quadratic-collapsed the validator the moment CoinBlast / DEX activity drove TABLE_LOGS into the millions. Audit at `audits/2026-05-11-postdeploy-audit.md` (operator-private) finding D-G3 documents the failure mode in detail.
+**Why it matters:** invisible while mainnet had ~100 EVM logs total. Would have quadratic-collapsed the validator the moment CoinBlast / DEX activity drove TABLE_LOGS into the millions. An internal Sentrix Labs post-deploy audit (finding `D-G3`) documents the failure mode in detail.
 
 **Storage API additions** (both in `MdbxStorage`):
 - `iter_range(table, prefix, |k, v| -> bool)` — walks contiguous run of keys starting with `prefix`. Callback returns `false` to break early.
