@@ -100,6 +100,17 @@ impl AuthorityManager {
         active
     }
 
+    /// Every validator the chain knows about — active + inactive (jailed,
+    /// removed, paused). Sorted by address for deterministic display
+    /// order. Used by operator-visibility surfaces (`sentrix validator
+    /// list`) where seeing the full set matters; consensus paths should
+    /// still call `active_validators` instead.
+    pub fn all_validators(&self) -> Vec<&Validator> {
+        let mut all: Vec<&Validator> = self.validators.values().collect();
+        all.sort_by(|a, b| a.address.cmp(&b.address));
+        all
+    }
+
     // Round-robin: which validator should produce block at height h?
     pub fn expected_validator(&self, block_height: u64) -> SentrixResult<&Validator> {
         let active = self.active_validators();
@@ -494,6 +505,33 @@ mod tests {
         let mgr = setup();
         assert_eq!(mgr.validator_count(), 3);
         assert_eq!(mgr.active_count(), 3);
+    }
+
+    // `all_validators()` must include toggled-off (inactive) validators
+    // so operator-facing surfaces like `sentrix validator list` don't
+    // hide jailed / paused entries. Pre-fix the command iterated only
+    // `active_validators()` even though the header counted both, so
+    // operators saw fewer rows than the printed totals.
+    #[test]
+    fn all_validators_includes_inactive() {
+        let mut mgr = setup_4();
+        let to_off = mgr.active_validators()[0].address.clone();
+        mgr.toggle_validator("admin", &to_off).unwrap();
+
+        assert_eq!(mgr.validator_count(), 4);
+        assert_eq!(mgr.active_count(), 3);
+
+        let all = mgr.all_validators();
+        assert_eq!(all.len(), 4, "all_validators must include the inactive one");
+        assert!(
+            all.iter().any(|v| v.address == to_off && !v.is_active),
+            "inactive validator must appear with is_active=false"
+        );
+        // Order is deterministic (address-sorted).
+        let mut sorted: Vec<&String> = all.iter().map(|v| &v.address).collect();
+        let original = sorted.clone();
+        sorted.sort();
+        assert_eq!(sorted, original, "all_validators must be address-sorted");
     }
 
     #[test]
