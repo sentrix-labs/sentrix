@@ -25,13 +25,14 @@ use sentrix_proto::sentrix_client::SentrixClient;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = SentrixClient::connect("https://grpc.sentrixchain.com").await?;
 
-    let resp = client
+    let block = client
         .get_block(sentrix_proto::GetBlockRequest {
             selector: Some(sentrix_proto::get_block_request::Selector::Latest(true)),
         })
-        .await?;
+        .await?
+        .into_inner();
 
-    println!("latest block: {:?}", resp.into_inner().block.unwrap().header);
+    println!("latest block: index={} timestamp={}", block.index, block.timestamp);
     Ok(())
 }
 ```
