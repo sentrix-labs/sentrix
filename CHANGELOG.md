@@ -8,7 +8,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > **Validator naming in incident narratives:** historical entries reference
 > individual mainnet validator hosts as `validator A/B/C/D`. The labels are
 > stable within this document; the underlying host-to-label mapping is
-> operator-private.
+> not published.
 
 ---
 
@@ -20,7 +20,7 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Workspace package inheritance — version / edition / license / repository now flow from `[workspace.package]` to every member crate. Future bumps = one-line edit in root `Cargo.toml`.
 - New workflows: `cargo-deny`, `dependency-review`, `stale`, `commitlint`, `docker-image` (publishes `ghcr.io/sentrix-labs/sentrix:<tag>` on every release tag), `reproducible-build-verify` (rebuild on a fresh runner + sha256 diff against published artifact — SLSA L4 gate), `fuzz` (5 cargo-fuzz targets on consensus surfaces, 3-min PR / 30-min nightly), `benchmark` (criterion regression detection on the trie hot path).
 - Branch-protection ruleset tightened: 6 required status checks (Test + cargo audit + gitleaks + cargo-llvm-cov + Dependency review + commitlint).
-- CodeRabbit per-path discipline: consensus crates get "suggestions only, no destructive rewrites, no auto-generated unit tests" rules to prevent another #597-class incident (CodeRabbit deleted SENTRIX_APPLY_PROFILE in a stray `create-unit-tests` request).
+- Automated-review per-path discipline: consensus crates get "suggestions only, no destructive rewrites, no auto-generated unit tests" rules to prevent another #597-class incident (an automated review tool deleted SENTRIX_APPLY_PROFILE in a stray `create-unit-tests` request).
 
 ## [2.2.4] — 2026-05-12 — fix: dispatch trie prune to background thread
 
@@ -60,7 +60,7 @@ Replaces three `storage.iter(TABLE_LOGS)` full-table materialisations with curso
 
 Per-call cost drops from `O(total_logs_in_chain)` to `O(logs_in_requested_range)`.
 
-**Why it matters:** invisible while mainnet had ~100 EVM logs total. Would have quadratic-collapsed the validator the moment CoinBlast / DEX activity drove TABLE_LOGS into the millions. Audit at `audits/2026-05-11-postdeploy-audit.md` (operator-private) finding D-G3 documents the failure mode in detail.
+**Why it matters:** invisible while mainnet had ~100 EVM logs total. Would have quadratic-collapsed the validator the moment CoinBlast / DEX activity drove TABLE_LOGS into the millions. An internal Sentrix Labs post-deploy audit (finding `D-G3`) documents the failure mode in detail.
 
 **Storage API additions** (both in `MdbxStorage`):
 - `iter_range(table, prefix, |k, v| -> bool)` — walks contiguous run of keys starting with `prefix`. Callback returns `false` to break early.

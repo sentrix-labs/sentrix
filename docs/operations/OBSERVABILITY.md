@@ -130,7 +130,7 @@ sudo systemctl start sentrix-watchdog.service
 cat /var/lib/sentrix-watchdog/state.json | jq
 
 # Trigger manual recovery (skip waiting for stall threshold)
-<operator-private>/scripts/recover-mainnet.sh
+./scripts/recover-mainnet.sh   # script location varies per operator setup
 
 # Disable temporarily (planned maintenance)
 sudo systemctl stop sentrix-watchdog.timer

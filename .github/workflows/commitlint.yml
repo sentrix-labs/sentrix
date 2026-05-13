@@ -1,8 +1,8 @@
 name: commitlint
 
-# Enforce Conventional Commits on PR commit messages (per CLAUDE.md
-# discipline). Catches accidental "wip", "test", "fixes" landing on main.
-# Runs on PR only — main is trusted (PRs already gated).
+# Enforce Conventional Commits on PR commit messages. Catches accidental
+# "wip", "test", "fixes" landing on main. Runs on PR only — main is
+# trusted (PRs already gated).
 
 on:
   pull_request:
