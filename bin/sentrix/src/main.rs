@@ -770,8 +770,8 @@ async fn main() -> anyhow::Result<()> {
         },
 
         Commands::Mempool { action } => match action {
-            MempoolCommands::Clear => cmd_mempool_clear()?,
-            MempoolCommands::Stats => cmd_mempool_stats()?,
+            MempoolCommands::Clear => commands::mempool::cmd_mempool_clear()?,
+            MempoolCommands::Stats => commands::mempool::cmd_mempool_stats()?,
         },
 
         Commands::Balance { address } => commands::misc::cmd_balance(&address)?,
@@ -3567,26 +3567,6 @@ async fn cmd_start(
     Ok(())
 }
 
-fn cmd_mempool_clear() -> anyhow::Result<()> {
-    let storage = Storage::open(&get_db_path())?;
-    let mut bc = storage
-        .load_blockchain()?
-        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
-    let old_size = bc.mempool_size();
-    bc.clear_mempool();
-    storage.save_blockchain(&bc)?;
-    println!("Mempool cleared: {} transactions removed", old_size);
-    Ok(())
-}
-
-fn cmd_mempool_stats() -> anyhow::Result<()> {
-    let storage = Storage::open(&get_db_path())?;
-    let bc = storage
-        .load_blockchain()?
-        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
-    println!("Mempool size: {} transactions", bc.mempool_size());
-    Ok(())
-}
 
 // ── Token commands ───────────────────────────────────────
 
