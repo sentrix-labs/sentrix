@@ -3471,8 +3471,8 @@ async fn cmd_start(
                     // collection so they can validate the prevotes they're
                     // receiving from us.
                     // v2.2.2: tightened 2s → 500ms after mainnet bt RCA 2026-05-11.
-                    // Round trace at h=1,690,662 (mainnet WAN vps3↔vps6) showed
-                    // a dropped proposal costing ~1.5s before the 2s retry
+                    // Round trace at h=1,690,662 (mainnet WAN between validator
+                    // hosts) showed a dropped proposal costing ~1.5s before the 2s retry
                     // fired; with ~30% of rounds hitting at least one drop on
                     // the public-IPv4 path, mean bt sat at 2.5 s/blk vs the
                     // sub-1s target. Tighter retry brings recovery inside one
