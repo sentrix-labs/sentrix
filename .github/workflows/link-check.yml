@@ -1,0 +1,39 @@
+name: link-check
+
+# Lychee scans every markdown link in this repo so dead URLs surface
+# before users hit them. Runs on PR + push to main + a weekly cron so
+# rot is caught even between releases.
+#
+# Non-blocking on findings (matches the gitleaks workflow's policy) —
+# branch protection gates that the scan ran; results appear in the
+# workflow summary so an operator can decide whether to fix or accept.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * 1'  # Mondays 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lychee:
+    name: lychee (link check)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Run lychee
+        uses: lycheeverse/lychee-action@8646ba30535128ac92d33dfc9133794bfdd9b411  # v2.8.0
+        with:
+          args: >-
+            --no-progress
+            --max-concurrency 8
+            --exclude-mail
+            --accept 200,206,403,429
+            '**/*.md'
+          fail: false
