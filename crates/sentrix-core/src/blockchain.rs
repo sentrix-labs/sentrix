@@ -661,44 +661,21 @@ impl Blockchain {
         }
     }
 
-    /// Tokenomics v2: max supply for a given height (fork-aware).
-    /// Pre-fork: 210M (`MAX_SUPPLY`). Post-fork: 315M (`MAX_SUPPLY_V2`).
+    // Tokenomics emission math — substance lives in `crate::tokenomics`.
+    // These delegators keep the existing `bc.max_supply_for(h)` /
+    // `bc.halving_interval_for(h)` / `Blockchain::halvings_at(h)` call
+    // sites working (sentrix-rpc, internal get_block_reward, tests).
+
     pub fn max_supply_for(&self, height: u64) -> u64 {
-        if Self::is_tokenomics_v2_height(height) {
-            MAX_SUPPLY_V2
-        } else {
-            MAX_SUPPLY
-        }
+        crate::tokenomics::max_supply_for(height)
     }
 
-    /// Tokenomics v2: halving interval for a given height (fork-aware).
-    /// Pre-fork: 42M blocks (1.33y). Post-fork: 126M blocks (4y BTC-parity).
     pub fn halving_interval_for(&self, height: u64) -> u64 {
-        if Self::is_tokenomics_v2_height(height) {
-            HALVING_INTERVAL_V2
-        } else {
-            HALVING_INTERVAL
-        }
+        crate::tokenomics::halving_interval_for(height)
     }
 
-    /// Halving count at a given height, fork-aware. Pre-fork blocks count
-    /// halvings against 42M intervals; post-fork blocks count against 126M
-    /// intervals **starting from the fork height** (so cumulative halvings
-    /// don't reset at fork moment, and no jump-up in reward).
-    ///
-    /// Assumes fork is activated while still within v1 era 0
-    /// (`fork_height < HALVING_INTERVAL` = 42M). At current mainnet height
-    /// ~600K, this is satisfied for any plausible fork target.
     fn halvings_at(height: u64) -> u32 {
-        let fork = get_tokenomics_v2_height();
-        if fork == u64::MAX || height < fork {
-            (height / HALVING_INTERVAL).try_into().unwrap_or(u32::MAX)
-        } else {
-            // Post-fork: count halvings from fork height using v2 interval.
-            // Pre-fork halvings = 0 by activation invariant (fork while in era 0).
-            let post = height.saturating_sub(fork);
-            (post / HALVING_INTERVAL_V2).try_into().unwrap_or(u32::MAX)
-        }
+        crate::tokenomics::halvings_at(height)
     }
 
     /// Is the given height at or after the EVM fork?
