@@ -23,7 +23,7 @@ pub fn cmd_wallet_generate(password: Option<String>) -> anyhow::Result<()> {
     println!("  Public key:  {}", wallet.public_key);
 
     if let Some(pwd) = password {
-        let pwd = reject_empty_cli_password(&pwd)?;
+        let pwd = reject_empty_cli_password(pwd)?;
         let keystore = Keystore::encrypt(&wallet, &pwd)?;
         let filename = format!("{}/{}.json", get_wallets_dir(), &wallet.address[2..10]);
         keystore.save(&filename)?;
@@ -43,7 +43,7 @@ pub fn cmd_wallet_import(private_key: &str, password: Option<String>) -> anyhow:
     println!("  Public key: {}", wallet.public_key);
 
     if let Some(pwd) = password {
-        let pwd = reject_empty_cli_password(&pwd)?;
+        let pwd = reject_empty_cli_password(pwd)?;
         let keystore = Keystore::encrypt(&wallet, &pwd)?;
         let filename = format!("{}/{}.json", get_wallets_dir(), &wallet.address[2..10]);
         keystore.save(&filename)?;
@@ -238,7 +238,16 @@ pub fn cmd_wallet_rekey(
 /// password wrapped in `Zeroizing` so the heap allocation is wiped on
 /// drop (matching how the rest of the binary handles secret material —
 /// `Wallet::secret_key_bytes`, the `SENTRIX_VALIDATOR_KEY` env var).
-fn reject_empty_cli_password(pw: &str) -> anyhow::Result<Zeroizing<String>> {
+///
+/// Takes the password by value (not `&str`) so the caller's untrimmed
+/// `String` allocation is moved into a `Zeroizing` envelope and wiped
+/// on drop too. A previous version took `&str` and the caller's heap
+/// buffer (from clap / env) survived unzeroed; CodeRabbit caught it on
+/// PR #646.
+fn reject_empty_cli_password(pw: String) -> anyhow::Result<Zeroizing<String>> {
+    // Wrap the caller's allocation first so it can't leak if the
+    // trim-clone below panics or bails early.
+    let pw = Zeroizing::new(pw);
     let trimmed = pw.trim();
     if trimmed.is_empty() {
         anyhow::bail!("--password cannot be empty or whitespace");
@@ -344,7 +353,7 @@ mod tests {
 
     #[test]
     fn reject_empty_cli_password_rejects_empty() {
-        assert!(reject_empty_cli_password("").is_err());
+        assert!(reject_empty_cli_password(String::new()).is_err());
     }
 
     #[test]
@@ -353,14 +362,14 @@ mod tests {
         // `--password "..."`; the prompt path trims so the CLI / env
         // paths must too, otherwise the same operator input produces
         // a different keystore depending on which entry point ran.
-        assert!(reject_empty_cli_password("   ").is_err());
-        assert!(reject_empty_cli_password("\n").is_err());
-        assert!(reject_empty_cli_password("\t\t").is_err());
+        assert!(reject_empty_cli_password("   ".into()).is_err());
+        assert!(reject_empty_cli_password("\n".into()).is_err());
+        assert!(reject_empty_cli_password("\t\t".into()).is_err());
     }
 
     #[test]
     fn reject_empty_cli_password_accepts_non_empty() {
-        let pw = reject_empty_cli_password("hunter2").unwrap();
+        let pw = reject_empty_cli_password("hunter2".into()).unwrap();
         assert_eq!(pw.as_str(), "hunter2");
     }
 
@@ -369,7 +378,7 @@ mod tests {
         // Caller uses the returned value, not the original arg — so a
         // password typed as " hunter2 " encrypts the keystore with
         // exactly "hunter2", same as the prompt path.
-        let pw = reject_empty_cli_password("  hunter2  ").unwrap();
+        let pw = reject_empty_cli_password("  hunter2  ".into()).unwrap();
         assert_eq!(pw.as_str(), "hunter2");
     }
 
@@ -466,7 +475,7 @@ mod tests {
         let _proof: Zeroizing<String> =
             resolve_password_named_confirmed(Some("x".into()), "_", "_").unwrap();
         let _proof: Zeroizing<String> = resolve_password(Some("x".into())).unwrap();
-        let _proof: Zeroizing<String> = reject_empty_cli_password("x").unwrap();
+        let _proof: Zeroizing<String> = reject_empty_cli_password("x".into()).unwrap();
         let _proof: Zeroizing<String> =
             validate_external_password("x".into(), "--password").unwrap();
     }

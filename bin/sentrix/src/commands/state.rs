@@ -105,7 +105,6 @@ pub fn cmd_state_import(input: &str, force: bool) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
 
     let count = bc.import_state(&snapshot)?;
-    storage.save_blockchain(&bc)?;
 
     // ROOT CAUSE fix (2026-04-21 deploy rollback post-mortem): import only
     // rewrites `accounts` and counters. The trie storage (trie_nodes +
@@ -121,7 +120,17 @@ pub fn cmd_state_import(input: &str, force: bool) -> anyhow::Result<()> {
     // freshly imported accounts on next startup. The backfill produces
     // the SAME root any validator would compute from the same account
     // set, restoring cross-validator determinism.
+    //
+    // RESET BEFORE SAVE (CR #648): the previous order was
+    // save_blockchain → reset_trie. If reset_trie failed mid-flight,
+    // the imported accounts were already persisted while the stale
+    // trie tables remained — exactly the unsafe mixed state this
+    // command exists to prevent. The non-zero-height guard above then
+    // blocks retry. Wiping the trie tables first means a failure here
+    // leaves a torn-but-detectable state (reset succeeded, no save)
+    // and the operator's retry path is clean.
     storage.reset_trie()?;
+    storage.save_blockchain(&bc)?;
 
     println!(
         "State imported: {} accounts from snapshot at height {}",
