@@ -7,11 +7,76 @@
 //! [`crate::commands::wallet`]: pure CLI handlers, no consensus path
 //! touched — the underlying mutations live in `sentrix-core::authority`
 //! and `sentrix-staking`.
+//!
+//! **Live-node guard.** Every mutating command calls
+//! [`ensure_chain_not_advancing`] before persisting. The pattern is
+//! load → mutate → re-check height → save; if the chain advanced between
+//! load and the pre-save check, a live node committed a block we didn't
+//! include and saving the in-memory snapshot would silently overwrite
+//! it. Operator must stop the validator service first, or set
+//! `SENTRIX_ALLOW_ONLINE_VALIDATOR_MUTATION=1` for a deliberate recovery
+//! scenario.
 
 use sentrix::storage::db::Storage;
 use sentrix::wallet::wallet::Wallet;
 
 use crate::get_db_path;
+
+/// Pre-save guard against silently overwriting blocks that a concurrently
+/// running validator committed between our `load_blockchain` and the
+/// upcoming `save_blockchain`. Reads the on-disk height a second time
+/// just before save; if it differs from the height we snapshotted at
+/// load, the node is producing blocks behind our back.
+///
+/// Why height-stability (not pidfile / MDBX exclusive lock):
+/// - Sentrix runs as both systemd unit and docker container in different
+///   deployment topologies; there's no single canonical pidfile location.
+/// - MDBX exclusive open would require changing `Storage::open`, which
+///   the live node also calls — they would race instead of fail cleanly.
+///   Height-stability is portable and only needs read access.
+///
+/// Caveat: there's still a small TOCTOU window between this check and
+/// `save_blockchain` — sub-block-time edits can slip through. But
+/// 90%+ of the risk (operator runs the command and the chain ticks
+/// during the mutation) is caught.
+fn ensure_chain_not_advancing(
+    cmd: &str,
+    storage: &Storage,
+    height_before: u64,
+) -> anyhow::Result<()> {
+    let height_after = storage.load_height().unwrap_or(height_before);
+    if height_after == height_before {
+        return Ok(());
+    }
+    if std::env::var("SENTRIX_ALLOW_ONLINE_VALIDATOR_MUTATION")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        tracing::warn!(
+            "{}: chain height advanced {} -> {} during command; proceeding because \
+             SENTRIX_ALLOW_ONLINE_VALIDATOR_MUTATION=1",
+            cmd,
+            height_before,
+            height_after
+        );
+        return Ok(());
+    }
+    anyhow::bail!(
+        "Refusing `{}` — chain height advanced from {} to {} during this command. \
+         A validator is producing blocks concurrently; persisting our in-memory \
+         snapshot would overwrite blocks {} through {}.\n\
+         \n\
+         Stop the validator service first (systemctl stop sentrix-node / docker \
+         stop sentrix-foundation / etc.) then re-run. If you understand the risk \
+         and want to force-persist anyway (rare recovery scenario), set \
+         `SENTRIX_ALLOW_ONLINE_VALIDATOR_MUTATION=1`.",
+        cmd,
+        height_before,
+        height_after,
+        height_before + 1,
+        height_after
+    );
+}
 
 pub fn cmd_validator_add(
     address: &str,
@@ -20,6 +85,7 @@ pub fn cmd_validator_add(
     admin_key: &str,
 ) -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
+    let height_before = storage.load_height().unwrap_or(0);
     let mut bc = storage
         .load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized. Run: sentrix init"))?;
@@ -32,6 +98,7 @@ pub fn cmd_validator_add(
         public_key.to_string(),
     )?;
 
+    ensure_chain_not_advancing("validator add", &storage, height_before)?;
     storage.save_blockchain(&bc)?;
     println!("Validator added: {} ({})", name, address);
     Ok(())
@@ -39,6 +106,7 @@ pub fn cmd_validator_add(
 
 pub fn cmd_validator_unjail(address: &str) -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
+    let height_before = storage.load_height().unwrap_or(0);
     let mut bc = storage
         .load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
@@ -47,6 +115,7 @@ pub fn cmd_validator_unjail(address: &str) -> anyhow::Result<()> {
     bc.stake_registry.unjail(address, height)?;
     bc.stake_registry.update_active_set();
 
+    ensure_chain_not_advancing("validator unjail", &storage, height_before)?;
     storage.save_blockchain(&bc)?;
     println!("Validator unjailed: {}", address);
     println!(
@@ -61,6 +130,7 @@ pub fn cmd_validator_force_unjail(
     acknowledged_phantom_stake: bool,
 ) -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
+    let height_before = storage.load_height().unwrap_or(0);
     let mut bc = storage
         .load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
@@ -94,6 +164,7 @@ pub fn cmd_validator_force_unjail(
         .get_validator(address)
         .map(|v| (v.self_stake, v.is_jailed, v.jail_until));
 
+    ensure_chain_not_advancing("validator force-unjail", &storage, height_before)?;
     storage.save_blockchain(&bc)?;
     println!("Validator force-unjailed: {}", address);
     if let (Some(b), Some(a)) = (before, after) {
@@ -139,6 +210,7 @@ pub fn cmd_validator_force_unjail(
 
 pub fn cmd_validator_transfer_admin(new_admin: &str, admin_key: &str) -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
+    let height_before = storage.load_height().unwrap_or(0);
     let mut bc = storage
         .load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized. Run: sentrix init"))?;
@@ -149,6 +221,7 @@ pub fn cmd_validator_transfer_admin(new_admin: &str, admin_key: &str) -> anyhow:
     bc.authority
         .transfer_admin(&admin_wallet.address, new_admin.to_string())?;
 
+    ensure_chain_not_advancing("validator transfer-admin", &storage, height_before)?;
     storage.save_blockchain(&bc)?;
     println!("Admin role transferred:");
     println!("  old: {}", old_admin);
@@ -172,12 +245,30 @@ pub fn cmd_validator_list() -> anyhow::Result<()> {
     // Walk every validator the chain knows about, not just the active
     // set — the header above already counts both, so the body has to
     // match or operators are missing inactive (jailed / paused) rows.
+    //
+    // Status precedence (most-actionable label wins):
+    //   1. JAILED   — stake_registry reports `is_jailed`. `unjail` /
+    //                 `force_unjail` mutate stake_registry, NOT
+    //                 authority.is_active, so a jailed validator was
+    //                 still printing ACTIVE here pre-fix.
+    //   2. INACTIVE — admin toggled the validator off via authority.
+    //   3. ACTIVE   — neither jailed nor toggled-off.
     for v in bc.authority.all_validators() {
+        let jailed = bc
+            .stake_registry
+            .get_validator(&v.address)
+            .map(|s| s.is_jailed)
+            .unwrap_or(false);
+        let status = if jailed {
+            "JAILED"
+        } else if v.is_active {
+            "ACTIVE"
+        } else {
+            "INACTIVE"
+        };
         println!(
             "  [{}] {} — {} blocks produced",
-            if v.is_active { "ACTIVE" } else { "INACTIVE" },
-            v.name,
-            v.blocks_produced
+            status, v.name, v.blocks_produced
         );
         println!("      Address: {}", v.address);
     }
@@ -186,12 +277,14 @@ pub fn cmd_validator_list() -> anyhow::Result<()> {
 
 pub fn cmd_validator_remove(address: &str, admin_key: &str) -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
+    let height_before = storage.load_height().unwrap_or(0);
     let mut bc = storage
         .load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
     let admin_wallet = Wallet::from_private_key(admin_key)?;
     bc.authority
         .remove_validator(&admin_wallet.address, address)?;
+    ensure_chain_not_advancing("validator remove", &storage, height_before)?;
     storage.save_blockchain(&bc)?;
     println!("Validator removed: {}", address);
     Ok(())
@@ -199,6 +292,7 @@ pub fn cmd_validator_remove(address: &str, admin_key: &str) -> anyhow::Result<()
 
 pub fn cmd_validator_toggle(address: &str, admin_key: &str) -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
+    let height_before = storage.load_height().unwrap_or(0);
     let mut bc = storage
         .load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
@@ -206,6 +300,7 @@ pub fn cmd_validator_toggle(address: &str, admin_key: &str) -> anyhow::Result<()
     let is_active = bc
         .authority
         .toggle_validator(&admin_wallet.address, address)?;
+    ensure_chain_not_advancing("validator toggle", &storage, height_before)?;
     storage.save_blockchain(&bc)?;
     let status = if is_active { "ACTIVE" } else { "INACTIVE" };
     println!("Validator {} toggled to: {}", address, status);
@@ -214,12 +309,14 @@ pub fn cmd_validator_toggle(address: &str, admin_key: &str) -> anyhow::Result<()
 
 pub fn cmd_validator_rename(address: &str, new_name: &str, admin_key: &str) -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
+    let height_before = storage.load_height().unwrap_or(0);
     let mut bc = storage
         .load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
     let admin_wallet = Wallet::from_private_key(admin_key)?;
     bc.authority
         .rename_validator(&admin_wallet.address, address, new_name.to_string())?;
+    ensure_chain_not_advancing("validator rename", &storage, height_before)?;
     storage.save_blockchain(&bc)?;
     println!("Validator {} renamed to: {}", address, new_name);
     Ok(())
