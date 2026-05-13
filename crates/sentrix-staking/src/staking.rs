@@ -19,7 +19,19 @@ pub const MAX_ACTIVE_VALIDATORS: usize = 21;
 /// BFT, so the validator loop must refuse to start Voyager mode until
 /// the active set meets this size.
 pub const MIN_BFT_VALIDATORS: usize = 4;
-pub const MAX_CANDIDATES: usize = 100;
+/// Maximum number of registered validator candidates the chain accepts.
+///
+/// Pre-2026-05-13: hard cap of 100. Lifted because the active set
+/// (`MAX_ACTIVE_VALIDATORS = 21`) already bounds BFT-relevant
+/// participation — extra candidates sit ranked by stake and rotate
+/// in only if an active spot frees up. The economic gate
+/// (`MIN_SELF_STAKE = 15_000 SRX`) is a much sharper anti-spam filter
+/// than a static numeric cap was.
+///
+/// Kept as a `pub const` (rather than removed) so callers that displayed
+/// "max candidates" don't break — they now see `usize::MAX` which UIs
+/// can render as "effectively unlimited".
+pub const MAX_CANDIDATES: usize = usize::MAX;
 pub const UNBONDING_PERIOD: u64 = 201_600; // 7 days at 3s blocks
 pub const MAX_DELEGATIONS_PER_ACCOUNT: usize = 10;
 pub const MAX_UNBONDING_ENTRIES: usize = 7;
@@ -140,12 +152,10 @@ impl StakeRegistry {
                 "validator already registered".into(),
             ));
         }
-        if self.validators.len() >= MAX_CANDIDATES {
-            return Err(SentrixError::InvalidTransaction(format!(
-                "max {} validator candidates reached",
-                MAX_CANDIDATES
-            )));
-        }
+        // No numeric cap on candidates as of 2026-05-13 — the active set
+        // (MAX_ACTIVE_VALIDATORS) already bounds BFT participation, and
+        // MIN_SELF_STAKE is the per-registration economic deposit. See
+        // the MAX_CANDIDATES doc for the rationale.
         if self_stake < MIN_SELF_STAKE {
             return Err(SentrixError::InvalidTransaction(format!(
                 "self-stake {} below minimum {}",
@@ -1997,17 +2007,24 @@ mod tests {
         assert!(reg.weighted_proposer(0, 0).is_none());
     }
 
+    /// Pre-2026-05-13 this asserted the 100-candidate cap kicked in.
+    /// Cap was lifted to `usize::MAX`; the test now verifies the
+    /// OPPOSITE — registering well past the historical cap still
+    /// succeeds. 200 candidates is plenty to prove unlimited; full
+    /// `usize::MAX` would be operationally silly to allocate in a
+    /// unit test.
     #[test]
-    fn test_max_candidates() {
+    fn test_registration_is_unlimited() {
         let mut reg = new_registry();
-        for i in 0..MAX_CANDIDATES {
+        for i in 0..200 {
             let addr = format!("0xval{:04}", i);
             register_val(&mut reg, &addr, MIN_SELF_STAKE);
         }
-        assert!(
-            reg.register_validator("0xoverflow", MIN_SELF_STAKE, 1000, 0)
-                .is_err()
-        );
+        // Historically the 101st registration would have errored; now it
+        // works and so does the 201st.
+        reg.register_validator("0xoverflow", MIN_SELF_STAKE, 1000, 0)
+            .expect("registration past the legacy MAX_CANDIDATES=100 cap must succeed");
+        assert_eq!(reg.validators.len(), 201);
     }
 
     #[test]
