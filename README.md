@@ -16,7 +16,6 @@ Real chain, real blocks, real code. Sentrix (SRX) is a purpose-built Layer-1 wit
 [![CI/CD](https://github.com/sentrix-labs/sentrix/actions/workflows/ci.yml/badge.svg)](https://github.com/sentrix-labs/sentrix/actions)
 [![Coverage](https://codecov.io/gh/sentrix-labs/sentrix/branch/main/graph/badge.svg)](https://codecov.io/gh/sentrix-labs/sentrix)
 [![Release](https://img.shields.io/github/v/release/sentrix-labs/sentrix)](https://github.com/sentrix-labs/sentrix/releases/latest)
-[![Tests](https://img.shields.io/badge/tests-700%2B%20passing-brightgreen)](https://github.com/sentrix-labs/sentrix/actions)
 [![Rust](https://img.shields.io/badge/rust-stable-orange)](Cargo.toml)
 [![Chain ID](https://img.shields.io/badge/chain%20ID-7119-blue)](docs/operations/NETWORKS.md)
 [![License](https://img.shields.io/badge/license-BUSL--1.1-purple)](LICENSE)
@@ -26,12 +25,11 @@ Real chain, real blocks, real code. Sentrix (SRX) is a purpose-built Layer-1 wit
 
 ## What is Sentrix?
 
-Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, instant BFT finality, and Ethereum-compatible tooling. MetaMask, ethers.js, viem, and web3.js connect natively to JSON-RPC. SDK developers can also use the Tonic-based **gRPC + gRPC-Web** transport for binary RPC and server-streaming block events.
+Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, instant BFT finality, and Ethereum-compatible tooling. MetaMask, ethers.js, viem, and web3.js connect natively to JSON-RPC. Power-user clients can use the Tonic-based **gRPC + gRPC-Web** transport for binary RPC and server-streaming block events.
 
-- **v2.1.86** — Same-bytes-replay exemption on the LastSignBytes guard: a legitimate rebroadcast (engine retransmitting an identical signed message on round timeout) no longer trips the strict `(h, r, step)` reject path, so the guard can stay enabled in production. Closes the rebroadcast halt class that kept `LAST_SIGN_GUARD_PATH` env-disabled across v2.1.84/v2.1.85. Builds on v2.1.85 BFT engine `last_signed` resume-at-correct-round + `HEIGHT_STALL_THRESHOLD_SEC` env override; v2.1.84 LastSignBytes / privval guard (Tendermint canonical pattern); v2.1.83 STRICT_JUSTIFICATION; v2.1.82 EXTENDED_TOUCH_LIST; v2.1.79 LivenessTracker idempotent recording. Release pipeline: SBOM (CycloneDX) + cosign keyless OIDC + SLSA Level 3 provenance on every tag.
-- Earlier line: v2.1.69-71 Tonic gRPC + gRPC-Web + StreamEvents push, v2.1.6x silent-thread-death defence-in-depth (cmd_tx/event_tx/bft_tx try_send + drop counters + watchdogs). Tokenomics v2 fork active since h=640800 (BTC-parity 4-year halving + 315M cap).
-- **700+ tests**, clippy clean, multiple internal Sentrix Labs / SentrisCloud audit rounds
-- **4 validators** running Voyager DPoS+BFT on mainnet
+- **Latest release: [v2.2.10](https://github.com/sentrix-labs/sentrix/releases/tag/v2.2.10)** — fully signed (CycloneDX SBOM + cosign keyless OIDC + SLSA Level 3 build provenance). `TRIE_PRUNE_EVERY` bumped to 5000 (~2-hour prune cadence). Workspace package inheritance via `version.workspace = true`. See [CHANGELOG.md](CHANGELOG.md) for the full ship line.
+- **4 validators** running Voyager DPoS + BFT on mainnet since 2026-04-25 (h=579,047). Tokenomics v2 fork active since h=640,800 (315M cap, 4-year halving).
+- **17 workspace crates + 2 binaries**, clippy clean, multiple internal Sentrix Labs / SentrisCloud audit rounds.
 
 ## Features
 
@@ -44,7 +42,7 @@ Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, i
 | **State** | Binary Sparse Merkle Tree (BLAKE3 + SHA-256) with proofs |
 | **Tokens** | SRC-20 native + SRC-20 (ERC-20 via EVM) |
 | **Network** | libp2p + Noise XX + Kademlia + Gossipsub |
-| **API** | REST (60+ endpoints) + JSON-RPC 2.0 (22 methods, incl. `sentrix_*` native namespace) + **Tonic gRPC + gRPC-Web** ([docs](docs/operations/GRPC.md)) — `GetBlock`, `GetBalance`, server-streaming `StreamEvents` |
+| **API** | REST + JSON-RPC 2.0 (incl. `sentrix_*` native namespace) + **Tonic gRPC + gRPC-Web** ([docs](docs/operations/GRPC.md)) — `GetBlock`, `GetBalance`, server-streaming `StreamEvents` |
 | **Explorer** | Built-in dark-themed block explorer |
 | **Wallet** | AES-256-GCM keystore (Argon2id KDF) |
 | **Fee model** | 50% burn / 50% validator (deflationary) |
@@ -58,7 +56,7 @@ cd sentrix
 cargo build --release
 
 # Test
-cargo test    # 700+ tests
+cargo test --workspace
 
 # Run a node
 SENTRIX_VALIDATOR_KEY=<key> ./target/release/sentrix start --port 30303
@@ -98,24 +96,29 @@ Full guide: [docs/operations/METAMASK.md](docs/operations/METAMASK.md). Deploy a
 
 ```
 crates/
-├── sentrix-primitives/   Block, Transaction, Account, Error types
-├── sentrix-codec/        Wire-format encoding helpers
-├── sentrix-wire/         Wire-protocol message types
-├── sentrix-wallet/       Keystore (Argon2id), wallet ops
-├── sentrix-trie/         Binary Sparse Merkle Tree (MDBX backend)
-├── sentrix-staking/      DPoS, epoch, slashing
-├── sentrix-evm/          revm 38 adapter
-├── sentrix-precompiles/  EVM precompiles
-├── sentrix-bft/          BFT consensus (timeout-only round advance)
-├── sentrix-core/         Blockchain, authority, executor, mempool, storage
-├── sentrix-network/      libp2p P2P, gossipsub, kademlia
-├── sentrix-rpc/          REST API, JSON-RPC, block explorer
-├── sentrix-rpc-types/    Shared RPC request/response types
-├── sentrix-storage/      MDBX wrapper + ChainStorage API
-bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
+├── sentrix-primitives/     Block, Transaction, Account, Error types
+├── sentrix-codec/          Wire-format encoding helpers
+├── sentrix-wire/           Wire-protocol message types
+├── sentrix-wallet/         Keystore (Argon2id), wallet ops
+├── sentrix-trie/           Binary Sparse Merkle Tree (MDBX backend)
+├── sentrix-staking/        DPoS, epoch, slashing
+├── sentrix-evm/            revm 38 adapter
+├── sentrix-precompiles/    EVM precompiles
+├── sentrix-bft/            BFT consensus (timeout-only round advance)
+├── sentrix-core/           Blockchain, authority, executor, mempool, storage
+├── sentrix-network/        libp2p P2P, gossipsub, kademlia
+├── sentrix-rpc/            REST API, JSON-RPC, block explorer
+├── sentrix-rpc-types/      Shared RPC request/response types
+├── sentrix-storage/        MDBX wrapper + ChainStorage API
+├── sentrix-proto/          Generated tonic types (published as `sentrix-proto` on crates.io)
+├── sentrix-grpc/           Server-side gRPC handlers (depends on sentrix-proto)
+└── sentrix-prom-exporter/  Prometheus metrics exporter
+bin/
+├── sentrix/                Node binary + CLI
+└── sentrix-faucet/         Testnet faucet HTTP service
 ```
 
-14 crates + 1 binary — node, API, explorer, CLI all ship as one executable.
+17 crates + 2 binaries. Node, API, explorer, CLI all ship as one executable.
 
 ## Network
 
@@ -142,13 +145,13 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 | Phase | Status | Focus |
 |-------|--------|-------|
 | **Pioneer** | Completed (mainnet h=0…579,046) | PoA round-robin, MDBX storage, 1s blocks, SRC-20 tokens — succeeded by Voyager 2026-04-25 |
-| **Voyager** | **Live on mainnet** | DPoS proposer rotation + BFT finality, EVM (revm 38) with `eth_call` against real chain state, `eth_sendRawTransaction`, L1 peer auto-discovery + connection-limits hardening, V4 reward distribution v2 (treasury escrow + ClaimRewards), runtime-aware Voyager dispatch, race-safe block sync, tokenomics v2 fork (315M cap + 4-year halving), `StakingOp::AddSelfStake` for non-phantom validator self-bond, side-car gRPC + gRPC-Web for SDK integration |
+| **Voyager** | **Live on mainnet** | DPoS proposer rotation + BFT finality, EVM (revm 38), V4 reward distribution v2 (treasury escrow + ClaimRewards), tokenomics v2 (315M cap + 4-year halving), `StakingOp::AddSelfStake`, side-car gRPC + gRPC-Web |
 | **Frontier** | Phase F-1 scaffold landed; F-2…F-10 planned | Parallel transaction execution, sub-1s block time, mainnet hard fork |
 | **Odyssey** | Future | Cross-chain bridges, mature ecosystem, light clients |
 
 ## Documentation
 
-- **[Whitepaper](https://github.com/sentrix-labs/whitepaper)** — foundational paper (vision, mission, design philosophy, protocol depth). Available in English and Bahasa Indonesia.
+- **[Whitepaper](https://github.com/sentrix-labs/whitepaper)** — foundational paper (vision, mission, design philosophy, protocol depth). English and Bahasa Indonesia.
 - [Architecture](docs/architecture/) — consensus, state, networking, transactions
 - [Operations](docs/operations/) — deployment, CI/CD, monitoring, validators
 - [Claim Rewards](docs/operations/CLAIM_REWARDS.md) — how validators + delegators claim escrowed rewards from `PROTOCOL_TREASURY`
@@ -158,9 +161,7 @@ bin/sentrix/              CLI binary (main.rs at bin/sentrix/src/main.rs)
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for vulnerability reporting.
-
-11 audit rounds completed (116 findings, 78+ fixed). Pentest 6/6 passed on live network.
+See [SECURITY.md](SECURITY.md) for vulnerability reporting. Internal audits live in [docs/security/](docs/security/) (V1 → V11 numbered code reviews, plus topical audits for BFT consensus, EVM integration, dependency supply chain, validator infra, tokenomics correctness). Pentest results: [docs/security/PENTEST_RESULTS.md](docs/security/PENTEST_RESULTS.md). No third-party audit firm has reviewed the chain code yet — pursued when budget + scope align, no committed timeline.
 
 ## Contributing
 
