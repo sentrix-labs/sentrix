@@ -138,4 +138,4 @@ Item 2 from production-readiness audit (libp2p resilience) requires:
 - Identify which sub-cause is actually firing
 - Then apply targeted quick-win fix (3-5 days total)
 
-Until then: **avoid stopping individual validators on mainnet.** Use halt-all + simultaneous-start for any operational change. This is the same advice from `feedback_mainnet_restart_cascade_jailing.md` memory + RECENTLY confirmed validity in 2026-04-27 mainnet test.
+Until then: **avoid stopping individual validators on mainnet.** Use halt-all + simultaneous-start for any operational change. This is the same advice from the operator restart-cascade runbook + RECENTLY confirmed validity in 2026-04-27 mainnet test.

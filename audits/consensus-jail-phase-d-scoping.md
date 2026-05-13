@@ -110,7 +110,7 @@ This adds a "required-presence" check. Phase D scope.
 ### Step 7: Mainnet activation
 - After testnet bake confirms stability
 - Set `JAIL_CONSENSUS_HEIGHT=<future_height>` on all 4 mainnet validator env files
-- Halt-all + simultaneous-start (per `feedback_mainnet_restart_cascade_jailing` rule)
+- Halt-all + simultaneous-start (per the operator restart-cascade runbook)
 - Chain crosses fork — consensus-jail active
 - Monitor observability metric (PR #350) — should show convergent counts post-fork
 

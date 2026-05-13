@@ -29,7 +29,7 @@ Check ONE:
 ### 🟠 High — adds
 - [ ] Regression test that **fails on main** and **passes with this change** — paste test name in PR body
 - [ ] Designed against documented invariant (link the audit/runbook/design doc)
-- [ ] Fresh-brain review by someone other than the author (per `feedback_consensus_change_review`)
+- [ ] Fresh-brain review by someone other than the author (per the consensus-change review checklist)
 - [ ] Single conceptual unit per PR (no bundling — bundling consensus changes burned us on v2.1.12 → 2026-04-25 livelock)
 
 ### 🔴 Critical — adds
