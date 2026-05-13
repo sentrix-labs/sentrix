@@ -67,3 +67,8 @@ zeroize = "1.7"
 # sentrix (lib) doesn't re-export sentrix-bft, so we pull it directly. Pinned
 # via path to keep the workspace at one copy.
 sentrix-bft = { path = "../../crates/sentrix-bft" }
+# 2026-05-13: hidden password prompt for `sentrix wallet ...` flows. The
+# previous stdin().read_line() echoed the password back to the terminal —
+# operator could see it on screen and in the scrollback. Apache-2.0; pure
+# Rust; no native deps.
+rpassword = "7"

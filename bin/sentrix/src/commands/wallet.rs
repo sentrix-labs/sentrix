@@ -22,6 +22,7 @@ pub fn cmd_wallet_generate(password: Option<String>) -> anyhow::Result<()> {
     println!("  Public key:  {}", wallet.public_key);
 
     if let Some(pwd) = password {
+        let pwd = reject_empty_cli_password(&pwd)?;
         let keystore = Keystore::encrypt(&wallet, &pwd)?;
         let filename = format!("{}/{}.json", get_wallets_dir(), &wallet.address[2..10]);
         keystore.save(&filename)?;
@@ -41,6 +42,7 @@ pub fn cmd_wallet_import(private_key: &str, password: Option<String>) -> anyhow:
     println!("  Public key: {}", wallet.public_key);
 
     if let Some(pwd) = password {
+        let pwd = reject_empty_cli_password(&pwd)?;
         let keystore = Keystore::encrypt(&wallet, &pwd)?;
         let filename = format!("{}/{}.json", get_wallets_dir(), &wallet.address[2..10]);
         keystore.save(&filename)?;
@@ -116,8 +118,12 @@ pub fn cmd_wallet_rekey(
         "SENTRIX_WALLET_OLD_PASSWORD",
         "Enter OLD wallet password",
     )?;
-    // New password: same resolution path + confirm-twice on prompt.
-    let new_pwd = resolve_password_named(
+    // New password: same resolution path, plus confirm-twice when the
+    // value comes from an interactive prompt. CLI / env paths still
+    // take the single value (no second source to confirm against);
+    // we trust the operator's automation when they explicitly pass
+    // the password non-interactively.
+    let new_pwd = resolve_password_named_confirmed(
         new_password,
         "SENTRIX_WALLET_NEW_PASSWORD",
         "Enter NEW wallet password",
@@ -174,8 +180,27 @@ pub fn cmd_wallet_rekey(
             .unwrap_or("keystore"),
         ts
     ));
+    // Two-step rename: backup the original, then install the new
+    // keystore. If the install fails, restore the backup so the
+    // canonical keystore path is never missing — otherwise the
+    // operator has to manually move `.bak-*` back before the
+    // validator can boot. The restore's own error is intentionally
+    // swallowed; we surface the original install failure since that
+    // is the actionable cause.
     std::fs::rename(path, &bak_path)?;
-    std::fs::rename(&tmp_path, path)?;
+    if let Err(install_err) = std::fs::rename(&tmp_path, path) {
+        let restored = std::fs::rename(&bak_path, path).is_ok();
+        let note = if restored {
+            "original keystore restored from backup"
+        } else {
+            "original keystore could NOT be restored — check .bak file manually"
+        };
+        anyhow::bail!(
+            "failed to install rekeyed keystore: {} ({})",
+            install_err,
+            note
+        );
+    }
 
     // Drop the in-memory plaintext as early as possible. `Wallet`
     // already zeroises its secret on drop, but explicit drop pins
@@ -204,6 +229,46 @@ pub fn cmd_wallet_rekey(
     Ok(())
 }
 
+/// Reject `--password ""` (and `"   "`, `"\n"`, …) from any subcommand
+/// that takes a CLI password directly (generate, import). All three
+/// entry points (CLI helper, env helper, prompt helper) normalise the
+/// same way — trim then reject empty — so the same operator input
+/// behaves identically regardless of source. Returns the trimmed
+/// password so the caller never accidentally encrypts with the
+/// untrimmed original.
+fn reject_empty_cli_password(pw: &str) -> anyhow::Result<String> {
+    let trimmed = pw.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("--password cannot be empty or whitespace");
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Hidden terminal prompt — characters are not echoed. Replaces the old
+/// `stdin().read_line()` path which printed the password to the screen
+/// (visible to anyone shoulder-surfing, and persisted in scrollback
+/// buffers / tmux capture / asciinema recordings).
+fn read_password_hidden(prompt: &str) -> anyhow::Result<String> {
+    let pw = rpassword::prompt_password(format!("{}: ", prompt))?;
+    let pw = pw.trim().to_string();
+    if pw.is_empty() {
+        anyhow::bail!("Password cannot be empty or whitespace");
+    }
+    Ok(pw)
+}
+
+/// Validate a CLI / env password value. Trims (matching the prompt
+/// path's behaviour) and rejects strictly empty + whitespace-only
+/// values from every source. Returns the trimmed password so all three
+/// helpers produce the same canonical form for `Keystore::encrypt`.
+fn validate_external_password(pw: String, source: &str) -> anyhow::Result<String> {
+    let pw = pw.trim().to_string();
+    if pw.is_empty() {
+        anyhow::bail!("Password from {} cannot be empty or whitespace", source);
+    }
+    Ok(pw)
+}
+
 /// Like [`resolve_password`] but with a named env var + custom prompt.
 /// Lets `rekey` distinguish OLD vs NEW password sources cleanly.
 pub fn resolve_password_named(
@@ -212,19 +277,40 @@ pub fn resolve_password_named(
     prompt: &str,
 ) -> anyhow::Result<String> {
     if let Some(pw) = cli_password {
-        return Ok(pw);
+        return validate_external_password(pw, "--password");
     }
     if let Ok(pw) = std::env::var(env_var) {
-        return Ok(pw);
+        return validate_external_password(pw, env_var);
     }
-    eprint!("{}: ", prompt);
-    let mut pw = String::new();
-    std::io::stdin().read_line(&mut pw)?;
-    let pw = pw.trim().to_string();
-    if pw.is_empty() {
-        anyhow::bail!("Password cannot be empty");
+    read_password_hidden(prompt)
+}
+
+/// Like [`resolve_password_named`] but confirms the value by prompting
+/// twice when it comes from an interactive prompt. Used for the NEW
+/// password on `wallet rekey` — a typo would otherwise re-encrypt the
+/// keystore to an unintended password (the self-decrypt check still
+/// passes because both encrypt and verify use the same mistyped value).
+///
+/// CLI / env paths are accepted as-is. They're non-interactive sources;
+/// there's no second value to compare against, and operators using
+/// automation have already committed to whatever they passed in.
+pub fn resolve_password_named_confirmed(
+    cli_password: Option<String>,
+    env_var: &str,
+    prompt: &str,
+) -> anyhow::Result<String> {
+    if let Some(pw) = cli_password {
+        return validate_external_password(pw, "--password");
     }
-    Ok(pw)
+    if let Ok(pw) = std::env::var(env_var) {
+        return validate_external_password(pw, env_var);
+    }
+    let first = read_password_hidden(prompt)?;
+    let second = read_password_hidden(&format!("{} (confirm)", prompt))?;
+    if first != second {
+        anyhow::bail!("Passwords did not match — aborting");
+    }
+    Ok(first)
 }
 
 /// Resolve password from CLI arg, `SENTRIX_WALLET_PASSWORD` env var, or
@@ -232,18 +318,127 @@ pub fn resolve_password_named(
 /// `main.rs::cmd_start` (validator boot keystore decrypt).
 pub fn resolve_password(cli_password: Option<String>) -> anyhow::Result<String> {
     if let Some(pw) = cli_password {
-        return Ok(pw);
+        return validate_external_password(pw, "--password");
     }
     if let Ok(pw) = std::env::var("SENTRIX_WALLET_PASSWORD") {
-        return Ok(pw);
+        return validate_external_password(pw, "SENTRIX_WALLET_PASSWORD");
     }
-    // Prompt on terminal
-    eprint!("Enter wallet password: ");
-    let mut pw = String::new();
-    std::io::stdin().read_line(&mut pw)?;
-    let pw = pw.trim().to_string();
-    if pw.is_empty() {
-        anyhow::bail!("Password cannot be empty");
+    read_password_hidden("Enter wallet password")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reject_empty_cli_password_rejects_empty() {
+        assert!(reject_empty_cli_password("").is_err());
     }
-    Ok(pw)
+
+    #[test]
+    fn reject_empty_cli_password_rejects_whitespace_only() {
+        // Operators sometimes paste a trailing space or newline into
+        // `--password "..."`; the prompt path trims so the CLI / env
+        // paths must too, otherwise the same operator input produces
+        // a different keystore depending on which entry point ran.
+        assert!(reject_empty_cli_password("   ").is_err());
+        assert!(reject_empty_cli_password("\n").is_err());
+        assert!(reject_empty_cli_password("\t\t").is_err());
+    }
+
+    #[test]
+    fn reject_empty_cli_password_accepts_non_empty() {
+        let pw = reject_empty_cli_password("hunter2").unwrap();
+        assert_eq!(pw, "hunter2");
+    }
+
+    #[test]
+    fn reject_empty_cli_password_returns_trimmed() {
+        // Caller uses the returned value, not the original arg — so a
+        // password typed as " hunter2 " encrypts the keystore with
+        // exactly "hunter2", same as the prompt path.
+        let pw = reject_empty_cli_password("  hunter2  ").unwrap();
+        assert_eq!(pw, "hunter2");
+    }
+
+    #[test]
+    fn validate_external_password_rejects_empty() {
+        let err = validate_external_password(String::new(), "--password").unwrap_err();
+        assert!(err.to_string().contains("--password"));
+    }
+
+    #[test]
+    fn validate_external_password_rejects_whitespace_only() {
+        let err = validate_external_password("   ".into(), "SENTRIX_WALLET_PASSWORD").unwrap_err();
+        assert!(err.to_string().contains("SENTRIX_WALLET_PASSWORD"));
+        assert!(err.to_string().contains("whitespace"));
+    }
+
+    #[test]
+    fn validate_external_password_returns_trimmed() {
+        let pw = validate_external_password("  hunter2  ".into(), "--password").unwrap();
+        assert_eq!(pw, "hunter2");
+    }
+
+    #[test]
+    fn validate_external_password_passes_non_empty() {
+        let pw = validate_external_password("hunter2".into(), "--password").unwrap();
+        assert_eq!(pw, "hunter2");
+    }
+
+    #[test]
+    fn resolve_password_named_cli_empty_string_rejected() {
+        // `--password ""` used to slip through the cli_password branch and
+        // encrypt the keystore with an empty string, silently bypassing the
+        // prompt path's own empty-check. Pin the rejection here.
+        let err = resolve_password_named(
+            Some(String::new()),
+            "SENTRIX_TEST_NEVER_SET_PWD",
+            "Enter test password",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("--password"));
+    }
+
+    #[test]
+    fn resolve_password_named_cli_non_empty_returned_verbatim() {
+        let pw = resolve_password_named(
+            Some("hunter2".into()),
+            "SENTRIX_TEST_NEVER_SET_PWD",
+            "Enter test password",
+        )
+        .unwrap();
+        assert_eq!(pw, "hunter2");
+    }
+
+    #[test]
+    fn resolve_password_cli_empty_string_rejected() {
+        let err = resolve_password(Some(String::new())).unwrap_err();
+        assert!(err.to_string().contains("--password"));
+    }
+
+    #[test]
+    fn resolve_password_named_confirmed_cli_path_skips_confirmation() {
+        // CLI / env are non-interactive sources — confirmation has no
+        // second value to check against, so we accept them as-is (only
+        // the empty-string guard applies).
+        let pw = resolve_password_named_confirmed(
+            Some("hunter2".into()),
+            "SENTRIX_TEST_NEVER_SET_PWD",
+            "Enter NEW wallet password",
+        )
+        .unwrap();
+        assert_eq!(pw, "hunter2");
+    }
+
+    #[test]
+    fn resolve_password_named_confirmed_cli_empty_rejected() {
+        let err = resolve_password_named_confirmed(
+            Some(String::new()),
+            "SENTRIX_TEST_NEVER_SET_PWD",
+            "Enter NEW wallet password",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("--password"));
+    }
 }
