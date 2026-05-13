@@ -76,40 +76,13 @@ pub const MEMPOOL_MAX_AGE_SECS: u64 = 3_600; // 1 hour
 // Sliding window size — only last N blocks kept in RAM; older blocks stay in MDBX storage
 pub const CHAIN_WINDOW_SIZE: usize = 1_000;
 
-// Sentrix addresses are 42-char hex strings (0x + 40 hex digits)
-pub fn is_valid_sentrix_address(addr: &str) -> bool {
-    addr.len() == 42 && addr.starts_with("0x") && addr[2..].chars().all(|c| c.is_ascii_hexdigit())
-}
-
-/// Canonical zero address. Used as a burn sink by AuthorityManager and
-/// as an invalid target for value-bearing token operations (M-02).
-pub const ZERO_ADDRESS: &str = "0x0000000000000000000000000000000000000000";
-
-/// Sentrix address that is valid-format AND not the burn sentinel. Use
-/// this for value-bearing targets (token transfers, mints, SRX sends)
-/// where the zero address would silently burn tokens without setting
-/// the protocol's `total_burned` counter. `is_valid_sentrix_address`
-/// alone remains the right guard for addresses that legitimately
-/// include the zero sentinel (e.g. internal tracking fields).
-pub fn is_spendable_sentrix_address(addr: &str) -> bool {
-    is_valid_sentrix_address(addr) && addr != ZERO_ADDRESS
-}
-
-// ── Genesis addresses ────────────────────────────────────
-// The canonical premine allocations now live in `genesis/mainnet.toml` and
-// are loaded via [`crate::Genesis`]. Only constants still referenced at
-// runtime (outside of initialisation) remain here.
-
-/// Ecosystem Fund receives the ecosystem share of token-operation fees
-/// (see `token_ops.rs`). Kept as a const because it is a compiled-in
-/// protocol parameter, not just a premine recipient.
-pub const ECOSYSTEM_FUND_ADDRESS: &str = "0xeb70fdefd00fdb768dec06c478f450c351499f14";
-
-/// Total premine across all genesis allocations, in sentri units. This is
-/// an economic invariant of the mainnet spec and is still exposed for
-/// tests / tooling. Drift against `genesis/mainnet.toml` is caught by
-/// `test_total_premine_matches_hardcoded` in `genesis.rs`.
-pub const TOTAL_PREMINE: u64 = 63_000_000 * 100_000_000;
+// Address validation + protocol-reserved address constants live in
+// `crate::address` now — re-export so the existing import paths
+// (`crate::blockchain::is_valid_sentrix_address` etc.) still resolve.
+pub use crate::address::{
+    ECOSYSTEM_FUND_ADDRESS, TOTAL_PREMINE, ZERO_ADDRESS,
+    is_spendable_sentrix_address, is_valid_sentrix_address,
+};
 
 // ── Blockchain struct ────────────────────────────────────
 // Chain field excluded from serde — blocks are saved individually in MDBX storage
