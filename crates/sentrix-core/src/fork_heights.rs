@@ -275,6 +275,135 @@ pub fn get_strict_justification_height() -> u64 {
         .unwrap_or(STRICT_JUSTIFICATION_HEIGHT_DEFAULT)
 }
 
+// ── Height predicates ────────────────────────────────────
+//
+// Every fork-height predicate has the same shape:
+//   `is_X_height(height) := fork != u64::MAX && height >= fork`
+// `u64::MAX` is the unset sentinel — the operator hasn't pinned an
+// activation height, so the gate stays closed (returns false) on
+// every block. Once the env var is set to a real height, the gate
+// flips open at that height.
+//
+// These used to live as `impl Blockchain { pub fn is_X_height(h) … }`
+// inside `blockchain.rs`. Moved here so the const + accessor + gate
+// for every fork sit in one module. `Blockchain` keeps thin
+// delegating methods for API compat.
+
+/// **Static / env-var only.** Returns true iff the operator set
+/// `VOYAGER_FORK_HEIGHT` to a real value AND the height is past it.
+/// Default `u64::MAX` makes this return false for all heights —
+/// the mainnet-safe-default-pre-activation pattern.
+///
+/// **Use [`crate::Blockchain::voyager_mode_for`] in consensus paths** —
+/// it ORs this check with the runtime persisted `voyager_activated`
+/// flag, so post-activation chains don't depend on the env var being
+/// set correctly. The 2026-04-26 mainnet stall happened because
+/// `validate_block` called this static function: env var was at
+/// default `u64::MAX`, function returned false, validate_block fell
+/// through to Pioneer auth check, which rejected legitimate Voyager
+/// skip-round blocks.
+pub fn is_voyager_height(height: u64) -> bool {
+    let fork = get_voyager_fork_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// V4 Step 3: is the given height at or after the reward-v2 fork?
+/// Post-fork: coinbase routes to `PROTOCOL_TREASURY`, `ClaimRewards`
+/// dispatch is consensus-valid.
+pub fn is_reward_v2_height(height: u64) -> bool {
+    let fork = get_reward_v2_fork_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// Tokenomics v2: is the given height at or after the fork?
+/// Post-fork: 126M halving + 315M cap (BTC-parity 4-year emission).
+pub fn is_tokenomics_v2_height(height: u64) -> bool {
+    let fork = get_tokenomics_v2_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// Phase B (consensus-jail): is the given height at or after the fork?
+/// Post-fork: `StakingOp::JailEvidenceBundle` dispatch is consensus-
+/// valid; epoch-boundary proposer includes evidence; peers verify and
+/// apply jail as on-chain state mutation. Pre-fork: legacy local
+/// check_liveness.
+pub fn is_jail_consensus_height(height: u64) -> bool {
+    let fork = get_jail_consensus_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// Is the given height at or after the NFT TokenOp fork?
+/// Post-fork: SRC-721 + SRC-1155 `TokenOp` variants dispatch.
+/// Pre-fork: dispatch rejects (wire format stable, storage layer +
+/// REST handlers gated until activation).
+pub fn is_nft_tokenop_height(height: u64) -> bool {
+    let fork = get_nft_tokenop_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// Is the given height at or after the `AddSelfStake` fork?
+/// Post-fork: `StakingOp::AddSelfStake` dispatch is consensus-valid —
+/// validators can bond real SRX into their own self_stake without
+/// phantom-mint. Pre-fork: dispatch rejects (wire format stable from
+/// the activation PR; gate keeps it dormant until operator rollout).
+pub fn is_add_self_stake_height(height: u64) -> bool {
+    let fork = get_add_self_stake_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// EVM value-transfer fork-gate. Pre-fork: Pass-2 EVM apply runs every
+/// tx with `TxEnv.value = U256::ZERO` (v2.1.48 behaviour, divergence-
+/// free). Post-fork: envelope value flows into revm — value-bearing
+/// EVM txs move SRX between accounts. See
+/// `EVM_VALUE_TRANSFER_HEIGHT_DEFAULT` for the regression context
+/// this gate manages.
+pub fn is_evm_value_transfer_height(height: u64) -> bool {
+    let fork = get_evm_value_transfer_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// Audit H3 — true once `EVM_GAS_FIX_HEIGHT` activates. Post-fork the
+/// write-path EVM tx skips revm's internal gas accounting
+/// (`cfg.disable_base_fee = true`); Pass-1 flat `tx.fee` is the entire
+/// fee, supply invariant restored.
+pub fn is_evm_gas_fix_height(height: u64) -> bool {
+    let fork = get_evm_gas_fix_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// state_root v2 drift fix — true once `EXTENDED_TOUCH_LIST_HEIGHT`
+/// activates. Post-fork `update_trie_for_block` augments the
+/// `tx.from`/`tx.to`/validator/+TREASURY touch list with every address
+/// in `accounts.touched_in_block` (every AccountDB mutator records
+/// there). Closes the EVM-CREATE'd contract + internal CALL trie-vs-
+/// AccountDB divergence class.
+pub fn is_extended_touch_list_height(height: u64) -> bool {
+    let fork = get_extended_touch_list_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// Strict justification verification — true once
+/// `STRICT_JUSTIFICATION_HEIGHT` activates. Post-fork every peer-
+/// supplied block runs full crypto verification on its justification
+/// precommits (recover signer, match against claimed validator, sum
+/// verified stake from receiver's own registry). Closes the chain-
+/// fork class identified by halt #9.
+pub fn is_strict_justification_height(height: u64) -> bool {
+    let fork = get_strict_justification_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// BFT-gate-relax: is the given height at or after the fork?
+/// Post-fork: validator-loop's P1 BFT safety gate uses
+/// `active >= ⌈2/3 × total⌉` instead of `active >= MIN_BFT_VALIDATORS
+/// (=4)`. For a 4-validator network: gate becomes 3 instead of 4
+/// (= 1-jail tolerance). See `audits/jail-cascade-root-cause-
+/// analysis.md`.
+pub fn is_bft_gate_relax_height(height: u64) -> bool {
+    let fork = get_bft_gate_relax_height();
+    fork != u64::MAX && height >= fork
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
