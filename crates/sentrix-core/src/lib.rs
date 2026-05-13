@@ -10,6 +10,7 @@ pub mod authority;
 pub mod block_executor;
 pub mod block_producer;
 pub mod blockchain;
+pub mod blockchain_storage_io;
 pub mod chain_params;
 pub mod chain_queries;
 pub(crate) mod divergence;
