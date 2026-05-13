@@ -1,0 +1,26 @@
+[package]
+name = "sentrix-proto"
+# Independent semver — proto crate evolves on its own cadence, decoupled from
+# the chain workspace version. Pre-1.0 alpha while the schema is still
+# settling; bump to 1.0.0 when sentrix.v1 is stable.
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Generated tonic + prost protobuf types for the Sentrix Chain gRPC service (sentrix.v1)"
+keywords = ["blockchain", "grpc", "tonic", "sentrix", "proto"]
+categories = ["api-bindings"]
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+tonic = { version = "0.14", features = ["transport"] }
+prost = "0.14"
+tonic-prost = "0.14"
+
+[build-dependencies]
+tonic-build = "0.14"
+prost-build = "0.14"
+tonic-prost-build = "0.14"
