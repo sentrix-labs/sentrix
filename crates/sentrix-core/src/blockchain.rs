@@ -53,11 +53,10 @@ pub fn get_chain_id() -> u64 {
 // Hash algorithm version — reserved for future hash algorithm migration
 pub const HASH_VERSION: u8 = 1; // 1 = SHA-256 (current)
 
-// Mempool size limits to prevent RAM exhaustion under high load
-pub const MAX_MEMPOOL_SIZE: usize = 10_000;
-pub const MAX_MEMPOOL_PER_SENDER: usize = 100;
-// Mempool TTL — transactions older than this are automatically pruned
-pub const MEMPOOL_MAX_AGE_SECS: u64 = 3_600; // 1 hour
+// Mempool consts live in `crate::mempool` now (next to the only code
+// that uses them) — re-export so `crate::blockchain::MAX_MEMPOOL_SIZE`
+// etc. still resolve for any path that was relying on it.
+pub use crate::mempool::{MAX_MEMPOOL_PER_SENDER, MAX_MEMPOOL_SIZE, MEMPOOL_MAX_AGE_SECS};
 // Sliding window size — only last N blocks kept in RAM; older blocks stay in MDBX storage
 pub const CHAIN_WINDOW_SIZE: usize = 1_000;
 

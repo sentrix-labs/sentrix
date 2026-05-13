@@ -1,11 +1,24 @@
 // mempool.rs - Sentrix — Mempool management
 
-use crate::blockchain::{
-    Blockchain, MAX_MEMPOOL_PER_SENDER, MAX_MEMPOOL_SIZE, MEMPOOL_MAX_AGE_SECS,
-    is_valid_sentrix_address,
-};
+use crate::blockchain::{Blockchain, is_valid_sentrix_address};
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::transaction::{TOKEN_OP_ADDRESS, TokenOp, Transaction};
+
+// ── Mempool capacity + lifetime limits ───────────────────────────────
+// These declarations used to live in `blockchain.rs`; they belong here
+// next to the code that enforces them (`add_to_mempool`, `prune_mempool`).
+// `blockchain.rs` re-exports the names so any caller path that read
+// `crate::blockchain::MAX_MEMPOOL_SIZE` still resolves.
+
+/// Total mempool size cap to prevent RAM exhaustion under high load.
+pub const MAX_MEMPOOL_SIZE: usize = 10_000;
+
+/// Per-sender cap. Protects against one sender flooding the mempool.
+pub const MAX_MEMPOOL_PER_SENDER: usize = 100;
+
+/// Mempool TTL — transactions older than this get pruned by the
+/// periodic `prune_mempool()` sweep.
+pub const MEMPOOL_MAX_AGE_SECS: u64 = 3_600; // 1 hour
 
 /// M-10: per-transaction size ceiling. Bounds worst-case memory impact
 /// of a single accepted mempool entry and caps block bloat from any
