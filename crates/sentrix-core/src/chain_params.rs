@@ -42,7 +42,9 @@ pub const HASH_VERSION: u8 = 1; // 1 = SHA-256 (current)
 /// Sliding-window size for the in-memory block cache. Only the last
 /// `CHAIN_WINDOW_SIZE` blocks live in RAM; older blocks remain on
 /// disk in MDBX and are read on demand through
-/// [`crate::blockchain::Blockchain::get_block`].
+/// [`crate::blockchain::Blockchain::get_block_any`] — the variant
+/// that falls back to MDBX storage when the in-memory window misses.
+/// Plain `get_block` returns `None` for out-of-window heights.
 pub const CHAIN_WINDOW_SIZE: usize = 1_000;
 
 #[cfg(test)]
