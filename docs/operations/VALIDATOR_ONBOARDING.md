@@ -23,7 +23,7 @@ fleet" required.
 ## Table of contents
 
 1. [What you're signing up for](#1-what-youre-signing-up-for)
-2. [How Sentrix compares](#2-how-sentrix-compares)
+2. [Active-set shape](#2-active-set-shape)
 3. [5-minute quickstart](#3-5-minute-quickstart)
 4. [Hardware + network](#4-hardware--network)
 5. [Get the binary](#5-get-the-binary)
@@ -73,21 +73,21 @@ stake-weighted active set finalises. Block time targets ~2.5 s.
 
 ---
 
-## 2. How Sentrix compares
+## 2. Active-set shape
 
-| Chain | Active | Candidate cap | Min self-stake | Permissionless |
-|---|---:|---:|---|:---:|
-| BNB Beacon | 21 | ~50 | 10,000 BNB | ❌ (whitelist) |
-| **Sentrix** | **21** | **unlimited** | **15,000 SRX** | ✅ |
-| Polkadot | ~300 | unlimited | 1,000 DOT (nomination) | ✅ |
-| Cosmos Hub | 180 | unlimited | 1 ATOM (effective) | ✅ |
-| Solana | ~1500 | unlimited | none | ✅ |
-| Avalanche | ~1000+ | unlimited | 2,000 AVAX | ✅ |
+| Parameter | Value |
+|---|---|
+| Active validators | 21 (top by total stake) |
+| Candidate set | unlimited (any address with ≥ `MIN_SELF_STAKE`) |
+| `MIN_SELF_STAKE` | 15,000 SRX |
+| Permissionless | yes — no whitelist, no admin approval |
+| Block time | ~2.5 s target |
+| Finality | BFT supermajority (2/3+1 stake-weighted) |
 
-Sentrix sits between BNB (tight active set, sub-second-ish BFT) and
-Cosmos (large flexible set, ~6 s blocks). The small active set is
-deliberate — BFT supermajority round-trips stay short, block time
-stays low.
+The small active set is deliberate — BFT supermajority round-trips
+stay short, block time stays low. Candidates beyond 21 sit on the
+bench ranked by stake and rotate in when an active spot frees up
+(jail, unbond, slash).
 
 ---
 
