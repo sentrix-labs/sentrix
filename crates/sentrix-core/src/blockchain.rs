@@ -1901,6 +1901,18 @@ impl Blockchain {
         const TRIE_PRUNE_EVERY: u64 = 5000;
         const TRIE_KEEP_VERSIONS: u64 = 1000;
 
+        // Archive-mode opt-in: when SENTRIX_DISABLE_TRIE_PRUNE=1 is set
+        // in the environment, the periodic prune skips entirely. The
+        // node accumulates every historical trie version, enabling
+        // state-at-past-block queries (eth_call at historic h, bridge
+        // proofs, explorer historical analytics). Off by default — only
+        // the dedicated archive fullnode sets this; validators stay
+        // lean. Predicate matches SENTRIX_APPLY_PROFILE's "1"-only
+        // semantics (block_executor.rs:635) for consistency.
+        if trie_prune_disabled() {
+            return;
+        }
+
         let height = self.height();
         if height == 0 || !height.is_multiple_of(TRIE_PRUNE_EVERY) {
             return;
@@ -1967,6 +1979,24 @@ impl Blockchain {
 /// — storage will continue to grow until the next successful prune, same
 /// as the existing "failed prune" semantics documented above.
 static PRUNE_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Archive-mode opt-in. When `SENTRIX_DISABLE_TRIE_PRUNE=1` is set in
+/// the environment, [`Blockchain::maybe_prune_trie`] returns immediately
+/// without scheduling a prune. The node accumulates every historical
+/// trie version forever — enabling state-at-past-block queries
+/// (`eth_call` at historic h, bridge proofs, explorer historical
+/// analytics) at the cost of unbounded disk growth.
+///
+/// Default off. Production validators leave this unset and keep the
+/// rolling `TRIE_KEEP_VERSIONS = 1000` window. Dedicated archive
+/// fullnodes set this flag.
+///
+/// Match SENTRIX_APPLY_PROFILE's strict "1" semantics (any other value
+/// is treated as off) so accidental `=true` / `=yes` / empty-value
+/// settings don't silently activate the archive path.
+fn trie_prune_disabled() -> bool {
+    std::env::var_os("SENTRIX_DISABLE_TRIE_PRUNE").is_some_and(|v| v == "1")
+}
 
 #[cfg(test)]
 mod tests {
@@ -2923,6 +2953,39 @@ mod tests {
 
         assert!(bc.add_to_mempool(tx).is_ok());
         assert_eq!(bc.mempool_size(), 1);
+    }
+
+    // ── Archive-mode opt-in: SENTRIX_DISABLE_TRIE_PRUNE ─────────
+
+    /// `trie_prune_disabled()` reflects exactly the env var state.
+    /// Default off; set "1" to enable; other values (empty, "true",
+    /// "yes", "0") all map to disabled-flag-off-prune-still-runs.
+    #[test]
+    fn test_trie_prune_disabled_env_var() {
+        let _guard = crate::test_util::env_test_lock();
+        unsafe {
+            // Baseline: unset → prune runs (predicate false).
+            std::env::remove_var("SENTRIX_DISABLE_TRIE_PRUNE");
+            assert!(!trie_prune_disabled());
+
+            // Strict "1" → archive mode on.
+            std::env::set_var("SENTRIX_DISABLE_TRIE_PRUNE", "1");
+            assert!(trie_prune_disabled());
+
+            // Anything else → treated as off (no silent activation).
+            std::env::set_var("SENTRIX_DISABLE_TRIE_PRUNE", "");
+            assert!(!trie_prune_disabled());
+            std::env::set_var("SENTRIX_DISABLE_TRIE_PRUNE", "true");
+            assert!(!trie_prune_disabled());
+            std::env::set_var("SENTRIX_DISABLE_TRIE_PRUNE", "yes");
+            assert!(!trie_prune_disabled());
+            std::env::set_var("SENTRIX_DISABLE_TRIE_PRUNE", "0");
+            assert!(!trie_prune_disabled());
+
+            // Cleanup so other tests see a clean env.
+            std::env::remove_var("SENTRIX_DISABLE_TRIE_PRUNE");
+            assert!(!trie_prune_disabled());
+        }
     }
 
     // ── M-04: Mempool TTL + prune_mempool() ─────────────
