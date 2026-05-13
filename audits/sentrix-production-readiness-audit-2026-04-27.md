@@ -143,7 +143,7 @@ Test count: 775 (post-PR #356). For consensus-critical code, this is light. Spec
 
 Validated multiple times today. Rolling restart triggers jail-cascade divergence. Halt-all + simultaneous-start avoids it.
 
-Memory: `feedback_mainnet_restart_cascade_jailing.md` updated.
+Captured in the operator restart-cascade runbook.
 
 ### 3.2 chain.db rsync recovery is well-tested
 

@@ -167,9 +167,9 @@ The remaining issues are architectural (libp2p resilience, state_root divergence
 4. Reward distribution flow audit
 5. Codebase areas 1-7 audit (this doc)
 
-**Memory updated:**
-- `feedback_no_vps_in_public.md` (existing)
-- `feedback_no_internal_filename_refs_in_public.md` (NEW)
+**Operator scrub policies updated:**
+- No VPS identifiers in public repos (existing rule)
+- No internal-filename refs in public repos (NEW rule)
 
 **Fresh-brain queue (next session):**
 1. Phase B/C/D consensus-jail (4-6 weeks)

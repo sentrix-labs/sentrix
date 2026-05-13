@@ -550,7 +550,7 @@ To activate (after testnet bake):
 ```
 # Set env on each validator's systemd EnvironmentFile, choose height in future
 BFT_GATE_RELAX_HEIGHT=<future_height>
-# Halt all + simultaneous-start (per feedback_mainnet_restart_cascade_jailing)
+# Halt all + simultaneous-start (per the operator restart-cascade runbook)
 ```
 
 Pre-activation chain operates exactly as v2.1.40. Post-activation: chain stays live with active=3 of total=4.
@@ -587,7 +587,7 @@ This release touches only `sentrix-rpc` (display layer). No changes to consensus
 
 ### Migration
 
-No operator action required. Hot-swap binary at any time. Restart causes ~10s downtime per validator if rolling, or ~5s halt-all+simultaneous-start (recommended per `feedback_mainnet_restart_cascade_jailing.md`).
+No operator action required. Hot-swap binary at any time. Restart causes ~10s downtime per validator if rolling, or ~5s halt-all+simultaneous-start (recommended per the operator restart-cascade runbook).
 
 ### Tests
 
@@ -622,7 +622,7 @@ No operator action required. Hot-swap binary at any time. Restart causes ~10s do
 1. ✅ Build v2.1.39 binary (docker bullseye, glibc 2.31 compat)
 2. ✅ Deploy to all 4 mainnet validators
 3. ✅ Set `TOKENOMICS_V2_HEIGHT=640800` in each validator's systemd EnvironmentFile (`/etc/sentrix/sentrix-node.env`, etc.)
-4. ✅ Halt all + simultaneous start (per `feedback_mainnet_restart_cascade_jailing.md` rule)
+4. ✅ Halt all + simultaneous start (per the operator restart-cascade runbook)
 5. ✅ Chain reached fork height h=640800 — consensus auto-switched
 6. ✅ Verified post-fork: `/chain/info` reports `max_supply_srx: 315000000`, `next_block_reward_srx: 1.0`
 
