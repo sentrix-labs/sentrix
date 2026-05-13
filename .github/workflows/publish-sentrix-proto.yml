@@ -1,0 +1,72 @@
+name: publish sentrix-proto to crates.io
+
+# Manual-trigger publish workflow for the standalone `sentrix-proto`
+# crate. Uses GitHub Actions OIDC + crates.io Trusted Publishing —
+# no long-lived API token stored as a repo secret.
+#
+# ## One-time setup (operator)
+#
+# Before the first run, register a Trusted Publisher on crates.io:
+#
+#   1. Go to https://crates.io/settings/tokens (logged in as crate owner)
+#   2. Click the "Trusted Publishers" tab
+#   3. Click "Add a publisher for a crate not yet published" (the
+#      sentrix-proto crate doesn't exist yet, so the "Pending Trusted
+#      Publishers" flow is the right one for the first publish)
+#   4. Fill in:
+#        Crate name:           sentrix-proto
+#        Repository owner:     sentrix-labs
+#        Repository name:      sentrix
+#        Workflow filename:    publish-sentrix-proto.yml
+#        Environment name:     (leave blank — no GH environment used)
+#   5. Save. The pending entry converts to a real Trusted Publisher
+#      automatically on the first successful publish from this workflow.
+#
+# After the first publish, no UI action is needed for subsequent
+# version bumps — bump `crates/sentrix-proto/Cargo.toml [package].version`,
+# then trigger this workflow via `gh workflow run`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Run --dry-run only (no actual publish)"
+        type: boolean
+        default: false
+
+permissions:
+  # Required for OIDC token exchange with crates.io
+  id-token: write
+  # Required so the rust-cache action can read repo contents
+  contents: read
+
+jobs:
+  publish:
+    name: cargo publish -p sentrix-proto
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+
+      - name: Mint short-lived crates.io token via OIDC
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Verify package
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p sentrix-proto --dry-run
+
+      - name: Publish
+        if: ${{ !inputs.dry-run }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p sentrix-proto
