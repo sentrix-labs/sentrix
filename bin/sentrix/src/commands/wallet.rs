@@ -12,6 +12,7 @@
 
 use sentrix::wallet::keystore::Keystore;
 use sentrix::wallet::wallet::Wallet;
+use zeroize::Zeroizing;
 
 use crate::get_wallets_dir;
 
@@ -234,23 +235,28 @@ pub fn cmd_wallet_rekey(
 /// entry points (CLI helper, env helper, prompt helper) normalise the
 /// same way — trim then reject empty — so the same operator input
 /// behaves identically regardless of source. Returns the trimmed
-/// password so the caller never accidentally encrypts with the
-/// untrimmed original.
-fn reject_empty_cli_password(pw: &str) -> anyhow::Result<String> {
+/// password wrapped in `Zeroizing` so the heap allocation is wiped on
+/// drop (matching how the rest of the binary handles secret material —
+/// `Wallet::secret_key_bytes`, the `SENTRIX_VALIDATOR_KEY` env var).
+fn reject_empty_cli_password(pw: &str) -> anyhow::Result<Zeroizing<String>> {
     let trimmed = pw.trim();
     if trimmed.is_empty() {
         anyhow::bail!("--password cannot be empty or whitespace");
     }
-    Ok(trimmed.to_string())
+    Ok(Zeroizing::new(trimmed.to_string()))
 }
 
 /// Hidden terminal prompt — characters are not echoed. Replaces the old
 /// `stdin().read_line()` path which printed the password to the screen
 /// (visible to anyone shoulder-surfing, and persisted in scrollback
 /// buffers / tmux capture / asciinema recordings).
-fn read_password_hidden(prompt: &str) -> anyhow::Result<String> {
-    let pw = rpassword::prompt_password(format!("{}: ", prompt))?;
-    let pw = pw.trim().to_string();
+fn read_password_hidden(prompt: &str) -> anyhow::Result<Zeroizing<String>> {
+    let raw = rpassword::prompt_password(format!("{}: ", prompt))?;
+    // Wrap immediately so the underlying allocation is wiped even if we
+    // bail out below; the trim/clone produces a fresh allocation we
+    // also keep inside `Zeroizing`.
+    let raw = Zeroizing::new(raw);
+    let pw = Zeroizing::new(raw.trim().to_string());
     if pw.is_empty() {
         anyhow::bail!("Password cannot be empty or whitespace");
     }
@@ -259,10 +265,14 @@ fn read_password_hidden(prompt: &str) -> anyhow::Result<String> {
 
 /// Validate a CLI / env password value. Trims (matching the prompt
 /// path's behaviour) and rejects strictly empty + whitespace-only
-/// values from every source. Returns the trimmed password so all three
-/// helpers produce the same canonical form for `Keystore::encrypt`.
-fn validate_external_password(pw: String, source: &str) -> anyhow::Result<String> {
-    let pw = pw.trim().to_string();
+/// values from every source. Returns the trimmed password wrapped in
+/// `Zeroizing` so all three helpers produce the same canonical form
+/// for `Keystore::encrypt` — and the heap buffer is wiped on drop.
+fn validate_external_password(pw: String, source: &str) -> anyhow::Result<Zeroizing<String>> {
+    // Wrap the raw source allocation BEFORE the trim/clone so it can't
+    // leak via reallocation if we bail.
+    let pw = Zeroizing::new(pw);
+    let pw = Zeroizing::new(pw.trim().to_string());
     if pw.is_empty() {
         anyhow::bail!("Password from {} cannot be empty or whitespace", source);
     }
@@ -275,7 +285,7 @@ pub fn resolve_password_named(
     cli_password: Option<String>,
     env_var: &str,
     prompt: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Zeroizing<String>> {
     if let Some(pw) = cli_password {
         return validate_external_password(pw, "--password");
     }
@@ -298,7 +308,7 @@ pub fn resolve_password_named_confirmed(
     cli_password: Option<String>,
     env_var: &str,
     prompt: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Zeroizing<String>> {
     if let Some(pw) = cli_password {
         return validate_external_password(pw, "--password");
     }
@@ -307,7 +317,7 @@ pub fn resolve_password_named_confirmed(
     }
     let first = read_password_hidden(prompt)?;
     let second = read_password_hidden(&format!("{} (confirm)", prompt))?;
-    if first != second {
+    if *first != *second {
         anyhow::bail!("Passwords did not match — aborting");
     }
     Ok(first)
@@ -315,8 +325,10 @@ pub fn resolve_password_named_confirmed(
 
 /// Resolve password from CLI arg, `SENTRIX_WALLET_PASSWORD` env var, or
 /// terminal prompt. Called from the wallet subcommands here and from
-/// `main.rs::cmd_start` (validator boot keystore decrypt).
-pub fn resolve_password(cli_password: Option<String>) -> anyhow::Result<String> {
+/// `main.rs::cmd_start` (validator boot keystore decrypt). Returns
+/// `Zeroizing<String>` so the heap buffer is wiped on drop — passwords
+/// MUST NOT linger in process memory or crash dumps.
+pub fn resolve_password(cli_password: Option<String>) -> anyhow::Result<Zeroizing<String>> {
     if let Some(pw) = cli_password {
         return validate_external_password(pw, "--password");
     }
@@ -349,7 +361,7 @@ mod tests {
     #[test]
     fn reject_empty_cli_password_accepts_non_empty() {
         let pw = reject_empty_cli_password("hunter2").unwrap();
-        assert_eq!(pw, "hunter2");
+        assert_eq!(pw.as_str(), "hunter2");
     }
 
     #[test]
@@ -358,7 +370,7 @@ mod tests {
         // password typed as " hunter2 " encrypts the keystore with
         // exactly "hunter2", same as the prompt path.
         let pw = reject_empty_cli_password("  hunter2  ").unwrap();
-        assert_eq!(pw, "hunter2");
+        assert_eq!(pw.as_str(), "hunter2");
     }
 
     #[test]
@@ -377,13 +389,13 @@ mod tests {
     #[test]
     fn validate_external_password_returns_trimmed() {
         let pw = validate_external_password("  hunter2  ".into(), "--password").unwrap();
-        assert_eq!(pw, "hunter2");
+        assert_eq!(pw.as_str(), "hunter2");
     }
 
     #[test]
     fn validate_external_password_passes_non_empty() {
         let pw = validate_external_password("hunter2".into(), "--password").unwrap();
-        assert_eq!(pw, "hunter2");
+        assert_eq!(pw.as_str(), "hunter2");
     }
 
     #[test]
@@ -408,7 +420,7 @@ mod tests {
             "Enter test password",
         )
         .unwrap();
-        assert_eq!(pw, "hunter2");
+        assert_eq!(pw.as_str(), "hunter2");
     }
 
     #[test]
@@ -428,7 +440,7 @@ mod tests {
             "Enter NEW wallet password",
         )
         .unwrap();
-        assert_eq!(pw, "hunter2");
+        assert_eq!(pw.as_str(), "hunter2");
     }
 
     #[test]
@@ -440,5 +452,22 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("--password"));
+    }
+
+    #[test]
+    fn resolved_passwords_are_zeroizing_wrapped() {
+        // Type-level proof — the return type *is* Zeroizing<String>, so a
+        // dropped password gets its heap buffer wiped (no recovery from
+        // process memory / crash dumps). If this compiles, the wrap is
+        // intact; if a future refactor drops the wrap by accident the
+        // assignment fails at build time.
+        let _proof: Zeroizing<String> =
+            resolve_password_named(Some("x".into()), "_", "_").unwrap();
+        let _proof: Zeroizing<String> =
+            resolve_password_named_confirmed(Some("x".into()), "_", "_").unwrap();
+        let _proof: Zeroizing<String> = resolve_password(Some("x".into())).unwrap();
+        let _proof: Zeroizing<String> = reject_empty_cli_password("x").unwrap();
+        let _proof: Zeroizing<String> =
+            validate_external_password("x".into(), "--password").unwrap();
     }
 }
