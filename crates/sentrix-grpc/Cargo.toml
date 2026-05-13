@@ -6,16 +6,19 @@ license.workspace = true
 description = "Tonic gRPC supplement transport for Sentrix Chain (parallel to JSON-RPC eth_*)"
 
 # 2026-05-05 v0.1 skeleton — handlers in src/lib.rs return tonic::Status::unimplemented
-# until main.rs integration lands. Reference design: internal Sentrix
-# Labs gRPC service-proto draft (2026-05-05).
+# until main.rs integration lands.
+#
+# 2026-05-13 — proto schema extracted to sibling crate `sentrix-proto`
+# (independent semver, published to crates.io for client consumption).
+# This crate now only carries server-side handlers + chain-state plumbing.
 
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
+sentrix-proto = { path = "../sentrix-proto" }
 tonic = { version = "0.14", features = ["transport"] }
 prost = "0.14"
-tonic-prost = "0.14"
 tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync"] }
 tokio-stream = "0.1"
 tracing = "0.1"
@@ -36,8 +39,3 @@ bincode = "1.3"
 # Forbid unsafe code in this crate. Tonic + prost generate code so we
 # rely on their respective safety reviews; our handwritten code path
 # stays unsafe-free.
-
-[build-dependencies]
-tonic-build = "0.14"
-prost-build = "0.14"
-tonic-prost-build = "0.14"

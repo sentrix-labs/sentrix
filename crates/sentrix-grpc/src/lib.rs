@@ -38,10 +38,11 @@
 // friction with every caller for no real benefit. Allow at crate root.
 #![allow(clippy::result_large_err)]
 
-/// Generated types and service stubs from `proto/sentrix.proto`.
-pub mod sentrix_proto {
-    tonic::include_proto!("sentrix.v1");
-}
+// Generated types + service stubs live in the sibling `sentrix-proto`
+// crate (independent semver, published to crates.io). Re-export so
+// downstream callers that previously did `use sentrix_grpc::sentrix_proto::…`
+// keep compiling without a churn-PR.
+pub use sentrix_proto;
 
 use sentrix_proto::sentrix_server::{Sentrix, SentrixServer};
 use sentrix_proto::*;
