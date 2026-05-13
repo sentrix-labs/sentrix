@@ -169,7 +169,10 @@ pub fn cmd_validator_list() -> anyhow::Result<()> {
         bc.authority.validator_count(),
         bc.authority.active_count()
     );
-    for v in bc.authority.active_validators() {
+    // Walk every validator the chain knows about, not just the active
+    // set — the header above already counts both, so the body has to
+    // match or operators are missing inactive (jailed / paused) rows.
+    for v in bc.authority.all_validators() {
         println!(
             "  [{}] {} — {} blocks produced",
             if v.is_active { "ACTIVE" } else { "INACTIVE" },
