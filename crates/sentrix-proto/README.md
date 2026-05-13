@@ -15,8 +15,18 @@ The chain server (`crates/sentrix-grpc` in [`sentrix-labs/sentrix`](https://gith
 
 ```toml
 [dependencies]
+# Native (server, native client) — default features include `transport`:
 sentrix-proto = "0.1"
+
+# Browser / WASM target — disable `transport` so tokio-net / mio aren't pulled in:
+# sentrix-proto = { version = "0.1", default-features = false }
 ```
+
+### Cargo features
+
+| Feature | Default | What it adds |
+|---|---|---|
+| `transport` | yes | Generated server stubs + tonic's hyper-based transport (Channel, Server). Needed for native server / native client; OFF for `wasm32`. |
 
 ```rust
 use sentrix_proto::sentrix_client::SentrixClient;
