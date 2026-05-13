@@ -57,7 +57,9 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
 
       - name: Mint short-lived crates.io token via OIDC
-        uses: rust-lang/crates-io-auth-action@v1
+        # Pinned to v1.0.4 commit SHA — verified via
+        # `gh api /repos/rust-lang/crates-io-auth-action/tags`
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
         id: auth
 
       - name: Verify package
