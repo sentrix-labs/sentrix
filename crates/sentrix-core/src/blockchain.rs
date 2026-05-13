@@ -17,32 +17,17 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-// ── Chain constants ──────────────────────────────────────
-//
-// Tokenomics v1 (genesis-active): 210M cap, 42M-block halving, 1 SRX initial.
-// Geometric series math: 1 × 42M × 2 = 84M from mining + 63M premine = 147M
-// asymptotic — caps unreachable, validator runway era 5 = year 6.66 (cliff).
-//
-// Tokenomics v2 (`TOKENOMICS_V2_HEIGHT` fork-gated): 315M cap, 126M-block
-// halving (BTC-parity 4-year), 1 SRX initial unchanged. Geometric: 1 × 126M
-// × 2 = 252M mining + 63M premine = 315M (cap reachable). Premine ratio
-// drops from 30% (intended) → 20% (mining-share dilution from 70% → 80%).
-// Validator runway era 5 = year ~20. See `feat: tokenomics v2 fork` PR.
-pub const MAX_SUPPLY: u64 = 210_000_000 * 100_000_000; // in sentri (v1)
-pub const MAX_SUPPLY_V2: u64 = 315_000_000 * 100_000_000; // in sentri (post-fork)
-pub const BLOCK_REWARD: u64 = 100_000_000; // 1 SRX in sentri (unchanged across forks)
+// ── Tokenomics constants ─────────────────────────────────
+// MAX_SUPPLY, MAX_SUPPLY_V2, BLOCK_REWARD, HALVING_INTERVAL,
+// HALVING_INTERVAL_V2, and the `max_supply_srx()` display helper
+// live in `crate::tokenomics` now — re-export so existing import
+// paths (`crate::blockchain::MAX_SUPPLY` etc.) still resolve.
+pub use crate::tokenomics::{
+    BLOCK_REWARD, HALVING_INTERVAL, HALVING_INTERVAL_V2, MAX_SUPPLY, MAX_SUPPLY_V2,
+    max_supply_srx,
+};
 
-/// MAX_SUPPLY expressed in whole SRX as f64 — used by RPC/explorer display paths.
-/// Single source of truth; do NOT redefine as a local constant.
-///
-/// **Pre-tokenomics-v2 callers:** prefer `Blockchain::max_supply_for(height)`
-/// at runtime to get the fork-aware value. This helper returns the v1 number
-/// for backward compatibility with non-`&self` paths only.
-pub fn max_supply_srx() -> f64 {
-    (MAX_SUPPLY / 100_000_000) as f64
-}
-pub const HALVING_INTERVAL: u64 = 42_000_000; // blocks (v1)
-pub const HALVING_INTERVAL_V2: u64 = 126_000_000; // blocks (post-fork, BTC-parity 4y at 1s blocks)
+// ── Other chain constants ────────────────────────────────
 pub const BLOCK_TIME_SECS: u64 = 1;
 pub const MAX_TX_PER_BLOCK: usize = 5000;
 pub const CHAIN_ID: u64 = 7119; // default; overridable via SENTRIX_CHAIN_ID env
