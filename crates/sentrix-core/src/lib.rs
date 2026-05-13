@@ -5,6 +5,7 @@
 
 #![allow(missing_docs)]
 
+pub mod address;
 pub mod authority;
 pub mod block_executor;
 pub mod block_producer;
