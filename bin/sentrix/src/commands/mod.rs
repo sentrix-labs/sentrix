@@ -7,4 +7,5 @@
 //! validator key load, which the orchestration layer needs to drive
 //! directly. Everything else moves here, one logical group per file.
 
+pub mod validator;
 pub mod wallet;
