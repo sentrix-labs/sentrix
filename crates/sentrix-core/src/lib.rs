@@ -19,6 +19,7 @@ pub mod parallel;
 pub mod state_export;
 pub mod storage;
 pub mod token_ops;
+pub mod tokenomics;
 pub mod vm;
 
 // Re-export key types at crate root for convenience
