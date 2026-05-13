@@ -55,6 +55,54 @@ pub fn max_supply_srx() -> f64 {
     (MAX_SUPPLY / 100_000_000) as f64
 }
 
+// ── Fork-aware emission math ─────────────────────────────
+//
+// These three functions used to live on `impl Blockchain` (max_supply_for,
+// halving_interval_for, halvings_at). Moved here so the tokenomics layer
+// owns its math; `Blockchain` keeps thin delegators for API compat with
+// existing instance-method callers.
+
+/// Max supply in sentri at the given height (fork-aware). Pre-fork:
+/// [`MAX_SUPPLY`] (210M). Post-fork: [`MAX_SUPPLY_V2`] (315M).
+pub fn max_supply_for(height: u64) -> u64 {
+    if crate::blockchain::Blockchain::is_tokenomics_v2_height(height) {
+        MAX_SUPPLY_V2
+    } else {
+        MAX_SUPPLY
+    }
+}
+
+/// Halving interval in blocks at the given height (fork-aware).
+/// Pre-fork: [`HALVING_INTERVAL`] (42M blocks ≈ 1.33y). Post-fork:
+/// [`HALVING_INTERVAL_V2`] (126M blocks ≈ 4y BTC-parity).
+pub fn halving_interval_for(height: u64) -> u64 {
+    if crate::blockchain::Blockchain::is_tokenomics_v2_height(height) {
+        HALVING_INTERVAL_V2
+    } else {
+        HALVING_INTERVAL
+    }
+}
+
+/// Halving count at a given height, fork-aware. Pre-fork blocks count
+/// halvings against 42M intervals; post-fork blocks count against 126M
+/// intervals **starting from the fork height** (so cumulative halvings
+/// don't reset at fork moment, and no jump-up in reward).
+///
+/// Assumes fork is activated while still within v1 era 0
+/// (`fork_height < HALVING_INTERVAL` = 42M). At current mainnet height
+/// ~600K, this is satisfied for any plausible fork target.
+pub fn halvings_at(height: u64) -> u32 {
+    let fork = crate::fork_heights::get_tokenomics_v2_height();
+    if fork == u64::MAX || height < fork {
+        (height / HALVING_INTERVAL).try_into().unwrap_or(u32::MAX)
+    } else {
+        // Post-fork: count halvings from fork height using v2 interval.
+        // Pre-fork halvings = 0 by activation invariant (fork while in era 0).
+        let post = height.saturating_sub(fork);
+        (post / HALVING_INTERVAL_V2).try_into().unwrap_or(u32::MAX)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
