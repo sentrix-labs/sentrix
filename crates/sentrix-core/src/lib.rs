@@ -11,6 +11,7 @@ pub mod block_executor;
 pub mod block_producer;
 pub mod blockchain;
 pub mod blockchain_storage_io;
+pub mod blockchain_trie_ops;
 pub mod chain_params;
 pub mod chain_queries;
 pub(crate) mod divergence;
