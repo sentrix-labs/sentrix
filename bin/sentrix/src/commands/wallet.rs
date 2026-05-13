@@ -22,7 +22,7 @@ pub fn cmd_wallet_generate(password: Option<String>) -> anyhow::Result<()> {
     println!("  Public key:  {}", wallet.public_key);
 
     if let Some(pwd) = password {
-        reject_empty_cli_password(&pwd)?;
+        let pwd = reject_empty_cli_password(&pwd)?;
         let keystore = Keystore::encrypt(&wallet, &pwd)?;
         let filename = format!("{}/{}.json", get_wallets_dir(), &wallet.address[2..10]);
         keystore.save(&filename)?;
@@ -42,7 +42,7 @@ pub fn cmd_wallet_import(private_key: &str, password: Option<String>) -> anyhow:
     println!("  Public key: {}", wallet.public_key);
 
     if let Some(pwd) = password {
-        reject_empty_cli_password(&pwd)?;
+        let pwd = reject_empty_cli_password(&pwd)?;
         let keystore = Keystore::encrypt(&wallet, &pwd)?;
         let filename = format!("{}/{}.json", get_wallets_dir(), &wallet.address[2..10]);
         keystore.save(&filename)?;
@@ -229,15 +229,19 @@ pub fn cmd_wallet_rekey(
     Ok(())
 }
 
-/// Reject `--password ""` from any subcommand that takes a CLI password
-/// directly (generate, import). Mirrors the same check inside
-/// `resolve_password*` so all entry points fail closed on the empty
-/// string instead of silently encrypting with it.
-fn reject_empty_cli_password(pw: &str) -> anyhow::Result<()> {
-    if pw.is_empty() {
-        anyhow::bail!("--password cannot be empty");
+/// Reject `--password ""` (and `"   "`, `"\n"`, …) from any subcommand
+/// that takes a CLI password directly (generate, import). All three
+/// entry points (CLI helper, env helper, prompt helper) normalise the
+/// same way — trim then reject empty — so the same operator input
+/// behaves identically regardless of source. Returns the trimmed
+/// password so the caller never accidentally encrypts with the
+/// untrimmed original.
+fn reject_empty_cli_password(pw: &str) -> anyhow::Result<String> {
+    let trimmed = pw.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("--password cannot be empty or whitespace");
     }
-    Ok(())
+    Ok(trimmed.to_string())
 }
 
 /// Hidden terminal prompt — characters are not echoed. Replaces the old
@@ -248,17 +252,19 @@ fn read_password_hidden(prompt: &str) -> anyhow::Result<String> {
     let pw = rpassword::prompt_password(format!("{}: ", prompt))?;
     let pw = pw.trim().to_string();
     if pw.is_empty() {
-        anyhow::bail!("Password cannot be empty");
+        anyhow::bail!("Password cannot be empty or whitespace");
     }
     Ok(pw)
 }
 
-/// Validate a CLI / env password value (trimmed). Same empty-string
-/// rejection rule the prompt path uses, applied to the non-interactive
-/// sources so they can't sneak through.
+/// Validate a CLI / env password value. Trims (matching the prompt
+/// path's behaviour) and rejects strictly empty + whitespace-only
+/// values from every source. Returns the trimmed password so all three
+/// helpers produce the same canonical form for `Keystore::encrypt`.
 fn validate_external_password(pw: String, source: &str) -> anyhow::Result<String> {
+    let pw = pw.trim().to_string();
     if pw.is_empty() {
-        anyhow::bail!("Password from {} cannot be empty", source);
+        anyhow::bail!("Password from {} cannot be empty or whitespace", source);
     }
     Ok(pw)
 }
@@ -330,14 +336,48 @@ mod tests {
     }
 
     #[test]
+    fn reject_empty_cli_password_rejects_whitespace_only() {
+        // Operators sometimes paste a trailing space or newline into
+        // `--password "..."`; the prompt path trims so the CLI / env
+        // paths must too, otherwise the same operator input produces
+        // a different keystore depending on which entry point ran.
+        assert!(reject_empty_cli_password("   ").is_err());
+        assert!(reject_empty_cli_password("\n").is_err());
+        assert!(reject_empty_cli_password("\t\t").is_err());
+    }
+
+    #[test]
     fn reject_empty_cli_password_accepts_non_empty() {
-        assert!(reject_empty_cli_password("hunter2").is_ok());
+        let pw = reject_empty_cli_password("hunter2").unwrap();
+        assert_eq!(pw, "hunter2");
+    }
+
+    #[test]
+    fn reject_empty_cli_password_returns_trimmed() {
+        // Caller uses the returned value, not the original arg — so a
+        // password typed as " hunter2 " encrypts the keystore with
+        // exactly "hunter2", same as the prompt path.
+        let pw = reject_empty_cli_password("  hunter2  ").unwrap();
+        assert_eq!(pw, "hunter2");
     }
 
     #[test]
     fn validate_external_password_rejects_empty() {
         let err = validate_external_password(String::new(), "--password").unwrap_err();
         assert!(err.to_string().contains("--password"));
+    }
+
+    #[test]
+    fn validate_external_password_rejects_whitespace_only() {
+        let err = validate_external_password("   ".into(), "SENTRIX_WALLET_PASSWORD").unwrap_err();
+        assert!(err.to_string().contains("SENTRIX_WALLET_PASSWORD"));
+        assert!(err.to_string().contains("whitespace"));
+    }
+
+    #[test]
+    fn validate_external_password_returns_trimmed() {
+        let pw = validate_external_password("  hunter2  ".into(), "--password").unwrap();
+        assert_eq!(pw, "hunter2");
     }
 
     #[test]
