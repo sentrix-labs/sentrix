@@ -62,9 +62,32 @@ pub fn cmd_genesis_wallets() -> anyhow::Result<()> {
         });
     }
 
-    // Save to file
+    // Save to file. On Unix, force mode 0600 (owner read+write only) so
+    // a permissive umask can't leak the file to other local users —
+    // genesis_wallets.json holds plaintext private keys. CR #652
+    // flagged the default-umask path as an information-disclosure risk;
+    // CR #654 added: `OpenOptionsExt::mode` only applies to NEW files,
+    // so an existing file with broader perms keeps them when truncated.
+    // Call `set_permissions` explicitly after open to tighten both paths.
     let output_path = format!("{}/genesis_wallets.json", get_wallets_dir());
-    std::fs::write(&output_path, serde_json::to_string_pretty(&wallets_json)?)?;
+    let body = serde_json::to_string_pretty(&wallets_json)?;
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&output_path)?;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        f.write_all(body.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&output_path, body)?;
+    }
     println!("Saved to: {}", output_path);
     println!("\nCRITICAL: Back up genesis_wallets.json offline immediately.");
     println!("          Delete from this machine after backup.");
@@ -97,12 +120,20 @@ pub fn cmd_history(address: &str) -> anyhow::Result<()> {
             "out" => "OUT   ",
             _ => "?     ",
         };
+        // Slice by chars, not bytes, to avoid panicking when the fallback
+        // "?" (or any short / non-ascii string) doesn't have 24 bytes —
+        // CR #652 flagged this as a 🔴 Critical panic risk. Truncating by
+        // char count is the right level of granularity: txids are hex
+        // (ASCII), so chars == bytes for the normal path.
+        let txid_short: String = tx["txid"]
+            .as_str()
+            .unwrap_or("?")
+            .chars()
+            .take(24)
+            .collect();
         println!(
             "  [{}] {} | {} sentri | Block #{}",
-            label,
-            &tx["txid"].as_str().unwrap_or("?")[..24],
-            tx["amount"],
-            tx["block_index"],
+            label, txid_short, tx["amount"], tx["block_index"],
         );
     }
     Ok(())
