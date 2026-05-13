@@ -6,18 +6,17 @@
 //! than catching it post-deploy when fullnode lag starts compounding.
 //!
 //! Bench groups:
-//!  - `insert_single`:  one insert into an empty trie. Measures the
-//!                      cold-cache path (every node traversal is a
-//!                      fresh MDBX read).
-//!  - `insert_batch_100`: 100 sequential inserts into a fresh trie.
-//!                      Measures the warm-cache path with the
-//!                      TrieCache populated mid-flight — the more
-//!                      realistic block-apply shape.
-//!  - `commit_100`:     same 100 inserts, then commit() the result.
-//!                      Catches regressions in the WriteBatch flush
-//!                      + state_root recomputation.
+//! - `insert_single`: one insert into an empty trie. Measures the
+//!   cold-cache path (every node traversal is a fresh MDBX read).
+//! - `insert_batch_100`: 100 sequential inserts into a fresh trie.
+//!   Measures the warm-cache path with the TrieCache populated
+//!   mid-flight — the more realistic block-apply shape.
+//! - `commit_100`: same 100 inserts, then commit() the result.
+//!   Catches regressions in the WriteBatch flush + state_root
+//!   recomputation.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 use sentrix_trie::{address::account_value_bytes, tree::SentrixTrie};
 use sentrix_storage::MdbxStorage;
 use std::sync::Arc;
