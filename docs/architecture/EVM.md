@@ -1,6 +1,6 @@
 # EVM (Voyager Phase 2b)
 
-Sentrix runs the Ethereum Virtual Machine via [revm](https://github.com/bluealloy/revm) 37. Solidity contracts deployed via Remix, Hardhat, or Foundry work natively. MetaMask connects via standard JSON-RPC.
+Sentrix runs the Ethereum Virtual Machine via [revm](https://github.com/bluealloy/revm) 38. Solidity contracts deployed via Remix, Hardhat, or Foundry work natively. MetaMask connects via standard JSON-RPC.
 
 ## Status
 
@@ -70,7 +70,7 @@ Base fee adjusts every block based on parent block utilization. Base fee is burn
 | `eth_getTransactionReceipt` | ✓ | |
 | `eth_syncing` | ✓ | Returns `false` (always synced) |
 | `eth_accounts` | ✓ | Returns `[]` (server doesn't hold keys) |
-| `web3_clientVersion` | ✓ | `Sentrix/1.2.0/Rust` |
+| `web3_clientVersion` | ✓ | `Sentrix/<workspace_version>/Rust` (current: `Sentrix/2.2.11/Rust`) |
 | `net_listening` | ✓ | `true` |
 
 ## Transaction Flow
