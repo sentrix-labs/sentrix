@@ -221,6 +221,11 @@ pub struct EventBus {
     pub token_ops: broadcast::Sender<TokenOpEvent>,
     pub staking_ops: broadcast::Sender<StakingOpEvent>,
     pub jail: broadcast::Sender<JailEvent>,
+    /// Full-Tx channel for the libp2p gossip pump. Subscribed by
+    /// `bin/sentrix/main.rs` after the LibP2pNode boots; every admit
+    /// to mempool fires here so peers learn about the tx and validators
+    /// can include it in a block. Closes sentrix#683.
+    pub tx_for_gossip: broadcast::Sender<sentrix_primitives::transaction::Transaction>,
 }
 
 impl EventBus {
@@ -241,6 +246,7 @@ impl EventBus {
             token_ops: broadcast::channel(capacity).0,
             staking_ops: broadcast::channel(capacity).0,
             jail: broadcast::channel(capacity).0,
+            tx_for_gossip: broadcast::channel(capacity).0,
         }
     }
 }
@@ -271,6 +277,13 @@ impl EventEmitter for EventBus {
                 format!("0x{}", txid)
             },
         });
+    }
+
+    fn emit_tx_for_gossip(&self, tx: &sentrix_primitives::transaction::Transaction) {
+        // No receivers (e.g. CLI tools without libp2p) → silent drop;
+        // gossip is best-effort. The libp2p task in main.rs subscribes
+        // and forwards to gossipsub `txs` topic.
+        let _ = self.tx_for_gossip.send(tx.clone());
     }
 
     fn emit_finalized(&self, height: u64, hash: &str, justification_signers: usize) {
@@ -358,6 +371,56 @@ mod tests {
         assert_eq!(event.gas_limit, "0x1c9c380"); // 30M
         assert!(event.state_root.starts_with("0x"));
         assert_eq!(event.state_root.len(), 66); // 0x + 64 hex
+    }
+
+    /// Pin the gossip-pump contract: `emit_tx_for_gossip` MUST publish
+    /// the full Tx body to `tx_for_gossip` so the libp2p subscriber in
+    /// bin/sentrix/main.rs can broadcast it. Closes #683.
+    #[test]
+    fn emit_tx_for_gossip_publishes_full_tx() {
+        let bus = EventBus::with_capacity(8);
+        let mut rx = bus.tx_for_gossip.subscribe();
+        let tx = sentrix_primitives::transaction::Transaction {
+            txid: "deadbeef".to_string(),
+            from_address: "0x0000000000000000000000000000000000000001".to_string(),
+            to_address: "0x0000000000000000000000000000000000000002".to_string(),
+            amount: 1_000_000,
+            fee: 10_000,
+            nonce: 7,
+            data: String::new(),
+            timestamp: 1_700_000_000,
+            chain_id: 7119,
+            signature: String::new(),
+            public_key: String::new(),
+        };
+        bus.emit_tx_for_gossip(&tx);
+        let received = rx.try_recv().expect("tx_for_gossip channel must have a tx");
+        assert_eq!(received.txid, "deadbeef");
+        assert_eq!(received.amount, 1_000_000);
+        assert_eq!(received.nonce, 7);
+    }
+
+    /// No subscribers must NOT cause emit to fail or block consensus.
+    #[test]
+    fn emit_tx_for_gossip_no_subscribers_is_silent() {
+        let bus = EventBus::with_capacity(8);
+        let tx = sentrix_primitives::transaction::Transaction {
+            txid: "noop".to_string(),
+            from_address: "0xfrom".to_string(),
+            to_address: "0xto".to_string(),
+            amount: 0,
+            fee: 0,
+            nonce: 0,
+            data: String::new(),
+            timestamp: 0,
+            chain_id: 7119,
+            signature: String::new(),
+            public_key: String::new(),
+        };
+        // No panic, no error — the broadcast::send Err(no receivers) is
+        // intentionally swallowed. Block production must never depend
+        // on subscriber liveness.
+        bus.emit_tx_for_gossip(&tx);
     }
 
     #[tokio::test]

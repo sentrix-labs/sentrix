@@ -188,8 +188,17 @@ impl Blockchain {
         // Notify WebSocket subscribers — eth_subscribe(newPendingTransactions).
         // Non-blocking, infallible by trait contract. Fires only on
         // successful admission; rejections above already returned Err.
+        // Also fires the full-tx gossip channel so the libp2p layer
+        // propagates the tx to peers — without this, public-RPC fullnode
+        // admits never reach validator mempools and txs only land when
+        // the round-robin upstream happens to be a validator. Closes #683.
         if let Some(emitter) = &self.event_emitter {
             emitter.emit_pending_tx(&txid_for_event);
+            // Re-borrow the just-inserted tx (pos is preserved because
+            // we just called insert(pos, tx)).
+            if let Some(admitted) = self.mempool.get(pos) {
+                emitter.emit_tx_for_gossip(admitted);
+            }
         }
 
         Ok(())

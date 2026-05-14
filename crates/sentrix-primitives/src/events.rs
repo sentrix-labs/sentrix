@@ -69,6 +69,14 @@ pub trait EventEmitter: Send + Sync + std::fmt::Debug {
     /// Note: this fires on admission only, NOT on rejection.
     fn emit_pending_tx(&self, _txid: &str) {}
 
+    /// Called when a tx is admitted to the mempool — the FULL tx body,
+    /// not just the txid. The libp2p layer subscribes to this and
+    /// gossipsub-broadcasts the tx to peers so it reaches validator
+    /// mempools (otherwise public-RPC fullnode admits would never
+    /// propagate, and txs would only land when the round-robin
+    /// upstream happens to be a validator). See sentrix#683.
+    fn emit_tx_for_gossip(&self, _tx: &crate::transaction::Transaction) {}
+
     /// Sentrix-native: called after every BFT-finalized block.
     /// Equivalent to `emit_new_head` on the protocol-native side
     /// but exposes finalization-specific fields (justification
