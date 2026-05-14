@@ -1,0 +1,5 @@
+# Default owner for everything in the repo. CODEOWNERS auto-requests
+# review from listed owners when a PR touches matching paths. Solo
+# operator pattern — everything owned by satyakwok until co-maintainers
+# join, at which point split per-area (e.g. consensus/ contracts/ etc.).
+* @satyakwok
