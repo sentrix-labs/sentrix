@@ -3372,6 +3372,33 @@ async fn cmd_start(
         let mut bc = shared.write().await;
         bc.set_event_emitter(Some(event_bus.clone()));
     }
+
+    // libp2p tx-gossip pump — every mempool admit fires
+    // emit_tx_for_gossip; this task forwards to the libp2p gossipsub
+    // `txs` topic so peer mempools see the tx. Without it,
+    // public-RPC fullnode admits never reach validator mempools and
+    // user txs only land when the round-robin upstream happens to be
+    // a validator. Closes #683.
+    let lp2p_for_tx_gossip = lp2p.clone();
+    let mut tx_gossip_rx = event_bus.tx_for_gossip.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match tx_gossip_rx.recv().await {
+                Ok(tx) => lp2p_for_tx_gossip.broadcast_transaction(&tx).await,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(
+                        "tx-gossip pump lagged {} txs — increase EventBus capacity",
+                        n
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    tracing::info!("tx-gossip pump shutting down (channel closed)");
+                    return;
+                }
+            }
+        }
+    });
+
     let app = create_router_with_bus(shared.clone(), event_bus.clone());
     let api_addr = format!("{}:{}", get_api_host(), get_api_port());
     println!("REST API listening on http://{}", api_addr);
