@@ -27,7 +27,7 @@ Real chain, real blocks, real code. Sentrix (SRX) is a purpose-built Layer-1 wit
 
 Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, instant BFT finality, and Ethereum-compatible tooling. MetaMask, ethers.js, viem, and web3.js connect natively to JSON-RPC. Power-user clients can use the Tonic-based **gRPC + gRPC-Web** transport for binary RPC and server-streaming block events.
 
-- **Latest release: [v2.2.10](https://github.com/sentrix-labs/sentrix/releases/tag/v2.2.10)** — fully signed (CycloneDX SBOM + cosign keyless OIDC + SLSA Level 3 build provenance). `TRIE_PRUNE_EVERY` bumped to 5000 (~2-hour prune cadence). Workspace package inheritance via `version.workspace = true`. See [CHANGELOG.md](CHANGELOG.md) for the full ship line.
+- **Latest release: [v2.2.11](https://github.com/sentrix-labs/sentrix/releases/tag/v2.2.11)** — production binary on mainnet + testnet since 2026-05-13 (EVM value-transfer + gas-fix forks activated at testnet h=3,787,000 / mainnet h=1,748,900). Fully signed (CycloneDX SBOM + cosign keyless OIDC + SLSA Level 3 build provenance). See [CHANGELOG.md](CHANGELOG.md) for the full ship line.
 - **4 validators** running Voyager DPoS + BFT on mainnet since 2026-04-25 (h=579,047). Tokenomics v2 fork active since h=640,800 (315M cap, 4-year halving).
 - **17 workspace crates + 2 binaries**, clippy clean, multiple internal Sentrix Labs / SentrisCloud audit rounds.
 
