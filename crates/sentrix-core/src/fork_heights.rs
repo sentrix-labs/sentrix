@@ -68,7 +68,7 @@ const ADD_SELF_STAKE_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// hash, validator-pair B the other. Until RCA lands
 /// (`audits/2026-05-01-evm-value-transfer-divergence.md`), default
 /// disabled mirrors v2.1.48 behaviour.
-const EVM_VALUE_TRANSFER_HEIGHT_DEFAULT: u64 = u64::MAX;
+const EVM_VALUE_TRANSFER_HEIGHT_DEFAULT: u64 = 1_748_900;
 
 /// Audit H3 (2026-05-06): EVM gas-fix fork. Pre-fork the write-path
 /// EVM tx flow let revm internally deduct `gas_used × INITIAL_BASE_FEE`
@@ -78,7 +78,7 @@ const EVM_VALUE_TRANSFER_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// `cfg.disable_base_fee = true` on the write path too so revm skips
 /// gas accounting; Pass-1 native `tx.fee` (10K sentri flat) is the
 /// entire fee.
-const EVM_GAS_FIX_HEIGHT_DEFAULT: u64 = u64::MAX;
+const EVM_GAS_FIX_HEIGHT_DEFAULT: u64 = 1_748_900;
 
 /// state_root v2 drift fix (2026-05-07, post-halt #5 RCA). Pre-fork
 /// `update_trie_for_block` derives `touched_addrs` from `tx.from` /
