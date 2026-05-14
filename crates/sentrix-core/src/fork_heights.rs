@@ -1,10 +1,14 @@
 //! Fork-height accessors — every consensus-fork activation height the
 //! chain reads at runtime, plus the corresponding compile-time defaults.
 //!
-//! All readers default to `u64::MAX` (disabled). Operators activate a
-//! fork by setting the matching env var to a real height in every
-//! validator's process environment and halt-all + simultaneous-start
-//! the cluster — a mismatch produces a state divergence.
+//! Each reader returns its compile-time default unless the matching env
+//! var is set, which then takes precedence. Most defaults remain
+//! `u64::MAX` (un-activated on mainnet); the ones that have already
+//! activated on mainnet carry the real activation height as their
+//! default so a fresh validator (or any rebuild from main) computes
+//! the same state_root past the fork. Mismatched activation heights
+//! across validators = state divergence — change defaults only after
+//! the fork has actually crossed on mainnet.
 //!
 //! Extracted from `crate::blockchain` so this concern lives in one
 //! file (was scattered across ~200 lines mid-blockchain.rs). The
@@ -12,7 +16,7 @@
 //! working bit-identically: `crate::blockchain::get_*_height` still
 //! resolves, no caller had to change.
 
-// ── Compile-time defaults (all u64::MAX = disabled, mainnet-safe) ──────
+// ── Compile-time defaults — see module doc for activated-vs-disabled. ──
 
 /// Voyager DPoS fork activation. Pre-fork: PoA round-robin. Post-fork:
 /// stake-weighted BFT consensus.
@@ -61,14 +65,14 @@ const ADD_SELF_STAKE_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// envelope value and moves SRX between EOAs / forwards into payable
 /// contract calls.
 ///
-/// Why gated: shipped flat in v2.1.49, recurred the eager-write
-/// divergence pattern that v2.1.48's FinalizeBlock guard was meant to
-/// close. Three 2v2 split-brain halts on 2026-05-01 (h≈1180k / 1191k /
-/// 1192k) all followed the same shape — validator-pair A finalizes one
-/// hash, validator-pair B the other. Until RCA lands
-/// (`audits/2026-05-01-evm-value-transfer-divergence.md`), default
-/// disabled mirrors v2.1.48 behaviour.
-const EVM_VALUE_TRANSFER_HEIGHT_DEFAULT: u64 = u64::MAX;
+/// **Activated on mainnet at h=1,748,900 on 2026-05-13** (closes #580
+/// after the 5-step audit in `audits/2026-05-01-evm-value-transfer-divergence.md`).
+/// The original 2026-05-01 split-brain halts were resolved by the
+/// state_root v2 + extended-touch + strict-justification forks shipped
+/// in v2.1.85+. Verified end-to-end via WSRX deposit at h=1,749,380.
+/// Constant must match the runtime fork — fresh validators that compute
+/// state_root past 1,748,900 with a different default would diverge.
+const EVM_VALUE_TRANSFER_HEIGHT_DEFAULT: u64 = 1_748_900;
 
 /// Audit H3 (2026-05-06): EVM gas-fix fork. Pre-fork the write-path
 /// EVM tx flow let revm internally deduct `gas_used × INITIAL_BASE_FEE`
@@ -78,7 +82,11 @@ const EVM_VALUE_TRANSFER_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// `cfg.disable_base_fee = true` on the write path too so revm skips
 /// gas accounting; Pass-1 native `tx.fee` (10K sentri flat) is the
 /// entire fee.
-const EVM_GAS_FIX_HEIGHT_DEFAULT: u64 = u64::MAX;
+///
+/// **Activated on mainnet at h=1,748,900 on 2026-05-13**, paired with
+/// `EVM_VALUE_TRANSFER_HEIGHT_DEFAULT`. Constraint: GAS_FIX ≤ VALUE_TRANSFER —
+/// equal-height activation is the safe form.
+const EVM_GAS_FIX_HEIGHT_DEFAULT: u64 = 1_748_900;
 
 /// state_root v2 drift fix (2026-05-07, post-halt #5 RCA). Pre-fork
 /// `update_trie_for_block` derives `touched_addrs` from `tx.from` /
@@ -231,11 +239,11 @@ pub fn get_add_self_stake_height() -> u64 {
         .unwrap_or(ADD_SELF_STAKE_HEIGHT_DEFAULT)
 }
 
-/// Read EVM value-transfer fork height from env, default `u64::MAX`
-/// (disabled — matches v2.1.48 EVM behaviour). Post-fork: Pass-2 EVM
-/// apply path threads envelope value into `TxEnv.value` so revm
-/// performs real SRX transfers between EOAs and into payable contract
-/// calls.
+/// Read EVM value-transfer fork height from env. Default 1,748,900 —
+/// matches mainnet activation 2026-05-13 so a fresh validator built
+/// from main computes consistent state_root past the fork. Post-fork
+/// the Pass-2 EVM apply path threads envelope value into `TxEnv.value`.
+/// Testnet sets `EVM_VALUE_TRANSFER_HEIGHT=3409717` in env to override.
 pub fn get_evm_value_transfer_height() -> u64 {
     std::env::var("EVM_VALUE_TRANSFER_HEIGHT")
         .ok()
@@ -244,9 +252,9 @@ pub fn get_evm_value_transfer_height() -> u64 {
 }
 
 /// Audit H3 EVM gas-fix fork height (2026-05-06). See
-/// [`EVM_GAS_FIX_HEIGHT_DEFAULT`] for context. Default `u64::MAX`
-/// keeps the supply-leak behaviour unchanged on chains that haven't
-/// activated.
+/// [`EVM_GAS_FIX_HEIGHT_DEFAULT`] for context. Default 1,748,900 —
+/// matches mainnet activation 2026-05-13 (paired with VALUE_TRANSFER).
+/// Testnet sets `EVM_GAS_FIX_HEIGHT=3787000` in env to override.
 pub fn get_evm_gas_fix_height() -> u64 {
     std::env::var("EVM_GAS_FIX_HEIGHT")
         .ok()
