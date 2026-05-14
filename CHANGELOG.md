@@ -14,13 +14,59 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### CI / supply chain (2026-05-12 batch)
+## [2.2.11] — 2026-05-13 — EVM value-transfer + gas-fix forks activated; Blockchain refactor pass
 
-- Release pipeline fully signed end-to-end: binary + CycloneDX SBOM + cosign keyless signatures (binary + SBOM) + SLSA Level 3 build provenance via `actions/attest-build-provenance@v2`. First fully-signed release: `v2.2.9`.
-- Workspace package inheritance — version / edition / license / repository now flow from `[workspace.package]` to every member crate. Future bumps = one-line edit in root `Cargo.toml`.
-- New workflows: `cargo-deny`, `dependency-review`, `stale`, `commitlint`, `docker-image` (publishes `ghcr.io/sentrix-labs/sentrix:<tag>` on every release tag), `reproducible-build-verify` (rebuild on a fresh runner + sha256 diff against published artifact — SLSA L4 gate), `fuzz` (5 cargo-fuzz targets on consensus surfaces, 3-min PR / 30-min nightly), `benchmark` (criterion regression detection on the trie hot path).
-- Branch-protection ruleset tightened: 6 required status checks (Test + cargo audit + gitleaks + cargo-llvm-cov + Dependency review + commitlint).
-- Automated-review per-path discipline: consensus crates get "suggestions only, no destructive rewrites, no auto-generated unit tests" rules to prevent another #597-class incident (an automated review tool deleted SENTRIX_APPLY_PROFILE in a stray `create-unit-tests` request).
+**Production binary on mainnet + testnet since 2026-05-13.**
+
+- **EVM value-transfer + gas-fix activation** (PR #676). Fork heights baked into constants — testnet h=3,787,000, mainnet h=1,748,900. Closes the EVM value-passing bug class tracked in [#580](https://github.com/sentrix-labs/sentrix/issues/580): `payable` internal-call chains with `msg.value > 0` no longer revert at 27k gas on `eth_sendRawTransaction`. `WSRX9.deposit{value: amount}()` verified working end-to-end on both nets. Bridge fresh-user wrap path no longer needs the workaround.
+- **Recipient-credit + state_root determinism regressions** (PR #674). Test harness pins the post-#580 invariants: recipient balance credited atomically with sender debit; state_root identical across all validators after EVM value transfer.
+- **`sentrix-proto` extracted to its own crate, published on crates.io** (PR #667 + #670). Generated tonic types + `.proto` schema now live in their own crate (`sentrix-proto = "0.1.1"`); transport is feature-gated for wasm32 support. Indexer + sentrix-grpc-wasm + future SDK consumers depend on the crate, not on a vendored copy.
+- **`MAX_CANDIDATES` cap removed** (PR #664). Validator registration is no longer capped at a hardcoded N — DPoS active-set selection handles candidate set sizing organically.
+- **Blockchain god-object refactor** — split into focused modules without behaviour change: trie ops (PR #661), MDBX storage I/O (PR #659), block accessors (PR #660), fork-activation mutations (PR #663), tokenomics emission math (PR #658), fork-predicate substance (PR #657), chain_params (PR #640), tokenomics constants (PR #638), address validation + protocol constants (PR #636), DivergenceTracker (PR #635), fork-height accessors (PR #634), mempool size/age consts (PR #639).
+- **`bin/sentrix` subcommand split** — `cmd_init`, `mempool`, `token`, `wallet`, `chain`, `validator`, `state`, `balance`/`history`/`genesis-wallets` extracted from `main.rs` into `commands/<area>.rs` (PRs #641, #643, #644, #647, #648, #649, #651, #652, #656). `validator` cmds also gain a live-node guard + jailed status in `list` (PR #647).
+- **Wallet hardening** — password `String`s zeroed on drop (PR #646); helpers hide prompts, confirm on rekey, atomic rollback on write failure (PR #645).
+- **Archive mode env** (PR #633) — `SENTRIX_ARCHIVE_MODE=1` opts out of trie pruning entirely. Required for fullnodes serving historical-state RPC.
+- **Trie write batching** (PR #627) — node + value + root commit in a single MDBX transaction per block, instead of three. Cuts MDBX commit latency on the apply hot path.
+
+## [2.2.10] — 2026-05-12 — TRIE_PRUNE_EVERY 1000 → 5000 + criterion bench regression detection
+
+**No wire change. No consensus change.**
+
+- **Prune cadence loosened** (PR #610). `TRIE_PRUNE_EVERY` 1000 → 5000 blocks (~2-hour cadence at 1.5s blocks). Pairs with the v2.2.3 / v2.2.4 prune-path fixes — the apply loop no longer freezes during a prune, so loosening the cadence is pure storage-headroom win.
+- **Criterion benchmark regression detection** (PR #605) on `sentrix-trie` hot path. CI fails on >10% regression vs baseline; `Cargo.lock` reset before bench-results checkout (PR #611) so dep churn doesn't poison the diff.
+- **CI hygiene** — exempt Swatinem/rust-cache LGPL-3.0 from dependency-review (PR #606); add NCSA to license allowlist for libfuzzer-sys (PR #604); pin remaining unpinned actions in commitlint + fuzz workflows (PR #608); apply CodeRabbit follow-up fixes (PR #603).
+
+## [2.2.9] — 2026-05-12 — workspace package inheritance + first fully-signed release
+
+**No wire change. No consensus change. Supply-chain milestone.**
+
+- **First fully-signed release** (PR #593). Binary + CycloneDX SBOM + cosign keyless signatures (binary + SBOM) + SLSA Level 3 build provenance via `actions/attest-build-provenance@v2`. Every artifact downloadable from the release page is verifiable end-to-end against the workflow run that produced it.
+- **Workspace package inheritance** — version / edition / license / repository now flow from `[workspace.package]` to every member crate via `version.workspace = true`. Future workspace bumps = one-line edit in root `Cargo.toml`.
+- **Sigs upload fix** — release workflow now uploads `.sig` and `.cert` files alongside the binary + SBOM.
+
+## [2.2.8] — 2026-05-12 — release pipeline retry (artifact path fix)
+
+**No code change.** Bumps 2.2.7 → 2.2.8 to retry the release pipeline after fixing the artifact download target — `cargo cyclonedx` outputs land in `_artifacts/`, not `./bin` (PR #591).
+
+## [2.2.7] — 2026-05-12 — release pipeline retry (checkout fix)
+
+**No code change.** Bumps 2.2.6 → 2.2.7 to retry the release pipeline after adding `actions/checkout` to the release job (PR #589) — the previous run had no source tree to upload artifacts from.
+
+## [2.2.6] — 2026-05-12 — release pipeline retry (cyclonedx flag fix)
+
+**No code change.** Bumps 2.2.5 → 2.2.6 to retry the release pipeline after dropping `--output-pattern` from the `cargo cyclonedx` invocation (PR #587) — the flag had been removed in a recent cargo-cyclonedx update.
+
+## [2.2.5] — 2026-05-12 — supply-chain hardening batch + BFT rebroadcast tightening
+
+**No wire change. No consensus change.**
+
+Bundles the 2026-05-12 supply-chain + repo-hygiene work plus the v2.2.2 / v2.2.3 / v2.2.4 fixes into one release.
+
+- **CI / supply chain** — pin third-party GitHub Actions to commit SHAs (PR #582); add `gitleaks` pre-commit secret scan workflow (PR #578); add Code of Conduct (Contributor Covenant v2.1, PR #577); add PR + issue templates (PR #581); add `.coderabbit.yaml` configured for consensus-crate guard rails (PR #579 — "suggestions only, no destructive rewrites, no auto-generated unit tests" on consensus paths to prevent another #597-class incident where an automated review tool deleted `SENTRIX_APPLY_PROFILE`).
+- **Branch-protection ruleset tightened**: 6 required status checks (Test + cargo audit + gitleaks + cargo-llvm-cov + Dependency review + commitlint).
+- **CI release pipeline** — release workflow rebuilt; `verify-notes` step YAML scalar fix (PR #585).
+- **BFT proposal rebroadcast tightening** — `REBROADCAST_INTERVAL` 2s → 500ms, `MAX_REBROADCASTS` 7 → 28 (PR #576). Recovers dropped proposals inside one round window. Mainnet bt 2.5 → 2.05 s/blk steady (-18%). (Same change carried under v2.2.2's tag during the testnet bake; folded into 2.2.5 here for the consolidated release line.)
+- **Trie storage** — `gc_table` + `prune_old_roots` stream via `iter_from` cursor walks (PR #583, originally v2.2.3); prune now dispatches to background thread instead of running inline under `chain.write()` (PR #584, originally v2.2.4). Both fixes folded into 2.2.5.
 
 ## [2.2.4] — 2026-05-12 — fix: dispatch trie prune to background thread
 

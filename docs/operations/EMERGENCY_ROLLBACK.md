@@ -65,11 +65,11 @@ sudo install -m 755 <bin_dir>/releases/sentrix-vX.Y.Z-<timestamp> <bin_dir>/sent
 sudo systemctl start <validator-service>
 ```
 
-Current production binary at the time of writing: **v2.1.39** (mainnet
-& testnet, post tokenomics-v2 fork landing). Prior production releases
-archived under each validator's `<bin_dir>/releases/`: v2.1.38, v2.1.37,
-v2.1.36, v2.1.35, v2.1.34, v2.1.33, v2.1.32, v2.1.31, v2.1.30, v2.1.29,
-v2.1.28, v2.1.27, v2.1.26.
+Current production binary at the time of writing: **v2.2.11** (mainnet
+& testnet, post EVM value-transfer + gas-fix activation at testnet
+h=3,787,000 / mainnet h=1,748,900). Prior production releases archived
+under each validator's `<bin_dir>/releases/` — see [CHANGELOG.md](../../CHANGELOG.md)
+for the per-version ship line.
 
 The 2026-04-25 / 2026-04-26 incident hotfix series:
 - v2.1.31: BFT signing v2 foundation + Frontier F-2 shadow + libp2p connection-leak fix
