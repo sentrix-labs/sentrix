@@ -18,8 +18,7 @@ use std::sync::Arc;
 // live in `crate::tokenomics` now — re-export so existing import
 // paths (`crate::blockchain::MAX_SUPPLY` etc.) still resolve.
 pub use crate::tokenomics::{
-    BLOCK_REWARD, HALVING_INTERVAL, HALVING_INTERVAL_V2, MAX_SUPPLY, MAX_SUPPLY_V2,
-    max_supply_srx,
+    BLOCK_REWARD, HALVING_INTERVAL, HALVING_INTERVAL_V2, MAX_SUPPLY, MAX_SUPPLY_V2, max_supply_srx,
 };
 
 // Chain parameter consts + chain-id accessor live in `crate::chain_params`
@@ -27,8 +26,7 @@ pub use crate::tokenomics::{
 // MAX_TX_PER_BLOCK, CHAIN_ID, HASH_VERSION, CHAIN_WINDOW_SIZE, get_chain_id}`
 // import paths still resolve unchanged.
 pub use crate::chain_params::{
-    BLOCK_TIME_SECS, CHAIN_ID, CHAIN_WINDOW_SIZE, HASH_VERSION, MAX_TX_PER_BLOCK,
-    get_chain_id,
+    BLOCK_TIME_SECS, CHAIN_ID, CHAIN_WINDOW_SIZE, HASH_VERSION, MAX_TX_PER_BLOCK, get_chain_id,
 };
 
 // Fork-height accessors live in `crate::fork_heights` now — re-export so
@@ -42,7 +40,6 @@ pub use crate::fork_heights::{
     warn_if_jail_consensus_armed,
 };
 
-
 // Mempool consts live in `crate::mempool` now (next to the only code
 // that uses them) — re-export so `crate::blockchain::MAX_MEMPOOL_SIZE`
 // etc. still resolve for any path that was relying on it.
@@ -52,8 +49,8 @@ pub use crate::mempool::{MAX_MEMPOOL_PER_SENDER, MAX_MEMPOOL_SIZE, MEMPOOL_MAX_A
 // `crate::address` now — re-export so the existing import paths
 // (`crate::blockchain::is_valid_sentrix_address` etc.) still resolve.
 pub use crate::address::{
-    ECOSYSTEM_FUND_ADDRESS, TOTAL_PREMINE, ZERO_ADDRESS,
-    is_spendable_sentrix_address, is_valid_sentrix_address,
+    ECOSYSTEM_FUND_ADDRESS, TOTAL_PREMINE, ZERO_ADDRESS, is_spendable_sentrix_address,
+    is_valid_sentrix_address,
 };
 
 // ── Blockchain struct ────────────────────────────────────
@@ -422,14 +419,15 @@ impl Blockchain {
         // the block being constructed, so the deterministic is_downtime_at
         // window check needs the about-to-be-applied height.
         let active_set = self.stake_registry.active_set.clone();
-        let evidence = self.slashing.compute_jail_evidence(&active_set, next_height);
+        let evidence = self
+            .slashing
+            .compute_jail_evidence(&active_set, next_height);
         if evidence.is_empty() {
             return None;
         }
 
         // Compute epoch metadata for the bundle
-        let epoch =
-            sentrix_staking::epoch::EpochManager::epoch_for_height(next_height);
+        let epoch = sentrix_staking::epoch::EpochManager::epoch_for_height(next_height);
         let epoch_length = sentrix_staking::epoch::EPOCH_LENGTH;
         let epoch_start_block = epoch.saturating_mul(epoch_length);
         let epoch_end_block = next_height; // boundary block IS the end
@@ -517,7 +515,6 @@ impl Blockchain {
         self.total_minted
     }
 
-
     // Memory estimate reflects the in-memory window, not the full historical chain
     pub fn get_memory_estimate(&self) -> String {
         let window_blocks = self.chain.len();
@@ -529,7 +526,6 @@ impl Blockchain {
         )
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -699,10 +695,7 @@ mod tests {
         assert_eq!(total, MAX_SUPPLY_V2);
         // Sanity: discrete actual is within ~5B sentri of the cap.
         let actual_total = premine + total_mined;
-        assert!(
-            actual_total <= MAX_SUPPLY_V2,
-            "discrete sum exceeds cap"
-        );
+        assert!(actual_total <= MAX_SUPPLY_V2, "discrete sum exceeds cap");
         assert!(
             MAX_SUPPLY_V2 - actual_total <= 5_000_000_000,
             "discrete asymptote gap > 5B sentri (= 50 SRX)"
@@ -2055,9 +2048,7 @@ mod tests {
              — {CHAIN_WINDOW_SIZE}-block window should have evicted it"
         );
         let fetched = bc.get_block_any(evicted_height).unwrap_or_else(|| {
-            panic!(
-                "get_block_any should have fetched evicted block {evicted_height} from MDBX"
-            )
+            panic!("get_block_any should have fetched evicted block {evicted_height} from MDBX")
         });
         assert_eq!(
             fetched.index, evicted_height,
@@ -2132,17 +2123,21 @@ mod tests {
     /// behaviour (TxEnv.value forced to ZERO). Pins the regression that
     /// caused 3 mainnet halts on 2026-05-01 — flat-shipping the
     /// envelope-value plumbing in v2.1.49 produced 2v2 split-brain
-    /// divergence on every value-bearing EVM tx. Default disabled keeps
-    /// chain stable until the divergence RCA lands. Operator activates
-    /// post-RCA via halt-all + simul-start with `EVM_VALUE_TRANSFER_HEIGHT`.
+    /// EVM value-transfer gate is now baked in at mainnet activation
+    /// height 1_748_900 (activated 2026-05-13, closes #580). Test pins
+    /// the constant: pre-fork heights stay inactive, post-fork active.
     #[test]
-    fn test_evm_value_transfer_disabled_by_default() {
+    fn test_evm_value_transfer_default_matches_mainnet_activation() {
         let _guard = env_test_lock();
         unsafe {
             std::env::remove_var("EVM_VALUE_TRANSFER_HEIGHT");
         }
+        // Pre-activation: inactive.
         assert!(!Blockchain::is_evm_value_transfer_height(0));
-        assert!(!Blockchain::is_evm_value_transfer_height(u64::MAX - 1));
+        assert!(!Blockchain::is_evm_value_transfer_height(1_748_899));
+        // At + post-activation: active.
+        assert!(Blockchain::is_evm_value_transfer_height(1_748_900));
+        assert!(Blockchain::is_evm_value_transfer_height(u64::MAX - 1));
     }
 
     /// EVM value-transfer gate: when set, activates exactly at the
@@ -2422,7 +2417,10 @@ mod tests {
             1,
             h0_hash,
             vec![sentrix_primitives::transaction::Transaction::new_coinbase(
-                "v1".into(), 0, 1, 1_700_000_000,
+                "v1".into(),
+                0,
+                1,
+                1_700_000_000,
             )],
             "v1".into(),
         ));
@@ -2437,13 +2435,17 @@ mod tests {
             2,
             h1_hash,
             vec![sentrix_primitives::transaction::Transaction::new_coinbase(
-                "v1".into(), 0, 2, 1_700_000_000,
+                "v1".into(),
+                0,
+                2,
+                1_700_000_000,
             )],
             "v1".into(),
         ));
         let _ = bc.update_trie_for_block();
         assert_eq!(
-            bc.accounts.get_balance(PROTOCOL_TREASURY), 750,
+            bc.accounts.get_balance(PROTOCOL_TREASURY),
+            750,
             "post-activation blocks must not rebase — let coinbase + ClaimRewards drive treasury"
         );
 
