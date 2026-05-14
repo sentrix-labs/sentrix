@@ -32,7 +32,9 @@ COPY . .
 
 # Build the validator binary specifically — the workspace has 19 crates
 # but we only ship `sentrix-node` (bin/sentrix) as the running validator.
-RUN cargo build --release --bin sentrix
+# `-p sentrix-node` qualifier is required since the workspace refactor
+# (#651-#663) split the binary out of the default-run set.
+RUN cargo build --release --bin sentrix -p sentrix-node
 
 # ── Runtime ────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
