@@ -616,13 +616,16 @@ pub(crate) fn trie_prune_disabled() -> bool {
     std::env::var_os("SENTRIX_DISABLE_TRIE_PRUNE").is_some_and(|v| v == "1")
 }
 
+const TESTNET_CHAIN_ID: u64 = 7120;
+
 /// Testnet recovery opt-out for boot-time trie reachability checks.
 ///
 /// Existing testnet runtimes carry this flag while their historical trie
 /// tables are known to have orphan references. Keep the predicate strict:
-/// only the explicit value `1` disables the check.
+/// only the explicit value `1` disables the check, and only on testnet.
 pub(crate) fn trie_integrity_check_skipped() -> bool {
-    std::env::var_os("SENTRIX_SKIP_TRIE_INTEGRITY").is_some_and(|v| v == "1")
+    crate::chain_params::get_chain_id() == TESTNET_CHAIN_ID
+        && std::env::var_os("SENTRIX_SKIP_TRIE_INTEGRITY").is_some_and(|v| v == "1")
 }
 
 #[cfg(test)]
@@ -631,18 +634,27 @@ mod tests {
     use crate::test_util::env_test_lock;
 
     #[test]
-    fn trie_integrity_skip_is_strictly_opt_in() {
+    fn trie_integrity_skip_is_testnet_only_and_strictly_opt_in() {
         let _guard = env_test_lock();
         unsafe {
+            std::env::remove_var("SENTRIX_CHAIN_ID");
             std::env::remove_var("SENTRIX_SKIP_TRIE_INTEGRITY");
             assert!(!trie_integrity_check_skipped());
 
+            std::env::set_var("SENTRIX_CHAIN_ID", TESTNET_CHAIN_ID.to_string());
             std::env::set_var("SENTRIX_SKIP_TRIE_INTEGRITY", "true");
             assert!(!trie_integrity_check_skipped());
 
             std::env::set_var("SENTRIX_SKIP_TRIE_INTEGRITY", "1");
             assert!(trie_integrity_check_skipped());
 
+            std::env::set_var("SENTRIX_CHAIN_ID", "7119");
+            assert!(!trie_integrity_check_skipped());
+
+            std::env::set_var("SENTRIX_CHAIN_ID", "999999");
+            assert!(!trie_integrity_check_skipped());
+
+            std::env::remove_var("SENTRIX_CHAIN_ID");
             std::env::remove_var("SENTRIX_SKIP_TRIE_INTEGRITY");
         }
     }
