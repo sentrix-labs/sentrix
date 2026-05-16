@@ -198,7 +198,11 @@ impl Blockchain {
         // STATE_ROOT_FORK_HEIGHT if any orphan is found. Below the fork
         // height the old hash format ignores state_root entirely, so a
         // broken trie can't cause consensus divergence — warn-only there.
-        if let Err(e) = trie.verify_integrity() {
+        if trie_integrity_check_skipped() {
+            tracing::warn!(
+                "SENTRIX_SKIP_TRIE_INTEGRITY=1 set; skipping boot-time trie integrity check"
+            );
+        } else if let Err(e) = trie.verify_integrity() {
             if height >= sentrix_primitives::block::STATE_ROOT_FORK_HEIGHT {
                 return Err(SentrixError::Internal(format!(
                     "trie integrity check failed at height {height}: {e}"
@@ -610,4 +614,36 @@ static PRUNE_RUNNING: AtomicBool = AtomicBool::new(false);
 /// settings don't silently activate the archive path.
 pub(crate) fn trie_prune_disabled() -> bool {
     std::env::var_os("SENTRIX_DISABLE_TRIE_PRUNE").is_some_and(|v| v == "1")
+}
+
+/// Testnet recovery opt-out for boot-time trie reachability checks.
+///
+/// Existing testnet runtimes carry this flag while their historical trie
+/// tables are known to have orphan references. Keep the predicate strict:
+/// only the explicit value `1` disables the check.
+pub(crate) fn trie_integrity_check_skipped() -> bool {
+    std::env::var_os("SENTRIX_SKIP_TRIE_INTEGRITY").is_some_and(|v| v == "1")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::env_test_lock;
+
+    #[test]
+    fn trie_integrity_skip_is_strictly_opt_in() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::remove_var("SENTRIX_SKIP_TRIE_INTEGRITY");
+            assert!(!trie_integrity_check_skipped());
+
+            std::env::set_var("SENTRIX_SKIP_TRIE_INTEGRITY", "true");
+            assert!(!trie_integrity_check_skipped());
+
+            std::env::set_var("SENTRIX_SKIP_TRIE_INTEGRITY", "1");
+            assert!(trie_integrity_check_skipped());
+
+            std::env::remove_var("SENTRIX_SKIP_TRIE_INTEGRITY");
+        }
+    }
 }
