@@ -1,14 +1,16 @@
 //! Fork-height accessors — every consensus-fork activation height the
 //! chain reads at runtime, plus the corresponding compile-time defaults.
 //!
-//! Each reader returns its compile-time default unless the matching env
-//! var is set, which then takes precedence. Most defaults remain
-//! `u64::MAX` (un-activated on mainnet); the ones that have already
-//! activated on mainnet carry the real activation height as their
-//! default so a fresh validator (or any rebuild from main) computes
-//! the same state_root past the fork. Mismatched activation heights
-//! across validators = state divergence — change defaults only after
-//! the fork has actually crossed on mainnet.
+//! Each reader returns its chain-level compile-time default unless the
+//! matching env var is set, which then takes precedence. Most defaults
+//! remain `u64::MAX` (un-activated on mainnet); the ones that have
+//! already activated on mainnet carry the real activation height as
+//! their default so a fresh validator (or any rebuild from main)
+//! computes the same state_root past the fork. Testnet has deterministic
+//! defaults for mature forks already activated through the docker env
+//! files. Mismatched activation heights across validators = state
+//! divergence — change defaults only after the fork has actually crossed
+//! on that chain.
 //!
 //! Extracted from `crate::blockchain` so this concern lives in one
 //! file (was scattered across ~200 lines mid-blockchain.rs). The
@@ -18,26 +20,34 @@
 
 // ── Compile-time defaults — see module doc for activated-vs-disabled. ──
 
+const MAINNET_CHAIN_ID: u64 = 7119;
+const TESTNET_CHAIN_ID: u64 = 7120;
+
 /// Voyager DPoS fork activation. Pre-fork: PoA round-robin. Post-fork:
 /// stake-weighted BFT consensus.
 const VOYAGER_DPOS_HEIGHT_DEFAULT: u64 = u64::MAX;
+const VOYAGER_DPOS_HEIGHT_TESTNET_DEFAULT: u64 = 10;
 
 /// EVM fork activation. Pre-fork: native-only tx flow. Post-fork:
 /// payable EVM tx via revm.
 const VOYAGER_EVM_HEIGHT_DEFAULT: u64 = u64::MAX;
+const VOYAGER_EVM_HEIGHT_TESTNET_DEFAULT: u64 = 752;
 
 /// V4 reward-v2 fork: coinbase → `PROTOCOL_TREASURY`, ClaimRewards
 /// dispatch becomes consensus-valid.
 const VOYAGER_REWARD_V2_HEIGHT_DEFAULT: u64 = u64::MAX;
+const VOYAGER_REWARD_V2_HEIGHT_TESTNET_DEFAULT: u64 = 100;
 
 /// Tokenomics v2 fork: 126M halving (BTC-parity 4-year) + 315M cap.
 /// Replaces v1 emission schedule (42M halving + 210M cap).
 const TOKENOMICS_V2_HEIGHT_DEFAULT: u64 = u64::MAX;
+const TOKENOMICS_V2_HEIGHT_TESTNET_DEFAULT: u64 = 381_651;
 
 /// BFT-gate-relax fork: `active >= ⌈2/3 × total⌉` threshold. Replaces
 /// the legacy `active >= MIN_BFT_VALIDATORS` constant. See
 /// `audits/jail-cascade-root-cause-analysis.md`.
 const BFT_GATE_RELAX_HEIGHT_DEFAULT: u64 = u64::MAX;
+const BFT_GATE_RELAX_HEIGHT_TESTNET_DEFAULT: u64 = 551_500;
 
 /// Phase B consensus-jail dispatch activation. **Known halt risk** —
 /// see [`warn_if_jail_consensus_armed`] for the warning that fires at
@@ -73,6 +83,7 @@ const ADD_SELF_STAKE_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// Constant must match the runtime fork — fresh validators that compute
 /// state_root past 1,748,900 with a different default would diverge.
 const EVM_VALUE_TRANSFER_HEIGHT_DEFAULT: u64 = 1_748_900;
+const EVM_VALUE_TRANSFER_HEIGHT_TESTNET_DEFAULT: u64 = 3_409_717;
 
 /// Audit H3 (2026-05-06): EVM gas-fix fork. Pre-fork the write-path
 /// EVM tx flow let revm internally deduct `gas_used × INITIAL_BASE_FEE`
@@ -87,6 +98,7 @@ const EVM_VALUE_TRANSFER_HEIGHT_DEFAULT: u64 = 1_748_900;
 /// `EVM_VALUE_TRANSFER_HEIGHT_DEFAULT`. Constraint: GAS_FIX ≤ VALUE_TRANSFER —
 /// equal-height activation is the safe form.
 const EVM_GAS_FIX_HEIGHT_DEFAULT: u64 = 1_748_900;
+const EVM_GAS_FIX_HEIGHT_TESTNET_DEFAULT: u64 = 3_787_000;
 
 /// state_root v2 drift fix (2026-05-07, post-halt #5 RCA). Pre-fork
 /// `update_trie_for_block` derives `touched_addrs` from `tx.from` /
@@ -117,22 +129,49 @@ const STRICT_JUSTIFICATION_HEIGHT_DEFAULT: u64 = u64::MAX;
 
 // ── Runtime readers (env → u64, default to compile-time default) ──────
 
+fn configured_chain_id() -> u64 {
+    std::env::var("SENTRIX_CHAIN_ID")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(MAINNET_CHAIN_ID)
+}
+
+fn chain_default(mainnet_default: u64, testnet_default: u64) -> u64 {
+    match configured_chain_id() {
+        TESTNET_CHAIN_ID => testnet_default,
+        _ => mainnet_default,
+    }
+}
+
+fn read_height(env_var: &str, default: u64) -> u64 {
+    std::env::var(env_var)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
 /// Read Voyager fork height from env, default u64::MAX (mainnet safe).
 /// Testnet sets `VOYAGER_FORK_HEIGHT=<height>` in systemd service.
 pub fn get_voyager_fork_height() -> u64 {
-    std::env::var("VOYAGER_FORK_HEIGHT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(VOYAGER_DPOS_HEIGHT_DEFAULT)
+    read_height(
+        "VOYAGER_FORK_HEIGHT",
+        chain_default(
+            VOYAGER_DPOS_HEIGHT_DEFAULT,
+            VOYAGER_DPOS_HEIGHT_TESTNET_DEFAULT,
+        ),
+    )
 }
 
 /// Read EVM fork height from env, default u64::MAX (disabled).
 /// Testnet: set `VOYAGER_EVM_HEIGHT=<height>` in systemd service.
 pub fn get_evm_fork_height() -> u64 {
-    std::env::var("VOYAGER_EVM_HEIGHT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(VOYAGER_EVM_HEIGHT_DEFAULT)
+    read_height(
+        "VOYAGER_EVM_HEIGHT",
+        chain_default(
+            VOYAGER_EVM_HEIGHT_DEFAULT,
+            VOYAGER_EVM_HEIGHT_TESTNET_DEFAULT,
+        ),
+    )
 }
 
 /// V4 Step 3: read reward-v2 hard-fork height from env, default
@@ -140,20 +179,26 @@ pub fn get_evm_fork_height() -> u64 {
 /// Post-fork: coinbase → `PROTOCOL_TREASURY`, ClaimRewards dispatch
 /// becomes consensus-valid.
 pub fn get_reward_v2_fork_height() -> u64 {
-    std::env::var("VOYAGER_REWARD_V2_HEIGHT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(VOYAGER_REWARD_V2_HEIGHT_DEFAULT)
+    read_height(
+        "VOYAGER_REWARD_V2_HEIGHT",
+        chain_default(
+            VOYAGER_REWARD_V2_HEIGHT_DEFAULT,
+            VOYAGER_REWARD_V2_HEIGHT_TESTNET_DEFAULT,
+        ),
+    )
 }
 
 /// Tokenomics v2: read fork height from env, default `u64::MAX`
 /// (disabled — keeps v1 emission schedule: 42M halving + 210M cap).
 /// Post-fork: 126M halving (BTC-parity 4-year) + 315M cap.
 pub fn get_tokenomics_v2_height() -> u64 {
-    std::env::var("TOKENOMICS_V2_HEIGHT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(TOKENOMICS_V2_HEIGHT_DEFAULT)
+    read_height(
+        "TOKENOMICS_V2_HEIGHT",
+        chain_default(
+            TOKENOMICS_V2_HEIGHT_DEFAULT,
+            TOKENOMICS_V2_HEIGHT_TESTNET_DEFAULT,
+        ),
+    )
 }
 
 /// BFT-gate-relax: read fork height from env, default `u64::MAX`
@@ -163,19 +208,19 @@ pub fn get_tokenomics_v2_height() -> u64 {
 /// when they want to enable jail-cascade liveness margin. See
 /// `audits/jail-cascade-root-cause-analysis.md`.
 pub fn get_bft_gate_relax_height() -> u64 {
-    std::env::var("BFT_GATE_RELAX_HEIGHT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(BFT_GATE_RELAX_HEIGHT_DEFAULT)
+    read_height(
+        "BFT_GATE_RELAX_HEIGHT",
+        chain_default(
+            BFT_GATE_RELAX_HEIGHT_DEFAULT,
+            BFT_GATE_RELAX_HEIGHT_TESTNET_DEFAULT,
+        ),
+    )
 }
 
 /// Phase B: read `JAIL_CONSENSUS_HEIGHT` from env. Default `u64::MAX`
 /// (disabled). Activates consensus-computed jail dispatch when set.
 pub fn get_jail_consensus_height() -> u64 {
-    std::env::var("JAIL_CONSENSUS_HEIGHT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(JAIL_CONSENSUS_HEIGHT_DEFAULT)
+    read_height("JAIL_CONSENSUS_HEIGHT", JAIL_CONSENSUS_HEIGHT_DEFAULT)
 }
 
 /// Startup-time guardrail: if `JAIL_CONSENSUS_HEIGHT` is set to anything
@@ -221,10 +266,7 @@ pub fn warn_if_jail_consensus_armed() {
 /// Post-fork: SRC-721 + SRC-1155 dispatch active. Operators activate via
 /// halt-all + simultaneous-start with `NFT_TOKENOP_HEIGHT=<height>`.
 pub fn get_nft_tokenop_height() -> u64 {
-    std::env::var("NFT_TOKENOP_HEIGHT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(NFT_TOKENOP_HEIGHT_DEFAULT)
+    read_height("NFT_TOKENOP_HEIGHT", NFT_TOKENOP_HEIGHT_DEFAULT)
 }
 
 /// Read AddSelfStake fork height from env, default `u64::MAX`
@@ -233,10 +275,7 @@ pub fn get_nft_tokenop_height() -> u64 {
 /// Operators activate via halt-all + simultaneous-start with
 /// `ADD_SELF_STAKE_HEIGHT=<height>`.
 pub fn get_add_self_stake_height() -> u64 {
-    std::env::var("ADD_SELF_STAKE_HEIGHT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(ADD_SELF_STAKE_HEIGHT_DEFAULT)
+    read_height("ADD_SELF_STAKE_HEIGHT", ADD_SELF_STAKE_HEIGHT_DEFAULT)
 }
 
 /// Read EVM value-transfer fork height from env. Default 1,748,900 —
@@ -245,10 +284,13 @@ pub fn get_add_self_stake_height() -> u64 {
 /// the Pass-2 EVM apply path threads envelope value into `TxEnv.value`.
 /// Testnet sets `EVM_VALUE_TRANSFER_HEIGHT=3409717` in env to override.
 pub fn get_evm_value_transfer_height() -> u64 {
-    std::env::var("EVM_VALUE_TRANSFER_HEIGHT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(EVM_VALUE_TRANSFER_HEIGHT_DEFAULT)
+    read_height(
+        "EVM_VALUE_TRANSFER_HEIGHT",
+        chain_default(
+            EVM_VALUE_TRANSFER_HEIGHT_DEFAULT,
+            EVM_VALUE_TRANSFER_HEIGHT_TESTNET_DEFAULT,
+        ),
+    )
 }
 
 /// Audit H3 EVM gas-fix fork height (2026-05-06). See
@@ -256,10 +298,13 @@ pub fn get_evm_value_transfer_height() -> u64 {
 /// matches mainnet activation 2026-05-13 (paired with VALUE_TRANSFER).
 /// Testnet sets `EVM_GAS_FIX_HEIGHT=3787000` in env to override.
 pub fn get_evm_gas_fix_height() -> u64 {
-    std::env::var("EVM_GAS_FIX_HEIGHT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(EVM_GAS_FIX_HEIGHT_DEFAULT)
+    read_height(
+        "EVM_GAS_FIX_HEIGHT",
+        chain_default(
+            EVM_GAS_FIX_HEIGHT_DEFAULT,
+            EVM_GAS_FIX_HEIGHT_TESTNET_DEFAULT,
+        ),
+    )
 }
 
 /// state_root v2 drift fix fork height (2026-05-07). See
@@ -267,20 +312,20 @@ pub fn get_evm_gas_fix_height() -> u64 {
 /// `u64::MAX` keeps the legacy behaviour unchanged so v2.1.81 chain
 /// history stays bit-identical.
 pub fn get_extended_touch_list_height() -> u64 {
-    std::env::var("EXTENDED_TOUCH_LIST_HEIGHT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(EXTENDED_TOUCH_LIST_HEIGHT_DEFAULT)
+    read_height(
+        "EXTENDED_TOUCH_LIST_HEIGHT",
+        EXTENDED_TOUCH_LIST_HEIGHT_DEFAULT,
+    )
 }
 
 /// Strict-justification fork height (2026-05-07). See
 /// [`STRICT_JUSTIFICATION_HEIGHT_DEFAULT`] for context. Default
 /// `u64::MAX` preserves legacy behaviour bit-identically.
 pub fn get_strict_justification_height() -> u64 {
-    std::env::var("STRICT_JUSTIFICATION_HEIGHT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(STRICT_JUSTIFICATION_HEIGHT_DEFAULT)
+    read_height(
+        "STRICT_JUSTIFICATION_HEIGHT",
+        STRICT_JUSTIFICATION_HEIGHT_DEFAULT,
+    )
 }
 
 // ── Height predicates ────────────────────────────────────
@@ -426,6 +471,7 @@ mod tests {
     fn voyager_fork_height_env_round_trip() {
         let _guard = env_test_lock();
         unsafe {
+            std::env::remove_var("SENTRIX_CHAIN_ID");
             std::env::remove_var("VOYAGER_FORK_HEIGHT");
             assert_eq!(get_voyager_fork_height(), u64::MAX);
 
@@ -438,6 +484,130 @@ mod tests {
 
             std::env::remove_var("VOYAGER_FORK_HEIGHT");
             assert_eq!(get_voyager_fork_height(), u64::MAX);
+            std::env::remove_var("SENTRIX_CHAIN_ID");
+        }
+    }
+
+    #[test]
+    fn mature_testnet_forks_have_code_level_defaults() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::set_var("SENTRIX_CHAIN_ID", TESTNET_CHAIN_ID.to_string());
+            for var in [
+                "VOYAGER_FORK_HEIGHT",
+                "VOYAGER_EVM_HEIGHT",
+                "VOYAGER_REWARD_V2_HEIGHT",
+                "TOKENOMICS_V2_HEIGHT",
+                "BFT_GATE_RELAX_HEIGHT",
+                "EVM_VALUE_TRANSFER_HEIGHT",
+                "EVM_GAS_FIX_HEIGHT",
+            ] {
+                std::env::remove_var(var);
+            }
+
+            assert_eq!(get_voyager_fork_height(), 10);
+            assert_eq!(get_evm_fork_height(), 752);
+            assert_eq!(get_reward_v2_fork_height(), 100);
+            assert_eq!(get_tokenomics_v2_height(), 381_651);
+            assert_eq!(get_bft_gate_relax_height(), 551_500);
+            assert_eq!(get_evm_value_transfer_height(), 3_409_717);
+            assert_eq!(get_evm_gas_fix_height(), 3_787_000);
+
+            assert!(!is_voyager_height(9));
+            assert!(is_voyager_height(10));
+            assert!(!is_evm_gas_fix_height(3_786_999));
+            assert!(is_evm_gas_fix_height(3_787_000));
+
+            std::env::remove_var("SENTRIX_CHAIN_ID");
+        }
+    }
+
+    #[test]
+    fn risky_forks_stay_disabled_by_default_on_testnet() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::set_var("SENTRIX_CHAIN_ID", TESTNET_CHAIN_ID.to_string());
+            for var in [
+                "JAIL_CONSENSUS_HEIGHT",
+                "NFT_TOKENOP_HEIGHT",
+                "ADD_SELF_STAKE_HEIGHT",
+                "EXTENDED_TOUCH_LIST_HEIGHT",
+                "STRICT_JUSTIFICATION_HEIGHT",
+            ] {
+                std::env::remove_var(var);
+            }
+
+            assert_eq!(get_jail_consensus_height(), u64::MAX);
+            assert_eq!(get_nft_tokenop_height(), u64::MAX);
+            assert_eq!(get_add_self_stake_height(), u64::MAX);
+            assert_eq!(get_extended_touch_list_height(), u64::MAX);
+            assert_eq!(get_strict_justification_height(), u64::MAX);
+
+            assert!(!is_jail_consensus_height(0));
+            assert!(!is_nft_tokenop_height(0));
+            assert!(!is_add_self_stake_height(0));
+            assert!(!is_extended_touch_list_height(0));
+            assert!(!is_strict_justification_height(0));
+
+            std::env::remove_var("SENTRIX_CHAIN_ID");
+        }
+    }
+
+    #[test]
+    fn mainnet_defaults_preserve_v2_2_11_values_without_env() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::set_var("SENTRIX_CHAIN_ID", MAINNET_CHAIN_ID.to_string());
+            for var in [
+                "VOYAGER_FORK_HEIGHT",
+                "VOYAGER_EVM_HEIGHT",
+                "VOYAGER_REWARD_V2_HEIGHT",
+                "TOKENOMICS_V2_HEIGHT",
+                "BFT_GATE_RELAX_HEIGHT",
+                "EVM_VALUE_TRANSFER_HEIGHT",
+                "EVM_GAS_FIX_HEIGHT",
+            ] {
+                std::env::remove_var(var);
+            }
+
+            assert_eq!(get_voyager_fork_height(), u64::MAX);
+            assert_eq!(get_evm_fork_height(), u64::MAX);
+            assert_eq!(get_reward_v2_fork_height(), u64::MAX);
+            assert_eq!(get_tokenomics_v2_height(), u64::MAX);
+            assert_eq!(get_bft_gate_relax_height(), u64::MAX);
+            assert_eq!(get_evm_value_transfer_height(), 1_748_900);
+            assert_eq!(get_evm_gas_fix_height(), 1_748_900);
+
+            std::env::remove_var("SENTRIX_CHAIN_ID");
+        }
+    }
+
+    #[test]
+    fn unknown_chain_ids_use_mainnet_safe_defaults() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::set_var("SENTRIX_CHAIN_ID", "999999");
+            for var in [
+                "VOYAGER_FORK_HEIGHT",
+                "VOYAGER_EVM_HEIGHT",
+                "VOYAGER_REWARD_V2_HEIGHT",
+                "TOKENOMICS_V2_HEIGHT",
+                "BFT_GATE_RELAX_HEIGHT",
+                "EVM_VALUE_TRANSFER_HEIGHT",
+                "EVM_GAS_FIX_HEIGHT",
+            ] {
+                std::env::remove_var(var);
+            }
+
+            assert_eq!(get_voyager_fork_height(), u64::MAX);
+            assert_eq!(get_evm_fork_height(), u64::MAX);
+            assert_eq!(get_reward_v2_fork_height(), u64::MAX);
+            assert_eq!(get_tokenomics_v2_height(), u64::MAX);
+            assert_eq!(get_bft_gate_relax_height(), u64::MAX);
+            assert_eq!(get_evm_value_transfer_height(), 1_748_900);
+            assert_eq!(get_evm_gas_fix_height(), 1_748_900);
+
+            std::env::remove_var("SENTRIX_CHAIN_ID");
         }
     }
 
