@@ -1042,6 +1042,7 @@ async fn cmd_start(
     // path (C-08) can await the task's exit before save_blockchain
     // snapshots state. Without the handle the process could exit mid
     // add_block / trie.commit, tearing state between memory and disk.
+    let is_validator_node = validator.is_some();
     let validator_handle: Option<tokio::task::JoinHandle<()>> = if let Some(wallet) = validator {
         println!("Validator mode: {}", wallet.address);
         let shared_clone = shared.clone();
@@ -2412,8 +2413,12 @@ async fn cmd_start(
                                             }
                                             break;
                                         }
-                                        BftAction::SyncNeeded { .. } => {
-                                            tracing::info!("BFT: peer ahead, need block sync");
+                                        BftAction::SyncNeeded { peer_height } => {
+                                            tracing::info!(
+                                                "BFT: peer at height {}, triggering block sync",
+                                                peer_height
+                                            );
+                                            lp2p_clone.trigger_sync().await;
                                             break;
                                         }
                                         BftAction::Wait | BftAction::ProposeBlock => break,
@@ -2971,9 +2976,10 @@ async fn cmd_start(
                                 }
                                 BftAction::SyncNeeded { peer_height } => {
                                     tracing::info!(
-                                        "BFT: peer at height {}, need block sync",
+                                        "BFT: peer at height {}, triggering block sync",
                                         peer_height
                                     );
+                                    lp2p_clone.trigger_sync().await;
                                     break;
                                 }
                                 BftAction::Wait | BftAction::ProposeBlock => break,
@@ -3178,6 +3184,7 @@ async fn cmd_start(
     let storage_for_p2p = storage.clone();
     let bft_tx_clone = bft_tx;
     let lp2p_for_events = lp2p.clone();
+    let forward_bft_to_validator = is_validator_node;
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             match event {
@@ -3258,6 +3265,9 @@ async fn cmd_start(
                 // journalctl and operators can restart the node instead of
                 // silently dropping votes/proposals.
                 NodeEvent::BftProposal(p) => {
+                    if !forward_bft_to_validator {
+                        continue;
+                    }
                     tracing::info!(
                         "BFT proposal: height={} round={} proposer={} block_hash={}",
                         p.height,
@@ -3272,6 +3282,9 @@ async fn cmd_start(
                     );
                 }
                 NodeEvent::BftPrevote(v) => {
+                    if !forward_bft_to_validator {
+                        continue;
+                    }
                     let hash_tag = match &v.block_hash {
                         Some(h) => format!("block={}", &h[..h.len().min(16)]),
                         None => "block=nil".to_string(),
@@ -3290,6 +3303,9 @@ async fn cmd_start(
                     );
                 }
                 NodeEvent::BftPrecommit(c) => {
+                    if !forward_bft_to_validator {
+                        continue;
+                    }
                     let hash_tag = match &c.block_hash {
                         Some(h) => format!("block={}", &h[..h.len().min(16)]),
                         None => "block=nil".to_string(),
@@ -3308,6 +3324,9 @@ async fn cmd_start(
                     );
                 }
                 NodeEvent::BftRoundStatus(s) => {
+                    if !forward_bft_to_validator {
+                        continue;
+                    }
                     tracing::debug!(
                         "BFT round-status: height={} round={} from={}",
                         s.height,
