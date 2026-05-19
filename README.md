@@ -7,8 +7,8 @@ Real chain, real blocks, real code. Sentrix (SRX) is a purpose-built Layer-1 wit
 
 <a href="https://sentrixchain.com">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero.gif">
-    <img src="docs/assets/hero.gif" alt="Sentrix Chain — orbital nodes hero animation" width="100%">
+    <source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/gh/sentrix-labs/brand-kit@227404b54a1d2314d9f6127d23cb1197ce2880b8/png-transparent/sentrix-256.png">
+    <img src="https://cdn.jsdelivr.net/gh/sentrix-labs/brand-kit@227404b54a1d2314d9f6127d23cb1197ce2880b8/png-transparent/sentrix-256.png" alt="Sentrix Chain" width="128">
   </picture>
 </a>
 
