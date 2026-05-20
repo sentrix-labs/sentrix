@@ -209,9 +209,152 @@ async fn eth_get_transaction_by_hash(params: &Value, state: &SharedState) -> Dis
     };
     let bc = state.read().await;
     match bc.get_transaction(&txid) {
-        Some(tx_data) => Ok(tx_data),
+        Some(tx_data) => Ok(tx_to_evm_json(&bc, &txid, &tx_data)),
         None => Ok(json!(null)),
     }
+}
+
+/// Convert chain-native tx JSON (block_hash + nested transaction{}) to
+/// Ethereum JSON-RPC standard shape per EIP-1474. Pre-2026-05-20 this
+/// returned the raw native shape and ethers.js / viem / alloy / Hyperlane
+/// CLI all crashed with "missing from address". The receipt handler does
+/// the same conversion for eth_getTransactionReceipt — this mirrors it
+/// for getTransactionByHash so the same off-the-shelf tooling works.
+fn tx_to_evm_json(
+    bc: &sentrix_core::blockchain::Blockchain,
+    txid: &str,
+    tx_data: &Value,
+) -> Value {
+    let block_index = tx_data["block_index"].as_u64().unwrap_or(0);
+    let block_hash = tx_data["block_hash"]
+        .as_str()
+        .map(|h| if h.starts_with("0x") { h.to_string() } else { format!("0x{h}") })
+        .unwrap_or_default();
+
+    let tx_obj = &tx_data["transaction"];
+    let from_raw = tx_obj["from_address"].as_str().unwrap_or("").to_string();
+    let from = if from_raw.starts_with("0x") {
+        from_raw.clone()
+    } else {
+        format!("0x{from_raw}")
+    };
+    let to_raw = tx_obj["to_address"].as_str().unwrap_or("").to_string();
+
+    let data_str = tx_obj["data"].as_str().unwrap_or("").to_string();
+    let is_evm = data_str.starts_with("EVM:");
+
+    // EVM contract creations target the synthetic TOKEN_OP_ADDRESS in the
+    // chain-native representation. Surface as `to: null` so ethers/viem
+    // detect creations the standard way.
+    let to_value: Value = if to_raw.is_empty()
+        || to_raw == "0x0000000000000000000000000000000000000000"
+        || to_raw == "0000000000000000000000000000000000000000"
+        || (is_evm
+            && to_raw.to_lowercase()
+                == sentrix_primitives::transaction::TOKEN_OP_ADDRESS.to_lowercase())
+    {
+        Value::Null
+    } else {
+        Value::String(if to_raw.starts_with("0x") {
+            to_raw.clone()
+        } else {
+            format!("0x{to_raw}")
+        })
+    };
+
+    // Parse "EVM:<gas_limit>:<input_hex>" envelope. Native txs surface
+    // gas=21000 + input="0x" — matches what most EVM tools expect for a
+    // basic value transfer.
+    let (gas_hex, input_hex) = if is_evm {
+        let rest = &data_str[4..];
+        if let Some(colon) = rest.find(':') {
+            let gas_str = &rest[..colon];
+            let input_str = &rest[colon + 1..];
+            let gas_val: u64 = gas_str.parse().unwrap_or(21_000);
+            (to_hex(gas_val), format!("0x{input_str}"))
+        } else {
+            (to_hex(21_000), "0x".to_string())
+        }
+    } else {
+        (to_hex(21_000), "0x".to_string())
+    };
+
+    // Resolve transactionIndex by scanning the block. Same approach as
+    // the receipt handler — blocks have a small number of txs so the
+    // linear scan is cheap.
+    let tx_index = bc
+        .get_block_any(block_index)
+        .and_then(|b| b.transactions.iter().position(|t| t.txid == txid))
+        .map(|i| to_hex(i as u64))
+        .unwrap_or_else(|| "0x0".to_string());
+
+    // Chain-native amount is u64 in sentri. EVM tools expect wei. 1 sentri
+    // = 1e10 wei. u64::MAX sentri × 1e10 fits in u128.
+    let amount_sentri = tx_obj["amount"].as_u64().unwrap_or(0);
+    let value_wei = (amount_sentri as u128).saturating_mul(10_000_000_000u128);
+    let value_hex = to_hex_u128(value_wei);
+
+    let nonce_hex = to_hex(tx_obj["nonce"].as_u64().unwrap_or(0));
+    let chain_id_hex = to_hex(tx_obj["chain_id"].as_u64().unwrap_or(0));
+
+    // Same EIP-1559 type + effectiveGasPrice rationale as receipts. EVM txs
+    // go through the base_fee pipeline, native txs do not.
+    let (tx_type, gas_price) = if is_evm {
+        ("0x2", to_hex(sentrix_evm::gas::INITIAL_BASE_FEE))
+    } else {
+        ("0x0", "0x0".to_string())
+    };
+
+    // For EVM txs, decode the original RLP envelope stored in `signature`
+    // (see eth_send_raw_transaction). That gives us the canonical v/r/s
+    // ethers needs to round-trip the tx. For native txs we don't have
+    // ECDSA-on-EVM-envelope semantics; return zeros so the field is present.
+    let (v_hex, r_hex, s_hex) = if is_evm {
+        extract_vrs_from_rlp(tx_obj["signature"].as_str().unwrap_or(""))
+            .unwrap_or_else(|| ("0x0".to_string(), "0x0".to_string(), "0x0".to_string()))
+    } else {
+        ("0x0".to_string(), "0x0".to_string(), "0x0".to_string())
+    };
+
+    json!({
+        "hash": format!("0x{txid}"),
+        "blockHash": block_hash,
+        "blockNumber": to_hex(block_index),
+        "transactionIndex": tx_index,
+        "from": from,
+        "to": to_value,
+        "value": value_hex,
+        "gas": gas_hex,
+        "gasPrice": gas_price.clone(),
+        "input": input_hex,
+        "nonce": nonce_hex,
+        "type": tx_type,
+        "chainId": chain_id_hex,
+        "v": v_hex,
+        "r": r_hex,
+        "s": s_hex,
+        "maxFeePerGas": gas_price,
+        "maxPriorityFeePerGas": "0x0",
+        "accessList": [],
+    })
+}
+
+/// Decode the stored RLP envelope back into its alloy form so we can
+/// surface canonical v/r/s. Returns None for non-EVM signatures (which
+/// we fall back to zeros for).
+fn extract_vrs_from_rlp(sig_hex: &str) -> Option<(String, String, String)> {
+    use alloy_consensus::TxEnvelope;
+    use alloy_eips::eip2718::Decodable2718;
+
+    let raw_bytes = hex::decode(sig_hex).ok()?;
+    let envelope = TxEnvelope::decode_2718(&mut raw_bytes.as_slice()).ok()?;
+    let sig = envelope.signature();
+    // For typed (EIP-2718) transactions the signature carries y-parity (0 or 1).
+    // Legacy txs encode chain-id in v but ethers/viem accept parity too.
+    let v_val: u64 = if sig.v() { 1 } else { 0 };
+    let r_u256 = sig.r();
+    let s_u256 = sig.s();
+    Some((to_hex(v_val), format!("0x{r_u256:x}"), format!("0x{s_u256:x}")))
 }
 
 async fn eth_get_transaction_receipt(params: &Value, state: &SharedState) -> DispatchResult {
