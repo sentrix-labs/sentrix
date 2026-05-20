@@ -5,12 +5,11 @@
 Real chain, real blocks, real code. Sentrix (SRX) is a purpose-built Layer-1 with 1-second blocks, instant BFT finality, and Ethereum-compatible tooling — MetaMask, ethers.js, viem, and hardhat connect natively. Bitcoin's monetary discipline (fixed 315M supply, 4-year halving) plus Ethereum's programmability (revm 38).
 
 
-<a href="https://sentrixchain.com">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://cdn.jsdelivr.net/gh/sentrix-labs/brand-kit@227404b54a1d2314d9f6127d23cb1197ce2880b8/png-transparent/sentrix-256.png">
+<div align="center">
+  <a href="https://sentrixchain.com">
     <img src="https://cdn.jsdelivr.net/gh/sentrix-labs/brand-kit@227404b54a1d2314d9f6127d23cb1197ce2880b8/png-transparent/sentrix-256.png" alt="Sentrix Chain" width="128">
-  </picture>
-</a>
+  </a>
+</div>
 
 [![Website](https://img.shields.io/badge/website-sentrixchain.com-8A5A11)](https://sentrixchain.com)
 [![CI/CD](https://github.com/sentrix-labs/sentrix/actions/workflows/ci.yml/badge.svg)](https://github.com/sentrix-labs/sentrix/actions)
