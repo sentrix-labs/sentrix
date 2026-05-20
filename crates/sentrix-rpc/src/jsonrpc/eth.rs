@@ -225,16 +225,28 @@ fn tx_to_evm_json(
     txid: &str,
     tx_data: &Value,
 ) -> Value {
-    let block_index = tx_data["block_index"].as_u64().unwrap_or(0);
-    let block_hash = tx_data["block_hash"]
+    // Mined location fields are Option-typed so pending / not-yet-included
+    // txs surface as null rather than genesis-looking defaults (block 0,
+    // empty hash). EIP-1474 clients use null on these three to detect that
+    // a tx is still in the mempool.
+    let block_index = tx_data["block_index"].as_u64();
+    let block_hash: Value = tx_data["block_hash"]
         .as_str()
+        .filter(|h| !h.is_empty())
         .map(|h| if h.starts_with("0x") { h.to_string() } else { format!("0x{h}") })
-        .unwrap_or_default();
+        .map(Value::String)
+        .unwrap_or(Value::Null);
 
     let tx_obj = &tx_data["transaction"];
-    let from_raw = tx_obj["from_address"].as_str().unwrap_or("").to_string();
-    let from = if from_raw.starts_with("0x") {
-        from_raw.clone()
+    let from_raw = tx_obj["from_address"].as_str().unwrap_or("");
+    // Coinbase / system-emitted txs carry sentinel senders ("COINBASE",
+    // PROTOCOL_TREASURY, or empty) that are not valid EVM addresses. Map
+    // them to the zero address so receipt + tx-by-hash agree and EVM
+    // parsers don't crash on "0xCOINBASE".
+    let from = if from_raw.is_empty() || from_raw.eq_ignore_ascii_case("COINBASE") {
+        "0x0000000000000000000000000000000000000000".to_string()
+    } else if from_raw.starts_with("0x") {
+        from_raw.to_string()
     } else {
         format!("0x{from_raw}")
     };
@@ -281,12 +293,14 @@ fn tx_to_evm_json(
 
     // Resolve transactionIndex by scanning the block. Same approach as
     // the receipt handler — blocks have a small number of txs so the
-    // linear scan is cheap.
-    let tx_index = bc
-        .get_block_any(block_index)
-        .and_then(|b| b.transactions.iter().position(|t| t.txid == txid))
-        .map(|i| to_hex(i as u64))
-        .unwrap_or_else(|| "0x0".to_string());
+    // linear scan is cheap. Pending txs (no block_index) surface null.
+    let tx_index: Value = block_index
+        .and_then(|h| {
+            bc.get_block_any(h)
+                .and_then(|b| b.transactions.iter().position(|t| t.txid == txid))
+        })
+        .map(|i| Value::String(to_hex(i as u64)))
+        .unwrap_or(Value::Null);
 
     // Chain-native amount is u64 in sentri. EVM tools expect wei. 1 sentri
     // = 1e10 wei. u64::MAX sentri × 1e10 fits in u128.
@@ -316,10 +330,14 @@ fn tx_to_evm_json(
         ("0x0".to_string(), "0x0".to_string(), "0x0".to_string())
     };
 
+    let block_number_value: Value = block_index
+        .map(|h| Value::String(to_hex(h)))
+        .unwrap_or(Value::Null);
+
     json!({
         "hash": format!("0x{txid}"),
         "blockHash": block_hash,
-        "blockNumber": to_hex(block_index),
+        "blockNumber": block_number_value,
         "transactionIndex": tx_index,
         "from": from,
         "to": to_value,
