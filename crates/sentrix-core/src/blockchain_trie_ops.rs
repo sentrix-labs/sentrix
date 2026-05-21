@@ -199,16 +199,33 @@ impl Blockchain {
         // height the old hash format ignores state_root entirely, so a
         // broken trie can't cause consensus divergence — warn-only there.
         if let Err(e) = trie.verify_integrity() {
-            if height >= sentrix_primitives::block::STATE_ROOT_FORK_HEIGHT {
+            // Operator escape hatch: when chain.db has a known orphan that
+            // affects every peer identically (same orphan reference across
+            // the cluster), bypassing the strict gate is recovery-safe — all
+            // nodes will compute identical state_roots and stay in consensus.
+            // Set SENTRIX_SKIP_TRIE_INTEGRITY=1 to allow boot. Use only when
+            // the alternative is a halted chain with no clean peer to rsync
+            // from. NOT for production unless coordinated cluster-wide.
+            let skip = std::env::var("SENTRIX_SKIP_TRIE_INTEGRITY")
+                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
+                .unwrap_or(false);
+            if height >= sentrix_primitives::block::STATE_ROOT_FORK_HEIGHT && !skip {
                 return Err(SentrixError::Internal(format!(
                     "trie integrity check failed at height {height}: {e}"
                 )));
             }
-            tracing::warn!(
-                "trie integrity warning at height {} (below fork height — allowed): {}",
-                height,
-                e
-            );
+            if skip {
+                tracing::warn!(
+                    "trie integrity check FAILED at height {height} but \
+                     SENTRIX_SKIP_TRIE_INTEGRITY=1 set — booting anyway: {e}"
+                );
+            } else {
+                tracing::warn!(
+                    "trie integrity warning at height {} (below fork height — allowed): {}",
+                    height,
+                    e
+                );
+            }
         }
 
         self.state_trie = Some(trie);
