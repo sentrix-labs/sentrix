@@ -321,13 +321,33 @@ fn tx_to_evm_json(
 
     // For EVM txs, decode the original RLP envelope stored in `signature`
     // (see eth_send_raw_transaction). That gives us the canonical v/r/s
-    // ethers needs to round-trip the tx. For native txs we don't have
-    // ECDSA-on-EVM-envelope semantics; return zeros so the field is present.
-    let (v_hex, r_hex, s_hex) = if is_evm {
-        extract_vrs_from_rlp(tx_obj["signature"].as_str().unwrap_or(""))
-            .unwrap_or_else(|| ("0x0".to_string(), "0x0".to_string(), "0x0".to_string()))
+    // ethers needs to round-trip the tx.
+    //
+    // 2026-05-21 (audit M-6): if decoding fails for an EVM tx, surface
+    // v/r/s as null in the response instead of silently returning zeros.
+    // Zero-as-fallback risks ethers / viem accepting a forged "signature"
+    // (all-zero r/s parses but ecrecover returns a deterministic junk
+    // address that callers might trust). Null forces explicit "no
+    // recoverable signature" handling, matching how EIP-1474 clients
+    // treat pending / unsigned txs. Log a warn so a stuck decoder path
+    // doesn't go unnoticed.
+    //
+    // For native (non-EVM) txs there is no Ethereum-shaped signature at
+    // all; v/r/s stay null so the response is shape-consistent.
+    let (v_value, r_value, s_value): (Value, Value, Value) = if is_evm {
+        match extract_vrs_from_rlp(tx_obj["signature"].as_str().unwrap_or("")) {
+            Some((v, r, s)) => (Value::String(v), Value::String(r), Value::String(s)),
+            None => {
+                tracing::warn!(
+                    txid,
+                    "eth_getTransactionByHash: failed to decode v/r/s from stored \
+                     EVM-tx signature field; returning null sig"
+                );
+                (Value::Null, Value::Null, Value::Null)
+            }
+        }
     } else {
-        ("0x0".to_string(), "0x0".to_string(), "0x0".to_string())
+        (Value::Null, Value::Null, Value::Null)
     };
 
     let block_number_value: Value = block_index
@@ -348,9 +368,9 @@ fn tx_to_evm_json(
         "nonce": nonce_hex,
         "type": tx_type,
         "chainId": chain_id_hex,
-        "v": v_hex,
-        "r": r_hex,
-        "s": s_hex,
+        "v": v_value,
+        "r": r_value,
+        "s": s_value,
         "maxFeePerGas": gas_price,
         "maxPriorityFeePerGas": "0x0",
         "accessList": [],
