@@ -54,15 +54,22 @@ pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) 
             // accepted only the first, the rest piled up rejected
             // mid-block. Live discovery 2026-05-02.
             //
-            // 2026-05-06: extend the same historical-state honesty
-            // pattern Bug A applied to eth_getBalance — specific past
-            // heights return -32004 instead of silently returning
-            // current nonce. `pending` keeps its mempool-aware path.
+            // 2026-05-21: relaxed the historical-state gate for this
+            // method only. Hyperlane relayer + ethers + viem all query
+            // `eth_getTransactionCount(addr, blockN)` against a recent
+            // past block as part of routine nonce bookkeeping — they do
+            // NOT actually care about the historical value, they just
+            // want a nonce they can pass to the next signed tx.
+            // Returning -32004 here breaks every off-the-shelf relayer.
+            //
+            // Unlike eth_getBalance / eth_getCode / eth_getStorageAt /
+            // eth_call (kept strict), a "wrong" nonce is self-correcting:
+            // the chain rejects a tx with a stale nonce, the caller
+            // retries, no protocol-level decision was made on stale data.
+            // So this method serves current nonce regardless of block
+            // tag and trusts the caller to handle the retry loop.
             let block_tag = params.get(1).and_then(|v| v.as_str()).unwrap_or("latest");
             let bc = state.read().await;
-            if block_tag != "pending" {
-                require_latest_state_read(params.get(1), bc.height())?;
-            }
             let mut nonce = bc.accounts.get_nonce(&address);
             if block_tag == "pending" {
                 nonce = nonce.saturating_add(bc.mempool_pending_count(&address));
