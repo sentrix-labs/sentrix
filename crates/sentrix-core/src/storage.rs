@@ -365,8 +365,11 @@ impl Storage {
     /// premine / genesis accounts that pre-date the first trie touch.
     /// We must not zero those out.
     ///
-    /// Trie-lookup errors (`Err(_)`) propagate: a corrupted trie is a
-    /// hard-fail, not silent fallback.
+    /// Trie-lookup errors (`Err(_)`) are logged and skipped: a missing
+    /// or corrupted trie node for one address no longer aborts boot.
+    /// The address is treated as having no trie leaf (blob value
+    /// preserved); the next block touching that account rewrites the
+    /// trie entry and closes the gap.
     fn reconcile_accounts_from_trie(bc: &mut Blockchain) -> SentrixResult<(usize, usize)> {
         // Build the candidate address set first — sorted + deduped so
         // the reconcile order is deterministic across runs (helps debug
@@ -409,17 +412,41 @@ impl Storage {
 
         // Phase 1: read all trie leaves into a buffer. This avoids
         // holding the trie borrow while we mutate accounts in phase 2.
+        //
+        // 2026-05-20: a missing trie node here used to crash boot. Testnet
+        // hit this with one address having a dangling reference to node
+        // 314e57bd... at h=5003961; the other 99.99% of the trie was
+        // healthy and the chain had been producing for 5 hours. Refusing
+        // to boot turned one stale leaf into an unrecoverable validator.
+        // Fail-soft now: log the gap, skip the address (existing phase-2
+        // logic treats a `None` leaf as "trie has no opinion, keep the
+        // blob"), and let the next block apply rewrite the entry.
         let mut trie_values: Vec<(String, Option<(u64, u64)>)> = Vec::with_capacity(addrs.len());
+        let mut trie_gaps: usize = 0;
         for addr in &addrs {
             let key = address_to_key(addr);
-            let leaf = trie.get(&key).map_err(|e| {
-                SentrixError::Internal(format!(
-                    "B3 reconcile: trie lookup for {addr} failed at h={}: {e}",
-                    bc.chain.last().map(|b| b.index).unwrap_or(0)
-                ))
-            })?;
+            let leaf = match trie.get(&key) {
+                Ok(leaf) => leaf,
+                Err(e) => {
+                    tracing::warn!(
+                        "B3 reconcile: trie lookup for {addr} failed at h={}: {e} — \
+                         skipping reconcile for this address (will rewrite on next touch)",
+                        bc.chain.last().map(|b| b.index).unwrap_or(0)
+                    );
+                    trie_gaps += 1;
+                    None
+                }
+            };
             let decoded = leaf.and_then(|bytes| account_value_decode(&bytes));
             trie_values.push((addr.clone(), decoded));
+        }
+        if trie_gaps > 0 {
+            tracing::warn!(
+                "B3 reconcile: skipped {trie_gaps}/{} addresses due to missing trie nodes \
+                 at h={}; chain will continue producing — touched accounts repair themselves",
+                addrs.len(),
+                bc.chain.last().map(|b| b.index).unwrap_or(0)
+            );
         }
 
         // Phase 2: apply repairs.
