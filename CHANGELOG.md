@@ -14,6 +14,18 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.14] — 2026-05-21 — Five RPC compat fixes; off-the-shelf EVM tooling unblocked
+
+**Production binary on mainnet (vps3 + vps6) + testnet (vps4) since 2026-05-21.** Mainnet halt window 21s. Chain progression resumed 1.36 s/blk. Zero cascade-jail.
+
+- **`eth_getTransactionByHash` returns EVM-standard JSON shape** (PR #692). Pre-fix the response carried the chain-native shape (`block_hash` / `transaction.{amount,chain_id,data:"EVM:..."}`) which crashed ethers / viem / alloy / Hyperlane CLI on every tx fetch. The new path converts to the canonical EVM tx response (`from`, `to`, `value`, `gas`, `gasPrice`, `nonce`, `v`, `r`, `s`, `hash`, `input`, `transactionIndex`, `blockNumber`, `blockHash`). Live-verified against a recent mainnet tx — all 14 keys present.
+- **B3 trie reconcile fail-soft on missing nodes** (PR #696). The boot-time integrity check used to halt-crash if a single trie node was missing in the snapshot. Now it logs + skips so the chain can self-heal via consensus replay instead of needing a manual operator rsync from a clean peer.
+- **RPC pending fields + coinbase intermediate fix** (PR #702). Pending tx response shape now matches spec; `miner` / `coinbase` block fields return canonical hex strings.
+- **`null` v/r/s for undecodable EVM tx sigs** (PR #703). When `extract_vrs_from_rlp` fails we now return `null` for the three signature fields instead of `"0x0"`. EIP-1474 clients already treat null sig fields as "not recoverable"; the previous all-zero strings parsed as a valid ECDSA point pair and `ecrecover` returned junk that callers could trust by accident.
+- **`eth_getTransactionCount` accepts any block tag** (PR #704). The 2026-05-06 strict gate (`-32004 historical state reads not yet supported`) broke Hyperlane relayer / ethers / viem nonce bookkeeping. A stale nonce is self-correcting (chain rejects wrong-nonce tx, caller retries) so this method now serves current nonce regardless of block tag. The strict gate stays on `eth_getBalance` / `eth_getCode` / `eth_getStorageAt` / `eth_call` — those keep returning `-32004` for any non-`latest` tag because silently serving current state for an explicit "balance at h=N" query is the original silent-lie risk the 2026-05-05 audit caught.
+
+**Sibling work, not in this binary**: `eth_call` historical-tag loosening + empty `logsBloom` constant 304B → 256B (Ethereum spec). Both live on testnet via branch `fix/rpc-eth-call-and-logsbloom`. Mainnet pickup planned for 2.2.15.
+
 ## [2.2.11] — 2026-05-13 — EVM value-transfer + gas-fix forks activated; Blockchain refactor pass
 
 **Production binary on mainnet + testnet since 2026-05-13.**
