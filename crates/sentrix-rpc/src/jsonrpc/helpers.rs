@@ -32,11 +32,10 @@ pub(super) fn resolve_block_tag(v: Option<&Value>, latest: u64) -> Result<u64, &
     }
 }
 
-/// Gate state-read methods (`eth_getBalance`, `eth_getCode`,
-/// `eth_getStorageAt`, `eth_call`) against historical-specific block
-/// heights. `eth_getTransactionCount` was removed from this gate
-/// 2026-05-21 — see the comment in eth.rs for why nonces are different
-/// from other state reads.
+/// `eth_getStorageAt`) against historical-specific block heights.
+/// `eth_getTransactionCount` and `eth_call` were removed from this
+/// gate 2026-05-21 — see the comments in eth.rs for why nonces and
+/// view-function calls are different from explicit state reads.
 ///
 /// Sentrix doesn't yet have MDBX snapshot isolation, so account state
 /// reads always serve current-tip data regardless of the block tag
