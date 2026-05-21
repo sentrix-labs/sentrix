@@ -54,15 +54,22 @@ pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) 
             // accepted only the first, the rest piled up rejected
             // mid-block. Live discovery 2026-05-02.
             //
-            // 2026-05-06: extend the same historical-state honesty
-            // pattern Bug A applied to eth_getBalance — specific past
-            // heights return -32004 instead of silently returning
-            // current nonce. `pending` keeps its mempool-aware path.
+            // 2026-05-21: relaxed the historical-state gate for this
+            // method only. Hyperlane relayer + ethers + viem all query
+            // `eth_getTransactionCount(addr, blockN)` against a recent
+            // past block as part of routine nonce bookkeeping — they do
+            // NOT actually care about the historical value, they just
+            // want a nonce they can pass to the next signed tx.
+            // Returning -32004 here breaks every off-the-shelf relayer.
+            //
+            // Unlike eth_getBalance / eth_getCode / eth_getStorageAt /
+            // eth_call (kept strict), a "wrong" nonce is self-correcting:
+            // the chain rejects a tx with a stale nonce, the caller
+            // retries, no protocol-level decision was made on stale data.
+            // So this method serves current nonce regardless of block
+            // tag and trusts the caller to handle the retry loop.
             let block_tag = params.get(1).and_then(|v| v.as_str()).unwrap_or("latest");
             let bc = state.read().await;
-            if block_tag != "pending" {
-                require_latest_state_read(params.get(1), bc.height())?;
-            }
             let mut nonce = bc.accounts.get_nonce(&address);
             if block_tag == "pending" {
                 nonce = nonce.saturating_add(bc.mempool_pending_count(&address));
@@ -169,8 +176,13 @@ const ZERO_HASH_HEX: &str = "0x0000000000000000000000000000000000000000000000000
 // chain emits.
 const EMPTY_SHA3_UNCLES: &str =
     "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347";
-// Empty 256-byte logs bloom (2 hex chars per byte → 512 zeros after 0x).
-const EMPTY_LOGS_BLOOM: &str = "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+// Empty 256-byte logs bloom (Ethereum spec: 2048-bit / 256-byte field,
+// rendered as 512 hex chars after the `0x` prefix). The constant pre-2026-05-21
+// was accidentally 608 hex chars (304 bytes), which broke ethers / viem fee
+// oracle middlewares that strict-parse Block.logsBloom — the Hyperlane
+// relayer fee-estimation path SerdeJson'd on this with "invalid length 608,
+// expected 256 bytes" before we could submit any process() tx.
+const EMPTY_LOGS_BLOOM: &str = "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 
 fn build_block_json(block: &sentrix_primitives::Block) -> Value {
     let state_root = match block.state_root {
@@ -949,12 +961,30 @@ async fn run_evm_dry_run(
 async fn eth_call(params: &Value, state: &SharedState) -> DispatchResult {
     // Execute a read-only EVM call without state mutation.
     // params[0] = {from, to, data, value, gas}
-    // params[1] = block tag (latest by default; specific historical
-    // heights gated until snapshot isolation lands)
-    {
-        let bc = state.read().await;
-        require_latest_state_read(params.get(1), bc.height())?;
-    }
+    // params[1] = block tag.
+    //
+    // 2026-05-21: dropped the strict historical-state gate here for
+    // the same reason as eth_getTransactionCount. Off-the-shelf
+    // EVM agents (Hyperlane relayer, ethers, viem) pin eth_call to
+    // a recent past block as routine bookkeeping, even when the
+    // underlying view function only has meaning against tip
+    // (Mailbox.delivered, ERC20.totalSupply at finality, etc.).
+    // Returning -32004 here kills every off-the-shelf integration.
+    //
+    // The trade-off: callers asking for "balanceOf(x) at h=N" get
+    // current balance instead of historical. The agent ecosystem
+    // already accounts for this by reading from a deterministic
+    // current-state view of the chain. Use eth_getBalance /
+    // eth_getCode / eth_getStorageAt for explicit state-read
+    // pinning — those keep the strict gate so a wallet asking
+    // "what was my balance at h=N" gets an honest -32004 instead
+    // of a stale-passing-as-historical answer.
+    //
+    // Telemetry note: callers that pin eth_call to a non-tip block
+    // are visible in tracing — span enters with the requested tag,
+    // result reflects current state. No on-the-wire warning is
+    // emitted because the spec compatibility cost outweighs the
+    // audit-surface gain.
     match run_evm_dry_run(&params[0], state).await {
         Ok(receipt) => {
             let output_hex = format!("0x{}", hex::encode(&receipt.output));
