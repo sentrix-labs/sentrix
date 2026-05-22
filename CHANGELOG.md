@@ -14,9 +14,19 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.15] — 2026-05-22 — eth_call historical tags + logsBloom spec-length fix
+
+**Production binary on mainnet since 2026-05-22.** Mainnet halt window 34s. Chain progression resumed ~1.8 s/blk. Zero cascade-jail. Testnet ran the same code as a version-2.2.14-stamped binary since 2026-05-21; binary re-stamped to 2.2.15 in this release.
+
+- **`eth_call` accepts any block tag** (PR #707, also in #705). The 2026-05-06 strict historical-state gate returned `-32004` for `eth_call` against any non-`latest` block. Hyperlane's relayer queries `Mailbox.delivered(msgId)` and `recipientIsm(addr)` at a recent past block as routine bookkeeping — the gate killed every off-the-shelf relayer integration. `eth_call` now serves current state regardless of block tag. The strict gate stays on `eth_getBalance` / `eth_getCode` / `eth_getStorageAt` where a silently-stale answer would let a caller make a wrong protocol decision on data that purports to be historical.
+- **Empty `logsBloom` is now actually 256 bytes** (PR #707, also in #705). The `EMPTY_LOGS_BLOOM` constant literal had 608 hex chars (304 bytes); the doc comment claimed 256. ethers' fee-oracle middleware strict-parses `Block.logsBloom` against the Ethereum spec — the Hyperlane relayer's gas-estimation path hit `SerdeJson("invalid length 608, expected 256 bytes")` on every attempt to estimate a `process()` tx. Constant shrunk to the spec-correct 512 hex chars.
+- **Workspace version bump 2.2.14 → 2.2.15** (PR #708). #705/#707 merged without a version bump, so post-merge `main` carried more RPC changes than the 2.2.14 binary already on mainnet — two distinct binaries with one version string. This release re-stamps.
+
+Together with 2.2.14 this completes the RPC-compat set that unblocked the Base Sepolia ↔ Sentrix Testnet Hyperlane bridge: validator + relayer agents now run against Sentrix RPC with no client-side patching, and bridge transfers auto-relay end-to-end.
+
 ## [2.2.14] — 2026-05-21 — Five RPC compat fixes; off-the-shelf EVM tooling unblocked
 
-**Production binary on mainnet (vps3 + vps6) + testnet (vps4) since 2026-05-21.** Mainnet halt window 21s. Chain progression resumed 1.36 s/blk. Zero cascade-jail.
+**Production binary on mainnet + testnet since 2026-05-21.** Mainnet halt window 21s. Chain progression resumed 1.36 s/blk. Zero cascade-jail.
 
 - **`eth_getTransactionByHash` returns EVM-standard JSON shape** (PR #692). Pre-fix the response carried the chain-native shape (`block_hash` / `transaction.{amount,chain_id,data:"EVM:..."}`) which crashed ethers / viem / alloy / Hyperlane CLI on every tx fetch. The new path converts to the canonical EVM tx response (`from`, `to`, `value`, `gas`, `gasPrice`, `nonce`, `v`, `r`, `s`, `hash`, `input`, `transactionIndex`, `blockNumber`, `blockHash`). Live-verified against a recent mainnet tx — all 14 keys present.
 - **B3 trie reconcile fail-soft on missing nodes** (PR #696). The boot-time integrity check used to halt-crash if a single trie node was missing in the snapshot. Now it logs + skips so the chain can self-heal via consensus replay instead of needing a manual operator rsync from a clean peer.
@@ -996,7 +1006,7 @@ This closes Bug A from `audits/bft-signing-fork-design.md`: cross-chain BFT vote
 
 ### Added — peer auto-discovery (L1 + L2)
 
-- **L2 pre-flight peer-mesh gate (#298).** Validator loop refuses to flip into Voyager BFT mode unless `peer_count >= active_set.len() - 1`. The 2026-04-25 livelock would have been caught at every VPS — Beacon node had only 1 libp2p peer (Foundation node) at activation, gate would have held the flip until L1 self-healing converged the mesh. Strict `SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=="1"` env override (rejects empty string + non-1 values to close the misconfiguration footgun).
+- **L2 pre-flight peer-mesh gate (#298).** Validator loop refuses to flip into Voyager BFT mode unless `peer_count >= active_set.len() - 1`. The 2026-04-25 livelock would have been caught at every host — Beacon node had only 1 libp2p peer (Foundation node) at activation, gate would have held the flip until L1 self-healing converged the mesh. Strict `SENTRIX_FORCE_BFT_INSUFFICIENT_PEERS=="1"` env override (rejects empty string + non-1 values to close the misconfiguration footgun).
 - **L1 multiaddr advertisement (#300, #301, #302).** New gossipsub topic `sentrix/validator-adverts/1`. Each validator broadcasts a signed `MultiaddrAdvertisement` on startup + every 10 minutes (sequence persisted to `<data_dir>/.advert-sequence` so restart doesn't reset). Receivers verify against on-chain stake registry pubkey, store latest-by-sequence in a 4096-entry LRU cache (lowest-sequence eviction). Periodic dial-tick (every 30s) reads `active_set` and dials any cached members not currently peered. Self-healing mesh from a single bootstrap peer; manual `--peers` lists no longer required at scale.
 
 ### Fixed
@@ -1119,7 +1129,7 @@ This release closes **one** disk-roundtrip divergence class. Mainnet's specific 
 
 ## [2.1.21] — 2026-04-24 — Observability + startup perf (no consensus change)
 
-> **🚨 DEPLOYMENT FROZEN** — 2026-04-24 Beacon canary (Beacon node) triggered immediate `CRITICAL #1e: state_root mismatch` against v2.1.15 peers even with fork envs unset. Rolled back to v2.1.15; divergence persisted through 3 rsync recovery attempts. Root cause remains unresolved — see GitHub issue #268. Do NOT deploy v2.1.21 to any mainnet VPS until the issue closes.
+> **🚨 DEPLOYMENT FROZEN** — 2026-04-24 Beacon canary (Beacon node) triggered immediate `CRITICAL #1e: state_root mismatch` against v2.1.15 peers even with fork envs unset. Rolled back to v2.1.15; divergence persisted through 3 rsync recovery attempts. Root cause remains unresolved — see GitHub issue #268. Do NOT deploy v2.1.21 to any mainnet host until the issue closes.
 
 Maintenance patch collecting three bite-sized improvements merged over the 2026-04-24 session. No consensus, wire, or storage format change; `VOYAGER_*_HEIGHT` env vars remain the sole activation gates for Voyager behaviour.
 
@@ -1812,7 +1822,7 @@ work natively, and deploy moves from CI to `fast-deploy.sh` on build host.
   pre-validate runs before finalize so a malformed block fails fast.
 - **Abort process on panic — systemd restarts** (PR #130) — was
   previously swallowing panics in worker tasks.
-- **CI deploy workflow aligned with actual v2.0.0 VPS state** (commit
+- **CI deploy workflow aligned with actual v2.0.0 host state** (commit
   0b59b42) — stale assumptions from pre-v2.0 purged.
 
 ### Security
@@ -2046,13 +2056,13 @@ Voyager DPoS + BFT. The consensus upgrade.
 
 ## [1.0.0] — 2026-04-15
 
-Pioneer release. PoA chain live with 7 validators across 3 VPS, 141K+ blocks, 11 security audit rounds.
+Pioneer release. PoA chain live, 141K+ blocks, 11 security audit rounds.
 
 ### Milestones since 0.1.0 (Pioneer)
-- 7 validators running across 3 geographically separate VPS (full mesh peering)
-- CI/CD pipeline deploying to all 3 VPS with ordered stop/start and health checks
+- Validator set running with full mesh peering across geographically separate hosts
+- CI/CD pipeline with ordered stop/start and health checks
 - P0 security hardening: libp2p peer limits, per-IP rate limiting, legacy TCP deprecated
-- Core node (Sentrix Core) added as 7th validator
+- Core node (Sentrix Core) added to the validator set
 - Chain height 141,000+, zero downtime incidents since stabilization
 - 11 security audit rounds completed (94 findings, 78 fixed, score 8.3/10)
 - Full documentation suite (20 files across architecture, security, operations, tokenomics, roadmap)
