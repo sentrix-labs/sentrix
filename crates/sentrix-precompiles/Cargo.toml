@@ -7,4 +7,4 @@ description = "Sentrix-specific EVM precompile addresses (staking, slashing, ...
 repository.workspace = true
 
 [dependencies]
-alloy-primitives = "1.5"
+alloy-primitives = "1.6"
