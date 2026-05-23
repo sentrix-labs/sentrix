@@ -324,7 +324,11 @@ fn test_trie_persists_after_restart() {
     let dir = tempfile::TempDir::new().unwrap();
 
     let key = address_to_key("0xcafecafecafecafecafecafecafecafecafecafe");
-    let val = account_value_bytes(999_999, 42);
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let val = account_value_bytes(999_999, nonce);
 
     // Session 1: insert + commit
     {
