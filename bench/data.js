@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1778970169057,
+  "lastUpdate": 1779529674617,
   "repoUrl": "https://github.com/sentrix-labs/sentrix",
   "entries": {
     "sentrix-trie benches": [
@@ -83,6 +83,48 @@ window.BENCHMARK_DATA = {
             "name": "commit_after_100_inserts",
             "value": 1369676,
             "range": "± 1965154",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c6ae2619a315fa5d84c10947f72ec83ed0faca3f",
+          "message": "chore(deps): bump alloy-primitives from 1.5.7 to 1.6.0 (#698)\n\nBumps [alloy-primitives](https://github.com/alloy-rs/core) from 1.5.7 to 1.6.0.\n- [Release notes](https://github.com/alloy-rs/core/releases)\n- [Changelog](https://github.com/alloy-rs/core/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/alloy-rs/core/compare/v1.5.7...v1.6.0)\n\n---\nupdated-dependencies:\n- dependency-name: alloy-primitives\n  dependency-version: 1.6.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-05-23T16:45:52+07:00",
+          "tree_id": "24a1f364a9dd1ba2ca0b1774beafee8eca8f74ee",
+          "url": "https://github.com/sentrix-labs/sentrix/commit/c6ae2619a315fa5d84c10947f72ec83ed0faca3f"
+        },
+        "date": 1779529674214,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "insert_single",
+            "value": 83470,
+            "range": "± 10721",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "insert_batch_100",
+            "value": 446055,
+            "range": "± 27929",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "commit_after_100_inserts",
+            "value": 1290934,
+            "range": "± 46775",
             "unit": "ns/iter"
           }
         ]
