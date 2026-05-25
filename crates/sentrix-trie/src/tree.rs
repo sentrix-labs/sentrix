@@ -621,10 +621,10 @@ impl SentrixTrie {
 
         // Build live set: walk all remaining committed roots and collect reachable hashes.
         let mut live = std::collections::HashSet::new();
-        // Walk the current root
+        // Walk the current root (as-of the clone snapshot when prune was scheduled).
         self.collect_reachable(self.root, &mut live)?;
-        // Walk all other surviving roots in storage
-        // (they share most nodes with current root, but some may diverge)
+        // Walk all other surviving roots in storage between the keep-window
+        // floor and self.version (the snapshot height at clone time).
         let cutoff = self.version.saturating_sub(keep_versions);
         for version in (cutoff + 1)..=self.version {
             if let Some(root) = self.cache.storage.load_root(version)?
@@ -632,6 +632,62 @@ impl SentrixTrie {
             {
                 self.collect_reachable(root, &mut live)?;
             }
+        }
+
+        // Race-window closer (2026-05-24 RCA).
+        //
+        // `maybe_prune_trie` in sentrix-core spawns this prune on a
+        // background `std::thread` that clones the trie. The cloned
+        // trie's `self.version` is fixed at clone time. While the
+        // live-set walk above runs (seconds to minutes on a big chain),
+        // the main thread keeps applying blocks — each commits a NEW
+        // root via `flush_trie_batch`, with its own `value_hash` and
+        // `node_hash` entries landing in `TABLE_TRIE_VALUES` /
+        // `TABLE_TRIE_NODES`. Those new hashes are NOT in `live`. When
+        // `gc_orphaned_nodes` runs, it deletes them as orphans.
+        //
+        // The symptom is exactly what mainnet hit at h=2215224 (orphan
+        // value `516a0dc27c…` from leaf at depth 8) and h=2131563 on a
+        // fullnode (orphan node, same hash class): the value or node
+        // was a live entry written by the most recent block(s), but
+        // the prune built `live` from a snapshot that pre-dated those
+        // writes and then deleted the freshly-committed data.
+        //
+        // Re-load the highest version currently in TABLE_TRIE_ROOTS and
+        // walk every root committed AFTER self.version. Shrinks the
+        // race window from "full walk duration" to "the gap between
+        // this re-load and the gc_orphaned_nodes commit" — at most one
+        // block's worth of writes can still slip through, and the B3b
+        // total_minted self-heal plus boot-time verify_integrity catch
+        // those as defense in depth.
+        //
+        // A proper race-free fix requires running the live walk and the
+        // delete inside the same MDBX RW transaction. That's a bigger
+        // refactor (exposing the txn handle through TrieStorage) and
+        // belongs in its own PR. This patch is the minimal targeted
+        // closer for the observed symptom.
+        let on_disk_latest = self
+            .cache
+            .storage
+            .latest_version()?
+            .unwrap_or(self.version);
+        let mut augmented_roots = 0usize;
+        for version in (self.version + 1)..=on_disk_latest {
+            if let Some(root) = self.cache.storage.load_root(version)?
+                && !live.contains(&root)
+            {
+                self.collect_reachable(root, &mut live)?;
+                augmented_roots += 1;
+            }
+        }
+        if augmented_roots > 0 {
+            tracing::info!(
+                "trie prune: augmented live set with {} new roots committed during walk \
+                 (snapshot v{} → on-disk v{})",
+                augmented_roots,
+                self.version,
+                on_disk_latest
+            );
         }
 
         let nodes_gc = self.cache.storage.gc_orphaned_nodes(&live)?;
@@ -1396,5 +1452,91 @@ mod tests {
 
         let cloned = trie.clone();
         assert_eq!(cloned.cache.capacity, 42, "clone must preserve capacity");
+    }
+
+    /// Race-window regression for `prune()`: when a clone of the trie is
+    /// pruning at snapshot version `V_old`, the main thread may have
+    /// already committed `V_old + 1`, `V_old + 2`, …. Pre-fix the prune
+    /// would delete any node/value reachable ONLY from those newer
+    /// versions (because the clone's live walk never saw them). The
+    /// augment-walk reload of `latest_version()` plus a walk of every
+    /// version above `self.version` closes the window.
+    ///
+    /// Simulation: open one trie, commit v=3, take a "prune-clone" at
+    /// v=3, then on the original commit v=4 with a NEW key whose
+    /// `value_hash` exists nowhere in v≤3. Call `prune(0)` on the
+    /// clone. The v=4 leaf's value must still be loadable from MDBX —
+    /// pre-fix it was GC'd as an orphan, post-fix the augment walk
+    /// puts it in `live` before the gc step runs.
+    #[test]
+    fn test_prune_augment_walk_preserves_newer_versions_committed_during_race() {
+        let (_dir, mdbx) = temp_mdbx();
+        let mut main = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
+
+        // v=1..=3: warm the trie with three commits of varied keys.
+        for v in 1..=3u64 {
+            let mut key = [0u8; 32];
+            key[0] = v as u8;
+            main.insert(&key, &account_value_bytes(100 * v, v)).unwrap();
+            let _ = main.commit(v).unwrap();
+        }
+
+        // "Prune clone" snapshot: opens at v=3 with a frozen self.version.
+        // The production path does this via `state_trie.as_ref().cloned()`
+        // inside `maybe_prune_trie`; here we open a second handle that
+        // takes a fresh view of v=3, which is sufficient for the race
+        // simulation because both `self.version` and `self.root` reflect
+        // the snapshot at open time.
+        let prune_view = SentrixTrie::open(Arc::clone(&mdbx), 3).unwrap();
+
+        // Main thread continues: commit v=4 with a brand-new key whose
+        // value hash exists nowhere in v≤3.
+        let race_key = [0xab; 32];
+        let race_value = account_value_bytes(424242, 9);
+        main.insert(&race_key, &race_value).unwrap();
+        let v4_root = main.commit(4).unwrap();
+        let race_value_hash = crate::node::hash_leaf(&race_key, &race_value);
+
+        // Sanity: v=4 root + race value are in storage before prune.
+        assert_eq!(
+            mdbx.get(sentrix_storage::tables::TABLE_TRIE_ROOTS, &4u64.to_be_bytes())
+                .unwrap()
+                .as_deref(),
+            Some(&v4_root[..]),
+            "v=4 root must be committed before prune"
+        );
+        assert!(
+            mdbx.get(sentrix_storage::tables::TABLE_TRIE_VALUES, &race_value_hash)
+                .unwrap()
+                .is_some(),
+            "race value must be in TABLE_TRIE_VALUES before prune"
+        );
+
+        // The clone prunes at its frozen v=3 snapshot. Without the
+        // augment walk, gc_orphaned_nodes would delete the race value
+        // because it wasn't in the live-set walk (v=3's roots don't
+        // reference it). With the augment walk, v=4 gets walked too,
+        // and the race value survives.
+        let _ = prune_view.prune(0).unwrap();
+
+        // The value committed AFTER the prune snapshot was taken must
+        // still be retrievable. Pre-fix: this assert fails because the
+        // value was GC'd. Post-fix: passes because augment_roots picked
+        // it up.
+        let still_there = main.get(&race_key).unwrap();
+        assert_eq!(
+            still_there,
+            Some(race_value.clone()),
+            "value committed during the prune race must NOT be GC'd"
+        );
+
+        // Cross-check directly against MDBX to be unambiguous about
+        // what "still alive" means here.
+        assert!(
+            mdbx.get(sentrix_storage::tables::TABLE_TRIE_VALUES, &race_value_hash)
+                .unwrap()
+                .is_some(),
+            "race value must still be in TABLE_TRIE_VALUES after prune"
+        );
     }
 }

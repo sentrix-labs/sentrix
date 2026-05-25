@@ -236,6 +236,37 @@ impl TrieStorage {
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
+    /// Highest committed version currently in `TABLE_TRIE_ROOTS`.
+    /// Returns `None` if the table is empty.
+    ///
+    /// Used by `SentrixTrie::prune` to augment the live-set walk with
+    /// roots that were committed AFTER the cloned trie snapshot was
+    /// taken — a critical race-window closer when prune runs in a
+    /// background thread (per `maybe_prune_trie` at
+    /// `crates/sentrix-core/src/blockchain_trie_ops.rs:555`).
+    ///
+    /// Cost: one cursor walk over `TABLE_TRIE_ROOTS`. The table holds at
+    /// most `TRIE_KEEP_VERSIONS` entries (default ~1000), so this is
+    /// O(1000) in practice — milliseconds. We could use `last()` on the
+    /// cursor if the storage layer exposed it, but a forward scan is
+    /// good enough and matches the existing `prune_old_roots` access
+    /// pattern below.
+    pub fn latest_version(&self) -> SentrixResult<Option<u64>> {
+        let mut max_version: Option<u64> = None;
+        self.mdbx
+            .iter_from(tables::TABLE_TRIE_ROOTS, &[], |k, _v| {
+                if k.len() == 8 {
+                    let mut buf = [0u8; 8];
+                    buf.copy_from_slice(k);
+                    let v = u64::from_be_bytes(buf);
+                    max_version = Some(max_version.map_or(v, |old| old.max(v)));
+                }
+                true
+            })
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        Ok(max_version)
+    }
+
     /// Prune old trie roots, keeping only the last `keep` versions.
     ///
     /// Walks `TABLE_TRIE_ROOTS` via a streaming cursor (`iter_from`) so the
