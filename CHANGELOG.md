@@ -14,6 +14,15 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.17] — 2026-05-25 — B3b uses emission schedule, not per-block disk reads
+
+**Hotfix for v2.2.16 boot-stall regression.** The v2.2.16 B3b `total_minted` self-heal iterated `load_block` per height to sum coinbase amounts. At mainnet h≈2.2M with six containers booting in parallel after a halt-all, MDBX I/O contention turned the "~30-60s sanity pass" estimate into a multi-minute per-container stall — every node sat past `Blockchain state loaded` without proceeding to the BFT round loop. Public RPC stayed down, health checks failed, the v2.2.16 deploy was rolled back at T+~24min.
+
+- **B3b switched to closed-form arithmetic** (`tokenomics::halvings_at` + `BLOCK_REWARD >> halvings`). C-04 (`block_executor.rs:336`) enforces `coinbase.amount == reward` for every accepted block, so the schedule sum is identical to the disk sum but ~6 orders of magnitude cheaper. New cost at mainnet h≈2.2M: ~2 ms.
+- The detection + repair contract is unchanged: blob's `total_minted` is compared against the recomputed value; mismatch triggers warn + overwrite + atomic save-back through the existing B1 path.
+- Regression test renamed `test_recompute_total_minted_is_disk_independent` (was `..._skips_missing_blocks`) — asserts the helper returns the same value whether or not blocks are persisted to MDBX. Guards against a future refactor accidentally reintroducing the O(N) disk-read cost.
+- All four 2.2.16 patches (PRs #711, #712, #713, #714) ride along unchanged. Only the B3b helper body changed.
+
 ## [2.2.16] — 2026-05-25 — trie GC race fix + B3b total_minted self-heal
 
 **Closes the 2026-05-24 mainnet incident root causes.** Four consensus-area patches landed since 2.2.15: two real fixes for the orphan trie reference and the cross-validator STATE-FP `fp` divergence, plus two structural-parity improvements. Mainnet ran an emergency recovery (cp from canonical validator to four broken nodes, ~67min total halt window) before these patches landed; this release is the durable fix so the same class doesn't recur on the next prune boundary.
