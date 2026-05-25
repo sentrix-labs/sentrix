@@ -873,9 +873,21 @@ impl StakeRegistry {
         }
 
         // Sum of delegations to this validator (denominator for pro-rata).
-        let total_delegated: u64 = self
-            .delegations
-            .values()
+        //
+        // CRITICAL determinism (mirrors the slash() pattern at line 556):
+        // `self.delegations` is `HashMap<String, Vec<DelegationEntry>>`. Its
+        // `.values()` iteration order is randomised per-process via SipHash
+        // seed. The summation itself is commutative so this sum is
+        // order-independent — but we also need a stable iteration below for
+        // the per-share write into `delegator_rewards`, and using the same
+        // sorted-keys pattern in both places keeps the two halves of the
+        // function trivially consistent.
+        let mut delegator_keys: Vec<String> = self.delegations.keys().cloned().collect();
+        delegator_keys.sort();
+
+        let total_delegated: u64 = delegator_keys
+            .iter()
+            .filter_map(|k| self.delegations.get(k))
             .flatten()
             .filter(|e| e.validator == validator_addr)
             .map(|e| e.amount)
@@ -885,10 +897,14 @@ impl StakeRegistry {
         }
 
         // Collect (delegator, amount) pairs first to avoid double-borrow
-        // of self when writing into delegator_rewards.
-        let shares: Vec<(String, u64)> = self
-            .delegations
-            .values()
+        // of self when writing into delegator_rewards. Iterate by sorted
+        // delegator address so the `shares` Vec is byte-identical across
+        // every validator process for the same input — matches slash()
+        // (line 556) and closes a quiet determinism gap that paired with
+        // PR #551 for the slash path but was missed for the reward path.
+        let shares: Vec<(String, u64)> = delegator_keys
+            .iter()
+            .filter_map(|k| self.delegations.get(k))
             .flatten()
             .filter(|e| e.validator == validator_addr)
             .map(|e| {
