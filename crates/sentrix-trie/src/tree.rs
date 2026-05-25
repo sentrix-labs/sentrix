@@ -622,7 +622,7 @@ impl SentrixTrie {
         // Build live set: walk all remaining committed roots and collect reachable hashes.
         let mut live = std::collections::HashSet::new();
         // Walk the current root (as-of the clone snapshot when prune was scheduled).
-        self.collect_reachable(self.root, &mut live)?;
+        self.collect_reachable(self.root, 0, &mut live)?;
         // Walk all other surviving roots in storage between the keep-window
         // floor and self.version (the snapshot height at clone time).
         let cutoff = self.version.saturating_sub(keep_versions);
@@ -630,7 +630,7 @@ impl SentrixTrie {
             if let Some(root) = self.cache.storage.load_root(version)?
                 && !live.contains(&root)
             {
-                self.collect_reachable(root, &mut live)?;
+                self.collect_reachable(root, 0, &mut live)?;
             }
         }
 
@@ -676,7 +676,7 @@ impl SentrixTrie {
             if let Some(root) = self.cache.storage.load_root(version)?
                 && !live.contains(&root)
             {
-                self.collect_reachable(root, &mut live)?;
+                self.collect_reachable(root, 0, &mut live)?;
                 augmented_roots += 1;
             }
         }
@@ -699,15 +699,38 @@ impl SentrixTrie {
         Ok((roots_pruned, nodes_gc))
     }
 
-    /// Recursively collect all node hashes reachable from `hash`.
+    /// Recursively collect all node hashes reachable from `hash` at `depth`.
+    ///
+    /// `depth` is the SMT depth the `hash` argument sits at (0 = root, 256 = leaf).
+    /// Empty subtrees have a depth-specific canonical hash — `empty_hash(d) =
+    /// hash_internal(empty_hash(d+1), empty_hash(d+1))` built bottom-up from
+    /// `empty_hash(256) = SHA-256([0u8;32])`. Pre-fix this method only checked
+    /// `hash == empty_hash(0)` (the root-level sentinel) and ran `load_node`
+    /// on every other hash. Empty subtrees at depth > 0 are never materialized
+    /// in `trie_nodes`, so `load_node` returned `Ok(None)` and the function
+    /// silently exited without recording anything in `live`.
+    ///
+    /// That alone is harmless when the missing branch is genuinely empty. But
+    /// when an older surviving root reaches the same hash through a non-empty
+    /// path AND the live walk for the current root skips it as "empty", the
+    /// subtree's descendants are missing from `live` entirely → `gc_orphaned_nodes`
+    /// deletes them → the surviving root now has dangling references → next
+    /// boot's `verify_integrity` reports "orphan value/node reference".
+    ///
+    /// Hit live on mainnet 2026-05-24: hash `516a0dc27c…` appeared as both an
+    /// orphan value reference on one validator and an orphan node reference on
+    /// a fullnode, at different heights (h=2215224 and h=2131563). Each node's
+    /// prune fired at its own 5000-block boundary with a slightly different
+    /// live-state snapshot — same bug, different victim.
     fn collect_reachable(
         &self,
         hash: NodeHash,
+        depth: usize,
         live: &mut std::collections::HashSet<NodeHash>,
     ) -> SentrixResult<()> {
         use crate::node::empty_hash;
-        // Skip empty subtrees and already-visited nodes
-        if hash == empty_hash(0) || live.contains(&hash) {
+        // Skip empty subtrees (depth-specific) and already-visited nodes
+        if hash == empty_hash(depth) || live.contains(&hash) {
             return Ok(());
         }
         live.insert(hash);
@@ -717,8 +740,8 @@ impl SentrixTrie {
                     live.insert(value_hash);
                 }
                 TrieNode::Internal { left, right, .. } => {
-                    self.collect_reachable(left, live)?;
-                    self.collect_reachable(right, live)?;
+                    self.collect_reachable(left, depth + 1, live)?;
+                    self.collect_reachable(right, depth + 1, live)?;
                 }
             }
         }
@@ -1452,6 +1475,64 @@ mod tests {
 
         let cloned = trie.clone();
         assert_eq!(cloned.cache.capacity, 42, "clone must preserve capacity");
+    }
+
+    /// `collect_reachable` must skip empty subtrees at every depth, not just
+    /// the root. Pre-fix the check was `hash == empty_hash(0)`, which meant
+    /// the walk fell through to `load_node` for every empty-at-depth-d
+    /// reference, returning `Ok(None)` and inserting the empty-sentinel
+    /// hashes into `live`. That alone doesn't corrupt anything, but it
+    /// silently disagreed with `walk_verify` (which has always taken depth)
+    /// and made the live-set bookkeeping fragile against any future change
+    /// where the GC scanned the wrong tables or a hash collision was
+    /// introduced.
+    ///
+    /// This test fixes the contract: after pruning, every key written into
+    /// the trie at the surviving version must still resolve correctly via
+    /// `get`, and `verify_integrity` must pass. With the fix, multi-key
+    /// tries that diverge at deep depths survive a `prune(keep=0)` cleanly.
+    #[test]
+    fn test_prune_survives_multi_key_at_varied_depths() {
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
+
+        // Pick keys whose first bytes diverge at different depths so the
+        // internal-node path includes empty subtrees at varied depths.
+        let keys: Vec<[u8; 32]> = vec![
+            [0x00; 32],
+            [0x01; 32],
+            [0x80; 32],
+            [0xff; 32],
+            [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0, 0, 0, 0, 0, 0, 0, 0,
+             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0x10, 0x20, 0x30, 0x41, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ];
+
+        for (i, k) in keys.iter().enumerate() {
+            trie.insert(k, &account_value_bytes(1000 + i as u64, 0)).unwrap();
+        }
+        let _ = trie.commit(1).unwrap();
+
+        // v2: rotate the values so the old leaf/value entries become
+        // unreachable from v2 root but still alive under v1.
+        for (i, k) in keys.iter().enumerate() {
+            trie.insert(k, &account_value_bytes(2000 + i as u64, 1)).unwrap();
+        }
+        let _ = trie.commit(2).unwrap();
+
+        // prune(keep=0) retires v1 entirely. With the pre-fix bug, the
+        // depth-mismatched empty check could leave referenced subtrees
+        // out of `live`, leading to GC of nodes that v2 still points at.
+        let (_roots, _gc) = trie.prune(0).unwrap();
+
+        // Every v2 key must still resolve, and integrity must hold.
+        for (i, k) in keys.iter().enumerate() {
+            let v = trie.get(k).unwrap();
+            assert!(v.is_some(), "key {i} missing after prune");
+            assert_eq!(v.unwrap(), account_value_bytes(2000 + i as u64, 1));
+        }
+        trie.verify_integrity().expect("trie integrity must hold after prune");
     }
 
     /// Race-window regression for `prune()`: when a clone of the trie is
