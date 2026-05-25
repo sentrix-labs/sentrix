@@ -218,12 +218,49 @@ impl Storage {
         // absent — refuse to start so an operator surfaces it instead
         // of silently running on inconsistent state.
         let (checked, repaired) = Self::reconcile_accounts_from_trie(&mut bc)?;
-        if repaired > 0 {
+
+        // B3b — `total_minted` self-heal.
+        //
+        // The blob carries `total_minted` as a plain `u64` snapshot. The
+        // bincode blob save is atomic with `accounts`, so under the normal
+        // crash path B2 replay catches the lag for both. But there is a
+        // class of stale-blob scenarios — most concretely an offline
+        // chain.db moved between hosts via partial copy, or a save that
+        // raced a halt — where the trie is at height N and the blob's
+        // `total_minted` is at an earlier value. B3 overwrites `accounts`
+        // from trie (so `acc` in STATE-FP agrees across nodes), but
+        // `total_minted` lives nowhere in the trie and quietly stays
+        // diverged. `fp = SHA256(acc + total_minted.to_be_bytes())` then
+        // disagrees across two otherwise-identical nodes, exactly the
+        // 2026-05-24 symptom (treasury and beacon agreed on `acc` but
+        // not `fp`).
+        //
+        // The recompute uses a hard invariant: every block's coinbase
+        // amount is bounded by `coinbase.amount == reward` (C-04 at
+        // `block_executor.rs:336`), so summing coinbase amounts across
+        // the stored block range plus the genesis premine yields the
+        // canonical `total_minted` at the current height. There is no
+        // other source of newly-minted supply.
+        let recomputed = self.recompute_total_minted_from_blocks(&bc)?;
+        let total_minted_was_stale = recomputed != bc.total_minted;
+        if total_minted_was_stale {
             tracing::warn!(
-                "load_blockchain B3: reconciled {}/{} accounts from trie at height {} \
-                 (blob was stale; trie is canonical)",
+                "load_blockchain B3b: total_minted blob={} != recomputed-from-blocks={} \
+                 at height {} — overwriting blob (block-sum is canonical)",
+                bc.total_minted,
+                recomputed,
+                bc.height()
+            );
+            bc.total_minted = recomputed;
+        }
+
+        if repaired > 0 || total_minted_was_stale {
+            tracing::warn!(
+                "load_blockchain B3: reconciled {}/{} accounts + total_minted_stale={} \
+                 from trie/blocks at height {} (blob was stale; trie+blocks are canonical)",
                 repaired,
                 checked,
+                total_minted_was_stale,
                 bc.height()
             );
             // Persist the repaired state via the atomic B1 path so the
@@ -233,7 +270,8 @@ impl Storage {
                 .map_err(|e| SentrixError::StorageError(e.to_string()))?;
         } else {
             tracing::debug!(
-                "load_blockchain B3: {}/{} accounts checked, none required reconcile at height {}",
+                "load_blockchain B3: {}/{} accounts checked, total_minted matches; \
+                 nothing to reconcile at height {}",
                 repaired,
                 checked,
                 bc.height()
@@ -494,6 +532,52 @@ impl Storage {
         Ok((checked, repaired))
     }
 
+    /// Recompute `total_minted` by summing every persisted block's coinbase
+    /// amount and adding the genesis premine. Used by B3b on load to detect
+    /// + repair a stale blob-snapshot value (see `load_blockchain` above).
+    ///
+    /// This is the canonical derivation: `block_executor.rs:336` enforces
+    /// `coinbase.amount == reward` (C-04), so the chain has no other source
+    /// of newly-minted supply. Premine is fixed at genesis (`TOTAL_PREMINE`
+    /// in `address.rs`), block 0 carries no coinbase (genesis), and every
+    /// subsequent block contributes exactly its coinbase value.
+    ///
+    /// Cost: O(N) block loads (N = current height). At mainnet h≈2.2M this
+    /// is ~30-60s of MDBX reads on warm SSD — acceptable for a once-per-boot
+    /// sanity pass that only writes back when divergence is detected.
+    /// Blocks that fail to load are skipped with a warning rather than
+    /// aborting boot — same fail-soft posture as B3 reconcile (2026-05-20
+    /// trie-gap incident).
+    fn recompute_total_minted_from_blocks(&self, bc: &Blockchain) -> SentrixResult<u64> {
+        use crate::address::TOTAL_PREMINE;
+
+        let tip = bc.height();
+        let mut total: u64 = TOTAL_PREMINE;
+        let mut missing: u64 = 0;
+        // Block 0 = genesis (no coinbase). Block 1 is the first reward.
+        for h in 1..=tip {
+            let block = match self.load_block(h)? {
+                Some(b) => b,
+                None => {
+                    missing += 1;
+                    continue;
+                }
+            };
+            if let Some(cb) = block.coinbase() {
+                total = total.saturating_add(cb.amount);
+            }
+        }
+        if missing > 0 {
+            tracing::warn!(
+                "recompute_total_minted_from_blocks: {} blocks missing from MDBX in range \
+                 1..={tip} — sum may underestimate true total_minted; surfacing partial \
+                 value rather than aborting boot",
+                missing
+            );
+        }
+        Ok(total)
+    }
+
     // ── Utility ──────────────────────────────────────────
 
     pub fn has_blockchain(&self) -> bool {
@@ -693,6 +777,134 @@ mod tests {
         assert_eq!(
             stored.hash, canonical_hash,
             "save_blockchain must overwrite stale H1 block with canonical H2 block"
+        );
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// `recompute_total_minted_from_blocks` is the canonical derivation
+    /// used by B3b. Build a chain with N blocks, then verify the helper
+    /// returns `TOTAL_PREMINE + sum(coinbase.amount over 1..=tip)`.
+    #[test]
+    fn test_recompute_total_minted_matches_block_sum() {
+        use crate::address::TOTAL_PREMINE;
+        use crate::tokenomics::BLOCK_REWARD;
+
+        let path = temp_db_path();
+        let storage = Storage::open(&path).unwrap();
+
+        let mut bc = Blockchain::new("admin".to_string());
+        bc.authority.add_validator_unchecked(
+            "val1".to_string(),
+            "V1".to_string(),
+            "pk1".to_string(),
+        );
+
+        // Mine 3 blocks. `add_block` updates `bc.total_minted` via the
+        // production apply path so it serves as the "ground truth" the
+        // helper must match.
+        for _ in 0..3 {
+            let block = bc.create_block("val1").unwrap();
+            bc.add_block(block).unwrap();
+        }
+        storage.save_blockchain(&bc).unwrap();
+
+        let expected = TOTAL_PREMINE + 3 * BLOCK_REWARD;
+        assert_eq!(bc.total_minted, expected, "bc.total_minted ground truth");
+
+        let recomputed = storage.recompute_total_minted_from_blocks(&bc).unwrap();
+        assert_eq!(recomputed, expected, "helper must match block-sum ground truth");
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// B3b repair on load: when the persisted blob's `total_minted` is
+    /// stale (e.g. lagged save_blockchain after a halt-with-trie-ahead
+    /// scenario), `load_blockchain` must detect the divergence via the
+    /// block-sum invariant and overwrite the blob value before handing
+    /// the Blockchain back to the caller. Without this, two validators
+    /// can converge on identical `accounts` (via B3 trie reconcile) but
+    /// keep divergent `total_minted` forever — exactly the 2026-05-24
+    /// STATE-FP `fp`-divergence-with-matching-`acc` symptom.
+    #[test]
+    fn test_b3b_repairs_stale_total_minted_on_load() {
+        let path = temp_db_path();
+        let storage = Storage::open(&path).unwrap();
+
+        let mut bc = Blockchain::new("admin".to_string());
+        bc.authority.add_validator_unchecked(
+            "val1".to_string(),
+            "V1".to_string(),
+            "pk1".to_string(),
+        );
+        for _ in 0..3 {
+            let block = bc.create_block("val1").unwrap();
+            bc.add_block(block).unwrap();
+        }
+        let canonical_total = bc.total_minted;
+
+        // Persist a corrupted view: blocks remain canonical, but the
+        // blob's total_minted is off by one block reward (as if save
+        // lagged one block behind apply, or a partial copy from a
+        // healthy host shipped stale state).
+        bc.total_minted = canonical_total - 1;
+        storage.save_blockchain(&bc).unwrap();
+
+        // Load via the production path — B3b must catch + repair.
+        let loaded = storage.load_blockchain().unwrap().unwrap();
+        assert_eq!(
+            loaded.total_minted, canonical_total,
+            "B3b must repair stale total_minted from block sum"
+        );
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// `recompute_total_minted_from_blocks` must skip + count blocks that
+    /// fail to load instead of aborting. Forge that case by deleting a
+    /// block's entry from MDBX after a save, then re-running the
+    /// recompute. The result must equal `TOTAL_PREMINE + sum(coinbase
+    /// for the surviving blocks)` — i.e., the missing block's reward is
+    /// silently omitted. The B3 fail-soft pattern (2026-05-20 testnet
+    /// incident) is the precedent for this posture: never refuse to
+    /// boot just because one block went missing on disk.
+    #[test]
+    fn test_recompute_total_minted_skips_missing_blocks() {
+        use crate::address::TOTAL_PREMINE;
+        use crate::tokenomics::BLOCK_REWARD;
+
+        let path = temp_db_path();
+        let storage = Storage::open(&path).unwrap();
+
+        let mut bc = Blockchain::new("admin".to_string());
+        bc.authority.add_validator_unchecked(
+            "val1".to_string(),
+            "V1".to_string(),
+            "pk1".to_string(),
+        );
+        for _ in 0..3 {
+            let block = bc.create_block("val1").unwrap();
+            bc.add_block(block).unwrap();
+        }
+        storage.save_blockchain(&bc).unwrap();
+
+        // Yank block #2 out of MDBX. The block stays in `bc.chain`
+        // (in-memory window) but the persisted entry is gone, so the
+        // recompute loop hits `load_block(2) -> Ok(None)` and counts
+        // the gap.
+        let mdbx = storage.mdbx_arc();
+        mdbx.delete(sentrix_storage::tables::TABLE_META, b"block:2")
+            .unwrap();
+
+        // Sum should be `TOTAL_PREMINE + 2 * BLOCK_REWARD` (block 1 +
+        // block 3; block 2 was deleted).
+        let recomputed = storage
+            .recompute_total_minted_from_blocks(&bc)
+            .unwrap();
+        assert_eq!(
+            recomputed,
+            TOTAL_PREMINE + 2 * BLOCK_REWARD,
+            "missing block must be silently skipped (fail-soft per B3 precedent)"
         );
 
         let _ = std::fs::remove_dir_all(&path);
