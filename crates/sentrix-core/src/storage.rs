@@ -221,26 +221,23 @@ impl Storage {
 
         // B3b — `total_minted` self-heal.
         //
-        // The blob carries `total_minted` as a plain `u64` snapshot. The
-        // bincode blob save is atomic with `accounts`, so under the normal
-        // crash path B2 replay catches the lag for both. But there is a
-        // class of stale-blob scenarios — most concretely an offline
-        // chain.db moved between hosts via partial copy, or a save that
-        // raced a halt — where the trie is at height N and the blob's
-        // `total_minted` is at an earlier value. B3 overwrites `accounts`
-        // from trie (so `acc` in STATE-FP agrees across nodes), but
+        // The blob carries `total_minted` as a plain `u64` snapshot.
+        // `accounts` snap to canonical via B3 trie reconcile above, but
         // `total_minted` lives nowhere in the trie and quietly stays
-        // diverged. `fp = SHA256(acc + total_minted.to_be_bytes())` then
-        // disagrees across two otherwise-identical nodes, exactly the
-        // 2026-05-24 symptom (treasury and beacon agreed on `acc` but
-        // not `fp`).
+        // diverged if the blob was stale (offline cp without halt, a
+        // save that raced a halt, etc.). `fp = SHA256(acc + total_minted)`
+        // then disagrees across otherwise-identical nodes — the 2026-05-24
+        // symptom where treasury and beacon agreed on `acc` but not `fp`.
         //
-        // The recompute uses a hard invariant: every block's coinbase
-        // amount is bounded by `coinbase.amount == reward` (C-04 at
-        // `block_executor.rs:336`), so summing coinbase amounts across
-        // the stored block range plus the genesis premine yields the
-        // canonical `total_minted` at the current height. There is no
-        // other source of newly-minted supply.
+        // Recompute uses the canonical emission schedule (premine +
+        // halving-aware reward per height) rather than reading every
+        // block. The chain has no source of newly-minted supply other
+        // than per-block coinbase, and C-04 (`block_executor.rs:336`)
+        // enforces `coinbase.amount == reward` for every accepted block,
+        // so the closed-form sum is identical to summing coinbase amounts
+        // from disk. Cost: ~2 ms at mainnet h≈2.2M, vs the ~30+ minutes
+        // the original block-iteration version stalled on under multi-
+        // container I/O contention (2026-05-25 v2.2.16 deploy regression).
         let recomputed = self.recompute_total_minted_from_blocks(&bc)?;
         let total_minted_was_stale = recomputed != bc.total_minted;
         if total_minted_was_stale {
@@ -532,48 +529,34 @@ impl Storage {
         Ok((checked, repaired))
     }
 
-    /// Recompute `total_minted` by summing every persisted block's coinbase
-    /// amount and adding the genesis premine. Used by B3b on load to detect
-    /// + repair a stale blob-snapshot value (see `load_blockchain` above).
+    /// Recompute `total_minted` from the canonical emission schedule:
+    /// `TOTAL_PREMINE` plus the accumulated block reward over `1..=tip`.
+    /// Used by B3b on load to detect and repair a stale blob-snapshot
+    /// value (see `load_blockchain` above).
     ///
-    /// This is the canonical derivation: `block_executor.rs:336` enforces
-    /// `coinbase.amount == reward` (C-04), so the chain has no other source
-    /// of newly-minted supply. Premine is fixed at genesis (`TOTAL_PREMINE`
-    /// in `address.rs`), block 0 carries no coinbase (genesis), and every
-    /// subsequent block contributes exactly its coinbase value.
+    /// Pure arithmetic, no disk reads. The chain has no source of
+    /// newly-minted supply other than the per-block coinbase, and
+    /// `block_executor.rs:336` C-04 enforces `coinbase.amount == reward`
+    /// for every accepted block, so summing `get_block_reward_at(h)`
+    /// across 1..=tip plus `TOTAL_PREMINE` is identical to summing
+    /// `block.coinbase().amount` directly — but cheaper by ~6 orders of
+    /// magnitude.
     ///
-    /// Cost: O(N) block loads (N = current height). At mainnet h≈2.2M this
-    /// is ~30-60s of MDBX reads on warm SSD — acceptable for a once-per-boot
-    /// sanity pass that only writes back when divergence is detected.
-    /// Blocks that fail to load are skipped with a warning rather than
-    /// aborting boot — same fail-soft posture as B3 reconcile (2026-05-20
-    /// trie-gap incident).
+    /// Cost at mainnet h≈2.2M: ~2 ms (single tight loop of shift+add).
+    /// The earlier implementation iterated `load_block` per height and
+    /// stalled boot for tens of minutes under multi-container I/O
+    /// contention (2026-05-25 v2.2.16 deploy regression).
     fn recompute_total_minted_from_blocks(&self, bc: &Blockchain) -> SentrixResult<u64> {
         use crate::address::TOTAL_PREMINE;
+        use crate::tokenomics::{BLOCK_REWARD, halvings_at};
 
         let tip = bc.height();
         let mut total: u64 = TOTAL_PREMINE;
-        let mut missing: u64 = 0;
         // Block 0 = genesis (no coinbase). Block 1 is the first reward.
         for h in 1..=tip {
-            let block = match self.load_block(h)? {
-                Some(b) => b,
-                None => {
-                    missing += 1;
-                    continue;
-                }
-            };
-            if let Some(cb) = block.coinbase() {
-                total = total.saturating_add(cb.amount);
-            }
-        }
-        if missing > 0 {
-            tracing::warn!(
-                "recompute_total_minted_from_blocks: {} blocks missing from MDBX in range \
-                 1..={tip} — sum may underestimate true total_minted; surfacing partial \
-                 value rather than aborting boot",
-                missing
-            );
+            let halvings = halvings_at(h);
+            let reward = BLOCK_REWARD.checked_shr(halvings).unwrap_or(0);
+            total = total.saturating_add(reward);
         }
         Ok(total)
     }
@@ -860,19 +843,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
     }
 
-    /// `recompute_total_minted_from_blocks` must skip + count blocks that
-    /// fail to load instead of aborting. Forge that case by deleting a
-    /// block's entry from MDBX after a save, then re-running the
-    /// recompute. The result must equal `TOTAL_PREMINE + sum(coinbase
-    /// for the surviving blocks)` — i.e., the missing block's reward is
-    /// silently omitted. The B3 fail-soft pattern (2026-05-20 testnet
-    /// incident) is the precedent for this posture: never refuse to
-    /// boot just because one block went missing on disk.
+    /// `recompute_total_minted_from_blocks` is intentionally disk-independent:
+    /// it uses the emission schedule (`TOTAL_PREMINE + sum reward_at(h)`),
+    /// not the per-block coinbase amounts on disk. Deleting a block entry
+    /// from MDBX must NOT change the recomputed value — the schedule is
+    /// the canonical source. This guards against a future refactor that
+    /// accidentally reintroduces the O(N) block-iteration cost class
+    /// (the 2026-05-25 v2.2.16 deploy regression).
     #[test]
-    fn test_recompute_total_minted_skips_missing_blocks() {
-        use crate::address::TOTAL_PREMINE;
-        use crate::tokenomics::BLOCK_REWARD;
-
+    fn test_recompute_total_minted_is_disk_independent() {
         let path = temp_db_path();
         let storage = Storage::open(&path).unwrap();
 
@@ -888,23 +867,21 @@ mod tests {
         }
         storage.save_blockchain(&bc).unwrap();
 
-        // Yank block #2 out of MDBX. The block stays in `bc.chain`
-        // (in-memory window) but the persisted entry is gone, so the
-        // recompute loop hits `load_block(2) -> Ok(None)` and counts
-        // the gap.
+        let before = storage.recompute_total_minted_from_blocks(&bc).unwrap();
+
+        // Yank multiple block entries out of MDBX. A disk-reading
+        // implementation would now under-count; the schedule-based
+        // implementation must return the same value.
         let mdbx = storage.mdbx_arc();
+        mdbx.delete(sentrix_storage::tables::TABLE_META, b"block:1")
+            .unwrap();
         mdbx.delete(sentrix_storage::tables::TABLE_META, b"block:2")
             .unwrap();
 
-        // Sum should be `TOTAL_PREMINE + 2 * BLOCK_REWARD` (block 1 +
-        // block 3; block 2 was deleted).
-        let recomputed = storage
-            .recompute_total_minted_from_blocks(&bc)
-            .unwrap();
+        let after = storage.recompute_total_minted_from_blocks(&bc).unwrap();
         assert_eq!(
-            recomputed,
-            TOTAL_PREMINE + 2 * BLOCK_REWARD,
-            "missing block must be silently skipped (fail-soft per B3 precedent)"
+            before, after,
+            "recompute must not depend on whether blocks are persisted to disk"
         );
 
         let _ = std::fs::remove_dir_all(&path);
