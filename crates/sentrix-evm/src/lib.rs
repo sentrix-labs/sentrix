@@ -1,4 +1,4 @@
-//! sentrix-evm — EVM execution layer (revm 37) for Sentrix blockchain.
+//! sentrix-evm — EVM execution layer (revm 38) for Sentrix blockchain.
 //!
 //! Provides:
 //! - `SentrixEvmDb` — revm Database adapter bridging Sentrix account state
