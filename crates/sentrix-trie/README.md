@@ -1,0 +1,51 @@
+# sentrix-trie
+
+[![crates.io](https://img.shields.io/crates/v/sentrix-trie.svg)](https://crates.io/crates/sentrix-trie)
+[![docs.rs](https://docs.rs/sentrix-trie/badge.svg)](https://docs.rs/sentrix-trie)
+
+256-level Binary Sparse Merkle Tree with MDBX persistence for Sentrix Chain state.
+
+## Why this crate exists
+
+The chain commits `state_root` into every block header, so the block executor needs
+an authenticated key-value store that can produce inclusion proofs (for
+`eth_getProof`) and recompute deterministic roots after each transaction. The BSMT
+implementation here writes nodes through to [sentrix-storage](../sentrix-storage) and
+keeps a hot LRU in front (`TrieCache`) so the trie hot path doesn't hammer mdbx for
+every read.
+
+Used by [sentrix-core](../sentrix-core) for account state writeback, and by
+[sentrix-rpc](../sentrix-rpc) for `eth_getProof`. Criterion microbenches under
+`benches/trie_insert.rs` gate consensus-touching PRs against the main-branch baseline.
+
+## Usage
+
+```toml
+[dependencies]
+sentrix-trie = { path = "../sentrix-trie" }
+```
+
+```rust
+use sentrix_trie::{SentrixTrie, MerkleProof, account_value_bytes, address_to_key};
+
+// SentrixTrie is the main API — insert/get/prove/commit. Keys are 256-bit
+// (typically hashed addresses or storage slots); values are arbitrary bytes.
+let mut trie = SentrixTrie::open(/* storage handle */)?;
+let key = address_to_key("0x...");
+let value = account_value_bytes(/* Account */);
+trie.insert(&key, &value)?;
+let root = trie.commit(height)?;
+
+// MerkleProof generates inclusion / non-inclusion proofs for the RPC layer.
+// `verify_membership(&root)` checks the proof matches the trie that committed
+// to `root`; `verify_nonmembership(&root)` proves a key is absent.
+let proof: MerkleProof = trie.prove(&key)?;
+assert!(proof.verify_membership(&root));
+```
+
+Key re-exports: `SentrixTrie`, `TrieNode`, `NodeHash`, `MerkleProof`,
+`account_value_bytes`, `account_value_decode`, `address_to_key`.
+
+## License
+
+BUSL-1.1 — same as the rest of the Sentrix Chain workspace. Transitions to a permissive open-source license after the Change Date.
