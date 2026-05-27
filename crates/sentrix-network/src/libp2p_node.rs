@@ -248,12 +248,16 @@ impl LibP2pNode {
     /// 2 s, and missed prevotes/precommits trigger a round skip on the
     /// receiver. Losing the occasional message is preferable to
     /// hard-stopping the BFT engine.
-    fn send_swarm_cmd(&self, cmd: SwarmCommand, op: &'static str) {
-        // 2026-05-05 v2.1.65: breadcrumb logs at trace level + a hot
-        // ERROR log on the drop branch so journalctl + the Telegram
-        // alerter both surface it. The drop here is what caused the
-        // silent-thread-death pattern at h=1392113 on 2026-05-05 —
-        // see `DROPPED_BFT_BROADCASTS` doc above for the full story.
+    /// Non-blocking send to the swarm task. Returns `Ok(())` if the message
+    /// was enqueued, `Err(())` if it was dropped (channel full or closed).
+    ///
+    /// BFT-vote callers (prevote/precommit broadcast) MUST inspect the
+    /// return value and revert their engine-state "cast" flag if the send
+    /// dropped, otherwise the engine goes silently stuck (it thinks it
+    /// broadcast and never retries). Best-effort callers (gossip block,
+    /// gossip transaction) can ignore the result — gossipsub re-sends and
+    /// the round skip on peers covers the loss.
+    fn send_swarm_cmd(&self, cmd: SwarmCommand, op: &'static str) -> Result<(), ()> {
         let max_cap = self.cmd_tx.max_capacity();
         let depth_pre = max_cap - self.cmd_tx.capacity();
         tracing::trace!(
@@ -268,17 +272,19 @@ impl LibP2pNode {
                     "[B sent] op={} depth_was={}/{}",
                     op, depth_pre, max_cap,
                 );
+                Ok(())
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 let total = DROPPED_BFT_BROADCASTS.fetch_add(1, Ordering::Relaxed) + 1;
                 tracing::error!(
                     target: "broadcast_bc",
                     "[B FAIL: channel FULL] libp2p cmd_tx saturated at {}/{} — \
-                     DROPPED {} (total drops since boot: {}). Engine will desync \
-                     from peers if this is a BFT vote — investigate swarm-task \
-                     starvation (memory pressure / I/O wait / blocked .await).",
+                     DROPPED {} (total drops since boot: {}). Engine will \
+                     self-heal via re-emit; investigate swarm-task starvation \
+                     (memory pressure / I/O wait / blocked .await).",
                     max_cap, max_cap, op, total,
                 );
+                Err(())
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 tracing::error!(
@@ -287,6 +293,7 @@ impl LibP2pNode {
                      (process should be restarting); message lost.",
                     op,
                 );
+                Err(())
             }
         }
     }
@@ -309,7 +316,7 @@ impl LibP2pNode {
 
     /// Broadcast a new block to all peers via gossipsub.
     pub async fn broadcast_block(&self, block: &Block) {
-        self.send_swarm_cmd(
+        let _ = self.send_swarm_cmd(
             SwarmCommand::GossipBlock(Box::new(block.clone())),
             "gossip block",
         );
@@ -317,31 +324,45 @@ impl LibP2pNode {
 
     /// Broadcast a new transaction to all peers via gossipsub.
     pub async fn broadcast_transaction(&self, tx: &Transaction) {
-        self.send_swarm_cmd(SwarmCommand::GossipTx(tx.clone()), "gossip transaction");
+        let _ = self.send_swarm_cmd(SwarmCommand::GossipTx(tx.clone()), "gossip transaction");
     }
 
     /// Broadcast a BFT proposal to all verified peers.
     pub async fn broadcast_bft_proposal(&self, proposal: &sentrix_bft::messages::Proposal) {
-        self.send_swarm_cmd(
+        let _ = self.send_swarm_cmd(
             SwarmCommand::GossipBftProposal(Box::new(proposal.clone())),
             "bft proposal",
         );
     }
 
     /// Broadcast a BFT prevote to all verified peers.
-    pub async fn broadcast_bft_prevote(&self, prevote: &sentrix_bft::messages::Prevote) {
+    /// Broadcast a signed BFT prevote. Returns `Ok(())` on enqueue,
+    /// `Err(())` if the underlying `try_send` dropped — the caller must
+    /// then revert its engine-state flag (e.g. `engine.mark_prevote_cast`
+    /// is skipped on the error path) so the BFT loop re-emits.
+    pub async fn broadcast_bft_prevote(
+        &self,
+        prevote: &sentrix_bft::messages::Prevote,
+    ) -> Result<(), ()> {
         self.send_swarm_cmd(
             SwarmCommand::GossipBftPrevote(Box::new(prevote.clone())),
             "bft prevote",
-        );
+        )
     }
 
     /// Broadcast a BFT precommit to all verified peers.
-    pub async fn broadcast_bft_precommit(&self, precommit: &sentrix_bft::messages::Precommit) {
+    /// Broadcast a signed BFT precommit. Same return contract as
+    /// [`Self::broadcast_bft_prevote`] — `Err(())` means the driver must
+    /// not mark `our_precommit_cast` on the engine; the BFT loop will
+    /// re-emit on the next iteration.
+    pub async fn broadcast_bft_precommit(
+        &self,
+        precommit: &sentrix_bft::messages::Precommit,
+    ) -> Result<(), ()> {
         self.send_swarm_cmd(
             SwarmCommand::GossipBftPrecommit(Box::new(precommit.clone())),
             "bft precommit",
-        );
+        )
     }
 
     /// Broadcast our current BFT round status so peers can sync rounds.
@@ -351,7 +372,7 @@ impl LibP2pNode {
     /// against the on-chain stake registry and dial the advertised
     /// multiaddrs on their next discovery tick.
     pub async fn broadcast_validator_advert(&self, advert: MultiaddrAdvertisement) {
-        self.send_swarm_cmd(
+        let _ = self.send_swarm_cmd(
             SwarmCommand::GossipValidatorAdvert(Box::new(advert)),
             "validator advert",
         );
@@ -389,7 +410,7 @@ impl LibP2pNode {
     }
 
     pub async fn broadcast_bft_round_status(&self, status: &sentrix_bft::messages::RoundStatus) {
-        self.send_swarm_cmd(
+        let _ = self.send_swarm_cmd(
             SwarmCommand::GossipBftRoundStatus(Box::new(status.clone())),
             "bft round status",
         );
@@ -397,7 +418,7 @@ impl LibP2pNode {
 
     /// Re-dial bootstrap peers that may have disconnected.
     pub async fn reconnect_peers(&self, addrs: Vec<Multiaddr>) {
-        self.send_swarm_cmd(SwarmCommand::ReconnectPeers(addrs), "reconnect peers");
+        let _ = self.send_swarm_cmd(SwarmCommand::ReconnectPeers(addrs), "reconnect peers");
     }
 
     /// Ask the swarm to immediately issue a `GetBlocks` to the first
@@ -406,17 +427,17 @@ impl LibP2pNode {
     /// catch up before the next round starts, not wait up to 30s for
     /// the periodic sync interval to fire.
     pub async fn trigger_sync(&self) {
-        self.send_swarm_cmd(SwarmCommand::TriggerSync, "trigger sync");
+        let _ = self.send_swarm_cmd(SwarmCommand::TriggerSync, "trigger sync");
     }
 
     /// Add a known peer to the Kademlia routing table (bootstrap node).
     pub async fn add_kad_peer(&self, peer_id: PeerId, addr: Multiaddr) {
-        self.send_swarm_cmd(SwarmCommand::AddKadPeer(peer_id, addr), "add kad peer");
+        let _ = self.send_swarm_cmd(SwarmCommand::AddKadPeer(peer_id, addr), "add kad peer");
     }
 
     /// Trigger a Kademlia bootstrap (random walk to discover peers).
     pub async fn kad_bootstrap(&self) {
-        self.send_swarm_cmd(SwarmCommand::KadBootstrap, "kad bootstrap");
+        let _ = self.send_swarm_cmd(SwarmCommand::KadBootstrap, "kad bootstrap");
     }
 
     /// Returns the number of currently verified (handshaked) peers.

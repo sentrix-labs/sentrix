@@ -1880,7 +1880,15 @@ async fn cmd_start(
                                         BftAction::BroadcastPrevote(ref prevote) => {
                                             let mut signed_pv = prevote.clone();
                                             signed_pv.sign(&validator_secret_key);
-                                            lp2p_clone.broadcast_bft_prevote(&signed_pv).await;
+                                            if lp2p_clone.broadcast_bft_prevote(&signed_pv).await.is_err() {
+                                                tracing::error!(
+                                                    "BFT prevote broadcast dropped at h={} r={} — \
+                                                     engine retains pending; outer loop re-emits",
+                                                    prevote.height, prevote.round,
+                                                );
+                                                break;
+                                            }
+                                            bft.mark_prevote_cast();
                                             let bc = shared_clone.read().await;
                                             let our_stake = bc
                                                 .stake_registry
@@ -1894,7 +1902,15 @@ async fn cmd_start(
                                         BftAction::BroadcastPrecommit(ref precommit) => {
                                             let mut signed_pc = precommit.clone();
                                             signed_pc.sign(&validator_secret_key);
-                                            lp2p_clone.broadcast_bft_precommit(&signed_pc).await;
+                                            if lp2p_clone.broadcast_bft_precommit(&signed_pc).await.is_err() {
+                                                tracing::error!(
+                                                    "BFT precommit broadcast dropped at h={} r={} — \
+                                                     engine retains pending; outer loop re-emits",
+                                                    precommit.height, precommit.round,
+                                                );
+                                                break;
+                                            }
+                                            bft.mark_precommit_cast();
                                             let bc = shared_clone.read().await;
                                             let our_stake = bc
                                                 .stake_registry
@@ -2025,7 +2041,7 @@ async fn cmd_start(
                                                 drop(bc_read);
                                                 if let Some(mut prevote) = cu_result {
                                                     prevote.sign(&validator_secret_key);
-                                                    lp2p_clone
+                                                    let _ = lp2p_clone
                                                         .broadcast_bft_prevote(&prevote)
                                                         .await;
                                                 }
@@ -2526,7 +2542,15 @@ async fn cmd_start(
                                 BftAction::BroadcastPrevote(ref prevote) => {
                                     let mut signed_pv = prevote.clone();
                                     signed_pv.sign(&validator_secret_key);
-                                    lp2p_clone.broadcast_bft_prevote(&signed_pv).await;
+                                    if lp2p_clone.broadcast_bft_prevote(&signed_pv).await.is_err() {
+                                        tracing::error!(
+                                            "BFT prevote broadcast dropped at h={} r={} — \
+                                             engine retains pending; outer loop re-emits",
+                                            prevote.height, prevote.round,
+                                        );
+                                        break;
+                                    }
+                                    bft.mark_prevote_cast();
                                     let bc = shared_clone.read().await;
                                     let our_stake = bc
                                         .stake_registry
@@ -2540,7 +2564,15 @@ async fn cmd_start(
                                 BftAction::BroadcastPrecommit(ref precommit) => {
                                     let mut signed_pc = precommit.clone();
                                     signed_pc.sign(&validator_secret_key);
-                                    lp2p_clone.broadcast_bft_precommit(&signed_pc).await;
+                                    if lp2p_clone.broadcast_bft_precommit(&signed_pc).await.is_err() {
+                                        tracing::error!(
+                                            "BFT precommit broadcast dropped at h={} r={} — \
+                                             engine retains pending; outer loop re-emits",
+                                            precommit.height, precommit.round,
+                                        );
+                                        break;
+                                    }
+                                    bft.mark_precommit_cast();
                                     let bc = shared_clone.read().await;
                                     let our_stake = bc
                                         .stake_registry
@@ -2642,7 +2674,7 @@ async fn cmd_start(
                                         drop(bc_read);
                                         if let Some(mut prevote) = cu_result {
                                             prevote.sign(&validator_secret_key);
-                                            lp2p_clone.broadcast_bft_prevote(&prevote).await;
+                                            let _ = lp2p_clone.broadcast_bft_prevote(&prevote).await;
                                         }
                                         break;
                                     }
@@ -3057,7 +3089,15 @@ async fn cmd_start(
                                 BftAction::BroadcastPrevote(ref prevote) => {
                                     let mut signed_pv = prevote.clone();
                                     signed_pv.sign(&validator_secret_key);
-                                    lp2p_clone.broadcast_bft_prevote(&signed_pv).await;
+                                    if lp2p_clone.broadcast_bft_prevote(&signed_pv).await.is_err() {
+                                        tracing::error!(
+                                            "BFT prevote broadcast dropped at h={} r={} — \
+                                             engine retains pending; outer loop re-emits",
+                                            prevote.height, prevote.round,
+                                        );
+                                        break;
+                                    }
+                                    bft.mark_prevote_cast();
                                     let bc = shared_clone.read().await;
                                     let our_stake = bc
                                         .stake_registry
@@ -3071,7 +3111,15 @@ async fn cmd_start(
                                 BftAction::BroadcastPrecommit(ref precommit) => {
                                     let mut signed_pc = precommit.clone();
                                     signed_pc.sign(&validator_secret_key);
-                                    lp2p_clone.broadcast_bft_precommit(&signed_pc).await;
+                                    if lp2p_clone.broadcast_bft_precommit(&signed_pc).await.is_err() {
+                                        tracing::error!(
+                                            "BFT precommit broadcast dropped at h={} r={} — \
+                                             engine retains pending; outer loop re-emits",
+                                            precommit.height, precommit.round,
+                                        );
+                                        break;
+                                    }
+                                    bft.mark_precommit_cast();
                                     let bc = shared_clone.read().await;
                                     let our_stake = bc
                                         .stake_registry

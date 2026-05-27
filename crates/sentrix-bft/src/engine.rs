@@ -512,7 +512,13 @@ impl BftEngine {
             return BftAction::Wait;
         }
         self.pending_prevote = Some(prevote.clone());
-        self.state.our_prevote_cast = true;
+        // NOTE: our_prevote_cast is no longer set here. The driver must call
+        // mark_prevote_cast() after the network send actually succeeds —
+        // setting the flag pre-send caused silent-thread-death when the
+        // libp2p cmd_tx try_send dropped the message (h=1392113 2026-05-05,
+        // val4 2026-05-27 ~h=5609246). pending_prevote is kept so the engine
+        // re-emits the same prevote on the next iteration if the driver
+        // failed to broadcast.
         BftAction::BroadcastPrevote(prevote)
     }
 
@@ -535,7 +541,10 @@ impl BftEngine {
             return BftAction::Wait;
         }
         self.pending_precommit = Some(precommit.clone());
-        self.state.our_precommit_cast = true;
+        // NOTE: our_precommit_cast is no longer set here. Same reason as
+        // emit_prevote — driver calls mark_precommit_cast() only after the
+        // network send succeeds, so a dropped try_send no longer leaves the
+        // engine thinking it broadcast when it didn't.
         BftAction::BroadcastPrecommit(precommit)
     }
 
@@ -1040,6 +1049,27 @@ impl BftEngine {
 
     pub fn phase(&self) -> BftPhase {
         self.state.phase
+    }
+
+    /// Called by the driver after a `BroadcastPrevote` action has been
+    /// successfully sent on the network. Marks our prevote as cast so the
+    /// engine does not re-emit it on the next iteration.
+    ///
+    /// If the driver does NOT call this (because the network send dropped),
+    /// the engine state machine sees `our_prevote_cast=false` on the next
+    /// step and re-emits the same prevote via the `pending_prevote` path —
+    /// which is how we self-heal from a dropped `libp2p` `try_send` instead
+    /// of going silently stuck.
+    pub fn mark_prevote_cast(&mut self) {
+        self.state.our_prevote_cast = true;
+    }
+
+    /// Called by the driver after a `BroadcastPrecommit` action has been
+    /// successfully sent on the network. Same contract as
+    /// [`Self::mark_prevote_cast`] — only mark on confirmed send so a
+    /// dropped `try_send` doesn't leave the engine thinking it broadcast.
+    pub fn mark_precommit_cast(&mut self) {
+        self.state.our_precommit_cast = true;
     }
 }
 
@@ -2609,9 +2639,13 @@ mod tests {
                 other
             ),
         }
+        // Driver-confirmed cast: simulate successful broadcast, then assert.
+        // Pre-v2.1.91 the engine self-set this flag inside emit_prevote and a
+        // dropped libp2p try_send left us stuck thinking we'd voted.
+        engine.mark_prevote_cast();
         assert!(
             engine.state.our_prevote_cast,
-            "after on_own_proposal, our_prevote_cast must be set"
+            "after on_own_proposal + driver mark_prevote_cast, flag must be set"
         );
     }
 
@@ -2728,6 +2762,9 @@ mod tests {
             ),
         }
         assert_eq!(engine.state.phase, BftPhase::Prevote);
+        // Driver-confirmed cast (same contract change as
+        // test_finalization_dead_fix_proposer_on_own_proposal_yes_prevotes).
+        engine.mark_prevote_cast();
         assert!(engine.state.our_prevote_cast);
     }
 
