@@ -1,37 +1,34 @@
-//! sentrix-codec — centralised encoding helpers for Sentrix.
+//! sentrix-codec — centralised encoding helpers.
 //!
-//! Why this crate exists:
-//!   - 8 files across the workspace call `bincode::serialize` /
-//!     `bincode::deserialize` directly. If we ever need to change bincode
-//!     config (e.g. bincode 1.x → 2.x migration, endianness, size limit),
-//!     every call site needs to be found and updated.
-//!   - `hex::encode` / `hex::decode` is used even more widely.
-//!
-//! This crate is the single chokepoint. Future format migrations edit
-//! ONE file (this one) instead of scanning the whole workspace.
-//!
-//! Extracted during the 45-crate split, Tier 1 item #2. See
-//! `internal design doc`.
+//! A small, stable wrapper around `bincode 1.3` and `hex 0.4` that gives
+//! consumers a single import surface and one error type (`CodecError`) for
+//! both serialization and hex conversion.
 //!
 //! # Design
 //!
-//! We stay with bincode 1.3 for now (matches the existing workspace
-//! pin). Migration to bincode 2.x (which has a different API surface)
-//! would happen here first with unit-tests confirming byte-identical
-//! output for the fixed serialization formats. Not part of this PR.
+//! Bincode is pinned to 1.3 (the workspace stays on 1.x for now). A future
+//! migration to bincode 2.x — which has a different API surface — would
+//! happen here first with byte-equality tests so every consumer follows in
+//! one step instead of a workspace-wide grep.
 
-#![allow(missing_docs)]
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
 
 use serde::{Serialize, de::DeserializeOwned};
 
 // ── bincode ──────────────────────────────────────────────────────────
 
-/// Error type returned by this crate's encode/decode helpers.
-/// Wraps `bincode::Error` but doesn't leak the underlying crate, so
-/// callers can match on `CodecError::*` without a bincode dep themselves.
+/// Error type returned by every function in this crate. Implements
+/// `std::error::Error` so it composes with `?` in any `Result` chain.
 #[derive(Debug)]
 pub enum CodecError {
+    /// Serialization failed (returned by [`encode`]). The wrapped string
+    /// is the underlying `bincode` error message — opaque to callers, fine
+    /// for logging or surfacing to a user.
     Encode(String),
+    /// Deserialization or hex-decoding failed (returned by [`decode`],
+    /// [`hex_decode`], and [`hex_decode_fixed`]). The wrapped string is the
+    /// underlying error message from `bincode` or `hex`.
     Decode(String),
 }
 
@@ -46,36 +43,39 @@ impl std::fmt::Display for CodecError {
 
 impl std::error::Error for CodecError {}
 
-/// Serialize a value to `Vec<u8>` using bincode 1.3 default config
-/// (little-endian, varint ints, no byte limit). Matches the behaviour
-/// of `bincode::serialize(..)` already in use across the workspace —
-/// this is a direct wrapper, not a new format.
+/// Serialize a value to `Vec<u8>` using `bincode 1.3` default config
+/// (little-endian, varint integers, no byte-length limit). Output is
+/// byte-identical to a direct `bincode::serialize(val)` call.
 pub fn encode<T: Serialize>(val: &T) -> Result<Vec<u8>, CodecError> {
     bincode::serialize(val).map_err(|e| CodecError::Encode(e.to_string()))
 }
 
-/// Deserialize a value from bytes using bincode 1.3 default config.
+/// Deserialize a value from bytes using `bincode 1.3` default config.
+/// Returns [`CodecError::Decode`] on malformed input or type mismatch.
 pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, CodecError> {
     bincode::deserialize(bytes).map_err(|e| CodecError::Decode(e.to_string()))
 }
 
 // ── hex ──────────────────────────────────────────────────────────────
 
-/// Hex-encode bytes as lowercase string (no `0x` prefix — matches the
-/// existing `hex::encode` behaviour that the workspace expects).
+/// Hex-encode bytes as a lowercase string with no `0x` prefix. Matches
+/// `hex::encode` exactly — kept here so consumers don't take a direct
+/// dependency on the `hex` crate.
 pub fn hex_encode<T: AsRef<[u8]>>(bytes: T) -> String {
     hex::encode(bytes)
 }
 
-/// Hex-decode a string (tolerates a leading `0x` prefix). Returns
-/// `CodecError::Decode` on invalid hex or odd length.
+/// Hex-decode a string into a `Vec<u8>`. Tolerates a leading `0x` prefix
+/// (`"deadbeef"` and `"0xdeadbeef"` both decode to the same bytes).
+/// Returns [`CodecError::Decode`] on non-hex characters or odd length.
 pub fn hex_decode(s: &str) -> Result<Vec<u8>, CodecError> {
     let stripped = s.strip_prefix("0x").unwrap_or(s);
     hex::decode(stripped).map_err(|e| CodecError::Decode(e.to_string()))
 }
 
-/// Hex-decode into a fixed-size byte array. Errors if the input isn't
-/// exactly `N` bytes (2*N hex chars after optional `0x` prefix).
+/// Hex-decode a string into a fixed-size `[u8; N]`. Tolerates a leading
+/// `0x` prefix and then requires exactly `2 * N` hex characters. Returns
+/// [`CodecError::Decode`] on a length mismatch or non-hex input.
 pub fn hex_decode_fixed<const N: usize>(s: &str) -> Result<[u8; N], CodecError> {
     let bytes = hex_decode(s)?;
     if bytes.len() != N {
