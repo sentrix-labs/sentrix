@@ -30,9 +30,9 @@ sudo systemctl enable --now sentrix-<your-name>
 
 | Resource | Minimum | Recommended |
 |---|---|---|
-| vCPU | 4 | 6 – 8 |
-| RAM | 8 GiB | 16 GiB |
-| Swap | 8 GiB persistent | 16 GiB |
+| vCPU | 8 | 16 |
+| RAM | 16 GiB | 32 GiB |
+| Swap | 16 GiB persistent | 32 GiB |
 | Disk | 1 TB NVMe SSD | 2 TB NVMe SSD |
 | Network | 100 Mbit | 1 Gbit |
 | OS | Ubuntu 22.04+ | Ubuntu 24.04 |
