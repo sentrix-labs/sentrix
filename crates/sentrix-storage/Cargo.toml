@@ -2,7 +2,7 @@
 name = "sentrix-storage"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT OR Apache-2.0"
 description = "Sentrix storage layer — libmdbx wrapper for blockchain persistence"
 publish = false
 

@@ -2,7 +2,7 @@
 name = "sentrix-wallet"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT OR Apache-2.0"
 description = "Wallet, keystore encryption, and signing for Sentrix blockchain"
 repository.workspace = true
 
