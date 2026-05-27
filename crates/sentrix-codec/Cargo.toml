@@ -2,7 +2,7 @@
 name = "sentrix-codec"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT OR Apache-2.0"
 description = "Centralised encoding: bincode + hex wrappers for Sentrix"
 repository.workspace = true
 
