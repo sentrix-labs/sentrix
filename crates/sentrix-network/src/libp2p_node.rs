@@ -279,9 +279,12 @@ impl LibP2pNode {
                 tracing::error!(
                     target: "broadcast_bc",
                     "[B FAIL: channel FULL] libp2p cmd_tx saturated at {}/{} — \
-                     DROPPED {} (total drops since boot: {}). Engine will \
-                     self-heal via re-emit; investigate swarm-task starvation \
-                     (memory pressure / I/O wait / blocked .await).",
+                     dropped op={} (total drops since boot: {}). Investigate \
+                     swarm-task starvation (memory pressure / I/O wait / \
+                     blocked .await). BFT-vote callers re-emit via the \
+                     engine's pending_* path; best-effort callers (gossip \
+                     block/tx/advert/round-status) rely on the next gossip \
+                     tick to recover.",
                     max_cap, max_cap, op, total,
                 );
                 Err(())
