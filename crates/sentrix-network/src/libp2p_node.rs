@@ -130,8 +130,19 @@ enum SwarmCommand {
     // per-peer request-response). Mesh fan-out + IHAVE/IWANT retry
     // replace our manual rebroadcast tick for missed votes on WAN.
     GossipBftProposal(Box<sentrix_bft::messages::Proposal>),
-    GossipBftPrevote(Box<sentrix_bft::messages::Prevote>),
-    GossipBftPrecommit(Box<sentrix_bft::messages::Precommit>),
+    /// BFT prevote with an ack channel — `run_swarm` sends `Ok(())` only
+    /// after `gossipsub.publish` succeeds, so the driver can mark the
+    /// engine cast on actual publication rather than mere enqueue.
+    GossipBftPrevote(
+        Box<sentrix_bft::messages::Prevote>,
+        tokio::sync::oneshot::Sender<Result<(), ()>>,
+    ),
+    /// BFT precommit with an ack channel — same publish-confirmation
+    /// contract as [`Self::GossipBftPrevote`].
+    GossipBftPrecommit(
+        Box<sentrix_bft::messages::Precommit>,
+        tokio::sync::oneshot::Sender<Result<(), ()>>,
+    ),
     GossipBftRoundStatus(Box<sentrix_bft::messages::RoundStatus>),
     /// Add a peer address to Kademlia DHT.
     AddKadPeer(PeerId, Multiaddr),
@@ -339,33 +350,41 @@ impl LibP2pNode {
     }
 
     /// Broadcast a BFT prevote to all verified peers.
-    /// Broadcast a signed BFT prevote. Returns `Ok(())` on enqueue,
-    /// `Err(())` if the underlying `try_send` dropped — the caller must
-    /// then revert its engine-state flag (e.g. `engine.mark_prevote_cast`
-    /// is skipped on the error path) so the BFT loop re-emits.
+    /// Broadcast a signed BFT prevote. Returns `Ok(())` ONLY after
+    /// `run_swarm` has actually `gossipsub.publish`'d the message (not just
+    /// enqueued the command). `Err(())` covers three failure modes:
+    /// `send_swarm_cmd` drop (cmd_tx full or closed), `bincode::serialize`
+    /// failure, or `gossipsub.publish` failure (e.g. `InsufficientPeers`).
+    /// In every error case the driver must skip `engine.mark_prevote_cast`
+    /// so the BFT loop re-emits the same vote on its next iteration.
     pub async fn broadcast_bft_prevote(
         &self,
         prevote: &sentrix_bft::messages::Prevote,
     ) -> Result<(), ()> {
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         self.send_swarm_cmd(
-            SwarmCommand::GossipBftPrevote(Box::new(prevote.clone())),
+            SwarmCommand::GossipBftPrevote(Box::new(prevote.clone()), ack_tx),
             "bft prevote",
-        )
+        )?;
+        ack_rx.await.unwrap_or(Err(()))
     }
 
     /// Broadcast a BFT precommit to all verified peers.
-    /// Broadcast a signed BFT precommit. Same return contract as
-    /// [`Self::broadcast_bft_prevote`] — `Err(())` means the driver must
-    /// not mark `our_precommit_cast` on the engine; the BFT loop will
-    /// re-emit on the next iteration.
+    /// Broadcast a signed BFT precommit. Same publish-confirmation
+    /// contract as [`Self::broadcast_bft_prevote`] — `Ok(())` only after
+    /// `gossipsub.publish` succeeds; `Err(())` on any of cmd_tx-drop /
+    /// serialize-fail / publish-fail. Driver skips `mark_precommit_cast`
+    /// on `Err(())` and the engine re-emits on the next iteration.
     pub async fn broadcast_bft_precommit(
         &self,
         precommit: &sentrix_bft::messages::Precommit,
     ) -> Result<(), ()> {
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
         self.send_swarm_cmd(
-            SwarmCommand::GossipBftPrecommit(Box::new(precommit.clone())),
+            SwarmCommand::GossipBftPrecommit(Box::new(precommit.clone()), ack_tx),
             "bft precommit",
-        )
+        )?;
+        ack_rx.await.unwrap_or(Err(()))
     }
 
     /// Broadcast our current BFT round status so peers can sync rounds.
@@ -641,29 +660,44 @@ async fn run_swarm(
                             Err(e) => tracing::warn!("gossip bft proposal serialize failed: {}", e),
                         }
                     }
-                    Some(SwarmCommand::GossipBftPrevote(prevote)) => {
+                    Some(SwarmCommand::GossipBftPrevote(prevote, ack)) => {
                         let topic = gossipsub::IdentTopic::new(BFT_PREVOTE_TOPIC);
                         let env = GossipBftPrevote { prevote: *prevote };
-                        match bincode::serialize(&env) {
-                            Ok(data) => {
-                                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                        let result = match bincode::serialize(&env) {
+                            Ok(data) => match swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                                Ok(_) => Ok(()),
+                                Err(e) => {
                                     tracing::debug!("gossipsub publish bft prevote failed: {}", e);
+                                    Err(())
                                 }
+                            },
+                            Err(e) => {
+                                tracing::warn!("gossip bft prevote serialize failed: {}", e);
+                                Err(())
                             }
-                            Err(e) => tracing::warn!("gossip bft prevote serialize failed: {}", e),
-                        }
+                        };
+                        // If the driver task dropped the receiver, the ack
+                        // .send returns Err — ignore: the broadcast attempt
+                        // still completed in the log.
+                        let _ = ack.send(result);
                     }
-                    Some(SwarmCommand::GossipBftPrecommit(precommit)) => {
+                    Some(SwarmCommand::GossipBftPrecommit(precommit, ack)) => {
                         let topic = gossipsub::IdentTopic::new(BFT_PRECOMMIT_TOPIC);
                         let env = GossipBftPrecommit { precommit: *precommit };
-                        match bincode::serialize(&env) {
-                            Ok(data) => {
-                                if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                        let result = match bincode::serialize(&env) {
+                            Ok(data) => match swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                                Ok(_) => Ok(()),
+                                Err(e) => {
                                     tracing::debug!("gossipsub publish bft precommit failed: {}", e);
+                                    Err(())
                                 }
+                            },
+                            Err(e) => {
+                                tracing::warn!("gossip bft precommit serialize failed: {}", e);
+                                Err(())
                             }
-                            Err(e) => tracing::warn!("gossip bft precommit serialize failed: {}", e),
-                        }
+                        };
+                        let _ = ack.send(result);
                     }
                     Some(SwarmCommand::GossipBftRoundStatus(status)) => {
                         let topic = gossipsub::IdentTopic::new(BFT_ROUND_STATUS_TOPIC);
