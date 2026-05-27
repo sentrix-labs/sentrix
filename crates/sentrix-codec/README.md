@@ -5,6 +5,17 @@
 
 Centralised bincode + hex encoding helpers for the Sentrix workspace.
 
+## What it's good for
+
+A thin compatibility layer that pins one bincode config + adds the missing
+`0x`-prefix-aware hex helpers. Useful beyond Sentrix for any Rust project that:
+- Mixes bincode 1.x serialization with hex encoding (RPC layers, on-disk
+  fixtures, debug dumps) and wants the import surface in one place
+- Needs to migrate bincode 1.x → 2.x later by touching one crate instead of
+  every call site
+- Wants `hex_decode` that transparently accepts both `"deadbeef"` and
+  `"0xdeadbeef"`, plus length-checked `hex_decode_fixed::<N>` returning `[u8; N]`
+
 ## Why this crate exists
 
 Eight files across the workspace were calling `bincode::serialize` / `bincode::deserialize`

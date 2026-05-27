@@ -5,6 +5,18 @@
 
 Key generation, address derivation, signing, and encrypted keystore for Sentrix Chain.
 
+## What it's good for
+
+secp256k1 + Keccak-256 (EVM address derivation) + AES-256-GCM keystore in one
+crate. Useful beyond Sentrix for any Rust project that needs:
+- EVM-compatible wallet creation (`0x…` 20-byte addresses derived the standard
+  way — Keccak-256 of the uncompressed pubkey, last 20 bytes)
+- Transaction or message signing against a held secret key
+- At-rest encrypted storage of signing keys with a strong KDF (Argon2id by
+  default; PBKDF2 supported for backwards compatibility)
+- Validator / oracle / signer node deployments where the operator wants the
+  crypto in one audited place with `zeroize` on secrets
+
 ## Why this crate exists
 
 Both the validator binary and the CLI tooling need to load a secp256k1 secret key,

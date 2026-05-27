@@ -5,6 +5,17 @@
 
 libmdbx-backed persistence layer for Sentrix Chain blocks, transactions, trie nodes, and metadata.
 
+## What it's good for
+
+A typed wrapper over raw libmdbx with batch / table semantics on top. Useful
+beyond Sentrix for any Rust project that needs:
+- Embedded ACID key-value storage with ordered iteration (same engine as Reth
+  and Erigon — battle-tested under blockchain write loads)
+- A familiar table → key → value layout without hand-rolling cursors and txn
+  lifetimes every call site
+- A drop-in replacement for `sled` workloads that outgrew its lack of proper
+  transaction commit / rollback semantics
+
 ## Why this crate exists
 
 The chain was originally on `sled`; libmdbx (used by Reth and Erigon) gives ACID

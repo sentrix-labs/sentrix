@@ -5,6 +5,16 @@
 
 256-level Binary Sparse Merkle Tree with MDBX persistence for Sentrix Chain state.
 
+## What it's good for
+
+Authenticated key-value state with inclusion / non-inclusion proofs. Useful
+beyond Sentrix for any Rust project needing one of:
+- L1 / L2 / app-chain account or storage trees committed to a root hash
+- zk-rollup state commitments with verifiable proofs
+- Airdrop / claim systems that publish a root and serve per-leaf proofs
+- Any content-addressed structure where a verifier wants to confirm membership
+  without re-reading the full dataset
+
 ## Why this crate exists
 
 The chain commits `state_root` into every block header, so the block executor needs
@@ -26,15 +36,20 @@ sentrix-trie = { path = "../sentrix-trie" }
 ```
 
 ```rust
+use std::path::Path;
+use std::sync::Arc;
+use sentrix_storage::MdbxStorage;
 use sentrix_trie::{SentrixTrie, MerkleProof, account_value_bytes, address_to_key};
 
 // SentrixTrie is the main API — insert/get/prove/commit. Keys are 256-bit
 // (typically hashed addresses or storage slots); values are arbitrary bytes.
-let mut trie = SentrixTrie::open(/* storage handle */)?;
+// `version` is the height / commit counter the trie writes nodes under.
+let mdbx = Arc::new(MdbxStorage::open(Path::new("data/chain.db"))?);
+let mut trie = SentrixTrie::open(mdbx, 0)?;          // (storage, version)
 let key = address_to_key("0x...");
 let value = account_value_bytes(/* Account */);
 trie.insert(&key, &value)?;
-let root = trie.commit(height)?;
+let root = trie.commit(1)?;                          // next version
 
 // MerkleProof generates inclusion / non-inclusion proofs for the RPC layer.
 // `verify_membership(&root)` checks the proof matches the trie that committed
