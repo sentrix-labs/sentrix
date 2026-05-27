@@ -33,7 +33,7 @@ sudo systemctl enable --now sentrix-<your-name>
 | vCPU | 4 | 6 – 8 |
 | RAM | 8 GiB | 16 GiB |
 | Swap | 8 GiB persistent | 16 GiB |
-| Disk | 60 GiB SSD | 120 GiB NVMe |
+| Disk | 1 TB NVMe SSD | 2 TB NVMe SSD |
 | Network | 100 Mbit | 1 Gbit |
 | OS | Ubuntu 22.04+ | Ubuntu 24.04 |
 
