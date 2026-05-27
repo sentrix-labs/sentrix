@@ -2883,6 +2883,113 @@ mod tests {
         assert_eq!(direct_retry, first_precommit);
     }
 
+    /// v2.1.91 driver-confirmed cast contract: `emit_prevote` must NOT
+    /// auto-set `our_prevote_cast`. The flag flips to true only when the
+    /// driver explicitly calls `mark_prevote_cast` after a confirmed
+    /// network send. If the driver never calls it (because `libp2p`
+    /// `try_send` dropped on a full channel), the engine stays in a
+    /// retry-ready state instead of going silently stuck.
+    #[test]
+    fn test_v2_1_91_emit_prevote_does_not_auto_mark_cast() {
+        let (_reg, total_stake) = setup_4val();
+        let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
+
+        let action = engine.on_own_proposal("0xblockhash");
+        assert!(matches!(action, BftAction::BroadcastPrevote(_)));
+        assert!(
+            !engine.state.our_prevote_cast,
+            "emit_prevote MUST NOT auto-mark cast — flag is driver-confirmed"
+        );
+
+        engine.mark_prevote_cast();
+        assert!(
+            engine.state.our_prevote_cast,
+            "after explicit mark_prevote_cast, flag is set"
+        );
+    }
+
+    /// v2.1.91 driver-confirmed cast contract for precommit. Same
+    /// reasoning as the prevote variant — engine must wait for the
+    /// driver's explicit confirmation instead of optimistically marking.
+    #[test]
+    fn test_v2_1_91_emit_precommit_does_not_auto_mark_cast() {
+        let (_reg, total_stake) = setup_4val();
+        let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
+        let stake = MIN_SELF_STAKE;
+        let block = "0xblockhash";
+
+        // Drive the engine to Precommit via the proposer-self-prevote
+        // + 2-peer-yes pattern from test 5.
+        let our_pv = match engine.on_own_proposal(block) {
+            BftAction::BroadcastPrevote(p) => p,
+            other => panic!("expected own prevote, got {other:?}"),
+        };
+        let _ = engine.on_prevote_weighted(&our_pv, stake);
+        let peer2 = Prevote {
+            height: 100,
+            round: 0,
+            block_hash: Some(block.into()),
+            validator: "0xval002".into(),
+            signature: vec![],
+        };
+        let _ = engine.on_prevote_weighted(&peer2, stake);
+        let peer3 = Prevote {
+            height: 100,
+            round: 0,
+            block_hash: Some(block.into()),
+            validator: "0xval003".into(),
+            signature: vec![],
+        };
+        let action = engine.on_prevote_weighted(&peer3, stake);
+        assert!(matches!(action, BftAction::BroadcastPrecommit(_)));
+
+        assert!(
+            !engine.state.our_precommit_cast,
+            "emit_precommit MUST NOT auto-mark cast — flag is driver-confirmed"
+        );
+
+        engine.mark_precommit_cast();
+        assert!(
+            engine.state.our_precommit_cast,
+            "after explicit mark_precommit_cast, flag is set"
+        );
+    }
+
+    /// v2.1.91 full-cycle regression: simulates the production silent-stall
+    /// scenario where the libp2p `try_send` drops the first send. The
+    /// engine must re-emit the same prevote on the next iteration, the
+    /// driver retries, this time successfully, and only then marks cast.
+    /// Pre-v2.1.91 the engine would have auto-set cast=true on the first
+    /// `on_own_proposal`, and the validator would have sat on the same
+    /// `(h, r)` until manually recovered.
+    #[test]
+    fn test_v2_1_91_dropped_send_then_retry_marks_cast_after_success() {
+        let (_reg, total_stake) = setup_4val();
+        let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
+
+        let first = match engine.on_own_proposal("0xblockhash") {
+            BftAction::BroadcastPrevote(p) => p,
+            other => panic!("first emit must return BroadcastPrevote, got {other:?}"),
+        };
+        // Driver simulates dropped send: does NOT call mark_prevote_cast.
+        assert!(!engine.state.our_prevote_cast);
+
+        // Engine re-emits same prevote via pending_prevote early-return.
+        let retry = match engine.on_own_proposal("0xblockhash") {
+            BftAction::BroadcastPrevote(p) => p,
+            other => panic!("retry must return BroadcastPrevote, got {other:?}"),
+        };
+        assert_eq!(retry, first, "retry must re-emit the identical prevote");
+        assert!(
+            !engine.state.our_prevote_cast,
+            "retry path also must not auto-mark — still driver-confirmed"
+        );
+
+        // Driver succeeds this time and confirms.
+        engine.mark_prevote_cast();
+        assert!(engine.state.our_prevote_cast);
+    }
+
     #[test]
     fn test_291_conflicting_pending_prevote_blocks_new_vote() {
         let (_reg, total_stake) = setup_4val();
