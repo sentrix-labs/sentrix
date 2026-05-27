@@ -512,7 +512,13 @@ impl BftEngine {
             return BftAction::Wait;
         }
         self.pending_prevote = Some(prevote.clone());
-        self.state.our_prevote_cast = true;
+        // NOTE: our_prevote_cast is no longer set here. The driver must call
+        // mark_prevote_cast() after the network send actually succeeds —
+        // setting the flag pre-send caused silent-thread-death when the
+        // libp2p cmd_tx try_send dropped the message (h=1392113 2026-05-05,
+        // val4 2026-05-27 ~h=5609246). pending_prevote is kept so the engine
+        // re-emits the same prevote on the next iteration if the driver
+        // failed to broadcast.
         BftAction::BroadcastPrevote(prevote)
     }
 
@@ -535,7 +541,10 @@ impl BftEngine {
             return BftAction::Wait;
         }
         self.pending_precommit = Some(precommit.clone());
-        self.state.our_precommit_cast = true;
+        // NOTE: our_precommit_cast is no longer set here. Same reason as
+        // emit_prevote — driver calls mark_precommit_cast() only after the
+        // network send succeeds, so a dropped try_send no longer leaves the
+        // engine thinking it broadcast when it didn't.
         BftAction::BroadcastPrecommit(precommit)
     }
 
@@ -1040,6 +1049,27 @@ impl BftEngine {
 
     pub fn phase(&self) -> BftPhase {
         self.state.phase
+    }
+
+    /// Called by the driver after a `BroadcastPrevote` action has been
+    /// successfully sent on the network. Marks our prevote as cast so the
+    /// engine does not re-emit it on the next iteration.
+    ///
+    /// If the driver does NOT call this (because the network send dropped),
+    /// the engine state machine sees `our_prevote_cast=false` on the next
+    /// step and re-emits the same prevote via the `pending_prevote` path —
+    /// which is how we self-heal from a dropped `libp2p` `try_send` instead
+    /// of going silently stuck.
+    pub fn mark_prevote_cast(&mut self) {
+        self.state.our_prevote_cast = true;
+    }
+
+    /// Called by the driver after a `BroadcastPrecommit` action has been
+    /// successfully sent on the network. Same contract as
+    /// [`Self::mark_prevote_cast`] — only mark on confirmed send so a
+    /// dropped `try_send` doesn't leave the engine thinking it broadcast.
+    pub fn mark_precommit_cast(&mut self) {
+        self.state.our_precommit_cast = true;
     }
 }
 
@@ -2609,9 +2639,13 @@ mod tests {
                 other
             ),
         }
+        // Driver-confirmed cast: simulate successful broadcast, then assert.
+        // Pre-v2.1.91 the engine self-set this flag inside emit_prevote and a
+        // dropped libp2p try_send left us stuck thinking we'd voted.
+        engine.mark_prevote_cast();
         assert!(
             engine.state.our_prevote_cast,
-            "after on_own_proposal, our_prevote_cast must be set"
+            "after on_own_proposal + driver mark_prevote_cast, flag must be set"
         );
     }
 
@@ -2728,6 +2762,9 @@ mod tests {
             ),
         }
         assert_eq!(engine.state.phase, BftPhase::Prevote);
+        // Driver-confirmed cast (same contract change as
+        // test_finalization_dead_fix_proposer_on_own_proposal_yes_prevotes).
+        engine.mark_prevote_cast();
         assert!(engine.state.our_prevote_cast);
     }
 
@@ -2844,6 +2881,113 @@ mod tests {
             other => panic!("same pending precommit should be reusable, got {other:?}"),
         };
         assert_eq!(direct_retry, first_precommit);
+    }
+
+    /// v2.1.91 driver-confirmed cast contract: `emit_prevote` must NOT
+    /// auto-set `our_prevote_cast`. The flag flips to true only when the
+    /// driver explicitly calls `mark_prevote_cast` after a confirmed
+    /// network send. If the driver never calls it (because `libp2p`
+    /// `try_send` dropped on a full channel), the engine stays in a
+    /// retry-ready state instead of going silently stuck.
+    #[test]
+    fn test_v2_1_91_emit_prevote_does_not_auto_mark_cast() {
+        let (_reg, total_stake) = setup_4val();
+        let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
+
+        let action = engine.on_own_proposal("0xblockhash");
+        assert!(matches!(action, BftAction::BroadcastPrevote(_)));
+        assert!(
+            !engine.state.our_prevote_cast,
+            "emit_prevote MUST NOT auto-mark cast — flag is driver-confirmed"
+        );
+
+        engine.mark_prevote_cast();
+        assert!(
+            engine.state.our_prevote_cast,
+            "after explicit mark_prevote_cast, flag is set"
+        );
+    }
+
+    /// v2.1.91 driver-confirmed cast contract for precommit. Same
+    /// reasoning as the prevote variant — engine must wait for the
+    /// driver's explicit confirmation instead of optimistically marking.
+    #[test]
+    fn test_v2_1_91_emit_precommit_does_not_auto_mark_cast() {
+        let (_reg, total_stake) = setup_4val();
+        let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
+        let stake = MIN_SELF_STAKE;
+        let block = "0xblockhash";
+
+        // Drive the engine to Precommit via the proposer-self-prevote
+        // + 2-peer-yes pattern from test 5.
+        let our_pv = match engine.on_own_proposal(block) {
+            BftAction::BroadcastPrevote(p) => p,
+            other => panic!("expected own prevote, got {other:?}"),
+        };
+        let _ = engine.on_prevote_weighted(&our_pv, stake);
+        let peer2 = Prevote {
+            height: 100,
+            round: 0,
+            block_hash: Some(block.into()),
+            validator: "0xval002".into(),
+            signature: vec![],
+        };
+        let _ = engine.on_prevote_weighted(&peer2, stake);
+        let peer3 = Prevote {
+            height: 100,
+            round: 0,
+            block_hash: Some(block.into()),
+            validator: "0xval003".into(),
+            signature: vec![],
+        };
+        let action = engine.on_prevote_weighted(&peer3, stake);
+        assert!(matches!(action, BftAction::BroadcastPrecommit(_)));
+
+        assert!(
+            !engine.state.our_precommit_cast,
+            "emit_precommit MUST NOT auto-mark cast — flag is driver-confirmed"
+        );
+
+        engine.mark_precommit_cast();
+        assert!(
+            engine.state.our_precommit_cast,
+            "after explicit mark_precommit_cast, flag is set"
+        );
+    }
+
+    /// v2.1.91 full-cycle regression: simulates the production silent-stall
+    /// scenario where the libp2p `try_send` drops the first send. The
+    /// engine must re-emit the same prevote on the next iteration, the
+    /// driver retries, this time successfully, and only then marks cast.
+    /// Pre-v2.1.91 the engine would have auto-set cast=true on the first
+    /// `on_own_proposal`, and the validator would have sat on the same
+    /// `(h, r)` until manually recovered.
+    #[test]
+    fn test_v2_1_91_dropped_send_then_retry_marks_cast_after_success() {
+        let (_reg, total_stake) = setup_4val();
+        let mut engine = BftEngine::new(100, "0xval001".into(), total_stake);
+
+        let first = match engine.on_own_proposal("0xblockhash") {
+            BftAction::BroadcastPrevote(p) => p,
+            other => panic!("first emit must return BroadcastPrevote, got {other:?}"),
+        };
+        // Driver simulates dropped send: does NOT call mark_prevote_cast.
+        assert!(!engine.state.our_prevote_cast);
+
+        // Engine re-emits same prevote via pending_prevote early-return.
+        let retry = match engine.on_own_proposal("0xblockhash") {
+            BftAction::BroadcastPrevote(p) => p,
+            other => panic!("retry must return BroadcastPrevote, got {other:?}"),
+        };
+        assert_eq!(retry, first, "retry must re-emit the identical prevote");
+        assert!(
+            !engine.state.our_prevote_cast,
+            "retry path also must not auto-mark — still driver-confirmed"
+        );
+
+        // Driver succeeds this time and confirms.
+        engine.mark_prevote_cast();
+        assert!(engine.state.our_prevote_cast);
     }
 
     #[test]
