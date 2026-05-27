@@ -125,10 +125,10 @@ Mainnet reference at h ≈ 1.74M (2026-05):
 
 | Resource | Minimum | Comfortable |
 |---|---|---|
-| vCPU | 4 | 6 – 8 |
-| RAM | **8 GiB** | 16 GiB |
-| Swap | **8 GiB** persistent (`/etc/fstab`) | 16 GiB |
-| Disk | 60 GiB SSD | 120 GiB NVMe |
+| vCPU | 8 | 16 |
+| RAM | **16 GiB** | 32 GiB |
+| Swap | **16 GiB** persistent (`/etc/fstab`) | 32 GiB |
+| Disk | 1 TB NVMe SSD | 2 TB NVMe SSD |
 | Bandwidth | 100 Mbit sustained | 1 Gbit |
 
 > [!CAUTION]
