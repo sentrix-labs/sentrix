@@ -10,6 +10,13 @@ homepage = "https://sentrixchain.com"
 authors = ["Sentrix Labs <support@sentrixchain.com>"]
 keywords = ["bincode", "hex", "serialization", "encoding"]
 categories = ["encoding"]
+include = [
+    "src/**/*.rs",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
 
 [dependencies]
 bincode = "1.3"

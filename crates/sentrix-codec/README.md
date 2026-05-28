@@ -153,9 +153,9 @@ above have a few stable releases of bake-in.
 
 ## Changelog
 
-Release notes live in the
-[sentrix-labs/sentrix releases](https://github.com/sentrix-labs/sentrix/releases)
-page, tagged per-crate (`sentrix-codec-v<version>`).
+See [CHANGELOG.md](CHANGELOG.md) for per-version notes; release tags live
+at the [sentrix-labs/sentrix releases](https://github.com/sentrix-labs/sentrix/releases)
+page (`sentrix-codec-v<version>`).
 
 ## Security
 
