@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 sentrix-primitives = { path = "../sentrix-primitives" }
 secp256k1 = { version = "0.31", features = ["rand", "recovery", "serde"] }
-sha3 = "0.11"
+sha3 = "0.12"
 aes-gcm = "0.10"
 argon2 = "0.5"
 pbkdf2 = { version = "0.13", features = ["hmac"] }
