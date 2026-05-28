@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779529674617,
+  "lastUpdate": 1779934945190,
   "repoUrl": "https://github.com/sentrix-labs/sentrix",
   "entries": {
     "sentrix-trie benches": [
@@ -125,6 +125,48 @@ window.BENCHMARK_DATA = {
             "name": "commit_after_100_inserts",
             "value": 1290934,
             "range": "± 46775",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0bacb743202a70aaa56853c2c342b2c9edc2c761",
+          "message": "chore(deps): bump sha3 from 0.11.0 to 0.12.0 (#723)\n\nBumps [sha3](https://github.com/RustCrypto/hashes) from 0.11.0 to 0.12.0.\n- [Commits](https://github.com/RustCrypto/hashes/compare/sha3-v0.11.0...sha3-v0.12.0)\n\n---\nupdated-dependencies:\n- dependency-name: sha3\n  dependency-version: 0.12.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-05-28T09:20:18+07:00",
+          "tree_id": "20aecb43f4a353e997aa021d63d28d5889ba944c",
+          "url": "https://github.com/sentrix-labs/sentrix/commit/0bacb743202a70aaa56853c2c342b2c9edc2c761"
+        },
+        "date": 1779934944304,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "insert_single",
+            "value": 176031,
+            "range": "± 15294",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "insert_batch_100",
+            "value": 499307,
+            "range": "± 6108",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "commit_after_100_inserts",
+            "value": 1524452,
+            "range": "± 1613175",
             "unit": "ns/iter"
           }
         ]
