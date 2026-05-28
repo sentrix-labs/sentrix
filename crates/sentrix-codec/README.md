@@ -8,7 +8,7 @@
   <a href="https://crates.io/crates/sentrix-codec"><img src="https://img.shields.io/crates/v/sentrix-codec.svg" alt="crates.io" /></a>
   <a href="https://docs.rs/sentrix-codec"><img src="https://docs.rs/sentrix-codec/badge.svg" alt="docs.rs" /></a>
   <a href="https://github.com/sentrix-labs/sentrix/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sentrix-labs/sentrix/ci.yml?branch=main&label=CI" alt="CI" /></a>
-  <a href="https://app.codecov.io/gh/sentrix-labs/sentrix"><img src="https://img.shields.io/codecov/c/github/sentrix-labs/sentrix?label=coverage" alt="Coverage" /></a>
+  <a href="https://codecov.io/gh/sentrix-labs/sentrix"><img src="https://codecov.io/gh/sentrix-labs/sentrix/branch/main/graph/badge.svg" alt="Coverage" /></a>
   <a href="https://crates.io/crates/sentrix-codec"><img src="https://img.shields.io/crates/d/sentrix-codec.svg" alt="downloads" /></a>
   <a href="https://github.com/sentrix-labs/sentrix/blob/main/crates/sentrix-codec/Cargo.toml"><img src="https://img.shields.io/badge/MSRV-1.95-blue.svg" alt="MSRV 1.95" /></a>
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
@@ -153,9 +153,9 @@ above have a few stable releases of bake-in.
 
 ## Changelog
 
-Release notes live in the
-[sentrix-labs/sentrix releases](https://github.com/sentrix-labs/sentrix/releases)
-page, tagged per-crate (`sentrix-codec-v<version>`).
+See [CHANGELOG.md](CHANGELOG.md) for per-version notes; release tags live
+at the [sentrix-labs/sentrix releases](https://github.com/sentrix-labs/sentrix/releases)
+page (`sentrix-codec-v<version>`).
 
 ## Security
 
