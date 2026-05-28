@@ -6,6 +6,7 @@ rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 description = "Centralised bincode + hex encoding helpers — a stable wrapper around bincode 1.3 and hex 0.4 with a single error type."
 repository.workspace = true
+homepage = "https://sentrixchain.com"
 authors = ["Sentrix Labs <support@sentrixchain.com>"]
 keywords = ["bincode", "hex", "serialization", "encoding"]
 categories = ["encoding"]
