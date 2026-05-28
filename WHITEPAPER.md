@@ -72,7 +72,7 @@ Voyager replaces Pioneer's authority-based round-robin with a stake-weighted act
 - **3-phase BFT round.** Propose → Prevote → Precommit. A block is committed when ≥ 2/3+1 of stake-weighted precommits are gathered. Locked-block-repropose handles partial-supermajority cases without forking.
 - **Justifications.** Each committed block carries a `justification` field with the precommit signatures that finalised it. `sentrix_getFinalizedHeight` returns the height of the newest justified block; light clients verify finality by checking justifications against the on-chain stake registry.
 - **Slashing.** Double-sign and prolonged offline trigger automatic stake slashing under `crates/sentrix-staking/`. Slash evidence is submitted on-chain via the `SubmitEvidence` staking op.
-- **EVM gating.** Voyager activation also flips `evm_activated=true`, enabling `eth_sendRawTransaction` and Solidity contract deployment via revm 37.
+- **EVM gating.** Voyager activation also flips `evm_activated=true`, enabling `eth_sendRawTransaction` and Solidity contract deployment via revm 38.
 
 Voyager activated on mainnet at h=579047 on 2026-04-25 after Pioneer ran from genesis through h=579046.
 

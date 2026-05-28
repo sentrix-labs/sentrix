@@ -42,7 +42,7 @@ crates/
 ├── sentrix-wallet/        # Argon2id keystore, ECDSA keypair ops
 ├── sentrix-trie/          # Binary Sparse Merkle Tree (MDBX backend)
 ├── sentrix-staking/       # DPoS, epoch, slashing
-├── sentrix-evm/           # revm 37 adapter
+├── sentrix-evm/           # revm 38 adapter
 ├── sentrix-precompiles/   # EVM precompiles
 ├── sentrix-bft/           # BFT consensus (timeout-only round advance)
 ├── sentrix-core/          # Blockchain, authority, executor, mempool
