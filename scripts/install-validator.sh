@@ -124,7 +124,7 @@ fi
 ok "kernel: $(uname -sr) on $(uname -m)"
 
 if ! command -v apt-get >/dev/null 2>&1; then
-    fail "apt-get not found — this installer expects Debian/Ubuntu. For other distros, follow docs/operations/VALIDATOR_ONBOARDING.md manually."
+    fail "apt-get not found — this installer expects Debian/Ubuntu. For other distros, follow https://docs.sentrixchain.com/operations/VALIDATOR_ONBOARDING/ manually."
 fi
 DISTRO_ID=$(. /etc/os-release && echo "${ID:-unknown}")
 DISTRO_VER=$(. /etc/os-release && echo "${VERSION_ID:-?}")

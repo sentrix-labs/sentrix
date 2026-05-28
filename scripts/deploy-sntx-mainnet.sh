@@ -19,7 +19,7 @@
 # `Founder Private ++` vault on the founder's local drive (see
 # reference_secrets_locations). Only the founder should run this. After
 # a successful deploy, record the contract address (`SRC20_...`) in:
-#   * docs/tokenomics/TOKEN_STANDARDS.md
+#   * https://docs.sentrixchain.com/tokenomics/TOKEN_STANDARDS/ (source at sentrix-labs/docs)
 #   * sentrix-wallet-web env config
 #   * sentrix-scan env config
 #   * internal design doc (canonical list of deployed contracts)
@@ -155,7 +155,7 @@ FEE="${DEPLOY_FEE}" \
 echo
 echo "==> Post-deploy checklist:"
 echo "    [ ] GET ${RPC}/tokens/<SRC20_…> confirms metadata"
-echo "    [ ] Record address in docs/tokenomics/TOKEN_STANDARDS.md"
+echo "    [ ] Record address in TOKEN_STANDARDS at sentrix-labs/docs"
 echo "    [ ] Record address in sentrix-wallet-web env config"
 echo "    [ ] Record address in sentrix-scan env config"
 echo "    [ ] Record address in internal design doc"
