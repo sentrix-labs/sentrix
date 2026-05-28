@@ -57,8 +57,12 @@ cargo build --release
 # Test
 cargo test --workspace
 
-# Run a node
-SENTRIX_VALIDATOR_KEY=<key> ./target/release/sentrix start --port 30303
+# Generate (or import) an encrypted keystore
+./target/release/sentrix wallet generate --password "<strong-passphrase>"
+
+# Run a node against the keystore (recommended)
+./target/release/sentrix start --port 30303 \
+    --validator-keystore data/wallets/<addr>.json
 
 # Check health
 curl http://localhost:8545/health
@@ -66,16 +70,18 @@ curl http://localhost:8545/health
 
 ## Run a validator
 
-Sentrix is a permissioned-onboarding chain for now — the consensus is open and the binary is the same one anyone can build, but admission to the active set is co-signed by the chain admin (single-key today, N-of-M target). To run a node:
+Sentrix runs **Voyager DPoS + BFT** — validator registration is fully **permissionless**. No whitelist, no Foundation approval, no admin co-sign. Any address with ≥ 15,000 SRX self-stake can submit `StakingOp::RegisterValidator` and join the candidate pool; the top 21 by total stake form the active set.
 
 ```bash
 # One-line installer (Ubuntu 22.04 / 24.04, x86_64 or aarch64)
 curl -fsSL https://raw.githubusercontent.com/sentrix-labs/sentrix/main/scripts/install-validator.sh | bash
 ```
 
-The script handles pre-flight checks (RAM ≥ 8 GiB, swap ≥ 8 GiB persistent, disk ≥ 60 GiB), apt deps, Rust 1.95+ via rustup, source clone + `cargo build --release -p sentrix-node`, keystore generation, systemd unit, and start. It's idempotent — re-runs are repair, not clobber.
+The script handles pre-flight checks (RAM ≥ 16 GiB, swap ≥ 16 GiB persistent, disk ≥ 1 TB NVMe SSD), apt deps, Rust 1.95+ via rustup, source clone + `cargo build --release -p sentrix-node`, encrypted keystore generation, systemd unit, and start. It's idempotent — re-runs are repair, not clobber.
 
-After the node is healthy, email **`validators@sentrixchain.com`** with your address + pubkey (printed by the installer) + intended self-stake (≥ 15,000 SRX) + ops contact. Activation height comes back; you appear in `GET /chain/info → validators` and at [scan.sentrixchain.com/validators](https://scan.sentrixchain.com/validators).
+After the node is healthy: bond ≥ 15,000 SRX and submit `StakingOp::RegisterValidator` from your wallet. The transaction is its own admission proof — no email or approval step. You appear in `GET /chain/info → validators` and at [scan.sentrixchain.com/validators](https://scan.sentrixchain.com/validators) once finalised.
+
+For incident coordination + ops support (not registration), contact **`validators@sentrixchain.com`**.
 
 Full operator guide: **[docs.sentrixchain.com/operations/VALIDATOR_ONBOARDING](https://docs.sentrixchain.com/operations/VALIDATOR_ONBOARDING)** (hardware, security, monitoring, recovery paths).
 
@@ -137,7 +143,7 @@ bin/
 **Verifier:** [verify.sentrixchain.com](https://verify.sentrixchain.com) (Sourcify)
 **gRPC + gRPC-Web:** [grpc.sentrixchain.com](https://grpc.sentrixchain.com) · [grpc-testnet.sentrixchain.com](https://grpc-testnet.sentrixchain.com)
 **WebSocket:** `wss://api.sentrixchain.com/ws` (mainnet) · `wss://testnet-api.sentrixchain.com/ws` (testnet)
-**Telegram:** [t.me/SentrixCommunity](https://t.me/SentrixCommunity)
+**Telegram:** [t.me/SentrixChain](https://t.me/SentrixChain) (announcements) · [t.me/SentrixCommunity](https://t.me/SentrixCommunity) (community chat)
 
 ## Roadmap
 
