@@ -67,18 +67,14 @@ fn op_strategy() -> impl Strategy<Value = Op> {
     prop_oneof![
         (addr.clone(), small_amount.clone()).prop_map(|(addr, amount)| Op::Credit { addr, amount }),
         (addr.clone(), small_fee.clone()).prop_map(|(from, fee)| Op::ChargeFee { from, fee }),
-        (
-            addr.clone(),
-            addr.clone(),
-            small_amount,
-            small_fee,
-        )
-            .prop_map(|(from, to, amount, fee)| Op::Transfer {
+        (addr.clone(), addr.clone(), small_amount, small_fee,).prop_map(
+            |(from, to, amount, fee)| Op::Transfer {
                 from,
                 to,
                 amount,
                 fee,
-            }),
+            }
+        ),
     ]
 }
 

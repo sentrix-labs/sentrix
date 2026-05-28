@@ -65,6 +65,25 @@ pub static SWARM_TICK: AtomicU64 = AtomicU64::new(0);
 /// next session) so the Telegram alerter can fire on `rate(...) > 0`.
 pub static DROPPED_BFT_BROADCASTS: AtomicU64 = AtomicU64::new(0);
 
+// 2026-05-28 v2.2.19: apply-path observability. The fullnode silent-stall
+// class (vps6 fullnode-1 stuck 78min on 2026-05-27, fullnode-2 stuck 6.1h,
+// testnet fullnode-1 stuck 4.5d) is invisible from outside: container is
+// alive, RPC answers, libp2p peers connected, but chain.height() never
+// advances. v2.2.18 closed the BFT-side silent-stall (driver-confirmed
+// cast); fullnodes don't run BFT — they only receive blocks via the three
+// apply paths below. We don't know yet whether the stall lives in
+// gossipsub delivery, the chain.write() lock, add_block_from_peer
+// internals, or the post-apply bookkeeping, so this watchdog records
+// counts at each step and logs a stall-class diagnostic instead of
+// speculating. Next stall reproduces with these numbers in the log.
+pub static APPLY_RX_GOSSIP: AtomicU64 = AtomicU64::new(0);
+pub static APPLY_RX_REQ: AtomicU64 = AtomicU64::new(0);
+pub static APPLY_RX_SYNC: AtomicU64 = AtomicU64::new(0);
+pub static APPLY_OK: AtomicU64 = AtomicU64::new(0);
+pub static APPLY_ERR: AtomicU64 = AtomicU64::new(0);
+pub static APPLY_LAST_HEIGHT: AtomicU64 = AtomicU64::new(0);
+pub static APPLY_LAST_UNIX: AtomicU64 = AtomicU64::new(0);
+
 use futures::StreamExt;
 use libp2p::{
     Multiaddr, PeerId, Swarm, SwarmBuilder, gossipsub,
@@ -81,14 +100,12 @@ use crate::behaviour::{
     BLOCKS_TOPIC, GossipBlock, GossipTransaction, SentrixBehaviour, SentrixBehaviourEvent,
     SentrixRequest, SentrixResponse, TXS_TOPIC, VALIDATOR_ADVERTS_TOPIC,
 };
-use sentrix_wire::{
-    GossipBftPrecommit, GossipBftPrevote, GossipBftProposal, GossipBftRoundStatus,
-};
 use crate::node::{NodeEvent, SharedBlockchain};
 use sentrix_primitives::block::Block;
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::transaction::Transaction;
 use sentrix_wire::MultiaddrAdvertisement;
+use sentrix_wire::{GossipBftPrecommit, GossipBftPrevote, GossipBftProposal, GossipBftRoundStatus};
 
 // The rate-limit + multiaddr-helper bits used to live inline below;
 // they were independent of the swarm logic and just bulked up the
@@ -235,6 +252,67 @@ impl LibP2pNode {
         tokio::spawn(async move {
             if let Err(e) = run_swarm(kp, bc, event_tx, cmd_rx).await {
                 tracing::error!("libp2p swarm task exited with error: {}", e);
+            }
+        });
+
+        // 2026-05-28 v2.2.19: apply-watchdog. Every 30s, drains the per-path
+        // RX/OK/ERR counters and reports apply_age (seconds since last
+        // successful apply). Classifies stalls:
+        //   • rx_total > 0 + apply_age > 120s  → SILENT-STALL (apply path
+        //     stuck or rejecting everything); previously invisible
+        //   • rx_total = 0 + apply_age > 120s  → PEER-MESH IDLE (gossipsub
+        //     mesh broken; different class — see libp2p peer table)
+        // Logs at info on every tick so grep apply_watchdog gives a clean
+        // history. Errors only on actual stall classification.
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+            interval.tick().await; // skip immediate first tick at startup
+            loop {
+                interval.tick().await;
+                let now_unix = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let last_apply_unix = APPLY_LAST_UNIX.load(Ordering::Relaxed);
+                let last_height = APPLY_LAST_HEIGHT.load(Ordering::Relaxed);
+                let rx_gossip = APPLY_RX_GOSSIP.swap(0, Ordering::Relaxed);
+                let rx_req = APPLY_RX_REQ.swap(0, Ordering::Relaxed);
+                let rx_sync = APPLY_RX_SYNC.swap(0, Ordering::Relaxed);
+                let ok = APPLY_OK.swap(0, Ordering::Relaxed);
+                let err = APPLY_ERR.swap(0, Ordering::Relaxed);
+                let apply_age = if last_apply_unix == 0 {
+                    0
+                } else {
+                    now_unix.saturating_sub(last_apply_unix)
+                };
+                let rx_total = rx_gossip + rx_req + rx_sync;
+
+                tracing::info!(
+                    target: "apply_watchdog",
+                    "30s tick: rx_gossip={} rx_req={} rx_sync={} ok={} err={} \
+                     last_h={} apply_age={}s",
+                    rx_gossip, rx_req, rx_sync, ok, err, last_height, apply_age,
+                );
+
+                if last_apply_unix > 0 && apply_age > 120 && rx_total > 0 {
+                    tracing::error!(
+                        target: "apply_watchdog",
+                        "SILENT-STALL: {} blocks received in last 30s but no \
+                         successful apply in {}s (last_h={}) — apply path stuck \
+                         on write-lock, MDBX commit, or rejecting everything. \
+                         Inspect chain.write() holders + DROPPED_BFT_BROADCASTS \
+                         + EVENT_TX_DROPPED counters and dump tokio task tree.",
+                        rx_total, apply_age, last_height,
+                    );
+                } else if last_apply_unix > 0 && apply_age > 120 {
+                    tracing::warn!(
+                        target: "apply_watchdog",
+                        "PEER-MESH IDLE: no apply in {}s and zero blocks received \
+                         (last_h={}) — gossipsub mesh broken or all peers behind. \
+                         Inspect connected_peers + gossip mesh size.",
+                        apply_age, last_height,
+                    );
+                }
             }
         });
 
@@ -1003,6 +1081,7 @@ async fn on_swarm_event(
                             );
                             return;
                         }
+                        APPLY_RX_GOSSIP.fetch_add(1, Ordering::Relaxed);
                         let bc = blockchain.clone();
                         let etx = event_tx.clone();
                         let peer = propagation_source;
@@ -1010,6 +1089,13 @@ async fn on_swarm_event(
                             let mut chain = bc.write().await;
                             match chain.add_block_from_peer(gossip.block.clone()) {
                                 Ok(()) => {
+                                    APPLY_OK.fetch_add(1, Ordering::Relaxed);
+                                    APPLY_LAST_HEIGHT.store(gossip.block.index, Ordering::Relaxed);
+                                    if let Ok(now) = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                    {
+                                        APPLY_LAST_UNIX.store(now.as_secs(), Ordering::Relaxed);
+                                    }
                                     // Asymmetric-recording fix bundle (see audits/reward-distribution-flow-audit-2026-04-27.md).
                                     // Apply same bookkeeping that main.rs validator-finalize paths apply,
                                     // so libp2p-applied blocks have identical state mutations.
@@ -1053,6 +1139,7 @@ async fn on_swarm_event(
                                     let _ = etx.send(NodeEvent::NewBlock(updated)).await;
                                 }
                                 Err(e) => {
+                                    APPLY_ERR.fetch_add(1, Ordering::Relaxed);
                                     tracing::debug!("gossip block from {} rejected: {}", peer, e);
                                 }
                             }
@@ -1115,7 +1202,8 @@ async fn on_swarm_event(
                             if pv.validator != proposal.proposer {
                                 tracing::warn!(
                                     "gossip bft proposal: embedded prevote signer {} != proposer {} — dropping",
-                                    &pv.validator, &proposal.proposer,
+                                    &pv.validator,
+                                    &proposal.proposer,
                                 );
                             } else if !triple_matches {
                                 tracing::warn!(
@@ -1173,7 +1261,11 @@ async fn on_swarm_event(
                             );
                             return;
                         }
-                        try_send_event(event_tx, NodeEvent::BftPrecommit(precommit), "BftPrecommit");
+                        try_send_event(
+                            event_tx,
+                            NodeEvent::BftPrecommit(precommit),
+                            "BftPrecommit",
+                        );
                     }
                     Err(e) => tracing::debug!("gossip bft precommit: bad bincode: {}", e),
                 }
@@ -1575,6 +1667,7 @@ async fn on_inbound_request(
                 );
                 return;
             }
+            APPLY_RX_REQ.fetch_add(1, Ordering::Relaxed);
             let bc = blockchain.clone();
             let etx = event_tx.clone();
             tokio::spawn(async move {
@@ -1584,6 +1677,13 @@ async fn on_inbound_request(
                 let block_justification = block.justification.clone();
                 match chain.add_block_from_peer(*block.clone()) {
                     Ok(()) => {
+                        APPLY_OK.fetch_add(1, Ordering::Relaxed);
+                        APPLY_LAST_HEIGHT.store(block_idx, Ordering::Relaxed);
+                        if let Ok(now) =
+                            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                        {
+                            APPLY_LAST_UNIX.store(now.as_secs(), Ordering::Relaxed);
+                        }
                         // Asymmetric-recording fix bundle (see audits/reward-distribution-flow-audit-2026-04-27.md).
                         if let Some(j) = &block_justification {
                             let active = chain.stake_registry.active_set.clone();
@@ -1615,6 +1715,7 @@ async fn on_inbound_request(
                         let _ = etx.send(NodeEvent::NewBlock(updated)).await;
                     }
                     Err(e) => {
+                        APPLY_ERR.fetch_add(1, Ordering::Relaxed);
                         tracing::warn!("libp2p: rejected block from {}: {}", peer, e);
                     }
                 }
@@ -1724,7 +1825,8 @@ async fn on_inbound_request(
                 if pv.validator != proposal.proposer {
                     tracing::warn!(
                         "libp2p rr bft proposal: embedded prevote signer {} != proposer {} — dropping",
-                        &pv.validator, &proposal.proposer,
+                        &pv.validator,
+                        &proposal.proposer,
                     );
                 } else if !triple_matches {
                     tracing::warn!(
@@ -1876,8 +1978,16 @@ async fn on_inbound_response(
                     skipped += 1;
                     continue;
                 }
+                APPLY_RX_SYNC.fetch_add(1, Ordering::Relaxed);
                 match chain.add_block_from_peer(block.clone()) {
                     Ok(()) => {
+                        APPLY_OK.fetch_add(1, Ordering::Relaxed);
+                        APPLY_LAST_HEIGHT.store(block.index, Ordering::Relaxed);
+                        if let Ok(now) =
+                            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                        {
+                            APPLY_LAST_UNIX.store(now.as_secs(), Ordering::Relaxed);
+                        }
                         // ── Asymmetric-recording fix bundle (2026-04-27 audit) ──
                         // Validator-finalize paths in main.rs apply 3 bookkeeping
                         // calls per block: record_block_signatures (liveness),
@@ -1919,6 +2029,7 @@ async fn on_inbound_response(
                         synced += 1;
                     }
                     Err(e) => {
+                        APPLY_ERR.fetch_add(1, Ordering::Relaxed);
                         tracing::warn!("libp2p sync: block {} failed: {}", block.index, e);
                         break;
                     }
@@ -2276,5 +2387,4 @@ mod tests {
             sentrix_primitives::block::Block::new(0, "0".to_string(), vec![], "v1".to_string());
         node.broadcast_block(&block).await; // must not panic
     }
-
 }

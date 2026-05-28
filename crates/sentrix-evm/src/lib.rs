@@ -21,10 +21,10 @@ pub use database::{SentrixEvmDb, parse_sentrix_address};
 pub use executor::{
     TxReceipt, execute_call, execute_call_with_state, execute_tx, execute_tx_with_state,
 };
-pub use writeback::commit_state_to_account_db;
 pub use gas::{BLOCK_GAS_LIMIT, INITIAL_BASE_FEE};
 pub use logs::{
     LogsBloom, StoredLog, add_log_to_bloom, bloom_contains, bloom_union, compute_logs_bloom,
     empty_bloom, log_key, log_key_prefix,
 };
 pub use receipts::{StoredReceipt, receipt_key};
+pub use writeback::commit_state_to_account_db;

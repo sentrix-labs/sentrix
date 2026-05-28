@@ -501,9 +501,7 @@ mod tests {
                 let mut k = Vec::with_capacity(16);
                 k.extend_from_slice(&height.to_be_bytes());
                 k.extend_from_slice(&[idx; 8]);
-                storage
-                    .put(TABLE_META, &k, &[height as u8, idx])
-                    .unwrap();
+                storage.put(TABLE_META, &k, &[height as u8, idx]).unwrap();
             }
         }
         let prefix = 2u64.to_be_bytes();

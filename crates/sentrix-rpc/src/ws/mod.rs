@@ -163,7 +163,10 @@ fn wrap_subscription(sub_id: &str, result: Value) -> Value {
     json!(SubscriptionMessage {
         jsonrpc: "2.0",
         method: "eth_subscription",
-        params: SubscriptionPayload { subscription: sub_id, result },
+        params: SubscriptionPayload {
+            subscription: sub_id,
+            result
+        },
     })
 }
 
@@ -306,10 +309,7 @@ async fn handle_subscribe(
         }
     }
 
-    let sub_id = format!(
-        "0x{:016x}",
-        next_sub_id.fetch_add(1, Ordering::Relaxed)
-    );
+    let sub_id = format!("0x{:016x}", next_sub_id.fetch_add(1, Ordering::Relaxed));
 
     let handle = match channel.as_str() {
         "newHeads" => {
@@ -376,11 +376,7 @@ async fn handle_subscribe(
     };
 
     subscriptions.lock().await.insert(sub_id.clone(), handle);
-    send_response(
-        sender,
-        JsonRpcResponse::ok(id, json!(sub_id)),
-    )
-    .await;
+    send_response(sender, JsonRpcResponse::ok(id, json!(sub_id))).await;
 }
 
 async fn handle_unsubscribe(
@@ -402,11 +398,7 @@ async fn handle_unsubscribe(
     if let Some(handle) = &removed {
         handle.abort();
     }
-    send_response(
-        sender,
-        JsonRpcResponse::ok(id, json!(removed.is_some())),
-    )
-    .await;
+    send_response(sender, JsonRpcResponse::ok(id, json!(removed.is_some()))).await;
 }
 
 /// Filter for `eth_subscribe(logs)` — mirrors the eth_getLogs filter
@@ -448,7 +440,11 @@ impl LogFilter {
                             .filter_map(|v| v.as_str())
                             .filter_map(parse_topic)
                             .collect();
-                        if hashes.is_empty() { None } else { Some(hashes) }
+                        if hashes.is_empty() {
+                            None
+                        } else {
+                            Some(hashes)
+                        }
                     }
                     _ => None,
                 })
@@ -519,7 +515,10 @@ fn spawn_new_heads_listener(
                 Ok(event) => {
                     let payload = wrap_subscription(&sub_id, json!(event));
                     let mut s = sender.lock().await;
-                    if s.send(Message::Text(payload.to_string().into())).await.is_err() {
+                    if s.send(Message::Text(payload.to_string().into()))
+                        .await
+                        .is_err()
+                    {
                         // Client disconnected — exit task; the per-conn
                         // subscriptions HashMap will be drained by the
                         // outer loop on close.
@@ -572,7 +571,10 @@ fn spawn_logs_listener(
                     }
                     let payload = wrap_subscription(&sub_id, json!(event));
                     let mut s = sender.lock().await;
-                    if s.send(Message::Text(payload.to_string().into())).await.is_err() {
+                    if s.send(Message::Text(payload.to_string().into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -610,7 +612,10 @@ fn spawn_pending_txs_listener(
                 Ok(event) => {
                     let payload = wrap_subscription(&sub_id, json!(event.txid));
                     let mut s = sender.lock().await;
-                    if s.send(Message::Text(payload.to_string().into())).await.is_err() {
+                    if s.send(Message::Text(payload.to_string().into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -645,7 +650,10 @@ fn spawn_finalized_listener(
         while let Ok(event) = rx.recv().await {
             let payload = wrap_subscription(&sub_id, json!(event));
             let mut s = sender.lock().await;
-            if s.send(Message::Text(payload.to_string().into())).await.is_err() {
+            if s.send(Message::Text(payload.to_string().into()))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -666,7 +674,10 @@ fn spawn_validator_set_listener(
         while let Ok(event) = rx.recv().await {
             let payload = wrap_subscription(&sub_id, json!(event));
             let mut s = sender.lock().await;
-            if s.send(Message::Text(payload.to_string().into())).await.is_err() {
+            if s.send(Message::Text(payload.to_string().into()))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -684,7 +695,10 @@ fn spawn_token_ops_listener(
         while let Ok(event) = rx.recv().await {
             let payload = wrap_subscription(&sub_id, json!(event));
             let mut s = sender.lock().await;
-            if s.send(Message::Text(payload.to_string().into())).await.is_err() {
+            if s.send(Message::Text(payload.to_string().into()))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -701,7 +715,10 @@ fn spawn_staking_ops_listener(
         while let Ok(event) = rx.recv().await {
             let payload = wrap_subscription(&sub_id, json!(event));
             let mut s = sender.lock().await;
-            if s.send(Message::Text(payload.to_string().into())).await.is_err() {
+            if s.send(Message::Text(payload.to_string().into()))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -720,7 +737,10 @@ fn spawn_jail_listener(
         while let Ok(event) = rx.recv().await {
             let payload = wrap_subscription(&sub_id, json!(event));
             let mut s = sender.lock().await;
-            if s.send(Message::Text(payload.to_string().into())).await.is_err() {
+            if s.send(Message::Text(payload.to_string().into()))
+                .await
+                .is_err()
+            {
                 break;
             }
         }

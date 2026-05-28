@@ -293,7 +293,11 @@ mod tests {
         // Slot 0 = totalSupply; arbitrary 32-byte value.
         let value = U256::from(1_000_000u64);
         let slot_hex = format!("{:064x}", U256::ZERO);
-        acct_db.store_contract_storage(contract_addr, &slot_hex, value.to_be_bytes::<32>().to_vec());
+        acct_db.store_contract_storage(
+            contract_addr,
+            &slot_hex,
+            value.to_be_bytes::<32>().to_vec(),
+        );
 
         let mut db = SentrixEvmDb::from_account_db(&acct_db);
         let addr = parse_sentrix_address(contract_addr).expect("valid addr");

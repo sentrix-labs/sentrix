@@ -35,7 +35,11 @@ pub(super) async fn root(State(state): State<SharedState>) -> Json<serde_json::V
     // — wallets that probe `/` for self-describe couldn't tell which
     // rail they were on without checking chain_id.
     let chain_name = bc.chain_name.clone();
-    let consensus = if bc.voyager_activated { "DPoS+BFT" } else { "PoA" };
+    let consensus = if bc.voyager_activated {
+        "DPoS+BFT"
+    } else {
+        "PoA"
+    };
     drop(bc);
     Json(serde_json::json!({
         "name": chain_name,
@@ -102,7 +106,11 @@ pub async fn sentrix_status(State(state): State<SharedState>) -> Json<serde_json
     let bc = state.read().await;
     let chain_id = bc.chain_id;
     // Same fix as root() — runtime flag, not chain_id heuristic.
-    let consensus = if bc.voyager_activated { "DPoS+BFT" } else { "PoA" };
+    let consensus = if bc.voyager_activated {
+        "DPoS+BFT"
+    } else {
+        "PoA"
+    };
     let latest = bc.latest_block().ok().cloned();
     let (latest_height, latest_hash, latest_timestamp) = latest
         .as_ref()
@@ -157,16 +165,18 @@ pub async fn sentrix_status(State(state): State<SharedState>) -> Json<serde_json
 ///
 /// All fields read from a single `state.read().await` to avoid producing
 /// inconsistent snapshots under load.
-pub async fn sentrix_status_extended(
-    State(state): State<SharedState>,
-) -> Json<serde_json::Value> {
+pub async fn sentrix_status_extended(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let uptime = START_TIME
         .get_or_init(std::time::Instant::now)
         .elapsed()
         .as_secs();
     let bc = state.read().await;
     let chain_id = bc.chain_id;
-    let consensus = if bc.voyager_activated { "DPoS+BFT" } else { "PoA" };
+    let consensus = if bc.voyager_activated {
+        "DPoS+BFT"
+    } else {
+        "PoA"
+    };
     let latest = bc.latest_block().ok().cloned();
     let (latest_height, latest_hash, latest_timestamp) = latest
         .as_ref()
@@ -200,7 +210,11 @@ pub async fn sentrix_status_extended(
             sum += w[1].timestamp.saturating_sub(w[0].timestamp) as i64;
             n += 1;
         }
-        if n > 0 { Some(sum as f64 / n as f64) } else { None }
+        if n > 0 {
+            Some(sum as f64 / n as f64)
+        } else {
+            None
+        }
     } else {
         None
     };

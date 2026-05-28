@@ -319,7 +319,9 @@ pub enum StakingOp {
     /// Fork-gated by `ADD_SELF_STAKE_HEIGHT` (env-controlled, default
     /// `u64::MAX` = disabled). Wire format stable on enum-add; gate
     /// check happens in dispatch.
-    AddSelfStake { amount: u64 },
+    AddSelfStake {
+        amount: u64,
+    },
 }
 
 /// Phase A data type: per-validator missed-block evidence for an epoch.
@@ -940,14 +942,12 @@ mod tests {
             epoch: 42,
             epoch_start_block: 590100,
             epoch_end_block: 604499,
-            evidence: vec![
-                JailEvidence {
-                    validator: "0x87c9976d4b2e360b9fbb87e4bd5442edce2a7511".into(),
-                    signed_count: 3000,
-                    missed_count: 11400,
-                    justification_hashes: vec!["abc123".into(), "def456".into()],
-                },
-            ],
+            evidence: vec![JailEvidence {
+                validator: "0x87c9976d4b2e360b9fbb87e4bd5442edce2a7511".into(),
+                signed_count: 3000,
+                missed_count: 11400,
+                justification_hashes: vec!["abc123".into(), "def456".into()],
+            }],
             active_set: vec![
                 "0x87c9976d4b2e360b9fbb87e4bd5442edce2a7511".into(),
                 "0x753f2f68829fbe76a0132295624f48b27ce2e2d9".into(),
@@ -1064,12 +1064,17 @@ mod tests {
         // the same StakingOp.
         let re_encoded = decoded.encode().expect("encode");
         let re_decoded = StakingOp::decode(&re_encoded).expect("re-decode");
-        assert_eq!(decoded, re_decoded, "round-trip must preserve the StakingOp");
+        assert_eq!(
+            decoded, re_decoded,
+            "round-trip must preserve the StakingOp"
+        );
     }
 
     #[test]
     fn test_add_self_stake_encode_decode_roundtrip() {
-        let op = StakingOp::AddSelfStake { amount: 1_500_000_000 };
+        let op = StakingOp::AddSelfStake {
+            amount: 1_500_000_000,
+        };
         let encoded = op.encode().expect("encode");
         let decoded = StakingOp::decode(&encoded).expect("decode");
         match decoded {
@@ -1155,7 +1160,10 @@ mod tests {
         let encoded = op.encode().expect("encode");
         assert!(encoded.contains("\"op\":\"set_approval_for_all\""));
         let decoded = TokenOp::decode(&encoded).expect("decode");
-        assert!(matches!(decoded, TokenOp::SetApprovalForAll { approved: true, .. }));
+        assert!(matches!(
+            decoded,
+            TokenOp::SetApprovalForAll { approved: true, .. }
+        ));
     }
 
     #[test]
@@ -1175,32 +1183,72 @@ mod tests {
     #[test]
     fn test_is_nft_family_predicate() {
         // SRC-20 fungible variants → NOT NFT family
-        assert!(!TokenOp::Deploy {
-            name: "x".into(), symbol: "X".into(), decimals: 8, supply: 0, max_supply: 0
-        }.is_nft_family());
-        assert!(!TokenOp::Transfer {
-            contract: "c".into(), to: "t".into(), amount: 1
-        }.is_nft_family());
+        assert!(
+            !TokenOp::Deploy {
+                name: "x".into(),
+                symbol: "X".into(),
+                decimals: 8,
+                supply: 0,
+                max_supply: 0
+            }
+            .is_nft_family()
+        );
+        assert!(
+            !TokenOp::Transfer {
+                contract: "c".into(),
+                to: "t".into(),
+                amount: 1
+            }
+            .is_nft_family()
+        );
 
         // SRC-721 variants → NFT family
-        assert!(TokenOp::DeployNft {
-            name: "n".into(), symbol: "N".into(), base_uri: "u".into(), max_supply: 0
-        }.is_nft_family());
-        assert!(TokenOp::MintNft {
-            contract: "c".into(), to: "t".into(), token_id: 1, metadata_uri: String::new()
-        }.is_nft_family());
-        assert!(TokenOp::SetApprovalForAll {
-            contract: "c".into(), operator: "o".into(), approved: false
-        }.is_nft_family());
+        assert!(
+            TokenOp::DeployNft {
+                name: "n".into(),
+                symbol: "N".into(),
+                base_uri: "u".into(),
+                max_supply: 0
+            }
+            .is_nft_family()
+        );
+        assert!(
+            TokenOp::MintNft {
+                contract: "c".into(),
+                to: "t".into(),
+                token_id: 1,
+                metadata_uri: String::new()
+            }
+            .is_nft_family()
+        );
+        assert!(
+            TokenOp::SetApprovalForAll {
+                contract: "c".into(),
+                operator: "o".into(),
+                approved: false
+            }
+            .is_nft_family()
+        );
 
         // SRC-1155 variants → NFT family
-        assert!(TokenOp::DeployMulti {
-            name: "n".into(), symbol: "N".into(), base_uri: "u".into()
-        }.is_nft_family());
-        assert!(TokenOp::BatchTransferMulti {
-            contract: "c".into(), from: "f".into(), to: "t".into(),
-            ids: vec![1], amounts: vec![1]
-        }.is_nft_family());
+        assert!(
+            TokenOp::DeployMulti {
+                name: "n".into(),
+                symbol: "N".into(),
+                base_uri: "u".into()
+            }
+            .is_nft_family()
+        );
+        assert!(
+            TokenOp::BatchTransferMulti {
+                contract: "c".into(),
+                from: "f".into(),
+                to: "t".into(),
+                ids: vec![1],
+                amounts: vec![1]
+            }
+            .is_nft_family()
+        );
     }
 
     #[test]

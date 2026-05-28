@@ -76,10 +76,8 @@ pub fn commit_state_to_account_db(
     // iteration is non-deterministic across processes; sorting removes a
     // potential source of cross-validator log divergence. Matches the
     // init_trie backfill pattern at blockchain.rs:583.
-    let mut touched: Vec<(&Address, &revm::state::Account)> = state
-        .iter()
-        .filter(|(_, acc)| acc.is_touched())
-        .collect();
+    let mut touched: Vec<(&Address, &revm::state::Account)> =
+        state.iter().filter(|(_, acc)| acc.is_touched()).collect();
     touched.sort_by_key(|(addr, _)| *addr);
 
     for (addr, evm_account) in touched {
@@ -204,7 +202,10 @@ mod tests {
         );
         let mut db = AccountDB::new();
         commit_state_to_account_db(&state, &mut db).unwrap();
-        assert_eq!(db.get_balance("0x0101010101010101010101010101010101010101"), 2100);
+        assert_eq!(
+            db.get_balance("0x0101010101010101010101010101010101010101"),
+            2100
+        );
     }
 
     #[test]
@@ -213,7 +214,10 @@ mod tests {
         state.insert(addr(0x02), touched_account(U256::ZERO, 7));
         let mut db = AccountDB::new();
         commit_state_to_account_db(&state, &mut db).unwrap();
-        assert_eq!(db.get_nonce("0x0202020202020202020202020202020202020202"), 7);
+        assert_eq!(
+            db.get_nonce("0x0202020202020202020202020202020202020202"),
+            7
+        );
     }
 
     #[test]
@@ -265,8 +269,14 @@ mod tests {
             "new contract bytecode must be persisted"
         );
         let addr_str = "0x0404040404040404040404040404040404040404";
-        let acct = db.accounts.get(addr_str).expect("contract account must exist");
-        assert_eq!(acct.code_hash, code_hash_bytes, "set_contract must mark account");
+        let acct = db
+            .accounts
+            .get(addr_str)
+            .expect("contract account must exist");
+        assert_eq!(
+            acct.code_hash, code_hash_bytes,
+            "set_contract must mark account"
+        );
         assert!(acct.is_contract());
     }
 
@@ -280,15 +290,23 @@ mod tests {
 
         let mut db = AccountDB::new();
         // Pre-populate so we can see the zero-out.
-        db.credit("0x0505050505050505050505050505050505050505", 100).unwrap();
+        db.credit("0x0505050505050505050505050505050505050505", 100)
+            .unwrap();
         db.set_contract("0x0505050505050505050505050505050505050505", [0xBB; 32]);
 
         commit_state_to_account_db(&state, &mut db).unwrap();
 
         let addr_str = "0x0505050505050505050505050505050505050505";
-        assert_eq!(db.get_balance(addr_str), 0, "selfdestructed balance must be zeroed");
+        assert_eq!(
+            db.get_balance(addr_str),
+            0,
+            "selfdestructed balance must be zeroed"
+        );
         let acct = db.accounts.get(addr_str).unwrap();
-        assert_eq!(acct.code_hash, EMPTY_CODE_HASH, "selfdestructed code_hash must be EMPTY");
+        assert_eq!(
+            acct.code_hash, EMPTY_CODE_HASH,
+            "selfdestructed code_hash must be EMPTY"
+        );
     }
 
     #[test]
@@ -315,7 +333,10 @@ mod tests {
         commit_state_to_account_db(&state, &mut db).unwrap();
 
         // Account should not even exist in AccountDB since we never touched it.
-        assert!(!db.accounts.contains_key("0x0606060606060606060606060606060606060606"));
+        assert!(
+            !db.accounts
+                .contains_key("0x0606060606060606060606060606060606060606")
+        );
     }
 
     #[test]
@@ -326,8 +347,10 @@ mod tests {
         let mut state_b = EvmState::default();
 
         for i in 0u8..5 {
-            let mut acc_a = touched_account(U256::from((i as u64 + 1) * 10_000_000_000u64), i as u64);
-            let mut acc_b = touched_account(U256::from((i as u64 + 1) * 10_000_000_000u64), i as u64);
+            let mut acc_a =
+                touched_account(U256::from((i as u64 + 1) * 10_000_000_000u64), i as u64);
+            let mut acc_b =
+                touched_account(U256::from((i as u64 + 1) * 10_000_000_000u64), i as u64);
             acc_a.storage.insert(
                 U256::ZERO,
                 EvmStorageSlot::new_changed(U256::ZERO, U256::from(i as u64 + 100), 0),

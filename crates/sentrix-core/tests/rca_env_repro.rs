@@ -38,9 +38,9 @@
 //! This OFFLINE harness sidesteps that by reading blocks directly from
 //! MDBX storage. BACKLOG #14 fixes the live-sync path independently.
 
+use sentrix_core::Genesis;
 use sentrix_core::blockchain::Blockchain;
 use sentrix_core::storage::Storage;
-use sentrix_core::Genesis;
 use std::sync::Arc;
 
 /// Burn-address admin for the rebuilt Blockchain. The harness only
@@ -59,7 +59,8 @@ fn replay_admin() -> String {
 /// Caller must set `SENTRIX_ALLOW_UNENCRYPTED_DISK=true` if the snapshot
 /// lives on an unencrypted volume (the default for dev/test setups).
 fn load_existing_chain(path: &str) -> Blockchain {
-    let storage = Storage::open(path).expect("chain.db open failed — check path + encryption env vars");
+    let storage =
+        Storage::open(path).expect("chain.db open failed — check path + encryption env vars");
     let mut bc = storage
         .load_blockchain()
         .expect("load_blockchain failed")
@@ -79,8 +80,7 @@ fn load_existing_chain(path: &str) -> Blockchain {
 #[test]
 #[ignore = "requires real chain.db — run manually per file header"]
 fn read_committed_trie_root() {
-    let path = std::env::var("TEST_CHAIN_DB")
-        .expect("set TEST_CHAIN_DB=/path/to/chain.db");
+    let path = std::env::var("TEST_CHAIN_DB").expect("set TEST_CHAIN_DB=/path/to/chain.db");
 
     // If TEST_HEIGHT is unset, dump tip + recent roots and return.
     if std::env::var("TEST_HEIGHT").is_err() {
@@ -91,11 +91,20 @@ fn read_committed_trie_root() {
         println!("TOTAL_MINTED={}", bc.total_minted);
         println!("VOYAGER_ACTIVATED={}", bc.voyager_activated);
         println!("EVM_ACTIVATED={}", bc.evm_activated);
-        println!("STAKE_REGISTRY_VALIDATORS={}", bc.stake_registry.validators.len());
-        println!("ACTIVE_VALIDATORS={}", bc.authority.active_validators().len());
+        println!(
+            "STAKE_REGISTRY_VALIDATORS={}",
+            bc.stake_registry.validators.len()
+        );
+        println!(
+            "ACTIVE_VALIDATORS={}",
+            bc.authority.active_validators().len()
+        );
         println!("--- last 5 trie roots ---");
         for h in tip.saturating_sub(4)..=tip {
-            let r = bc.trie_root_at(h).map(hex::encode).unwrap_or_else(|| "<none>".to_string());
+            let r = bc
+                .trie_root_at(h)
+                .map(hex::encode)
+                .unwrap_or_else(|| "<none>".to_string());
             println!("  h={} root={}", h, r);
         }
         // If TEST_BLOCK_AT is set, dump that specific block's header instead of tip's.
@@ -214,7 +223,9 @@ fn apply_canonical_block_to_forensic() {
             latest.hash
         );
         if latest.hash != block_prev {
-            println!("WARN: tip hash != block.previous_hash — chain not contiguous, peer-apply will reject");
+            println!(
+                "WARN: tip hash != block.previous_hash — chain not contiguous, peer-apply will reject"
+            );
         }
     }
 
@@ -226,10 +237,14 @@ fn apply_canonical_block_to_forensic() {
             println!("COMPUTED_STATE_ROOT={:?}", post_root);
             match post_root {
                 Some(computed) if computed == declared_state_root => {
-                    println!("VERDICT=MATCH — v2.1.23 binary reproduces canonical state_root for h={block_height}");
-                    println!("CONCLUSION=#268 NOT reproduced on this binary on this input — \
+                    println!(
+                        "VERDICT=MATCH — v2.1.23 binary reproduces canonical state_root for h={block_height}"
+                    );
+                    println!(
+                        "CONCLUSION=#268 NOT reproduced on this binary on this input — \
                               either the empty-hash fix closed it OR canary's bug was \
-                              transient (e.g. live-rsync MDBX inconsistency, not code).");
+                              transient (e.g. live-rsync MDBX inconsistency, not code)."
+                    );
                 }
                 Some(computed) => {
                     println!("VERDICT=MISMATCH — #268 reproducing on v2.1.23!");
@@ -237,7 +252,9 @@ fn apply_canonical_block_to_forensic() {
                     println!("  computed:  {}", computed);
                     panic!("#268 STATE_ROOT MISMATCH — root cause repro pinned, ready to bisect");
                 }
-                None => println!("VERDICT=COMPUTED_ROOT_MISSING — apply returned Ok but trie has no root at this height (unexpected)"),
+                None => println!(
+                    "VERDICT=COMPUTED_ROOT_MISSING — apply returned Ok but trie has no root at this height (unexpected)"
+                ),
             }
         }
         Err(e) => {
@@ -279,8 +296,7 @@ fn load_block_by_height(
 #[test]
 #[ignore = "requires real chain.db — run manually; full 388K walk is a few minutes"]
 fn sweep_mdbx_block_gaps() {
-    let path = std::env::var("TEST_CHAIN_DB")
-        .expect("set TEST_CHAIN_DB=/path/to/chain.db");
+    let path = std::env::var("TEST_CHAIN_DB").expect("set TEST_CHAIN_DB=/path/to/chain.db");
     let stride: u64 = std::env::var("TEST_SWEEP_STRIDE")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -380,8 +396,7 @@ fn sweep_mdbx_block_gaps() {
 #[test]
 #[ignore = "requires real chain.db — run manually per file header; slow on large ranges"]
 fn replay_and_compare() {
-    let path = std::env::var("TEST_CHAIN_DB")
-        .expect("set TEST_CHAIN_DB=/path/to/chain.db");
+    let path = std::env::var("TEST_CHAIN_DB").expect("set TEST_CHAIN_DB=/path/to/chain.db");
     let from: u64 = std::env::var("TEST_HEIGHT_FROM")
         .expect("set TEST_HEIGHT_FROM=<start block index, ≥1>")
         .parse()
@@ -415,8 +430,8 @@ fn replay_and_compare() {
     let tmp = tempfile::tempdir().expect("tempdir for replay trie failed");
     let trie_path = tmp.path().join("replay-trie");
     std::fs::create_dir_all(&trie_path).expect("create replay-trie dir failed");
-    let trie_storage = sentrix_storage::MdbxStorage::open(&trie_path)
-        .expect("replay trie MDBX open failed");
+    let trie_storage =
+        sentrix_storage::MdbxStorage::open(&trie_path).expect("replay trie MDBX open failed");
     bc.init_trie(Arc::new(trie_storage))
         .expect("replay init_trie failed");
 
@@ -437,9 +452,12 @@ fn replay_and_compare() {
         let block = match load_block_by_height(&source, h) {
             Some(b) => b,
             None => {
-                println!("GAP_STOP h={} — block missing from source TABLE_META; \
+                println!(
+                    "GAP_STOP h={} — block missing from source TABLE_META; \
                           cannot proceed past this point via replay. \
-                          (See BACKLOG #16 for the mainnet-wide 7K gap.)", h);
+                          (See BACKLOG #16 for the mainnet-wide 7K gap.)",
+                    h
+                );
                 gap_stop = Some(h);
                 break;
             }
@@ -505,7 +523,10 @@ fn replay_and_compare() {
         let block = match load_block_by_height(&source, h) {
             Some(b) => b,
             None => {
-                println!("COMPARE_GAP_STOP h={} — block missing from source TABLE_META", h);
+                println!(
+                    "COMPARE_GAP_STOP h={} — block missing from source TABLE_META",
+                    h
+                );
                 break;
             }
         };
@@ -537,7 +558,10 @@ fn replay_and_compare() {
     if mismatches == 0 {
         println!("CUMULATIVE_OK blocks={}", to - from + 1);
     } else {
-        println!("CUMULATIVE_MISMATCH count={} range={}..={}", mismatches, from, to);
+        println!(
+            "CUMULATIVE_MISMATCH count={} range={}..={}",
+            mismatches, from, to
+        );
     }
 }
 
@@ -591,8 +615,8 @@ fn replay_and_compare() {
 #[test]
 #[ignore = "requires two real chain.db snapshots + operator prep — manual run per file header"]
 fn snapshot_seed_env_repro() {
-    let state_path = std::env::var("TEST_STATE_DB")
-        .expect("set TEST_STATE_DB=/path/to/starting-state/chain.db");
+    let state_path =
+        std::env::var("TEST_STATE_DB").expect("set TEST_STATE_DB=/path/to/starting-state/chain.db");
     let block_src_path = std::env::var("TEST_BLOCK_SOURCE_DB")
         .expect("set TEST_BLOCK_SOURCE_DB=/path/to/block-source/chain.db");
     let from: u64 = std::env::var("TEST_HEIGHT_FROM")
@@ -609,8 +633,7 @@ fn snapshot_seed_env_repro() {
     // reconstructs Blockchain at that DB's tip height, including the
     // full `accounts` map + `authority` registry. Trie is bound to the
     // SAME mdbx so `trie_root_at(h)` can answer for pre-seed heights.
-    let state_storage =
-        Storage::open(&state_path).expect("state snapshot chain.db open failed");
+    let state_storage = Storage::open(&state_path).expect("state snapshot chain.db open failed");
     let mut bc = state_storage
         .load_blockchain()
         .expect("state snapshot load_blockchain failed")
@@ -628,8 +651,7 @@ fn snapshot_seed_env_repro() {
         from
     );
 
-    let block_source =
-        Storage::open(&block_src_path).expect("block source chain.db open failed");
+    let block_source = Storage::open(&block_src_path).expect("block source chain.db open failed");
 
     println!("STATE_DB={}", state_path);
     println!("STATE_TIP={}", state_tip);
@@ -642,9 +664,12 @@ fn snapshot_seed_env_repro() {
         let block = match load_block_by_height(&block_source, h) {
             Some(b) => b,
             None => {
-                println!("BLOCK_SOURCE_GAP h={} — block missing from source TABLE_META; \
+                println!(
+                    "BLOCK_SOURCE_GAP h={} — block missing from source TABLE_META; \
                           stopping. Pick a range fully inside a contiguous range \
-                          (see BACKLOG #16 for the mainnet-wide 7K gap).", h);
+                          (see BACKLOG #16 for the mainnet-wide 7K gap).",
+                    h
+                );
                 break;
             }
         };

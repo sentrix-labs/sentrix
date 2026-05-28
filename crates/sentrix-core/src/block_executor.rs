@@ -632,8 +632,7 @@ impl Blockchain {
         // duration. post = state_root stamp + state_root check + prune
         // dispatch. The prune itself runs on a background thread (v2.2.4)
         // so its walk time is NOT included here.
-        let apply_profile = std::env::var_os("SENTRIX_APPLY_PROFILE")
-            .is_some_and(|v| v == "1");
+        let apply_profile = std::env::var_os("SENTRIX_APPLY_PROFILE").is_some_and(|v| v == "1");
         let profile_t0 = if apply_profile {
             Some(std::time::Instant::now())
         } else {
@@ -664,9 +663,7 @@ impl Blockchain {
         //
         // Default OFF: env var unset → zero-cost (the env-var read is
         // gated by a `var_os` check that doesn't allocate when missing).
-        if std::env::var_os("SENTRIX_FRONTIER_F2_SHADOW")
-            .is_some_and(|v| v == "1")
-        {
+        if std::env::var_os("SENTRIX_FRONTIER_F2_SHADOW").is_some_and(|v| v == "1") {
             shadow_observe_parallel_batching(&block);
         }
 
@@ -765,9 +762,9 @@ impl Blockchain {
                 // in practice, but the guard is cheap and prevents a silent
                 // wrap if MAX_TX_PER_BLOCK or MIN_TX_FEE are ever tuned
                 // upward past the implicit ceiling.
-                total_fee = total_fee
-                    .checked_add(tx.fee)
-                    .ok_or_else(|| SentrixError::Internal("block total_fee overflow".to_string()))?;
+                total_fee = total_fee.checked_add(tx.fee).ok_or_else(|| {
+                    SentrixError::Internal("block total_fee overflow".to_string())
+                })?;
             }
 
             // Execute token operation if present in data field
@@ -932,7 +929,8 @@ impl Blockchain {
             // the `to_address == TREASURY` invariant inside dispatch
             // below; wrong address → Err → Pass 2 rollback.
             if Self::is_reward_v2_height(block.index)
-                && let Some(staking_op) = sentrix_primitives::transaction::StakingOp::decode(&tx.data)
+                && let Some(staking_op) =
+                    sentrix_primitives::transaction::StakingOp::decode(&tx.data)
             {
                 use sentrix_primitives::transaction::{PROTOCOL_TREASURY, StakingOp};
                 if tx.to_address != PROTOCOL_TREASURY {
@@ -961,8 +959,7 @@ impl Blockchain {
                         // the transfer Errs, accumulators stay intact
                         // and the claimer can re-submit later.
                         let claimer = tx.from_address.clone();
-                        let delegator_amount =
-                            self.stake_registry.peek_delegator_rewards(&claimer);
+                        let delegator_amount = self.stake_registry.peek_delegator_rewards(&claimer);
                         let validator_amount = self
                             .stake_registry
                             .validators
@@ -972,12 +969,8 @@ impl Blockchain {
                         let total_claim = delegator_amount.saturating_add(validator_amount);
                         if total_claim > 0 {
                             // Transfer first; only drain on success.
-                            self.accounts.transfer(
-                                PROTOCOL_TREASURY,
-                                &claimer,
-                                total_claim,
-                                0,
-                            )?;
+                            self.accounts
+                                .transfer(PROTOCOL_TREASURY, &claimer, total_claim, 0)?;
                             // Transfer succeeded — drain accumulators.
                             // `take_delegator_rewards` removes the entry
                             // entirely (matches semantics — claimer
@@ -1125,8 +1118,7 @@ impl Blockchain {
                                 "Unjail: tx.amount must be 0".into(),
                             ));
                         }
-                        self.stake_registry
-                            .unjail(&tx.from_address, block.index)?;
+                        self.stake_registry.unjail(&tx.from_address, block.index)?;
                         if let Some(emitter) = &self.event_emitter {
                             emitter.emit_staking_op(&sentrix_primitives::events::StakingOpEvent {
                                 op: "unjail".to_string(),
@@ -1164,8 +1156,7 @@ impl Blockchain {
                         // already rejects auto-jail dispatch).
                         if offender.is_empty() {
                             return Err(SentrixError::InvalidTransaction(
-                                "SubmitEvidence: offender field must be populated"
-                                    .into(),
+                                "SubmitEvidence: offender field must be populated".into(),
                             ));
                         }
                         // Evidence targets the validator named in the
@@ -1239,9 +1230,7 @@ impl Blockchain {
                         // Boundary block's epoch should be `(height + 1) / EPOCH_LENGTH - 1`
                         // when the boundary is the LAST block of the epoch.
                         let current_epoch =
-                            sentrix_staking::epoch::EpochManager::epoch_for_height(
-                                self.height(),
-                            );
+                            sentrix_staking::epoch::EpochManager::epoch_for_height(self.height());
                         if claimed_epoch != current_epoch {
                             return Err(SentrixError::InvalidTransaction(format!(
                                 "JailEvidenceBundle epoch {} != current epoch {}",
@@ -1398,9 +1387,8 @@ impl Blockchain {
                             // validator re-enters; emit so dApps tracking
                             // active set get a notif.
                             let active: Vec<String> = self.stake_registry.active_set.to_vec();
-                            let epoch = sentrix_staking::epoch::EpochManager::epoch_for_height(
-                                block.index,
-                            );
+                            let epoch =
+                                sentrix_staking::epoch::EpochManager::epoch_for_height(block.index);
                             emitter.emit_validator_set(epoch, &active);
                         }
                     }
@@ -1683,7 +1671,13 @@ impl Blockchain {
         emit_state_fingerprint(self, self.height());
 
         // Per-block apply-phase profile (see top of fn for rationale).
-        emit_apply_profile(profile_t0, profile_t1, profile_t2, profile_height, profile_txs);
+        emit_apply_profile(
+            profile_t0,
+            profile_t1,
+            profile_t2,
+            profile_height,
+            profile_txs,
+        );
 
         Ok(())
     }
@@ -1706,7 +1700,6 @@ impl Blockchain {
         }
         self.stake_registry.delegator_rewards.clear();
     }
-
 }
 
 /// State-drift fingerprint emitter (debug-only). When
@@ -2352,7 +2345,8 @@ mod tests {
         assert!(block.transactions[1].is_system_tx());
 
         // add_block runs full Pass-1 + Pass-2 + dispatch + state mutation
-        bc.add_block(block).expect("add_block must accept Phase D system tx");
+        bc.add_block(block)
+            .expect("add_block must accept Phase D system tx");
 
         // Post-condition: downer jailed
         let post_jailed = bc
@@ -2410,23 +2404,14 @@ mod tests {
                 },
             );
         }
-        bc.stake_registry.active_set = vec![
-            "v1".into(),
-            "v2".into(),
-            "v3".into(),
-            "v4".into(),
-        ];
+        bc.stake_registry.active_set = vec!["v1".into(), "v2".into(), "v3".into(), "v4".into()];
 
         let prev_hash = bc.latest_block().unwrap().hash.clone();
         let height = bc.height() + 1;
         let reward = bc.get_block_reward();
         let coinbase = Transaction::new_coinbase("v1".into(), reward, height, 1_777_000_000);
-        let mut block = sentrix_primitives::block::Block::new(
-            height,
-            prev_hash,
-            vec![coinbase],
-            "v1".into(),
-        );
+        let mut block =
+            sentrix_primitives::block::Block::new(height, prev_hash, vec![coinbase], "v1".into());
         block.timestamp = 1_777_000_000;
         block.hash = block.calculate_hash();
         let mut just = BlockJustification::new(height, 0, block.hash.clone());
@@ -2474,23 +2459,14 @@ mod tests {
                 },
             );
         }
-        bc.stake_registry.active_set = vec![
-            "v1".into(),
-            "v2".into(),
-            "v3".into(),
-            "v4".into(),
-        ];
+        bc.stake_registry.active_set = vec!["v1".into(), "v2".into(), "v3".into(), "v4".into()];
 
         let prev_hash = bc.latest_block().unwrap().hash.clone();
         let height = bc.height() + 1;
         let reward = bc.get_block_reward();
         let coinbase = Transaction::new_coinbase("v1".into(), reward, height, 1_777_000_000);
-        let mut block = sentrix_primitives::block::Block::new(
-            height,
-            prev_hash,
-            vec![coinbase],
-            "v1".into(),
-        );
+        let mut block =
+            sentrix_primitives::block::Block::new(height, prev_hash, vec![coinbase], "v1".into());
         block.timestamp = 1_777_000_000;
         block.hash = block.calculate_hash();
         let mut just = BlockJustification::new(height, 0, block.hash.clone());

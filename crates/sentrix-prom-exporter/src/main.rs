@@ -23,8 +23,8 @@
 //! is `count(count by (sentrix_chain_tip_hash_short) (sentrix_chain_tip_hash_short)) > 1`.
 
 use prometheus::{
-    register_gauge_vec, register_int_counter_vec, register_int_gauge_vec, Encoder,
-    GaugeVec, IntCounterVec, IntGaugeVec, TextEncoder,
+    Encoder, GaugeVec, IntCounterVec, IntGaugeVec, TextEncoder, register_gauge_vec,
+    register_int_counter_vec, register_int_gauge_vec,
 };
 use serde::Deserialize;
 use std::sync::OnceLock;
@@ -133,7 +133,8 @@ async fn poll_one(client: &reqwest::Client, t: &Target) -> Option<()> {
         .ok()?;
     let status: SentrixStatus = resp.json().await.ok()?;
 
-    HEIGHT.get()?
+    HEIGHT
+        .get()?
         .with_label_values(&[&t.name, &t.network])
         .set(status.sync_info.latest_block_height as i64);
 
@@ -141,28 +142,33 @@ async fn poll_one(client: &reqwest::Client, t: &Target) -> Option<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs() as f64;
-    BLOCK_AGE.get()?
+    BLOCK_AGE
+        .get()?
         .with_label_values(&[&t.name, &t.network])
         .set(now - status.sync_info.latest_block_time as f64);
 
     if let Some(v) = decode_tip_hash_short(&status.sync_info.latest_block_hash) {
-        TIP_HASH.get()?
+        TIP_HASH
+            .get()?
             .with_label_values(&[&t.name, &t.network])
             .set(v as i64);
     }
 
     if let Some(v) = status.validators {
-        ACTIVE_VALIDATORS.get()?
+        ACTIVE_VALIDATORS
+            .get()?
             .with_label_values(&[&t.network])
             .set(v.active_count as i64);
     }
     if let Some(m) = status.mempool {
-        MEMPOOL.get()?
+        MEMPOOL
+            .get()?
             .with_label_values(&[&t.name, &t.network])
             .set(m.size as i64);
     }
     if let Some(u) = status.uptime_seconds {
-        UPTIME.get()?
+        UPTIME
+            .get()?
             .with_label_values(&[&t.name, &t.network])
             .set(u as i64);
     }
@@ -180,7 +186,9 @@ async fn poll_loop(targets: Vec<Target>, interval: Duration) {
         tick.tick().await;
         for t in &targets {
             if poll_one(&client, t).await.is_none() {
-                PROBE_FAILED.get().unwrap()
+                PROBE_FAILED
+                    .get()
+                    .unwrap()
                     .with_label_values(&[&t.name, &t.network])
                     .inc();
                 warn!(target = %t.name, network = %t.network, "probe failed");
@@ -262,8 +270,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     tokio::spawn(poll_loop(targets, Duration::from_secs(interval)));
 
-    let bind = std::env::var("SENTRIX_EXPORTER_BIND")
-        .unwrap_or_else(|_| "0.0.0.0:9101".into());
+    let bind = std::env::var("SENTRIX_EXPORTER_BIND").unwrap_or_else(|_| "0.0.0.0:9101".into());
     let addr: std::net::SocketAddr = bind.parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     info!(addr = %addr, "metrics endpoint listening");
@@ -436,7 +443,9 @@ mod tests {
 
         // ── 2. Prometheus gather + encode (mirrors metrics_handler body) ──
         // Pre-populate one metric so the output is non-trivial.
-        HEIGHT.get().unwrap()
+        HEIGHT
+            .get()
+            .unwrap()
             .with_label_values(&["test-val", "test-net"])
             .set(42);
         let metric_families = prometheus::gather();
@@ -485,29 +494,42 @@ mod tests {
             url: format!("http://{}", addr),
         };
         let res = poll_one(&client, &target).await;
-        assert!(res.is_some(), "poll_one returned None — fixture handshake failed");
+        assert!(
+            res.is_some(),
+            "poll_one returned None — fixture handshake failed"
+        );
 
-        let h = HEIGHT.get().unwrap()
+        let h = HEIGHT
+            .get()
+            .unwrap()
             .get_metric_with_label_values(&["fixture", "fxnet"])
             .unwrap()
             .get();
         assert_eq!(h, 12345);
-        let m = MEMPOOL.get().unwrap()
+        let m = MEMPOOL
+            .get()
+            .unwrap()
             .get_metric_with_label_values(&["fixture", "fxnet"])
             .unwrap()
             .get();
         assert_eq!(m, 2);
-        let av = ACTIVE_VALIDATORS.get().unwrap()
+        let av = ACTIVE_VALIDATORS
+            .get()
+            .unwrap()
             .get_metric_with_label_values(&["fxnet"])
             .unwrap()
             .get();
         assert_eq!(av, 4);
-        let up = UPTIME.get().unwrap()
+        let up = UPTIME
+            .get()
+            .unwrap()
             .get_metric_with_label_values(&["fixture", "fxnet"])
             .unwrap()
             .get();
         assert_eq!(up, 60);
-        let th = TIP_HASH.get().unwrap()
+        let th = TIP_HASH
+            .get()
+            .unwrap()
             .get_metric_with_label_values(&["fixture", "fxnet"])
             .unwrap()
             .get();
@@ -522,6 +544,9 @@ mod tests {
             url: "http://127.0.0.1:1".into(),
         };
         let res = poll_one(&client, &dead).await;
-        assert!(res.is_none(), "poll_one against closed port should return None");
+        assert!(
+            res.is_none(),
+            "poll_one against closed port should return None"
+        );
     }
 }

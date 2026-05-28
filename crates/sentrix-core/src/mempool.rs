@@ -183,7 +183,10 @@ impl Blockchain {
         self.mempool.insert(pos, tx);
         // Audit M6: maintain sidecars on every successful admission.
         self.mempool_txids.insert(txid_for_event.clone());
-        *self.mempool_sender_count.entry(sender_for_count).or_insert(0) += 1;
+        *self
+            .mempool_sender_count
+            .entry(sender_for_count)
+            .or_insert(0) += 1;
 
         // Notify WebSocket subscribers — eth_subscribe(newPendingTransactions).
         // Non-blocking, infallible by trait contract. Fires only on
@@ -213,10 +216,7 @@ impl Blockchain {
         // iter+filter+count which `add_to_mempool` called twice per
         // admission (per-sender cap + expected-nonce computation),
         // each scan O(n) on a 10K-entry mempool.
-        self.mempool_sender_count
-            .get(address)
-            .copied()
-            .unwrap_or(0) as u64
+        self.mempool_sender_count.get(address).copied().unwrap_or(0) as u64
     }
 
     fn mempool_pending_spend(&self, address: &str) -> u64 {
@@ -316,10 +316,11 @@ impl Blockchain {
             .iter()
             .map(|addr| (addr.to_string(), self.accounts.get_nonce(addr)))
             .collect();
-        self.mempool.retain(|tx| match nonces.get(&tx.from_address) {
-            Some(&finalized) => tx.nonce >= finalized,
-            None => true,
-        });
+        self.mempool
+            .retain(|tx| match nonces.get(&tx.from_address) {
+                Some(&finalized) => tx.nonce >= finalized,
+                None => true,
+            });
         // Audit M6: retain mutated `mempool`, rebuild sidecars to keep
         // them consistent.
         self.rebuild_mempool_sidecars();

@@ -108,7 +108,10 @@ mod tests {
             t.record_rejection(1_000 + i);
         }
         let (recent, total) = t.stats();
-        assert_eq!(recent, 50, "all 50 rejections should be within the 5-min window");
+        assert_eq!(
+            recent, 50,
+            "all 50 rejections should be within the 5-min window"
+        );
         assert_eq!(total, 50);
     }
 

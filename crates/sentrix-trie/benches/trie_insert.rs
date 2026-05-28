@@ -16,9 +16,9 @@
 //!   recomputation.
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use std::hint::black_box;
-use sentrix_trie::{address::account_value_bytes, tree::SentrixTrie};
 use sentrix_storage::MdbxStorage;
+use sentrix_trie::{address::account_value_bytes, tree::SentrixTrie};
+use std::hint::black_box;
 use std::sync::Arc;
 use tempfile::TempDir;
 
@@ -37,7 +37,9 @@ fn random_key(seed: u64) -> [u8; 32] {
     let mut k = [0u8; 32];
     let mut s = seed;
     for byte in k.iter_mut() {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         *byte = (s >> 33) as u8;
     }
     k
@@ -101,5 +103,10 @@ fn bench_commit_100(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_insert_single, bench_insert_batch_100, bench_commit_100);
+criterion_group!(
+    benches,
+    bench_insert_single,
+    bench_insert_batch_100,
+    bench_commit_100
+);
 criterion_main!(benches);

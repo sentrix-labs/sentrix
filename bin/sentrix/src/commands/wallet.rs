@@ -470,8 +470,7 @@ mod tests {
         // process memory / crash dumps). If this compiles, the wrap is
         // intact; if a future refactor drops the wrap by accident the
         // assignment fails at build time.
-        let _proof: Zeroizing<String> =
-            resolve_password_named(Some("x".into()), "_", "_").unwrap();
+        let _proof: Zeroizing<String> = resolve_password_named(Some("x".into()), "_", "_").unwrap();
         let _proof: Zeroizing<String> =
             resolve_password_named_confirmed(Some("x".into()), "_", "_").unwrap();
         let _proof: Zeroizing<String> = resolve_password(Some("x".into())).unwrap();

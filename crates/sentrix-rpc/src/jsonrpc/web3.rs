@@ -12,11 +12,7 @@ use sha3::{Digest, Keccak256};
 
 use super::DispatchResult;
 
-pub(super) async fn dispatch(
-    method: &str,
-    params: &Value,
-    _state: &SharedState,
-) -> DispatchResult {
+pub(super) async fn dispatch(method: &str, params: &Value, _state: &SharedState) -> DispatchResult {
     match method {
         "web3_clientVersion" => Ok(json!(format!("Sentrix/{}/Rust", env!("CARGO_PKG_VERSION")))),
         // `web3_sha3` — keccak256 hash of a hex-encoded byte string. The
@@ -29,8 +25,8 @@ pub(super) async fn dispatch(
                 .and_then(|v| v.as_str())
                 .ok_or((-32602, "web3_sha3: expected hex string param".to_string()))?;
             let hex = input.strip_prefix("0x").unwrap_or(input);
-            let bytes = hex::decode(hex)
-                .map_err(|e| (-32602, format!("web3_sha3: invalid hex: {}", e)))?;
+            let bytes =
+                hex::decode(hex).map_err(|e| (-32602, format!("web3_sha3: invalid hex: {}", e)))?;
             let mut hasher = Keccak256::new();
             hasher.update(&bytes);
             let digest = hasher.finalize();

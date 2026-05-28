@@ -206,8 +206,8 @@ fn test_signed_tx_blocks_self_vs_peer_determinism() {
 #[test]
 fn test_mdbx_roundtrip_then_peer_block() {
     let dir = TempDir::new().expect("tempdir");
-    let storage = sentrix_core::storage::Storage::open(dir.path().to_str().unwrap())
-        .expect("storage open");
+    let storage =
+        sentrix_core::storage::Storage::open(dir.path().to_str().unwrap()).expect("storage open");
     let mdbx = storage.mdbx_arc();
 
     let mut producer = setup_chain();
@@ -316,8 +316,8 @@ fn test_mdbx_roundtrip_then_peer_block() {
 #[test]
 fn test_mdbx_roundtrip_with_active_state() {
     let dir = TempDir::new().expect("tempdir");
-    let storage = sentrix_core::storage::Storage::open(dir.path().to_str().unwrap())
-        .expect("storage open");
+    let storage =
+        sentrix_core::storage::Storage::open(dir.path().to_str().unwrap()).expect("storage open");
     let mdbx = storage.mdbx_arc();
 
     let mut producer = setup_chain();
@@ -445,7 +445,9 @@ fn test_stale_snapshot_peer_sync() {
 
     let mut producer = setup_chain();
     producer.init_trie(Arc::clone(&producer_mdbx)).unwrap();
-    producer.init_storage_handle(Arc::clone(&producer_mdbx)).unwrap();
+    producer
+        .init_storage_handle(Arc::clone(&producer_mdbx))
+        .unwrap();
 
     // Pre-fund 3 senders
     let mut keypairs = Vec::new();
@@ -727,9 +729,8 @@ fn test_voyager_active_stale_snapshot_peer_sync() {
     let peer_dir = TempDir::new().expect("peer tempdir");
     copy_dir_contents(producer_dir.path(), peer_dir.path()).expect("rsync sim");
 
-    let peer_storage =
-        sentrix_core::storage::Storage::open(peer_dir.path().to_str().unwrap())
-            .expect("peer storage open");
+    let peer_storage = sentrix_core::storage::Storage::open(peer_dir.path().to_str().unwrap())
+        .expect("peer storage open");
     let peer_mdbx = peer_storage.mdbx_arc();
     let mut peer: Blockchain = peer_storage
         .load_blockchain()
@@ -829,10 +830,7 @@ fn test_legacy_validation_height_branches() {
         (d1, d2, producer, peer)
     }
 
-    fn produce_block_with_bad_state_root(
-        producer: &mut Blockchain,
-        bad_root: [u8; 32],
-    ) -> Block {
+    fn produce_block_with_bad_state_root(producer: &mut Blockchain, bad_root: [u8; 32]) -> Block {
         let mut block = producer.create_block(VALIDATOR).unwrap();
         // Apply on producer normally (stamps real state_root)
         producer.add_block(block.clone()).unwrap();
@@ -964,7 +962,11 @@ fn test_libp2p_sync_loop_skips_duplicates_and_applies_remaining() {
 
     assert_eq!(skipped, 2, "two already-applied blocks should be skipped");
     assert_eq!(synced, 2, "two forward blocks should be applied");
-    assert_eq!(peer.height(), 5, "peer must advance to h=5 (not stall at 3)");
+    assert_eq!(
+        peer.height(),
+        5,
+        "peer must advance to h=5 (not stall at 3)"
+    );
 }
 
 /// Recursively copy directory contents — used for the rsync simulation in

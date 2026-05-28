@@ -534,7 +534,8 @@ mod tests {
         db.credit("alice", 100_000).unwrap();
         let pre_nonce = db.get_nonce("alice");
 
-        db.charge_fee_only("alice", 10_000).expect("charge should succeed");
+        db.charge_fee_only("alice", 10_000)
+            .expect("charge should succeed");
 
         assert_eq!(db.get_balance("alice"), 90_000, "fee should be deducted");
         assert_eq!(
@@ -552,9 +553,16 @@ mod tests {
         let result = db.charge_fee_only("alice", 10_000);
         assert!(matches!(
             result,
-            Err(SentrixError::InsufficientBalance { have: 9_999, need: 10_000 })
+            Err(SentrixError::InsufficientBalance {
+                have: 9_999,
+                need: 10_000
+            })
         ));
-        assert_eq!(db.get_balance("alice"), 9_999, "balance unchanged on rejection");
+        assert_eq!(
+            db.get_balance("alice"),
+            9_999,
+            "balance unchanged on rejection"
+        );
         assert_eq!(db.get_nonce("alice"), 0, "nonce unchanged on rejection");
     }
 
@@ -619,7 +627,10 @@ mod tests {
         assert_eq!(after_pass1, 999_995_000);
         assert_eq!(after_pass1_burned, 5_000);
         // Native invariant holds: supply drop == burn increment.
-        assert_eq!(initial_supply - after_pass1, after_pass1_burned - initial_burned);
+        assert_eq!(
+            initial_supply - after_pass1,
+            after_pass1_burned - initial_burned
+        );
 
         // Step 3 — Simulate `commit_state_to_account_db` writeback after
         // revm internally deducted gas. Real values: gas_used = 100_000,

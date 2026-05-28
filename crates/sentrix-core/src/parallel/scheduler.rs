@@ -33,7 +33,9 @@ pub struct Batch {
 
 impl Batch {
     pub fn singleton(idx: usize) -> Self {
-        Self { tx_indices: vec![idx] }
+        Self {
+            tx_indices: vec![idx],
+        }
     }
 }
 
@@ -62,7 +64,10 @@ pub fn build_batches<T: AsRef<[u8]>>(txs: &[T], validator: &str) -> Vec<Batch> {
         .map(|tx| derive_access(tx.as_ref(), validator))
         .collect();
 
-    txs.iter().enumerate().map(|(i, _)| Batch::singleton(i)).collect()
+    txs.iter()
+        .enumerate()
+        .map(|(i, _)| Batch::singleton(i))
+        .collect()
 }
 
 #[cfg(test)]
@@ -122,7 +127,10 @@ mod tests {
     fn batches_preserve_ascending_order() {
         let txs: Vec<&[u8]> = vec![b"0", b"1", b"2", b"3", b"4"];
         let batches = build_batches(&txs, "0xv");
-        let flat: Vec<usize> = batches.iter().flat_map(|b| b.tx_indices.iter().copied()).collect();
+        let flat: Vec<usize> = batches
+            .iter()
+            .flat_map(|b| b.tx_indices.iter().copied())
+            .collect();
         assert_eq!(flat, vec![0, 1, 2, 3, 4]);
     }
 }

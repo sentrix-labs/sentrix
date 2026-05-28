@@ -43,7 +43,11 @@ const CACHE_NO_STORE: &str = "no-store";
 fn cache_policy_for(path: &str) -> Option<&'static str> {
     // Live data: must always fetch fresh.
     match path {
-        "/chain/info" | "/sentrix_status" | "/sentrix_status_extended" | "/mempool" | "/chain/performance" => {
+        "/chain/info"
+        | "/sentrix_status"
+        | "/sentrix_status_extended"
+        | "/mempool"
+        | "/chain/performance" => {
             return Some(CACHE_NO_STORE);
         }
         "/chain/blocks" | "/blocks" => return Some(CACHE_LIVE_LIST),
@@ -158,7 +162,10 @@ mod tests {
         assert_eq!(cache_policy_for("/tokens"), None);
         // Children (holders, balance, etc) must NOT pick up token meta.
         assert_eq!(cache_policy_for("/tokens/SRC20_abcdef/holders"), None);
-        assert_eq!(cache_policy_for("/tokens/SRC20_abcdef/balance/0xdead"), None);
+        assert_eq!(
+            cache_policy_for("/tokens/SRC20_abcdef/balance/0xdead"),
+            None
+        );
     }
 
     #[test]
