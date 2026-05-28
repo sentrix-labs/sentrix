@@ -83,6 +83,8 @@ Add to your `Cargo.toml`:
 sentrix-codec = "0.1"
 ```
 
+This crate has **no optional features** and **no `default-features`** to disable — the API surface is the same for every consumer.
+
 ## Examples
 
 ```rust
@@ -123,6 +125,8 @@ let arr: [u8; 4] = hex_decode_fixed("deadbeef")?;        // length-checked
   with `encode`, the resulting `Vec<u8>` is plain bytes — treat it with the
   same care as the original secret (zero on drop, avoid logging, avoid
   unencrypted transmission). The crate does not zeroize on its own.
+- **Not `no_std`-compatible.** The crate uses `Vec<u8>` and `String` from
+  `alloc` / `std`; embedded targets without an allocator are not supported.
 
 ## Testing
 
@@ -131,6 +135,47 @@ Nine unit tests cover all five public functions plus the error paths
 
 ```sh
 cargo test -p sentrix-codec
+```
+
+## Minimum supported Rust version
+
+**Rust 1.95** (workspace `rust-toolchain.toml` pin). MSRV bumps are
+treated as a minor-version bump on this crate (`0.1.x` → `0.2.0`) so
+downstream consumers can pin around a Rust release if they need to.
+
+## Versioning
+
+Pre-`1.0`: the `0.x` line follows the de-facto crates.io convention —
+**minor bumps may include breaking changes**, patch bumps are non-breaking
+fixes. Any change to the on-the-wire bincode bytes or hex behavior is
+treated as breaking. A `1.0` cut will follow once the format guarantees
+above have a few stable releases of bake-in.
+
+## Changelog
+
+Release notes live in the
+[sentrix-labs/sentrix releases](https://github.com/sentrix-labs/sentrix/releases)
+page, tagged per-crate (`sentrix-codec-v<version>`).
+
+## Security
+
+Report vulnerabilities privately to
+**`security@sentrixchain.com`** — please **do not** file a public issue
+for a suspected security bug. See
+[`SECURITY.md`](https://github.com/sentrix-labs/sentrix/blob/main/SECURITY.md)
+for the full disclosure policy and response timeline.
+
+## Contributing
+
+PRs and issues welcome. See the workspace
+[`CONTRIBUTING.md`](https://github.com/sentrix-labs/sentrix/blob/main/CONTRIBUTING.md)
+for branch / commit / clippy expectations. Reproduce a build locally:
+
+```sh
+git clone https://github.com/sentrix-labs/sentrix.git
+cd sentrix
+cargo test -p sentrix-codec
+cargo clippy -p sentrix-codec --all-targets -- -D warnings
 ```
 
 ## License
