@@ -2,7 +2,7 @@
 
 Sentrix runs **Voyager DPoS + BFT** with a permissionless, uncapped
 candidate set and a top-21 active set rotated by total stake. Block
-time targets ~2.5 s. Block producer at height `h` = `active_set[h %
+time target is `1 s` (mainnet observed ~1–2 s, testnet ~1 s). Block producer at height `h` = `active_set[h %
 active_set.len()]`.
 
 > [!NOTE]
@@ -38,7 +38,7 @@ mainnet's current registry.)
 | `MIN_BFT_VALIDATORS` | 4 (Voyager activation floor) | `sentrix-staking/staking.rs` |
 | `MIN_ACTIVE_VALIDATORS` | 1 (chain can produce with 1 active) | `sentrix-core/authority.rs` |
 | Commission range | 0 – 10,000 bp (0 – 100%) | `sentrix-staking/staking.rs` |
-| Unbonding period | 201,600 blocks (~7 days at 3 s) | `sentrix-staking/staking.rs` |
+| Unbonding period | 201,600 blocks (~56 hours at 1 s blocks) | `sentrix-staking/staking.rs` |
 
 ## Add a validator (permissionless path, current)
 
@@ -120,11 +120,11 @@ Status shown in `validator list` (v2.2.11+):
 
 ## Block production economics
 
-At ~2.5 s block time and 21 active validators in round-robin, each
+At ~1.5 s observed block time and 21 active validators in round-robin, each
 active validator produces roughly:
 
-- **3,433 blocks/day** (24 × 3,600 / 2.5 / 21 ≈ 3,432.5)
-- **~3,433 SRX/day** in block reward (1 SRX per block, pre-halving)
+- **2,743 blocks/day** (24 × 3,600 / 1.5 / 21 ≈ 2,742.9)
+- **~2,743 SRX/day** in block reward (1 SRX per block, pre-halving)
 - Plus `commission_rate × validator_pool_share` of delegated rewards
 - Plus a share of tx fees in produced blocks
 

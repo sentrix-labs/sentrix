@@ -20,6 +20,22 @@ fleet" required.
 
 ---
 
+## Choose your participation path
+
+Before going further, decide whether you actually need to run a validator. Three ways to participate in Sentrix consensus economics, ranked by hands-on commitment:
+
+| Path | What you do | Stake | Hardware | Risk | Reward |
+|---|---|---|---|---|---|
+| **Run a validator** (this guide) | Operate a node 24/7, sign every assigned block, keep the keystore safe, respond to incidents. | **≥ 15,000 SRX self-stake** + any delegated stake | One server matching the spec in §4 | Slashing (20% on double-sign), jailing (liveness <70%) | Block reward + tx fees + commission on delegations |
+| **Delegate to a validator** | Pick an active validator from `/staking/validators`, submit `StakingOp::Delegate { validator, amount }`. Claim accrued rewards with `StakingOp::ClaimRewards` when convenient. | Any amount (no minimum) | None | Slashing follows the validator you delegated to | Block reward share net of validator commission |
+| **Wait for staking SaaS** | Stake through a third-party provider that runs the hardware for you. | Provider-defined | None | Custodial — you trust the provider | Provider-defined |
+
+Today only paths 1 and 2 exist on Sentrix — no staking SaaS providers yet. If you can't commit ≥ 99.5% uptime + the §4 spec, **delegate instead**. Validator slashing applies to the wallet that signed the bad block — not to the delegators behind that validator's stake, but their delegated rewards stop accruing while the validator is jailed. Both paths benefit from the same emission curve.
+
+The rest of this doc assumes you've picked Path 1.
+
+---
+
 ## Table of contents
 
 1. [What you're signing up for](#1-what-youre-signing-up-for)
@@ -46,7 +62,7 @@ Sentrix runs **Voyager DPoS + BFT** on mainnet, live since h=579,047
 (2026-04-25). Stake-weighted, **uncapped candidate set** (cap was
 lifted v2.2.11), 21 active validators rotate based on stake rank,
 3-phase BFT round (propose / prevote / precommit) per block, 2/3+1 of
-stake-weighted active set finalises. Block time targets ~2.5 s.
+stake-weighted active set finalises. Block-time target is `BLOCK_TIME_SECS = 1` second; mainnet ranges ~1–2 s in steady state, testnet typically ~1 s.
 
 > [!IMPORTANT]
 > - Node uptime expectation: **>99.5%**. The in-chain liveness tracker
@@ -81,7 +97,7 @@ stake-weighted active set finalises. Block time targets ~2.5 s.
 | Candidate set | unlimited (any address with ≥ `MIN_SELF_STAKE`) |
 | `MIN_SELF_STAKE` | 15,000 SRX |
 | Permissionless | yes — no whitelist, no admin approval |
-| Block time | ~2.5 s target |
+| Block time | 1 s target; mainnet ~1–2 s observed, testnet ~1 s |
 | Finality | BFT supermajority (2/3+1 stake-weighted) |
 
 The small active set is deliberate — BFT supermajority round-trips
@@ -121,7 +137,7 @@ That's the whole permissionless flow. No email, no DM, no approval.
 
 ## 4. Hardware + network
 
-Mainnet reference at h ≈ 1.74M (2026-05):
+Mainnet reference (observed at recent steady state):
 
 | Resource | Minimum | Comfortable |
 |---|---|---|
@@ -492,6 +508,107 @@ removal) per the slashing parameters.
 **No.** Lost password = lost validator. Bonded SRX is unrecoverable
 without the signing key. Treat keystore + password like a hardware
 wallet seed.
+
+</details>
+
+<details>
+<summary><strong>What counts as "double-signing" and how do I avoid it?</strong></summary>
+
+Double-signing = signing two different blocks at the same `(height,
+round)`. The on-chain `last-sign.json` guard ships in v2.1.85+ and
+refuses to re-sign a different hash for the same `(h, r)`, so the
+binary itself blocks the slashing condition. The two ways you can
+still trip it: (a) running the same keystore on two hosts at once
+(both have their own `last-sign.json`, neither sees the other's
+signature), (b) restoring an old `chain.db` snapshot that rewinds
+past a height you've already signed (and manually removing
+`last-sign.json` to "fix" the boot error). Rule: one keystore, one
+running process, never delete `last-sign.json` to bypass a guard
+error.
+
+</details>
+
+<details>
+<summary><strong>Can I migrate my validator to a new host?</strong></summary>
+
+Yes — keystore + chain.db move together. (1) Stop the old host's
+service. (2) `scp` the keystore, `last-sign.json`, and chain.db
+to the new host. (3) Set up the systemd unit + env file on the new
+host. (4) Start. The old host **must not start again** with the
+same keystore, ever — that's the double-sign trap above. Best
+practice is to rename the old keystore file to `*.archived` on the
+old host before bringing the new host up.
+
+</details>
+
+<details>
+<summary><strong>What's the difference between validator and fullnode?</strong></summary>
+
+A **validator** signs blocks. It bonds ≥ 15,000 SRX, sits in the
+active-set rotation, and faces slashing / jailing. It should NOT
+serve public RPC.
+
+A **fullnode** follows the chain but doesn't sign. It serves public
+JSON-RPC / REST / gRPC / WSS to dApps and explorers, replays new
+blocks via libp2p, and can be load-balanced. No stake required, no
+slashing risk.
+
+The reference deployment runs both: validators behind a firewall,
+fullnodes as the public-RPC frontline. If you only want to operate
+infrastructure (not earn validator rewards), run a fullnode — it's
+the same binary with a different config.
+
+</details>
+
+<details>
+<summary><strong>How do I monitor for jail risk before it happens?</strong></summary>
+
+The liveness tracker fires `JAIL_THRESHOLD = 70% missed-in-window`.
+Alert before that:
+
+- `/sentrix_status` returns `liveness_window_signed` and
+  `liveness_window_total`. Alert at `signed/total < 0.85` for
+  early warning.
+- Prometheus exporter exports the per-validator missed-count gauge
+  (`sentrix_validator_missed_blocks_in_window`).
+- Grafana dashboard panel shows the trend — see
+  `OBSERVABILITY.md` for the JSON.
+
+If you breach 0.85, find the cause (host CPU, disk, network) before
+0.70 fires.
+
+</details>
+
+<details>
+<summary><strong>Can I change my commission rate after registering?</strong></summary>
+
+Yes — submit `StakingOp::UpdateValidator { commission_rate: new_bp
+}`. The new rate applies to blocks produced from that height
+forward; previously-accrued rewards in the accumulator pay out at
+the rate that was active when they accrued. Delegators see the
+change on next claim. There's no cool-down or rate-limit on
+updates today, but spamming changes erodes trust — communicate
+ahead with your delegators.
+
+</details>
+
+<details>
+<summary><strong>How long from RegisterValidator to producing blocks?</strong></summary>
+
+Two thresholds:
+
+- **Candidate** — instant on `RegisterValidator` apply. The tx
+  finalizing puts you in the candidate pool.
+- **Active** — next time you're ranked in the top-21 by total
+  stake. If the active set has fewer than 21 today, you go active
+  in the next epoch boundary. If the active set is full, you're
+  active when one of the bottom-stake actives unbonds, gets jailed,
+  or gets out-staked by you.
+
+On testnet that's typically minutes (small active set, churn).
+On mainnet today the active set is small (4 reference validators),
+so a fresh registration with ≥ 15,000 SRX self-stake enters
+active immediately on the next epoch tick.
 
 </details>
 
