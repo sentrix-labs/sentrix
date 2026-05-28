@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779934945190,
+  "lastUpdate": 1779953387017,
   "repoUrl": "https://github.com/sentrix-labs/sentrix",
   "entries": {
     "sentrix-trie benches": [
@@ -167,6 +167,48 @@ window.BENCHMARK_DATA = {
             "name": "commit_after_100_inserts",
             "value": 1524452,
             "range": "± 1613175",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "satyakwikp77@gmail.com",
+            "name": "satyakwok",
+            "username": "satyakwok"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "df5e577d02ee0c407469aa4cd8fcac96a358b84a",
+          "message": "fix(network): v2.2.19 apply-watchdog for fullnode silent-stall class (#739)\n\n* fix(network): v2.2.19 apply-watchdog for fullnode silent-stall class\n\nvps6 mainnet fullnodes stuck 78min and 6.1h on 2026-05-27 (testnet\nfullnode-1 stuck 4.5d) — container healthy, RPC responsive, libp2p\npeers connected, but chain.height() frozen. v2.2.18 closed the BFT-side\nsilent-stall (driver-confirmed cast) but fullnodes don't run BFT — they\nonly receive blocks via the three apply paths in libp2p_node.rs\n(gossipsub, request-response, catch-up sync).\n\nWithout an in-process counter we couldn't distinguish: gossipsub mesh\nbroken, write-lock starvation, add_block_from_peer hanging on MDBX\ncommit, or bookkeeping silently rejecting everything. Each occurrence\ngot recovered (chain.db cp from canonical) before evidence could be\ncaptured.\n\nThis patch wires per-path counters at all three call sites (RX_GOSSIP,\nRX_REQ, RX_SYNC, OK, ERR, LAST_HEIGHT, LAST_UNIX) and spawns a 30s\nwatchdog in LibP2pNode::new that logs the deltas and classifies stalls:\n  - rx_total > 0 + apply_age > 120s -> SILENT-STALL (apply path stuck)\n  - rx_total = 0 + apply_age > 120s -> PEER-MESH IDLE (different class)\n\nLogs at info on every tick (clean grep-able history), error on actual\nstall. Next occurrence captures the failure mode in journal -> targeted\nfix follows.\n\nNo semantic change to apply path — atomic counters + a single read-only\nwatchdog task. Drop-in safe for mainnet + testnet.\n\nWorkspace bump 2.2.18 -> 2.2.19.\n\n* chore: cargo fmt workspace\n\nAccumulated rustfmt drift across ~55 files from many sessions where\nfmt was never re-run. Mechanical cargo fmt output, no semantic change.\nBundled into v2.2.19 branch so CI fmt --check passes.",
+          "timestamp": "2026-05-28T14:28:15+07:00",
+          "tree_id": "625a2593911c859181258fd217af2b764d15f35d",
+          "url": "https://github.com/sentrix-labs/sentrix/commit/df5e577d02ee0c407469aa4cd8fcac96a358b84a"
+        },
+        "date": 1779953386643,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "insert_single",
+            "value": 171226,
+            "range": "± 22512",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "insert_batch_100",
+            "value": 551879,
+            "range": "± 48257",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "commit_after_100_inserts",
+            "value": 1351622,
+            "range": "± 1655050",
             "unit": "ns/iter"
           }
         ]
