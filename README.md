@@ -16,7 +16,7 @@ Real chain, real blocks, real code. Sentrix (SRX) is a purpose-built Layer-1 wit
 [![Coverage](https://codecov.io/gh/sentrix-labs/sentrix/branch/main/graph/badge.svg)](https://codecov.io/gh/sentrix-labs/sentrix)
 [![Release](https://img.shields.io/github/v/release/sentrix-labs/sentrix)](https://github.com/sentrix-labs/sentrix/releases/latest)
 [![Rust](https://img.shields.io/badge/rust-stable-orange)](Cargo.toml)
-[![Chain ID](https://img.shields.io/badge/chain%20ID-7119-blue)](docs/operations/NETWORKS.md)
+[![Chain ID](https://img.shields.io/badge/chain%20ID-7119-blue)](https://docs.sentrixchain.com/operations/NETWORKS/)
 [![License](https://img.shields.io/badge/license-BUSL--1.1-purple)](LICENSE)
 [![Whitepaper](https://img.shields.io/badge/whitepaper-v1.3.0-8A5A11)](https://github.com/sentrix-labs/whitepaper)
 
@@ -41,7 +41,7 @@ Sentrix (SRX) is a purpose-built Layer-1 blockchain with 1-second block times, i
 | **State** | Binary Sparse Merkle Tree (BLAKE3 + SHA-256) with proofs |
 | **Tokens** | SRC-20 native + SRC-20 (ERC-20 via EVM) |
 | **Network** | libp2p + Noise XX + Kademlia + Gossipsub |
-| **API** | REST + JSON-RPC 2.0 (incl. `sentrix_*` native namespace) + **Tonic gRPC + gRPC-Web** ([docs](docs/operations/GRPC.md)) — `GetBlock`, `GetBalance`, server-streaming `StreamEvents` |
+| **API** | REST + JSON-RPC 2.0 (incl. `sentrix_*` native namespace) + **Tonic gRPC + gRPC-Web** ([docs](https://docs.sentrixchain.com/operations/GRPC/)) — `GetBlock`, `GetBalance`, server-streaming `StreamEvents` |
 | **Explorer** | Built-in dark-themed block explorer |
 | **Wallet** | AES-256-GCM keystore (Argon2id KDF) |
 | **Fee model** | 50% burn / 50% validator (deflationary) |
@@ -89,7 +89,7 @@ Full operator guide: **[docs.sentrixchain.com/operations/VALIDATOR_ONBOARDING](h
 | Symbol | `SRX` |
 | Explorer | `https://scan.sentrixchain.com` (toggle to Testnet in UI) |
 
-Full guide: [docs/operations/METAMASK.md](docs/operations/METAMASK.md). Deploy a smart contract via Remix: [docs/operations/SMART_CONTRACT_GUIDE.md](docs/operations/SMART_CONTRACT_GUIDE.md). EVM internals: [docs/architecture/EVM.md](docs/architecture/EVM.md).
+Full guide: [docs.sentrixchain.com/operations/METAMASK](https://docs.sentrixchain.com/operations/METAMASK/). Deploy a smart contract via Remix: [docs.sentrixchain.com/operations/SMART_CONTRACT_GUIDE](https://docs.sentrixchain.com/operations/SMART_CONTRACT_GUIDE/). EVM internals: [docs.sentrixchain.com/architecture/EVM](https://docs.sentrixchain.com/architecture/EVM/).
 
 ## Architecture
 
@@ -150,17 +150,20 @@ bin/
 
 ## Documentation
 
+All Sentrix docs live at **[docs.sentrixchain.com](https://docs.sentrixchain.com)** (source: [sentrix-labs/docs](https://github.com/sentrix-labs/docs)).
+
 - **[Whitepaper](https://github.com/sentrix-labs/whitepaper)** — foundational paper (vision, mission, design philosophy, protocol depth). English and Bahasa Indonesia.
-- [Architecture](docs/architecture/) — consensus, state, networking, transactions
-- [Operations](docs/operations/) — deployment, CI/CD, monitoring, validators
-- [Claim Rewards](docs/operations/CLAIM_REWARDS.md) — how validators + delegators claim escrowed rewards from `PROTOCOL_TREASURY`
-- [Security](docs/security/) — audit reports, attack vectors, pentest results
-- [Tokenomics](docs/tokenomics/) — SRX economics, staking, token standards
-- [Roadmap](docs/roadmap/) — phase details, changelog
+- [Architecture](https://docs.sentrixchain.com/architecture/OVERVIEW/) — consensus, state, networking, transactions
+- [Operations](https://docs.sentrixchain.com/operations/VALIDATOR_GUIDE/) — deployment, CI/CD, monitoring, validators
+- [Integration Cookbook](https://docs.sentrixchain.com/operations/INTEGRATION_COOKBOOK/) — viem / wagmi / ethers / hardhat / foundry recipes for dApp developers
+- [Claim Rewards](https://docs.sentrixchain.com/operations/CLAIM_REWARDS/) — how validators + delegators claim escrowed rewards from `PROTOCOL_TREASURY`
+- [Security](https://docs.sentrixchain.com/security/SECURITY_REPORT/) — audit reports, attack vectors, pentest results
+- [Tokenomics](https://docs.sentrixchain.com/tokenomics/OVERVIEW/) — SRX economics, staking, token standards
+- [Roadmap](https://docs.sentrixchain.com/roadmap/PHASE3/) — phase details, changelog
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for vulnerability reporting. Internal audits live in [docs/security/](docs/security/) (V1 → V11 numbered code reviews, plus topical audits for BFT consensus, EVM integration, dependency supply chain, validator infra, tokenomics correctness). Pentest results: [docs/security/PENTEST_RESULTS.md](docs/security/PENTEST_RESULTS.md). No third-party audit firm has reviewed the chain code yet — pursued when budget + scope align, no committed timeline.
+See [SECURITY.md](SECURITY.md) for vulnerability reporting. Internal audits live at [docs.sentrixchain.com/security](https://docs.sentrixchain.com/security/SECURITY_REPORT/) (V1 → V11 numbered code reviews, plus topical audits for BFT consensus, EVM integration, dependency supply chain, validator infra, tokenomics correctness). Pentest results: [docs.sentrixchain.com/security/PENTEST_RESULTS](https://docs.sentrixchain.com/security/PENTEST_RESULTS/). No third-party audit firm has reviewed the chain code yet — pursued when budget + scope align, no committed timeline.
 
 ## Contributing
 

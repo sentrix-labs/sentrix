@@ -47,7 +47,7 @@ pub static EVENT_TX_DROPPED: AtomicU64 = AtomicU64::new(0);
 /// We don't ship an in-process watchdog any more — production chains
 /// (Tendermint/CometBFT, Geth, Cosmos SDK) leave restart authority to
 /// the supervisor (systemd, docker, k8s, sentrix-guardian). See
-/// docs/operations/guardian.md for the rationale.
+/// https://docs.sentrixchain.com/operations/guardian/ for the rationale.
 pub static SWARM_TICK: AtomicU64 = AtomicU64::new(0);
 
 /// 2026-05-05 v2.1.65: cumulative count of broadcasts dropped because

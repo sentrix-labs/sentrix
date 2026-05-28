@@ -985,8 +985,8 @@ async fn cmd_start(
     // The earlier in-process watchdog was added during incident
     // response and worked, but it hid the underlying BFT/libp2p
     // liveness issues by short-cycling the process. See PR #561 +
-    // docs/operations/guardian.md for the full reasoning and the
-    // recommended supervisor policy.
+    // https://docs.sentrixchain.com/operations/guardian/ for the full
+    // reasoning and the recommended supervisor policy.
 
     // Fix A (2026-05-10) — async chain.db save off the BFT critical path.
     // Pre-fix: validator-loop blocked on storage.save_blockchain inside the
