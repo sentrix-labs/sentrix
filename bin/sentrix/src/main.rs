@@ -586,17 +586,19 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { admin, genesis } => {
-            commands::init::cmd_init(&admin, genesis.as_deref())?
-        }
+        Commands::Init { admin, genesis } => commands::init::cmd_init(&admin, genesis.as_deref())?,
 
         Commands::Wallet { action } => match action {
-            WalletCommands::Generate { password } => commands::wallet::cmd_wallet_generate(password)?,
+            WalletCommands::Generate { password } => {
+                commands::wallet::cmd_wallet_generate(password)?
+            }
             WalletCommands::Import {
                 private_key,
                 password,
             } => commands::wallet::cmd_wallet_import(&private_key, password)?,
-            WalletCommands::Info { keystore_file } => commands::wallet::cmd_wallet_info(&keystore_file)?,
+            WalletCommands::Info { keystore_file } => {
+                commands::wallet::cmd_wallet_info(&keystore_file)?
+            }
             WalletCommands::Encrypt {
                 private_key,
                 password,
@@ -643,7 +645,10 @@ async fn main() -> anyhow::Result<()> {
                 address,
                 i_understand_phantom_stake,
             } => {
-                commands::validator::cmd_validator_force_unjail(&address, i_understand_phantom_stake)?;
+                commands::validator::cmd_validator_force_unjail(
+                    &address,
+                    i_understand_phantom_stake,
+                )?;
             }
             ValidatorCommands::Unjail { address } => {
                 commands::validator::cmd_validator_unjail(&address)?;
@@ -1880,11 +1885,16 @@ async fn cmd_start(
                                         BftAction::BroadcastPrevote(ref prevote) => {
                                             let mut signed_pv = prevote.clone();
                                             signed_pv.sign(&validator_secret_key);
-                                            if lp2p_clone.broadcast_bft_prevote(&signed_pv).await.is_err() {
+                                            if lp2p_clone
+                                                .broadcast_bft_prevote(&signed_pv)
+                                                .await
+                                                .is_err()
+                                            {
                                                 tracing::error!(
                                                     "BFT prevote broadcast dropped at h={} r={} — \
                                                      engine retains pending; outer loop re-emits",
-                                                    prevote.height, prevote.round,
+                                                    prevote.height,
+                                                    prevote.round,
                                                 );
                                                 break;
                                             }
@@ -1902,11 +1912,16 @@ async fn cmd_start(
                                         BftAction::BroadcastPrecommit(ref precommit) => {
                                             let mut signed_pc = precommit.clone();
                                             signed_pc.sign(&validator_secret_key);
-                                            if lp2p_clone.broadcast_bft_precommit(&signed_pc).await.is_err() {
+                                            if lp2p_clone
+                                                .broadcast_bft_precommit(&signed_pc)
+                                                .await
+                                                .is_err()
+                                            {
                                                 tracing::error!(
                                                     "BFT precommit broadcast dropped at h={} r={} — \
                                                      engine retains pending; outer loop re-emits",
-                                                    precommit.height, precommit.round,
+                                                    precommit.height,
+                                                    precommit.round,
                                                 );
                                                 break;
                                             }
@@ -2261,39 +2276,55 @@ async fn cmd_start(
                                                             .as_deref()
                                                             == Some(wallet.address.as_str());
                                                         if we_next {
-                                                            match bc.create_block_voyager(&wallet.address) {
+                                                            match bc.create_block_voyager(
+                                                                &wallet.address,
+                                                            ) {
                                                                 Ok(block) => {
-                                                                    let block_hash = block.hash.clone();
-                                                                    let block_data = bincode::serialize(&block).unwrap_or_default();
+                                                                    let block_hash =
+                                                                        block.hash.clone();
+                                                                    let block_data =
+                                                                        bincode::serialize(&block)
+                                                                            .unwrap_or_default();
                                                                     // F-D Variant A v3 embedded
                                                                     // unsigned proposer prevote.
-                                                                    let proposer_prevote = Some(Prevote {
-                                                                        height: next_h,
-                                                                        round: 0,
-                                                                        block_hash: Some(block_hash.clone()),
-                                                                        validator: wallet.address.clone(),
-                                                                        signature: vec![],
-                                                                    });
+                                                                    let proposer_prevote =
+                                                                        Some(Prevote {
+                                                                            height: next_h,
+                                                                            round: 0,
+                                                                            block_hash: Some(
+                                                                                block_hash.clone(),
+                                                                            ),
+                                                                            validator: wallet
+                                                                                .address
+                                                                                .clone(),
+                                                                            signature: vec![],
+                                                                        });
                                                                     let mut prop = Proposal {
                                                                         height: next_h,
                                                                         round: 0,
                                                                         block_hash,
                                                                         block_data,
-                                                                        proposer: wallet.address.clone(),
+                                                                        proposer: wallet
+                                                                            .address
+                                                                            .clone(),
                                                                         signature: vec![],
                                                                         proposer_prevote,
                                                                     };
-                                                                    prop.sign(&validator_secret_key);
+                                                                    prop.sign(
+                                                                        &validator_secret_key,
+                                                                    );
                                                                     tracing::debug!(
                                                                         target: "speculative_build",
                                                                         "pre-built proposal h={} from FinalizeBlock(self) arm",
                                                                         next_h,
                                                                     );
-                                                                    speculative_proposal = Some((next_h, block, prop));
+                                                                    speculative_proposal =
+                                                                        Some((next_h, block, prop));
                                                                 }
                                                                 Err(e) => tracing::warn!(
                                                                     "speculative build for h={} failed: {}",
-                                                                    next_h, e,
+                                                                    next_h,
+                                                                    e,
                                                                 ),
                                                             }
                                                         } else {
@@ -2307,7 +2338,10 @@ async fn cmd_start(
                                                             // here. B2 load-replay recovers if we
                                                             // crash between in-memory commit and
                                                             // the queued save.
-                                                            if save_tx_clone.try_send(height).is_err() {
+                                                            if save_tx_clone
+                                                                .try_send(height)
+                                                                .is_err()
+                                                            {
                                                                 tracing::warn!(
                                                                     target: "save_writer",
                                                                     "save queue full at h={}; \
@@ -2546,7 +2580,8 @@ async fn cmd_start(
                                         tracing::error!(
                                             "BFT prevote broadcast dropped at h={} r={} — \
                                              engine retains pending; outer loop re-emits",
-                                            prevote.height, prevote.round,
+                                            prevote.height,
+                                            prevote.round,
                                         );
                                         break;
                                     }
@@ -2564,11 +2599,16 @@ async fn cmd_start(
                                 BftAction::BroadcastPrecommit(ref precommit) => {
                                     let mut signed_pc = precommit.clone();
                                     signed_pc.sign(&validator_secret_key);
-                                    if lp2p_clone.broadcast_bft_precommit(&signed_pc).await.is_err() {
+                                    if lp2p_clone
+                                        .broadcast_bft_precommit(&signed_pc)
+                                        .await
+                                        .is_err()
+                                    {
                                         tracing::error!(
                                             "BFT precommit broadcast dropped at h={} r={} — \
                                              engine retains pending; outer loop re-emits",
-                                            precommit.height, precommit.round,
+                                            precommit.height,
+                                            precommit.round,
                                         );
                                         break;
                                     }
@@ -2674,7 +2714,8 @@ async fn cmd_start(
                                         drop(bc_read);
                                         if let Some(mut prevote) = cu_result {
                                             prevote.sign(&validator_secret_key);
-                                            let _ = lp2p_clone.broadcast_bft_prevote(&prevote).await;
+                                            let _ =
+                                                lp2p_clone.broadcast_bft_prevote(&prevote).await;
                                         }
                                         break;
                                     }
@@ -2850,13 +2891,17 @@ async fn cmd_start(
                                                     match bc.create_block_voyager(&wallet.address) {
                                                         Ok(block) => {
                                                             let block_hash = block.hash.clone();
-                                                            let block_data = bincode::serialize(&block).unwrap_or_default();
+                                                            let block_data =
+                                                                bincode::serialize(&block)
+                                                                    .unwrap_or_default();
                                                             // F-D Variant A v3 embedded
                                                             // unsigned proposer prevote.
                                                             let proposer_prevote = Some(Prevote {
                                                                 height: next_h_pf,
                                                                 round: 0,
-                                                                block_hash: Some(block_hash.clone()),
+                                                                block_hash: Some(
+                                                                    block_hash.clone(),
+                                                                ),
                                                                 validator: wallet.address.clone(),
                                                                 signature: vec![],
                                                             });
@@ -2875,11 +2920,13 @@ async fn cmd_start(
                                                                 "pre-built proposal h={} from FinalizeBlock(peer) arm",
                                                                 next_h_pf,
                                                             );
-                                                            speculative_proposal = Some((next_h_pf, block, prop));
+                                                            speculative_proposal =
+                                                                Some((next_h_pf, block, prop));
                                                         }
                                                         Err(e) => tracing::warn!(
                                                             "speculative build for h={} failed: {}",
-                                                            next_h_pf, e,
+                                                            next_h_pf,
+                                                            e,
                                                         ),
                                                     }
                                                 } else {
@@ -3093,7 +3140,8 @@ async fn cmd_start(
                                         tracing::error!(
                                             "BFT prevote broadcast dropped at h={} r={} — \
                                              engine retains pending; outer loop re-emits",
-                                            prevote.height, prevote.round,
+                                            prevote.height,
+                                            prevote.round,
                                         );
                                         break;
                                     }
@@ -3111,11 +3159,16 @@ async fn cmd_start(
                                 BftAction::BroadcastPrecommit(ref precommit) => {
                                     let mut signed_pc = precommit.clone();
                                     signed_pc.sign(&validator_secret_key);
-                                    if lp2p_clone.broadcast_bft_precommit(&signed_pc).await.is_err() {
+                                    if lp2p_clone
+                                        .broadcast_bft_precommit(&signed_pc)
+                                        .await
+                                        .is_err()
+                                    {
                                         tracing::error!(
                                             "BFT precommit broadcast dropped at h={} r={} — \
                                              engine retains pending; outer loop re-emits",
-                                            precommit.height, precommit.round,
+                                            precommit.height,
+                                            precommit.round,
                                         );
                                         break;
                                     }
@@ -3601,7 +3654,6 @@ async fn cmd_start(
     .await?;
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {

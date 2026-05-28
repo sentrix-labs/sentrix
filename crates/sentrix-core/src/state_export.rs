@@ -437,7 +437,8 @@ mod tests {
         let s2 = serde_json::to_value(&snap2).unwrap();
 
         assert_eq!(
-            s1, s2,
+            s1,
+            s2,
             "export → import → export must be byte-identical (determinism)\n\
              original: {}\n\
              after round-trip: {}",
@@ -536,9 +537,7 @@ mod tests {
 
         // Chain 1: build a committed trie at height 1.
         let (accounts_a, accounts_b) = {
-            let mdbx = std::sync::Arc::new(
-                sentrix_storage::MdbxStorage::open(mdbx_path).unwrap(),
-            );
+            let mdbx = std::sync::Arc::new(sentrix_storage::MdbxStorage::open(mdbx_path).unwrap());
             let mut bc = setup();
             bc.init_trie(mdbx.clone()).unwrap();
 
@@ -567,9 +566,7 @@ mod tests {
         // (as if from a peer who had slightly different balances for
         // the same addresses). Simulates the drift-recovery scenario.
         let snapshot = {
-            let mdbx = std::sync::Arc::new(
-                sentrix_storage::MdbxStorage::open(mdbx_path).unwrap(),
-            );
+            let mdbx = std::sync::Arc::new(sentrix_storage::MdbxStorage::open(mdbx_path).unwrap());
             let mut other = setup();
             other.init_trie(mdbx).unwrap();
             // Same addresses but different balances — the "canonical" version
@@ -587,9 +584,7 @@ mod tests {
         // We apply the reset here so the next open sees empty trie tables
         // → init_trie backfills from imported accounts.
         {
-            let mdbx = std::sync::Arc::new(
-                sentrix_storage::MdbxStorage::open(mdbx_path).unwrap(),
-            );
+            let mdbx = std::sync::Arc::new(sentrix_storage::MdbxStorage::open(mdbx_path).unwrap());
             let mut bc = setup();
             bc.init_trie(mdbx.clone()).unwrap();
             bc.import_state(&snapshot).unwrap();
@@ -613,9 +608,8 @@ mod tests {
         // Chain 1 restart: init_trie should rebuild from the imported
         // accounts. If the fix is in place, the trie tables are empty
         // and init_trie triggers the backfill path.
-        let mdbx_reopen = std::sync::Arc::new(
-            sentrix_storage::MdbxStorage::open(mdbx_path).unwrap(),
-        );
+        let mdbx_reopen =
+            std::sync::Arc::new(sentrix_storage::MdbxStorage::open(mdbx_path).unwrap());
         let mut bc_reopened = setup();
         // Re-apply the imported accounts (save_blockchain/load_blockchain
         // would persist+restore them in production; here we set them
@@ -630,9 +624,8 @@ mod tests {
         // onto a pristine MDBX (no prior trie). This is what an
         // untouched peer would look like.
         let tmp_ref = tempfile::TempDir::new().unwrap();
-        let mdbx_ref = std::sync::Arc::new(
-            sentrix_storage::MdbxStorage::open(tmp_ref.path()).unwrap(),
-        );
+        let mdbx_ref =
+            std::sync::Arc::new(sentrix_storage::MdbxStorage::open(tmp_ref.path()).unwrap());
         let mut bc_reference = setup();
         bc_reference.import_state(&snapshot).unwrap();
         bc_reference.init_trie(mdbx_ref).unwrap();
@@ -641,7 +634,8 @@ mod tests {
             .or_else(|| bc_reference.state_trie.as_ref().map(|t| t.root_hash()));
 
         assert_eq!(
-            root_after_restart, root_reference,
+            root_after_restart,
+            root_reference,
             "After state import + restart, the restored trie root MUST equal what an \
              untouched peer would compute from the same imported accounts. If they \
              differ, the stale trie from pre-import state is still in use — exactly \
@@ -687,9 +681,9 @@ mod tests {
             sentrix_storage::MdbxStorage::open(tempfile::TempDir::new().unwrap().path()).unwrap(),
         );
         bc1.init_trie(mdbx1.clone()).unwrap();
-        let root1 = bc1.trie_root_at(bc1.height()).or_else(|| {
-            bc1.state_trie.as_ref().map(|t| t.root_hash())
-        });
+        let root1 = bc1
+            .trie_root_at(bc1.height())
+            .or_else(|| bc1.state_trie.as_ref().map(|t| t.root_hash()));
         assert!(root1.is_some(), "bc1 must have a committed trie root");
 
         // Export + import into fresh chain.
@@ -702,13 +696,14 @@ mod tests {
             sentrix_storage::MdbxStorage::open(tempfile::TempDir::new().unwrap().path()).unwrap(),
         );
         bc2.init_trie(mdbx2.clone()).unwrap();
-        let root2 = bc2.trie_root_at(bc2.height()).or_else(|| {
-            bc2.state_trie.as_ref().map(|t| t.root_hash())
-        });
+        let root2 = bc2
+            .trie_root_at(bc2.height())
+            .or_else(|| bc2.state_trie.as_ref().map(|t| t.root_hash()));
         assert!(root2.is_some(), "bc2 must have a committed trie root");
 
         assert_eq!(
-            root1, root2,
+            root1,
+            root2,
             "state_root must be IDENTICAL between original chain and chain rebuilt from export\n\
              original root = {:?}\n\
              restored root = {:?}\n\

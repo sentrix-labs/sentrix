@@ -101,7 +101,10 @@ pub(super) async fn dispatch(method: &str, params: &Value, state: &SharedState) 
                 bc.height()
             } else if block_param == "earliest" {
                 0
-            } else if block_param == "pending" || block_param == "finalized" || block_param == "safe" {
+            } else if block_param == "pending"
+                || block_param == "finalized"
+                || block_param == "safe"
+            {
                 bc.height()
             } else {
                 match u64::from_str_radix(block_param.trim_start_matches("0x"), 16) {
@@ -232,11 +235,7 @@ async fn eth_get_transaction_by_hash(params: &Value, state: &SharedState) -> Dis
 /// CLI all crashed with "missing from address". The receipt handler does
 /// the same conversion for eth_getTransactionReceipt — this mirrors it
 /// for getTransactionByHash so the same off-the-shelf tooling works.
-fn tx_to_evm_json(
-    bc: &sentrix_core::blockchain::Blockchain,
-    txid: &str,
-    tx_data: &Value,
-) -> Value {
+fn tx_to_evm_json(bc: &sentrix_core::blockchain::Blockchain, txid: &str, tx_data: &Value) -> Value {
     // Mined location fields are Option-typed so pending / not-yet-included
     // txs surface as null rather than genesis-looking defaults (block 0,
     // empty hash). EIP-1474 clients use null on these three to detect that
@@ -245,7 +244,13 @@ fn tx_to_evm_json(
     let block_hash: Value = tx_data["block_hash"]
         .as_str()
         .filter(|h| !h.is_empty())
-        .map(|h| if h.starts_with("0x") { h.to_string() } else { format!("0x{h}") })
+        .map(|h| {
+            if h.starts_with("0x") {
+                h.to_string()
+            } else {
+                format!("0x{h}")
+            }
+        })
         .map(Value::String)
         .unwrap_or(Value::Null);
 
@@ -404,7 +409,11 @@ fn extract_vrs_from_rlp(sig_hex: &str) -> Option<(String, String, String)> {
     let v_val: u64 = if sig.v() { 1 } else { 0 };
     let r_u256 = sig.r();
     let s_u256 = sig.s();
-    Some((to_hex(v_val), format!("0x{r_u256:x}"), format!("0x{s_u256:x}")))
+    Some((
+        to_hex(v_val),
+        format!("0x{r_u256:x}"),
+        format!("0x{s_u256:x}"),
+    ))
 }
 
 async fn eth_get_transaction_receipt(params: &Value, state: &SharedState) -> DispatchResult {
@@ -506,10 +515,15 @@ async fn eth_get_transaction_receipt(params: &Value, state: &SharedState) -> Dis
                 .as_ref()
                 .and_then(|s| sentrix_evm::receipt_key(&txid).map(|k| (s, k)))
                 .and_then(|(s, k)| {
-                    s.get_bincode(sentrix_storage::tables::TABLE_RECEIPTS, &k).ok().flatten()
+                    s.get_bincode(sentrix_storage::tables::TABLE_RECEIPTS, &k)
+                        .ok()
+                        .flatten()
                 });
 
-            let gas_used: u64 = stored_receipt.as_ref().map(|r| r.gas_used).unwrap_or(21_000);
+            let gas_used: u64 = stored_receipt
+                .as_ref()
+                .map(|r| r.gas_used)
+                .unwrap_or(21_000);
 
             // cumulativeGasUsed = sum of gas_used for all txs in this block
             // up to and including this one. We sum from the receipt store
@@ -647,9 +661,14 @@ async fn eth_get_block_receipts(params: &Value, state: &SharedState) -> Dispatch
             .as_ref()
             .and_then(|s| sentrix_evm::receipt_key(&tx.txid).map(|k| (s, k)))
             .and_then(|(s, k)| {
-                s.get_bincode(sentrix_storage::tables::TABLE_RECEIPTS, &k).ok().flatten()
+                s.get_bincode(sentrix_storage::tables::TABLE_RECEIPTS, &k)
+                    .ok()
+                    .flatten()
             });
-        let gas_used: u64 = stored_receipt.as_ref().map(|r| r.gas_used).unwrap_or(21_000);
+        let gas_used: u64 = stored_receipt
+            .as_ref()
+            .map(|r| r.gas_used)
+            .unwrap_or(21_000);
         cumulative = cumulative.saturating_add(gas_used);
         let contract_address: Value = stored_receipt
             .as_ref()
@@ -913,9 +932,7 @@ async fn run_evm_dry_run(
     let tx_value: alloy_primitives::U256 = call_obj
         .get("value")
         .and_then(|v| v.as_str())
-        .and_then(|s| alloy_primitives::U256::from_str_radix(
-            s.trim_start_matches("0x"), 16
-        ).ok())
+        .and_then(|s| alloy_primitives::U256::from_str_radix(s.trim_start_matches("0x"), 16).ok())
         .unwrap_or(alloy_primitives::U256::ZERO);
 
     let tx = revm::context::TxEnv::builder()
@@ -1105,9 +1122,14 @@ async fn eth_get_storage_at(params: &Value, state: &SharedState) -> DispatchResu
     // junk here keeps the downstream storage lookup from querying with
     // a malformed key that quietly returns zero.
     let slot_hex = slot.trim_start_matches("0x");
-    if slot_hex.is_empty() || slot_hex.len() > 64 || !slot_hex.chars().all(|c| c.is_ascii_hexdigit())
+    if slot_hex.is_empty()
+        || slot_hex.len() > 64
+        || !slot_hex.chars().all(|c| c.is_ascii_hexdigit())
     {
-        return Err((-32602, "invalid storage slot (must be hex, ≤ 32 bytes)".into()));
+        return Err((
+            -32602,
+            "invalid storage slot (must be hex, ≤ 32 bytes)".into(),
+        ));
     }
     let bc = state.read().await;
     // 2026-05-06: storage block tag is params[2] per spec (params[0]=addr,

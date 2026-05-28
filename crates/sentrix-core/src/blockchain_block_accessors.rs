@@ -106,11 +106,7 @@ impl Blockchain {
         match serde_json::from_slice::<Block>(&bytes) {
             Ok(b) => Some(b),
             Err(e) => {
-                tracing::warn!(
-                    "get_block_any({}): block JSON decode error: {}",
-                    index,
-                    e
-                );
+                tracing::warn!("get_block_any({}): block JSON decode error: {}", index, e);
                 None
             }
         }

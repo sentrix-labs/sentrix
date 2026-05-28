@@ -252,7 +252,12 @@ impl MultiaddrAdvertisement {
     /// replayed as an advertisement signature and vice versa.
     pub fn signing_payload(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(
-            1 + 8 + self.validator.len() + 8 + 8 + 8 + self.multiaddrs.iter().map(|m| 8 + m.len()).sum::<usize>(),
+            1 + 8
+                + self.validator.len()
+                + 8
+                + 8
+                + 8
+                + self.multiaddrs.iter().map(|m| 8 + m.len()).sum::<usize>(),
         );
         buf.push(0x10); // domain separator: multiaddr advertisement
         buf.extend_from_slice(&self.chain_id.to_be_bytes());
@@ -419,7 +424,8 @@ mod tests {
         MultiaddrAdvertisement {
             // Construct via concat! so the source text doesn't contain
             // a literal `0x` + 40-hex (pre-commit secret-scan regex).
-            validator: concat!("0", "x", "00000000000000000000", "00000000000000000001").to_string(),
+            validator: concat!("0", "x", "00000000000000000000", "00000000000000000001")
+                .to_string(),
             // RFC 5737 documentation IP ranges to avoid pre-commit
             // hook flagging real-fleet addresses.
             multiaddrs: vec![
@@ -456,7 +462,11 @@ mod tests {
         advert.validator = address.clone();
         advert.sign(&sk);
 
-        assert_eq!(advert.signature.len(), 65, "recoverable sig must be 65 bytes");
+        assert_eq!(
+            advert.signature.len(),
+            65,
+            "recoverable sig must be 65 bytes"
+        );
         assert!(advert.verify(), "signed advert must verify");
     }
 
@@ -571,7 +581,10 @@ mod tests {
 
         assert!(a1.verify());
         assert!(a2.verify());
-        assert_ne!(a1.signature, a2.signature, "different sequences → different sigs");
+        assert_ne!(
+            a1.signature, a2.signature,
+            "different sequences → different sigs"
+        );
     }
 
     /// Structural validation rejects malformed adverts before reaching
@@ -585,15 +598,23 @@ mod tests {
         assert!(a.validate_shape().is_err(), "empty multiaddr list rejected");
 
         let mut b = sample_advert();
-        b.multiaddrs = vec!["/ip4/198.51.100.10/tcp/30303".into(); MultiaddrAdvertisement::MAX_MULTIADDRS + 1];
-        assert!(b.validate_shape().is_err(), "exceeding MAX_MULTIADDRS rejected");
+        b.multiaddrs =
+            vec!["/ip4/198.51.100.10/tcp/30303".into(); MultiaddrAdvertisement::MAX_MULTIADDRS + 1];
+        assert!(
+            b.validate_shape().is_err(),
+            "exceeding MAX_MULTIADDRS rejected"
+        );
 
         let mut c = sample_advert();
         c.multiaddrs = vec!["not-a-multiaddr".into()];
-        assert!(c.validate_shape().is_err(), "missing leading slash rejected");
+        assert!(
+            c.validate_shape().is_err(),
+            "missing leading slash rejected"
+        );
 
         let mut d = sample_advert();
-        d.multiaddrs = vec!["/".to_string() + &"x".repeat(MultiaddrAdvertisement::MAX_MULTIADDR_LEN)];
+        d.multiaddrs =
+            vec!["/".to_string() + &"x".repeat(MultiaddrAdvertisement::MAX_MULTIADDR_LEN)];
         assert!(d.validate_shape().is_err(), "oversize multiaddr rejected");
 
         let mut e = sample_advert();
@@ -601,7 +622,10 @@ mod tests {
         assert!(e.validate_shape().is_err(), "non-0x validator rejected");
 
         let valid = sample_advert();
-        assert!(valid.validate_shape().is_ok(), "sample advert shape is valid");
+        assert!(
+            valid.validate_shape().is_ok(),
+            "sample advert shape is valid"
+        );
     }
 
     // ── BFT gossipsub envelope roundtrips ──────────────────
@@ -616,10 +640,13 @@ mod tests {
             height: 42,
             round: 1,
             block_hash: Some("0xabc123".to_string()),
-            validator: concat!("0", "x", "00000000000000000000", "00000000000000000005").to_string(),
+            validator: concat!("0", "x", "00000000000000000000", "00000000000000000005")
+                .to_string(),
             signature: vec![0u8; 65],
         };
-        let env = GossipBftPrevote { prevote: pv.clone() };
+        let env = GossipBftPrevote {
+            prevote: pv.clone(),
+        };
         let bytes = bincode::serialize(&env).expect("encode");
         let decoded: GossipBftPrevote = bincode::deserialize(&bytes).expect("decode");
         assert_eq!(decoded.prevote, pv);
@@ -631,10 +658,13 @@ mod tests {
             height: 100,
             round: 3,
             block_hash: None,
-            validator: concat!("0", "x", "00000000000000000000", "00000000000000000007").to_string(),
+            validator: concat!("0", "x", "00000000000000000000", "00000000000000000007")
+                .to_string(),
             signature: vec![1u8; 65],
         };
-        let env = GossipBftPrecommit { precommit: pc.clone() };
+        let env = GossipBftPrecommit {
+            precommit: pc.clone(),
+        };
         let bytes = bincode::serialize(&env).expect("encode");
         let decoded: GossipBftPrecommit = bincode::deserialize(&bytes).expect("decode");
         assert_eq!(decoded.precommit, pc);
@@ -645,7 +675,8 @@ mod tests {
         let rs = RoundStatus {
             height: 555,
             round: 2,
-            validator: concat!("0", "x", "00000000000000000000", "00000000000000000009").to_string(),
+            validator: concat!("0", "x", "00000000000000000000", "00000000000000000009")
+                .to_string(),
             signature: vec![2u8; 65],
         };
         let env = GossipBftRoundStatus { status: rs.clone() };

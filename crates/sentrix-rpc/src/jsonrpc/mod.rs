@@ -85,10 +85,7 @@ pub async fn jsonrpc_handler(
 ///
 /// HTTP and WS share this single dispatch path → 100% method parity
 /// across transports without duplicate code or drift risk.
-pub(crate) async fn dispatch_request(
-    state: &SharedState,
-    req: JsonRpcRequest,
-) -> JsonRpcResponse {
+pub(crate) async fn dispatch_request(state: &SharedState, req: JsonRpcRequest) -> JsonRpcResponse {
     let id = req.id.clone();
     let params = req.params.unwrap_or(json!([]));
     let method = req.method.as_str();

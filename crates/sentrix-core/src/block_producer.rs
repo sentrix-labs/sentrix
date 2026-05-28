@@ -50,9 +50,7 @@ impl Blockchain {
         // system tx with locally-computed downtime evidence. Helper returns
         // None pre-fork, at non-boundaries, or with no evidence — making this
         // a no-op on default builds (JAIL_CONSENSUS_HEIGHT=u64::MAX).
-        if let Some(jail_tx) =
-            self.build_jail_evidence_system_tx(next_height, block_timestamp)
-        {
+        if let Some(jail_tx) = self.build_jail_evidence_system_tx(next_height, block_timestamp) {
             transactions.push(jail_tx);
         }
 

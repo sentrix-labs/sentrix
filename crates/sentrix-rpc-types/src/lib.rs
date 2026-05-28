@@ -113,10 +113,7 @@ mod tests {
 
     #[test]
     fn test_to_hex_u128() {
-        assert_eq!(
-            to_hex_u128(u128::from(u64::MAX) + 1),
-            "0x10000000000000000"
-        );
+        assert_eq!(to_hex_u128(u128::from(u64::MAX) + 1), "0x10000000000000000");
     }
 
     #[test]

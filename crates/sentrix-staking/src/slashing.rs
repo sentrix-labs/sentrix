@@ -33,14 +33,14 @@ mod liveness;
 
 pub use double_sign::{DOUBLE_SIGN_SLASH_BP, DoubleSignDetector, DoubleSignEvidence};
 pub use liveness::{
-    DOWNTIME_JAIL_BLOCKS, DOWNTIME_SLASH_BP, LIVENESS_WINDOW, LivenessTracker, MIN_SIGNED_PER_WINDOW,
+    DOWNTIME_JAIL_BLOCKS, DOWNTIME_SLASH_BP, LIVENESS_WINDOW, LivenessTracker,
+    MIN_SIGNED_PER_WINDOW,
 };
 
 use crate::staking::StakeRegistry;
 use sentrix_primitives::transaction::JailEvidence;
 use sentrix_primitives::{SentrixError, SentrixResult};
 use serde::{Deserialize, Serialize};
-
 
 // ── Slashing Engine ──────────────────────────────────────────
 
@@ -545,7 +545,10 @@ mod tests {
 
         let (s2, m2) = engine.liveness.get_stats("0xval2");
         assert_eq!(s2, 0, "val2 didn't sign → no signed entries recorded");
-        assert_eq!(m2, 0, "val2 has no entries at all (not signers, not missed)");
+        assert_eq!(
+            m2, 0,
+            "val2 has no entries at all (not signers, not missed)"
+        );
 
         let (s3, _) = engine.liveness.get_stats("0xval3");
         assert_eq!(s3, 1);
@@ -601,8 +604,7 @@ mod tests {
     #[test]
     fn test_proposer_only_signers_triggers_cascade_jail() {
         let mut engine = SlashingEngine::new();
-        let active: Vec<String> =
-            (0..4).map(|i| format!("0xval{}", i + 1)).collect();
+        let active: Vec<String> = (0..4).map(|i| format!("0xval{}", i + 1)).collect();
 
         // Simulate LIVENESS_WINDOW blocks with the BROKEN model:
         // only the rotating proposer goes into `signers`.
@@ -687,8 +689,7 @@ mod tests {
         for h in 0..LIVENESS_WINDOW {
             engine.liveness.record_signed("0xval1", h);
         }
-        let evidence = engine
-            .compute_jail_evidence(&["0xval1".into()], LIVENESS_WINDOW);
+        let evidence = engine.compute_jail_evidence(&["0xval1".into()], LIVENESS_WINDOW);
         assert!(
             evidence.is_empty(),
             "healthy validator must NOT appear in jail evidence"
@@ -708,8 +709,7 @@ mod tests {
         // window is (100, LIVENESS_WINDOW + 100] — anchor at h=0 is
         // outside it, so signed_in_window = 0 < MIN_SIGNED_PER_WINDOW.
         let current_height = LIVENESS_WINDOW + 100;
-        let evidence = engine
-            .compute_jail_evidence(&["0xval1".into()], current_height);
+        let evidence = engine.compute_jail_evidence(&["0xval1".into()], current_height);
         assert_eq!(evidence.len(), 1);
         assert_eq!(evidence[0].validator, "0xval1");
         // Phase B initial impl: justification_hashes empty
@@ -779,8 +779,7 @@ mod tests {
         // LIVENESS_WINDOW, first_seen > current_height - LIVENESS_WINDOW
         // (grace period still active) → no downtime.
         engine.liveness.record_signed("0xval1", LIVENESS_WINDOW / 2);
-        let evidence = engine
-            .compute_jail_evidence(&["0xval1".into()], LIVENESS_WINDOW);
+        let evidence = engine.compute_jail_evidence(&["0xval1".into()], LIVENESS_WINDOW);
         assert!(
             evidence.is_empty(),
             "validator inside grace period must not produce evidence"

@@ -82,8 +82,8 @@ impl Blockchain {
             }
         };
 
-        use alloy_consensus::TxEnvelope;
         use alloy_consensus::Transaction as AlloyTx; // brings .value() into scope
+        use alloy_consensus::TxEnvelope;
         use alloy_eips::eip2718::Decodable2718;
 
         let envelope: TxEnvelope = match TxEnvelope::decode_2718(&mut raw_bytes.as_slice()) {
@@ -364,11 +364,9 @@ impl Blockchain {
                     // execute and DID move state — surface so ops can spot
                     // it. Don't propagate: block apply already succeeded,
                     // chain state is canonical.
-                    if let Err(e) = storage.put_bincode(
-                        sentrix_storage::tables::TABLE_RECEIPTS,
-                        &key,
-                        &stored,
-                    ) {
+                    if let Err(e) =
+                        storage.put_bincode(sentrix_storage::tables::TABLE_RECEIPTS, &key, &stored)
+                    {
                         tracing::warn!(
                             "EVM tx {}: receipt persist failed: {}",
                             &tx.txid[..16.min(tx.txid.len())],
@@ -405,11 +403,9 @@ impl Blockchain {
                         // as the receipt persist above. Failed log persist
                         // means `eth_getLogs` misses an entry; emit_log
                         // below still notifies live WS subscribers.
-                        if let Err(e) = storage.put_bincode(
-                            sentrix_storage::tables::TABLE_LOGS,
-                            &key,
-                            &stored,
-                        ) {
+                        if let Err(e) =
+                            storage.put_bincode(sentrix_storage::tables::TABLE_LOGS, &key, &stored)
+                        {
                             tracing::warn!(
                                 "EVM tx {}: log persist failed (idx={}): {}",
                                 &tx.txid[..16.min(tx.txid.len())],

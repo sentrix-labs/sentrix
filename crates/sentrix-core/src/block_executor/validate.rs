@@ -83,8 +83,7 @@ impl Blockchain {
             let local_evidence = self
                 .slashing
                 .compute_jail_evidence(&active_set, expected_index);
-            if !local_evidence.is_empty()
-                && !block.transactions.iter().any(|tx| tx.is_system_tx())
+            if !local_evidence.is_empty() && !block.transactions.iter().any(|tx| tx.is_system_tx())
             {
                 return Err(SentrixError::InvalidBlock(format!(
                     "boundary block {} missing required JailEvidenceBundle \

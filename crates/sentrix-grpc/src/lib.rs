@@ -530,7 +530,9 @@ mod tests {
         let _ = req.at_height.is_none();
 
         let entry = ValidatorEntry {
-            address: Some(Address { value: vec![0u8; 20] }),
+            address: Some(Address {
+                value: vec![0u8; 20],
+            }),
             stake_sentri: 1_000_000_000,
             active: true,
             jailed: false,

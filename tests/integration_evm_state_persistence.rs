@@ -106,10 +106,12 @@ fn deploy_bytecode(db: &mut AccountDB, deployer: Address, init_code: Vec<u8>) ->
         .chain_id(Some(CHAIN_ID))
         .build()
         .unwrap_or_default();
-    let (receipt, state) = execute_tx_with_state(evm_db, tx, INITIAL_BASE_FEE, CHAIN_ID)
-        .expect("deploy must succeed");
+    let (receipt, state) =
+        execute_tx_with_state(evm_db, tx, INITIAL_BASE_FEE, CHAIN_ID).expect("deploy must succeed");
     assert!(receipt.success, "deploy reverted");
-    let contract_addr = receipt.contract_address.expect("CREATE must produce address");
+    let contract_addr = receipt
+        .contract_address
+        .expect("CREATE must produce address");
     // Commit + also manually persist the runtime bytecode via set_contract,
     // because revm's state diff contains info.code = Some(runtime) from the
     // CREATE and commit_state_to_account_db will store + mark it.
@@ -133,7 +135,8 @@ fn call_contract(
     {
         let code_hash_hex = hex::encode(target_account.code_hash);
         if let Some(bytecode) = db.get_contract_code(&code_hash_hex) {
-            let code = revm::state::Bytecode::new_raw(alloy_primitives::Bytes::from(bytecode.clone()));
+            let code =
+                revm::state::Bytecode::new_raw(alloy_primitives::Bytes::from(bytecode.clone()));
             evm_db.insert_code(alloy_primitives::B256::from(target_account.code_hash), code);
         }
         let prefix = format!("{}:", target_str);
@@ -190,7 +193,10 @@ fn test_1_simple_storage_persists_after_set() {
     // Sanity: contract is now recorded.
     let contract_str = address_to_sentrix(&contract);
     assert!(
-        db.accounts.get(&contract_str).map(|a| a.is_contract()).unwrap_or(false),
+        db.accounts
+            .get(&contract_str)
+            .map(|a| a.is_contract())
+            .unwrap_or(false),
         "contract account must be marked is_contract() post-deploy"
     );
 
@@ -202,7 +208,8 @@ fn test_1_simple_storage_persists_after_set() {
 
     // Verify slot 0 == 42.
     let slot_hex = format!("{:064x}", 0);
-    let stored = db.get_contract_storage(&contract_str, &slot_hex)
+    let stored = db
+        .get_contract_storage(&contract_str, &slot_hex)
         .expect("slot 0 must be persisted to AccountDB");
     assert_eq!(stored.len(), 32, "slot value is 32 bytes");
     assert_eq!(stored[31], 42, "low byte == 42");
@@ -219,8 +226,10 @@ fn test_3_multiple_sets_see_prior_write() {
     fund_sender(&mut db, &deployer, 100_000_000);
     let contract = deploy_bytecode(&mut db, deployer, simple_storage_init_code());
 
-    let mut calldata10 = vec![0u8; 32]; calldata10[31] = 10;
-    let mut calldata20 = vec![0u8; 32]; calldata20[31] = 20;
+    let mut calldata10 = vec![0u8; 32];
+    calldata10[31] = 10;
+    let mut calldata20 = vec![0u8; 32];
+    calldata20[31] = 20;
 
     call_contract(&mut db, deployer, contract, calldata10, 100_000);
     call_contract(&mut db, deployer, contract, calldata20, 100_000);
@@ -275,7 +284,11 @@ fn test_5_revert_leaves_state_unchanged() {
 
     // Storage slot 0 must STILL be 42 (revert did not commit).
     let stored = db.get_contract_storage(&contract_str, &slot_hex).unwrap();
-    assert_eq!(stored, &vec![42u8; 32], "reverted tx must NOT overwrite storage");
+    assert_eq!(
+        stored,
+        &vec![42u8; 32],
+        "reverted tx must NOT overwrite storage"
+    );
 }
 
 // Tests 2 (ERC-20 mock), 4 (contract-to-contract), 6 (SELFDESTRUCT) are

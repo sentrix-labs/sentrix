@@ -50,9 +50,7 @@ impl Blockchain {
     /// (disk full, lock contention, permissions, corruption).
     pub fn persist_block_durable(&self, block: &Block) -> SentrixResult<()> {
         let mdbx = self.mdbx_storage.as_ref().ok_or_else(|| {
-            SentrixError::Internal(
-                "persist_block_durable: mdbx_storage not initialised".into(),
-            )
+            SentrixError::Internal("persist_block_durable: mdbx_storage not initialised".into())
         })?;
 
         let key = format!("block:{}", block.index);
@@ -81,9 +79,8 @@ impl Blockchain {
             .map_err(|e| {
                 SentrixError::Internal(format!("persist_block_durable: height put: {e}"))
             })?;
-        mdbx.sync().map_err(|e| {
-            SentrixError::Internal(format!("persist_block_durable: sync: {e}"))
-        })?;
+        mdbx.sync()
+            .map_err(|e| SentrixError::Internal(format!("persist_block_durable: sync: {e}")))?;
         Ok(())
     }
 

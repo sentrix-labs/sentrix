@@ -41,7 +41,6 @@ struct DailyCache {
 }
 static DAILY_CACHE: OnceLock<TokioMutex<Option<DailyCache>>> = OnceLock::new();
 
-
 // ── Explorer home ────────────────────────────────────────
 pub async fn explorer_home(State(state): State<SharedState>) -> Html<String> {
     const HOME_TTL: Duration = Duration::from_secs(10);

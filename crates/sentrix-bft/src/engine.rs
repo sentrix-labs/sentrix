@@ -2178,7 +2178,11 @@ mod tests {
         let (mut engine, reg) = setup_143();
         let action = engine.on_round_status(&status("0xa", 2), &reg);
         assert!(matches!(action, BftAction::Wait), "got {:?}", action);
-        assert_eq!(engine.round(), 1, "legacy path catches up to peer_round - 1");
+        assert_eq!(
+            engine.round(),
+            1,
+            "legacy path catches up to peer_round - 1"
+        );
         assert_eq!(engine.state.phase, BftPhase::Propose);
         assert!(!engine.state.our_prevote_cast);
     }

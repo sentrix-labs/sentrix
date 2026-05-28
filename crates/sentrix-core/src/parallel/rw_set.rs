@@ -95,8 +95,13 @@ impl TxAccess {
     /// any EVM tx conflicts with every other tx — forcing it into its
     /// own batch.
     pub fn conflicts_with(&self, other: &TxAccess) -> bool {
-        self.writes.iter().any(|w| other.reads.contains(w) || other.writes.contains(w))
-            || other.writes.iter().any(|w| self.reads.contains(w) || self.writes.contains(w))
+        self.writes
+            .iter()
+            .any(|w| other.reads.contains(w) || other.writes.contains(w))
+            || other
+                .writes
+                .iter()
+                .any(|w| self.reads.contains(w) || self.writes.contains(w))
     }
 }
 
@@ -221,6 +226,9 @@ mod tests {
 
         let a_iter: Vec<_> = a.reads.iter().collect();
         let b_iter: Vec<_> = b.reads.iter().collect();
-        assert_eq!(a_iter, b_iter, "BTreeSet iteration must be order-independent of insertion");
+        assert_eq!(
+            a_iter, b_iter,
+            "BTreeSet iteration must be order-independent of insertion"
+        );
     }
 }

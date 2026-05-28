@@ -33,12 +33,12 @@ pub const DEFAULT_BUS_CAPACITY: usize = 1024;
 /// special-casing Sentrix.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewHeadEvent {
-    pub number: String,        // hex-encoded u64
-    pub hash: String,          // 0x-prefixed
+    pub number: String, // hex-encoded u64
+    pub hash: String,   // 0x-prefixed
     #[serde(rename = "parentHash")]
-    pub parent_hash: String,   // 0x-prefixed
-    pub timestamp: String,     // hex-encoded u64
-    pub miner: String,         // validator address (lowercase, 0x-prefixed)
+    pub parent_hash: String, // 0x-prefixed
+    pub timestamp: String, // hex-encoded u64
+    pub miner: String,  // validator address (lowercase, 0x-prefixed)
     #[serde(rename = "transactionsRoot")]
     pub transactions_root: String,
     #[serde(rename = "stateRoot")]
@@ -70,8 +70,9 @@ impl NewHeadEvent {
         };
         let state_root_hex = match block.state_root {
             Some(root) => format!("0x{}", hex::encode(root)),
-            None => "0x0000000000000000000000000000000000000000000000000000000000000000"
-                .to_string(),
+            None => {
+                "0x0000000000000000000000000000000000000000000000000000000000000000".to_string()
+            }
         };
         Self {
             number: to_hex(block.index),
@@ -96,9 +97,9 @@ impl NewHeadEvent {
 /// topics, data, plus block + tx context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEvent {
-    pub address: String, // 0x + 40 hex
+    pub address: String,     // 0x + 40 hex
     pub topics: Vec<String>, // 0x + 64 hex each
-    pub data: String, // 0x + hex
+    pub data: String,        // 0x + hex
     #[serde(rename = "blockNumber")]
     pub block_number: String, // hex u64
     #[serde(rename = "blockHash")]

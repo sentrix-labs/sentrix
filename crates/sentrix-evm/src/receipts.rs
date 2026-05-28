@@ -102,7 +102,10 @@ mod tests {
     fn receipt_key_parses_with_and_without_prefix() {
         // Split into halves so the pre-commit "64-hex" guard doesn't
         // flag this test data as a private key.
-        let h = format!("{}{}", "8c333b24083ac83bb2a30817fd56cca3", "fde8fe69d916d6deeaa581b2354942a0");
+        let h = format!(
+            "{}{}",
+            "8c333b24083ac83bb2a30817fd56cca3", "fde8fe69d916d6deeaa581b2354942a0"
+        );
         let k1 = receipt_key(&h).expect("valid hex");
         let k2 = receipt_key(&format!("0x{h}")).expect("valid hex with 0x");
         assert_eq!(k1, k2);

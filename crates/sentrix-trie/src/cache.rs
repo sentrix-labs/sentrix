@@ -300,7 +300,10 @@ mod tests {
 
         // Now in persistent storage.
         assert!(cache.storage.load_node(&h1).unwrap().is_some());
-        assert_eq!(cache.storage.load_value(&h1).unwrap(), Some(b"hello".to_vec()));
+        assert_eq!(
+            cache.storage.load_value(&h1).unwrap(),
+            Some(b"hello".to_vec())
+        );
         // Root stored too.
         assert_eq!(cache.storage.load_root(0).unwrap(), Some(root_hash));
         // Pending buffers drained.

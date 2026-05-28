@@ -26,10 +26,10 @@ use accounts::{
     get_address_history, get_address_info, get_address_proof, get_balance, get_nonce, get_richlist,
     get_state_root, get_wallet_info, list_transactions,
 };
+use cache::cache_control_middleware;
 use chain::{chain_info, get_block, get_blocks, get_finalized_height, validate_chain};
 use epoch::{epoch_current, epoch_history};
 use ops::{START_TIME, get_admin_log, health, metrics, root};
-use cache::cache_control_middleware;
 use ratelimit::{ip_rate_limit_middleware, write_rate_limit_middleware};
 use staking::{get_validators, staking_delegations, staking_unbonding, staking_validators};
 use tokens::{
@@ -76,10 +76,7 @@ pub fn create_router(state: SharedState) -> Router {
 /// subscribers see live block events. Tests + lightweight CLI builds
 /// can use `create_router` which constructs an isolated bus the
 /// caller can ignore.
-pub fn create_router_with_bus(
-    state: SharedState,
-    bus: Arc<crate::events::EventBus>,
-) -> Router {
+pub fn create_router_with_bus(state: SharedState, bus: Arc<crate::events::EventBus>) -> Router {
     // Eagerly pin the process start time so /sentrix_status and /metrics
     // report uptime relative to boot, not to the first handler call that
     // happened to trigger the OnceLock. Without this, uptime_seconds was
@@ -109,11 +106,11 @@ pub fn create_router_with_bus(
             // SENTRIX_CORS_ORIGIN produced a router that rejected every
             // browser request without surfacing the misconfig. Panic at
             // startup instead so operators see the problem immediately.
-            let header = origin.parse::<axum::http::HeaderValue>().unwrap_or_else(|e| {
-                panic!(
-                    "SENTRIX_CORS_ORIGIN={origin:?} is not a valid HTTP header value: {e}"
-                )
-            });
+            let header = origin
+                .parse::<axum::http::HeaderValue>()
+                .unwrap_or_else(|e| {
+                    panic!("SENTRIX_CORS_ORIGIN={origin:?} is not a valid HTTP header value: {e}")
+                });
             CorsLayer::new()
                 .allow_origin(header)
                 .allow_methods([

@@ -75,7 +75,9 @@ impl Storage {
         {
             tracing::info!(
                 "chain_name fix-up on load: chain_id={} blob={:?} → {:?}",
-                bc.chain_id, bc.chain_name, name,
+                bc.chain_id,
+                bc.chain_name,
+                name,
             );
             bc.chain_name = name.to_string();
         }
@@ -796,7 +798,10 @@ mod tests {
         assert_eq!(bc.total_minted, expected, "bc.total_minted ground truth");
 
         let recomputed = storage.recompute_total_minted_from_blocks(&bc).unwrap();
-        assert_eq!(recomputed, expected, "helper must match block-sum ground truth");
+        assert_eq!(
+            recomputed, expected,
+            "helper must match block-sum ground truth"
+        );
 
         let _ = std::fs::remove_dir_all(&path);
     }

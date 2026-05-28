@@ -252,13 +252,17 @@ impl Blockchain {
                     tracing::warn!(
                         "STATE_ROOT_V2 activation rebase at h={}: PROTOCOL_TREASURY \
                          {} → {} (delta {} sentri). Operator-set canonical override.",
-                        state_root_v2_height_for_rebase, prior, canonical, delta
+                        state_root_v2_height_for_rebase,
+                        prior,
+                        canonical,
+                        delta
                     );
                 } else {
                     tracing::info!(
                         "STATE_ROOT_V2 activation at h={}: PROTOCOL_TREASURY \
                          balance already matches canonical {} sentri (no rebase)",
-                        state_root_v2_height_for_rebase, canonical
+                        state_root_v2_height_for_rebase,
+                        canonical
                     );
                 }
                 self.accounts.set_balance(PROTOCOL_TREASURY, canonical);
@@ -454,7 +458,10 @@ impl Blockchain {
             None => return Ok(None),
         };
         if trace {
-            eprintln!("[trie-trace] root pre-update: {}", hex::encode(trie.root_hash()));
+            eprintln!(
+                "[trie-trace] root pre-update: {}",
+                hex::encode(trie.root_hash())
+            );
         }
         for (addr, balance, nonce) in updates {
             let key = address_to_key(&addr);
@@ -463,7 +470,10 @@ impl Blockchain {
                 let existing = trie.get(&key)?;
                 eprintln!(
                     "[trie-trace]   existing leaf for {addr}: {}",
-                    existing.as_ref().map(hex::encode).unwrap_or_else(|| "<none>".into())
+                    existing
+                        .as_ref()
+                        .map(hex::encode)
+                        .unwrap_or_else(|| "<none>".into())
                 );
             }
             if balance == 0 {
@@ -481,7 +491,10 @@ impl Blockchain {
         }
         let root = trie.commit(block_index)?;
         if trace {
-            eprintln!("[trie-trace] commit at h={block_index} → root={}", hex::encode(root));
+            eprintln!(
+                "[trie-trace] commit at h={block_index} → root={}",
+                hex::encode(root)
+            );
         }
         Ok(Some(root))
     }

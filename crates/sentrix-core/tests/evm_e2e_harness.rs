@@ -364,8 +364,7 @@ fn test_h3_post_fork_supply_invariant_holds_on_value_transfer() {
     bc.accounts.credit(&sender_str, 100_000_000_000).unwrap(); // 1000 SRX
 
     let value = 100_000_000u64; // 1 SRX
-    let (_, balance_before, _txid) =
-        submit_evm_value_transfer(&mut bc, &sk, &pk, value, 0);
+    let (_, balance_before, _txid) = submit_evm_value_transfer(&mut bc, &sk, &pk, value, 0);
 
     let balance_after = bc.accounts.get_balance(&sender_str);
     let actual_drop = balance_before - balance_after;

@@ -108,22 +108,22 @@ pub trait EventEmitter: Send + Sync + std::fmt::Debug {
 /// Native TokenOp event — sentrix_subscribe(tokenOps).
 #[derive(Debug, Clone)]
 pub struct TokenOpEvent {
-    pub op: String,         // "deploy" / "transfer" / "burn" / "mint" / "approve" / etc.
-    pub contract: String,   // 0x-prefixed contract address (or "" for deploy)
-    pub from: String,       // 0x-prefixed sender
-    pub to: String,         // 0x-prefixed recipient (or "" for burn)
-    pub amount: u64,        // token amount in base units (decimals applied by display)
-    pub txid: String,       // tx hash
+    pub op: String,       // "deploy" / "transfer" / "burn" / "mint" / "approve" / etc.
+    pub contract: String, // 0x-prefixed contract address (or "" for deploy)
+    pub from: String,     // 0x-prefixed sender
+    pub to: String,       // 0x-prefixed recipient (or "" for burn)
+    pub amount: u64,      // token amount in base units (decimals applied by display)
+    pub txid: String,     // tx hash
     pub block_height: u64,
 }
 
 /// Native StakingOp event — sentrix_subscribe(stakingOps).
 #[derive(Debug, Clone)]
 pub struct StakingOpEvent {
-    pub op: String,         // "delegate" / "undelegate" / "claim_rewards" / etc.
-    pub validator: String,  // 0x-prefixed validator address
-    pub delegator: String,  // 0x-prefixed delegator (== validator for self-stake)
-    pub amount: u64,        // amount in sentri (0 for ClaimRewards / Unjail)
+    pub op: String,        // "delegate" / "undelegate" / "claim_rewards" / etc.
+    pub validator: String, // 0x-prefixed validator address
+    pub delegator: String, // 0x-prefixed delegator (== validator for self-stake)
+    pub amount: u64,       // amount in sentri (0 for ClaimRewards / Unjail)
     pub txid: String,
     pub block_height: u64,
 }

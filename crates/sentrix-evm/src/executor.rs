@@ -201,9 +201,10 @@ where
                 // saw "execution reverted" with no reason and dApps couldn't
                 // distinguish e.g. `ZeroValue()` from `Slippage()`. Wallets +
                 // wagmi rely on this data to display human revert reasons.
-                ExecutionResult::Revert { output: revert_bytes, .. } => {
-                    (None, revert_bytes.to_vec())
-                }
+                ExecutionResult::Revert {
+                    output: revert_bytes,
+                    ..
+                } => (None, revert_bytes.to_vec()),
                 _ => (None, Vec::new()),
             };
             // Distinguish Halt (OOG, InvalidOpcode, StackOverflow, etc) from
@@ -217,7 +218,8 @@ where
             if let ExecutionResult::Halt { reason, .. } = &exec_result {
                 return Err(format!(
                     "EVM halt ({:?}) — gas_used={}; not a contract revert",
-                    reason, exec_result.tx_gas_used()
+                    reason,
+                    exec_result.tx_gas_used()
                 ));
             }
             let receipt = TxReceipt {
@@ -414,7 +416,11 @@ mod tests {
             .unwrap_or_default();
 
         let result = execute_tx_with_state(db, tx, INITIAL_BASE_FEE, 7119);
-        assert!(result.is_ok(), "execute_tx_with_state failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "execute_tx_with_state failed: {:?}",
+            result.err()
+        );
         let (receipt, state) = result.unwrap();
         assert!(receipt.success);
         assert!(
@@ -457,6 +463,9 @@ mod tests {
         let (_receipt, state) = result.expect("no-op call should succeed");
         // State map is returned even for trivial txs — sender is touched
         // by gas deduction at minimum.
-        assert!(!state.is_empty(), "state diff must not be empty even for no-op");
+        assert!(
+            !state.is_empty(),
+            "state diff must not be empty even for no-op"
+        );
     }
 }

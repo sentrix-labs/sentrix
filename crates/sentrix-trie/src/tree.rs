@@ -529,7 +529,11 @@ impl SentrixTrie {
                 }
                 Ok(())
             }
-            TrieNode::Internal { left, right, hash: stored_hash } => {
+            TrieNode::Internal {
+                left,
+                right,
+                hash: stored_hash,
+            } => {
                 if stored_hash != hash {
                     return Err(SentrixError::Internal(format!(
                         "trie strict integrity: internal node loaded by hash {} declares \
@@ -666,11 +670,7 @@ impl SentrixTrie {
         // refactor (exposing the txn handle through TrieStorage) and
         // belongs in its own PR. This patch is the minimal targeted
         // closer for the observed symptom.
-        let on_disk_latest = self
-            .cache
-            .storage
-            .latest_version()?
-            .unwrap_or(self.version);
+        let on_disk_latest = self.cache.storage.latest_version()?.unwrap_or(self.version);
         let mut augmented_roots = 0usize;
         for version in (self.version + 1)..=on_disk_latest {
             if let Some(root) = self.cache.storage.load_root(version)?
@@ -1267,7 +1267,8 @@ mod tests {
 
         // Round 1: bulk insert + commit.
         for (i, k) in keys.iter().enumerate() {
-            trie.insert(k, &account_value_bytes(100 + i as u64, 0)).unwrap();
+            trie.insert(k, &account_value_bytes(100 + i as u64, 0))
+                .unwrap();
         }
         let _ = trie.commit(1).unwrap();
 
@@ -1275,7 +1276,8 @@ mod tests {
         // through the cluster, deletes some internal nodes along its path.
         for round in 2u64..=20 {
             let i = (round as usize) % keys.len();
-            trie.insert(&keys[i], &account_value_bytes(1000 + round, round)).unwrap();
+            trie.insert(&keys[i], &account_value_bytes(1000 + round, round))
+                .unwrap();
             let _ = trie.commit(round).unwrap();
         }
 
@@ -1344,7 +1346,8 @@ mod tests {
         for i in 1u8..=4 {
             let addr = format!("0x{}", hex::encode([i; 20]));
             let key = address_to_key(&addr);
-            trie.insert(&key, &account_value_bytes(1_000 * i as u64, 0)).unwrap();
+            trie.insert(&key, &account_value_bytes(1_000 * i as u64, 0))
+                .unwrap();
         }
         // Flush pending writes to MDBX before we can damage them.
         trie.commit(0).unwrap();
@@ -1355,7 +1358,9 @@ mod tests {
         let storage = &trie.cache.storage;
         storage.delete_node(&root).unwrap();
 
-        let err = trie.verify_integrity().expect_err("must detect missing root node");
+        let err = trie
+            .verify_integrity()
+            .expect_err("must detect missing root node");
         assert!(
             format!("{err}").contains("orphan node reference"),
             "error should name the orphan kind; got: {err}"
@@ -1394,7 +1399,9 @@ mod tests {
             }
         }
 
-        let err = trie.verify_integrity().expect_err("must detect missing value");
+        let err = trie
+            .verify_integrity()
+            .expect_err("must detect missing value");
         assert!(
             format!("{err}").contains("orphan value reference"),
             "error should name the orphan kind; got: {err}"
@@ -1503,21 +1510,27 @@ mod tests {
             [0x01; 32],
             [0x80; 32],
             [0xff; 32],
-            [0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-            [0x10, 0x20, 0x30, 0x41, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [
+                0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+            [
+                0x10, 0x20, 0x30, 0x41, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0,
+            ],
         ];
 
         for (i, k) in keys.iter().enumerate() {
-            trie.insert(k, &account_value_bytes(1000 + i as u64, 0)).unwrap();
+            trie.insert(k, &account_value_bytes(1000 + i as u64, 0))
+                .unwrap();
         }
         let _ = trie.commit(1).unwrap();
 
         // v2: rotate the values so the old leaf/value entries become
         // unreachable from v2 root but still alive under v1.
         for (i, k) in keys.iter().enumerate() {
-            trie.insert(k, &account_value_bytes(2000 + i as u64, 1)).unwrap();
+            trie.insert(k, &account_value_bytes(2000 + i as u64, 1))
+                .unwrap();
         }
         let _ = trie.commit(2).unwrap();
 
@@ -1532,7 +1545,8 @@ mod tests {
             assert!(v.is_some(), "key {i} missing after prune");
             assert_eq!(v.unwrap(), account_value_bytes(2000 + i as u64, 1));
         }
-        trie.verify_integrity().expect("trie integrity must hold after prune");
+        trie.verify_integrity()
+            .expect("trie integrity must hold after prune");
     }
 
     /// Race-window regression for `prune()`: when a clone of the trie is
@@ -1580,9 +1594,12 @@ mod tests {
 
         // Sanity: v=4 root + race value are in storage before prune.
         assert_eq!(
-            mdbx.get(sentrix_storage::tables::TABLE_TRIE_ROOTS, &4u64.to_be_bytes())
-                .unwrap()
-                .as_deref(),
+            mdbx.get(
+                sentrix_storage::tables::TABLE_TRIE_ROOTS,
+                &4u64.to_be_bytes()
+            )
+            .unwrap()
+            .as_deref(),
             Some(&v4_root[..]),
             "v=4 root must be committed before prune"
         );

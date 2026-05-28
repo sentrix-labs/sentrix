@@ -767,8 +767,7 @@ impl StakeRegistry {
             if *signer_stake == 0 {
                 continue;
             }
-            let signer_share = (total_reward as u128)
-                .saturating_mul(*signer_stake as u128)
+            let signer_share = (total_reward as u128).saturating_mul(*signer_stake as u128)
                 / total_signer_stake as u128;
             let signer_share = signer_share as u64;
             if signer_share == 0 {
@@ -787,9 +786,7 @@ impl StakeRegistry {
         total_reward: u64,
     ) -> SentrixResult<()> {
         let val = self.validators.get(validator_addr).ok_or_else(|| {
-            SentrixError::InvalidTransaction(
-                "proposer not found in stake registry".into(),
-            )
+            SentrixError::InvalidTransaction("proposer not found in stake registry".into())
         })?;
         let commission =
             (total_reward as u128).saturating_mul(val.commission_rate as u128) / 10_000;
@@ -815,11 +812,7 @@ impl StakeRegistry {
 
     /// V4 Step 2: split one signer's pro-rata share into commission +
     /// self-stake + per-delegator accumulator.
-    fn pay_one_signer(
-        &mut self,
-        validator_addr: &str,
-        signer_share: u64,
-    ) -> SentrixResult<()> {
+    fn pay_one_signer(&mut self, validator_addr: &str, signer_share: u64) -> SentrixResult<()> {
         // Fetch validator state (pre-mutation so we can read then write).
         let (commission_rate, self_stake, total_stake) = {
             let val = match self.validators.get(validator_addr) {
@@ -836,8 +829,7 @@ impl StakeRegistry {
         };
 
         // 1. Commission off the top.
-        let commission =
-            (signer_share as u128).saturating_mul(commission_rate as u128) / 10_000;
+        let commission = (signer_share as u128).saturating_mul(commission_rate as u128) / 10_000;
         let commission = commission as u64;
         let pool = signer_share.saturating_sub(commission);
 
@@ -855,8 +847,7 @@ impl StakeRegistry {
         }
 
         // 3. Self-stake portion credited to validator.
-        let self_share =
-            (pool as u128).saturating_mul(self_stake as u128) / total_stake as u128;
+        let self_share = (pool as u128).saturating_mul(self_stake as u128) / total_stake as u128;
         let self_share = self_share as u64;
         {
             let val = self
@@ -1570,8 +1561,7 @@ mod tests {
         // this validator. Pre-fix this could drift by N sentri per
         // slash (N = delegator count). Post-fix exact.
         assert_eq!(
-            reg.validators["0xval1"].total_delegated,
-            sum_entries,
+            reg.validators["0xval1"].total_delegated, sum_entries,
             "audit M3 invariant: total_delegated must equal sum of delegation entries",
         );
 
@@ -1722,7 +1712,8 @@ mod tests {
         reg.update_active_set();
 
         // Legacy Pioneer-path (empty signers) — 10% commission, reward = 1 SRX
-        reg.distribute_reward("0xval1", &[], 100_000_000, 0).unwrap();
+        reg.distribute_reward("0xval1", &[], 100_000_000, 0)
+            .unwrap();
 
         let val = &reg.validators["0xval1"];
         // Commission = 10% of 100M = 10M
@@ -1744,10 +1735,14 @@ mod tests {
         register_val(&mut reg, "0xval3", MIN_SELF_STAKE);
         register_val(&mut reg, "0xval4", MIN_SELF_STAKE);
         // Each validator has one delegator with MIN_SELF_STAKE delegated
-        reg.delegate("0xdelA", "0xval1", MIN_SELF_STAKE, 100).unwrap();
-        reg.delegate("0xdelB", "0xval2", MIN_SELF_STAKE, 100).unwrap();
-        reg.delegate("0xdelC", "0xval3", MIN_SELF_STAKE, 100).unwrap();
-        reg.delegate("0xdelD", "0xval4", MIN_SELF_STAKE, 100).unwrap();
+        reg.delegate("0xdelA", "0xval1", MIN_SELF_STAKE, 100)
+            .unwrap();
+        reg.delegate("0xdelB", "0xval2", MIN_SELF_STAKE, 100)
+            .unwrap();
+        reg.delegate("0xdelC", "0xval3", MIN_SELF_STAKE, 100)
+            .unwrap();
+        reg.delegate("0xdelD", "0xval4", MIN_SELF_STAKE, 100)
+            .unwrap();
         reg.update_active_set();
 
         // All 4 signers with equal stake weight.
@@ -1757,7 +1752,8 @@ mod tests {
             ("0xval3".to_string(), MIN_SELF_STAKE * 2),
             ("0xval4".to_string(), MIN_SELF_STAKE * 2),
         ];
-        reg.distribute_reward("0xval1", &signers, 100_000_000, 0).unwrap();
+        reg.distribute_reward("0xval1", &signers, 100_000_000, 0)
+            .unwrap();
 
         // Each signer's share = 100M / 4 = 25M
         // Commission (10%) = 2.5M → validator pending
@@ -1795,7 +1791,8 @@ mod tests {
             ("0xrogue".to_string(), MIN_SELF_STAKE), // not registered
         ];
         // Should not error, should silently skip rogue.
-        reg.distribute_reward("0xval1", &signers, 100_000_000, 0).unwrap();
+        reg.distribute_reward("0xval1", &signers, 100_000_000, 0)
+            .unwrap();
 
         // val1 got 50M share; rogue got 0 (skipped).
         // Commission 10% = 5M; pool 45M; self-share = 45M × SELF/SELF = 45M (no delegators).
@@ -1813,7 +1810,8 @@ mod tests {
         reg.update_active_set();
 
         // Empty signers vec = Pioneer fallback = pay proposer only (legacy).
-        reg.distribute_reward("0xval1", &[], 100_000_000, 0).unwrap();
+        reg.distribute_reward("0xval1", &[], 100_000_000, 0)
+            .unwrap();
         // Same as test_distribute_reward with no delegators:
         // commission 10M + self-share (all of pool since no delegators share) = 100M.
         assert_eq!(reg.validators["0xval1"].pending_rewards, 100_000_000);
@@ -1824,12 +1822,14 @@ mod tests {
     fn test_v4_claim_rewards_after_distribute() {
         let mut reg = new_registry();
         register_val(&mut reg, "0xval1", MIN_SELF_STAKE);
-        reg.delegate("0xdelA", "0xval1", MIN_SELF_STAKE, 100).unwrap();
+        reg.delegate("0xdelA", "0xval1", MIN_SELF_STAKE, 100)
+            .unwrap();
         reg.update_active_set();
 
         // One signer, full reward to them.
         let signers = vec![("0xval1".to_string(), MIN_SELF_STAKE * 2)];
-        reg.distribute_reward("0xval1", &signers, 100_000_000, 0).unwrap();
+        reg.distribute_reward("0xval1", &signers, 100_000_000, 0)
+            .unwrap();
 
         // Delegator should have accumulated a share.
         let accumulated = reg.delegator_rewards.get("0xdelA").copied().unwrap_or(0);
@@ -1892,8 +1892,7 @@ mod tests {
             msg2
         );
         assert_eq!(
-            reg.validators["0xval1"].commission_rate,
-            after_first,
+            reg.validators["0xval1"].commission_rate, after_first,
             "rate must not have advanced past first call"
         );
 
@@ -2289,7 +2288,10 @@ mod tests {
         struct Lcg(u64);
         impl Lcg {
             fn next(&mut self) -> u64 {
-                self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                self.0 = self
+                    .0
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 self.0 >> 33
             }
             fn pick<'a, T>(&mut self, xs: &'a [T]) -> &'a T {

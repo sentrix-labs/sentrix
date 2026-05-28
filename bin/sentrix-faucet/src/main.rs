@@ -55,7 +55,11 @@ struct Cli {
     password: String,
 
     /// RPC base URL (POST /transactions, GET /accounts/{addr}/nonce)
-    #[arg(long, env = "SENTRIX_FAUCET_RPC_URL", default_value = "http://127.0.0.1:8545")]
+    #[arg(
+        long,
+        env = "SENTRIX_FAUCET_RPC_URL",
+        default_value = "http://127.0.0.1:8545"
+    )]
     rpc_url: String,
 
     /// Bind address for the HTTP server
@@ -80,7 +84,11 @@ struct Cli {
 
     /// Per-recipient cooldown seconds. Same address can drip again only
     /// after this elapses.
-    #[arg(long, env = "SENTRIX_FAUCET_ADDR_COOLDOWN_SECS", default_value_t = 86400)]
+    #[arg(
+        long,
+        env = "SENTRIX_FAUCET_ADDR_COOLDOWN_SECS",
+        default_value_t = 86400
+    )]
     addr_cooldown_secs: u64,
 
     /// Tx fee paid by the faucet (sentri). MIN_TX_FEE by default.
@@ -161,7 +169,11 @@ fn validate_address(addr: &str) -> Result<String> {
 }
 
 async fn fetch_nonce(http: &reqwest::Client, rpc_url: &str, address: &str) -> Result<u64> {
-    let url = format!("{}/accounts/{}/nonce", rpc_url.trim_end_matches('/'), address);
+    let url = format!(
+        "{}/accounts/{}/nonce",
+        rpc_url.trim_end_matches('/'),
+        address
+    );
     let resp = http.get(&url).send().await.context("nonce request")?;
     if !resp.status().is_success() {
         bail!("nonce HTTP {}", resp.status());
@@ -228,7 +240,13 @@ async fn handle_drip(
 ) -> Result<Json<DripResponse>, (StatusCode, Json<ErrorResponse>)> {
     let recipient = match validate_address(&req.to) {
         Ok(a) => a,
-        Err(e) => return Err(err_with(StatusCode::BAD_REQUEST, "bad address", e.to_string())),
+        Err(e) => {
+            return Err(err_with(
+                StatusCode::BAD_REQUEST,
+                "bad address",
+                e.to_string(),
+            ));
+        }
     };
 
     if recipient == state.address {
@@ -275,14 +293,16 @@ async fn handle_drip(
         )
     })?;
 
-    let txid = submit_tx(&state.http, &state.rpc_url, &tx).await.map_err(|e| {
-        error!(?e, "tx submit failed");
-        err_with(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "rpc submit failed",
-            e.to_string(),
-        )
-    })?;
+    let txid = submit_tx(&state.http, &state.rpc_url, &tx)
+        .await
+        .map_err(|e| {
+            error!(?e, "tx submit failed");
+            err_with(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "rpc submit failed",
+                e.to_string(),
+            )
+        })?;
 
     info!(
         ip = %client.ip(),
@@ -325,8 +345,7 @@ async fn handle_health(
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -334,7 +353,9 @@ async fn main() -> Result<()> {
 
     info!(keystore = %cli.keystore, "loading keystore");
     let keystore = Keystore::load(&cli.keystore).context("load keystore")?;
-    let wallet: Wallet = keystore.decrypt(&cli.password).context("decrypt keystore")?;
+    let wallet: Wallet = keystore
+        .decrypt(&cli.password)
+        .context("decrypt keystore")?;
 
     let secret_key = wallet.get_secret_key().context("extract secret key")?;
     let public_key = wallet.get_public_key().context("extract public key")?;

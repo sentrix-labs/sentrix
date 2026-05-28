@@ -105,12 +105,7 @@ pub fn cmd_token_transfer(
     Ok(())
 }
 
-pub fn cmd_token_burn(
-    contract: &str,
-    amount: u64,
-    from_key: &str,
-    gas: u64,
-) -> anyhow::Result<()> {
+pub fn cmd_token_burn(contract: &str, amount: u64, from_key: &str, gas: u64) -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
     let mut bc = storage
         .load_blockchain()?

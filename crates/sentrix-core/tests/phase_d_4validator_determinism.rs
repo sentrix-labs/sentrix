@@ -58,7 +58,12 @@ fn setup_validator_chain() -> Blockchain {
 
     // Register both validator (proposer) + downer (the one we'll jail)
     bc.stake_registry
-        .register_validator(&validator, sentrix_staking::staking::MIN_SELF_STAKE, 1000, 0)
+        .register_validator(
+            &validator,
+            sentrix_staking::staking::MIN_SELF_STAKE,
+            1000,
+            0,
+        )
         .expect("register validator");
     bc.stake_registry
         .register_validator(&downer, sentrix_staking::staking::MIN_SELF_STAKE, 1000, 0)
@@ -116,8 +121,7 @@ fn phase_d_4validator_consensus_jail_determinism() {
 
     // Spin up 4 independent chain instances, all with identical initial
     // state (downer in active_set, full LIVENESS_WINDOW of misses).
-    let mut validators: Vec<Blockchain> =
-        (0..4).map(|_| setup_validator_chain()).collect();
+    let mut validators: Vec<Blockchain> = (0..4).map(|_| setup_validator_chain()).collect();
 
     // Pre-condition: no validator has the downer jailed yet.
     for (i, bc) in validators.iter().enumerate() {
@@ -237,9 +241,9 @@ fn phase_d_4validator_diverging_evidence_rejected() {
         .expect("proposer must build boundary block");
 
     // Diverging peer must reject the block.
-    let err = diverging_peer.add_block(block.clone()).expect_err(
-        "diverging peer must reject block — evidence recompute differs from claim",
-    );
+    let err = diverging_peer
+        .add_block(block.clone())
+        .expect_err("diverging peer must reject block — evidence recompute differs from claim");
     let msg = format!("{err:?}");
     assert!(
         msg.contains("verification failed") || msg.contains("differs from claim"),
