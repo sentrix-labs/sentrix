@@ -9,9 +9,8 @@
   <a href="https://docs.rs/sentrix-codec"><img src="https://docs.rs/sentrix-codec/badge.svg" alt="docs.rs" /></a>
   <a href="https://github.com/sentrix-labs/sentrix/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sentrix-labs/sentrix/ci.yml?branch=main&label=CI" alt="CI" /></a>
   <a href="https://app.codecov.io/gh/sentrix-labs/sentrix"><img src="https://img.shields.io/codecov/c/github/sentrix-labs/sentrix?label=coverage" alt="Coverage" /></a>
-  <a href="https://deps.rs/crate/sentrix-codec"><img src="https://deps.rs/crate/sentrix-codec/latest/status.svg" alt="Dependencies" /></a>
   <a href="https://crates.io/crates/sentrix-codec"><img src="https://img.shields.io/crates/d/sentrix-codec.svg" alt="downloads" /></a>
-  <a href="https://github.com/sentrix-labs/sentrix/blob/main/rust-toolchain.toml"><img src="https://img.shields.io/badge/MSRV-1.95-blue.svg" alt="MSRV 1.95" /></a>
+  <a href="https://github.com/sentrix-labs/sentrix/blob/main/crates/sentrix-codec/Cargo.toml"><img src="https://img.shields.io/badge/MSRV-1.95-blue.svg" alt="MSRV 1.95" /></a>
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
 </p>
 
@@ -139,9 +138,10 @@ cargo test -p sentrix-codec
 
 ## Minimum supported Rust version
 
-**Rust 1.95** (workspace `rust-toolchain.toml` pin). MSRV bumps are
-treated as a minor-version bump on this crate (`0.1.x` → `0.2.0`) so
-downstream consumers can pin around a Rust release if they need to.
+**Rust 1.95** (declared via `rust-version` in this crate's `Cargo.toml`).
+MSRV bumps are treated as a minor-version bump on this crate (`0.1.x`
+→ `0.2.0`) so downstream consumers can pin around a Rust release if
+they need to.
 
 ## Versioning
 
