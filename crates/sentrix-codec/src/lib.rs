@@ -156,4 +156,45 @@ mod tests {
         let err: Result<[u8; 4], _> = hex_decode_fixed("deadbe");
         assert!(matches!(err, Err(CodecError::Decode(_))));
     }
+
+    #[test]
+    fn test_hex_decode_fixed_with_prefix() {
+        let bytes: [u8; 4] = hex_decode_fixed("0xdeadbeef").unwrap();
+        assert_eq!(bytes, [0xde, 0xad, 0xbe, 0xef]);
+    }
+
+    #[test]
+    fn test_display_encode_error() {
+        let e = CodecError::Encode("oops".into());
+        assert_eq!(format!("{e}"), "codec encode error: oops");
+    }
+
+    #[test]
+    fn test_display_decode_error() {
+        let e = CodecError::Decode("bad bytes".into());
+        assert_eq!(format!("{e}"), "codec decode error: bad bytes");
+    }
+
+    #[test]
+    fn test_error_trait_object() {
+        // Verify CodecError implements std::error::Error so it composes
+        // with `?` in any `Result<_, Box<dyn Error>>` chain.
+        let e: Box<dyn std::error::Error> = Box::new(CodecError::Decode("x".into()));
+        assert!(e.to_string().contains("decode"));
+    }
+
+    #[test]
+    fn test_encode_error_path() {
+        // bincode 1.3 serialization is near-infallible for owned data, so
+        // force the error arm via a custom Serialize that always returns Err.
+        struct AlwaysFails;
+        impl Serialize for AlwaysFails {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("forced encode failure"))
+            }
+        }
+        let err = encode(&AlwaysFails).unwrap_err();
+        assert!(matches!(err, CodecError::Encode(_)));
+        assert!(format!("{err}").contains("forced encode failure"));
+    }
 }
