@@ -17,6 +17,7 @@ sha2 = "0.11"
 hex = "0.4"
 sha3 = "0.12"
 tracing = "0.1"
+prometheus = "0.14"
 
 [dev-dependencies]
 bincode = "1.3"

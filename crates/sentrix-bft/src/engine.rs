@@ -22,11 +22,13 @@ pub use timeouts::{
 pub use vote_collector::VoteCollector;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 // errors used by integration callers, not directly in this module
 use crate::messages::{
     BlockJustification, Precommit, Prevote, RoundStatus, supermajority_threshold,
 };
+use crate::metrics::{BftMetrics, phase};
 use sentrix_staking::StakeRegistry;
 
 // ── BFT Engine ───────────────────────────────────────────────
@@ -70,19 +72,77 @@ pub struct BftEngine {
     /// 1-round-drift livelock (issue #143) that the legacy single-peer
     /// "2+ rounds ahead" trigger could not resolve.
     peer_rounds: HashMap<String, (u32, u64)>,
+    /// Observability hook. `None` keeps the legacy hot path untouched
+    /// (tests + bench callers). Validator binary injects via
+    /// `new_with_metrics` and the engine writes to it at every state
+    /// transition. Cheap: `Option<Arc<_>>` clone is one atomic refcount.
+    metrics: Option<Arc<BftMetrics>>,
+    /// Wall-clock anchor for the in-progress round, used to observe round
+    /// duration on advance/commit. Reset on every `advance_round`,
+    /// `new_height`, and `catch_up_round`.
+    round_start: Instant,
 }
 
 impl BftEngine {
     pub fn new(height: u64, our_address: String, total_active_stake: u64) -> Self {
+        let now = Instant::now();
         Self {
             state: BftRoundState::new(height, 0, total_active_stake),
             collector: VoteCollector::new(),
             our_address,
-            phase_start: Instant::now(),
+            phase_start: now,
             pending_prevote: None,
             pending_precommit: None,
             peer_rounds: HashMap::new(),
+            metrics: None,
+            round_start: now,
         }
+    }
+
+    /// Construct with observability injected. Used by the validator binary;
+    /// tests + bench callers stick to [`Self::new`] and skip the metric
+    /// emit on hot paths via `Option`.
+    pub fn new_with_metrics(
+        height: u64,
+        our_address: String,
+        total_active_stake: u64,
+        metrics: Arc<BftMetrics>,
+    ) -> Self {
+        let now = Instant::now();
+        metrics.set_height(height);
+        metrics.set_round(0);
+        tracing::info!(
+            target: "bft::engine",
+            height,
+            our_address = %our_address,
+            "BFT engine constructed with observability hook"
+        );
+        Self {
+            state: BftRoundState::new(height, 0, total_active_stake),
+            collector: VoteCollector::new(),
+            our_address,
+            phase_start: now,
+            pending_prevote: None,
+            pending_precommit: None,
+            peer_rounds: HashMap::new(),
+            metrics: Some(metrics),
+            round_start: now,
+        }
+    }
+
+    /// Test/integration helper: attach metrics after construction. Same
+    /// semantics as `new_with_metrics` but lets call sites that already
+    /// hold an engine bolt observability on.
+    pub fn attach_metrics(&mut self, metrics: Arc<BftMetrics>) {
+        metrics.set_height(self.state.height);
+        metrics.set_round(self.state.round);
+        self.metrics = Some(metrics);
+    }
+
+    /// Read-only accessor for tests + callers that want to publish round
+    /// duration on commit (the engine itself only observes on advance).
+    pub fn metrics(&self) -> Option<&Arc<BftMetrics>> {
+        self.metrics.as_ref()
     }
 
     /// 2026-05-10: accessor for the validator-loop's vote-rebroadcast tick.
@@ -99,21 +159,54 @@ impl BftEngine {
 
     /// Reset for a new height
     pub fn new_height(&mut self, height: u64, total_active_stake: u64) {
+        let prev_height = self.state.height;
         self.state.advance_height(height, total_active_stake);
         self.collector.reset();
-        self.phase_start = Instant::now();
+        let now = Instant::now();
+        self.phase_start = now;
+        self.round_start = now;
         self.pending_prevote = None;
         self.pending_precommit = None;
         self.peer_rounds.clear();
+        if let Some(m) = &self.metrics {
+            m.set_height(height);
+            m.set_round(0);
+        }
+        tracing::info!(
+            target: "bft::engine",
+            from_height = prev_height,
+            to_height = height,
+            total_active_stake,
+            "BFT new height — engine reset"
+        );
     }
 
     /// Advance to next round (timeout or nil)
     pub fn advance_round(&mut self) {
+        let prev_round = self.state.round;
+        let prev_phase = self.state.phase;
+        let dur = self.round_start.elapsed();
         self.state.advance_round();
         self.collector.reset();
-        self.phase_start = Instant::now();
+        let now = Instant::now();
+        self.phase_start = now;
+        self.round_start = now;
         self.pending_prevote = None;
         self.pending_precommit = None;
+        if let Some(m) = &self.metrics {
+            m.inc_round();
+            m.observe_round_duration(dur.as_secs_f64());
+            m.set_round(self.state.round);
+        }
+        tracing::info!(
+            target: "bft::engine",
+            height = self.state.height,
+            prev_round,
+            new_round = self.state.round,
+            ?prev_phase,
+            elapsed_ms = dur.as_millis() as u64,
+            "BFT round advanced"
+        );
     }
 
     /// Round catch-up: if peers are at a higher round, fast-forward.
@@ -282,6 +375,17 @@ impl BftEngine {
         if expected.as_deref() != Some(proposer) {
             return BftAction::Wait; // wrong proposer, ignore
         }
+        if let Some(m) = &self.metrics {
+            m.inc_vote(phase::PROPOSE);
+        }
+        tracing::debug!(
+            target: "bft::engine",
+            height = self.state.height,
+            round = self.state.round,
+            proposer,
+            block_hash,
+            "BFT proposal received from expected proposer"
+        );
 
         // V3 defense-in-depth: refuse proposals from a jailed or
         // tombstoned validator even if `weighted_proposer` returned
@@ -590,6 +694,18 @@ impl BftEngine {
         if self.state.prevotes.contains_key(&prevote.validator) {
             return BftAction::Wait;
         }
+        if let Some(m) = &self.metrics {
+            m.inc_vote(phase::PREVOTE);
+        }
+        tracing::trace!(
+            target: "bft::engine",
+            height = prevote.height,
+            round = prevote.round,
+            validator = %prevote.validator,
+            block_hash = ?prevote.block_hash,
+            stake,
+            "BFT prevote accepted"
+        );
 
         self.state.prevotes.insert(
             prevote.validator.clone(),
@@ -679,6 +795,18 @@ impl BftEngine {
         if self.state.precommits.contains_key(&precommit.validator) {
             return BftAction::Wait;
         }
+        if let Some(m) = &self.metrics {
+            m.inc_vote(phase::PRECOMMIT);
+        }
+        tracing::trace!(
+            target: "bft::engine",
+            height = precommit.height,
+            round = precommit.round,
+            validator = %precommit.validator,
+            block_hash = ?precommit.block_hash,
+            stake,
+            "BFT precommit accepted"
+        );
 
         self.state.precommits.insert(
             precommit.validator.clone(),
@@ -778,6 +906,23 @@ impl BftEngine {
         if let Some(precommit) = &self.pending_precommit {
             return BftAction::BroadcastPrecommit(precommit.clone());
         }
+        let phase_label = match self.state.phase {
+            BftPhase::Propose => phase::PROPOSE,
+            BftPhase::Prevote => phase::PREVOTE,
+            BftPhase::Precommit => phase::PRECOMMIT,
+            BftPhase::Finalize => "finalize",
+        };
+        if let Some(m) = &self.metrics {
+            m.inc_timeout(phase_label);
+        }
+        tracing::warn!(
+            target: "bft::engine",
+            height = self.state.height,
+            round = self.state.round,
+            phase = phase_label,
+            phase_elapsed_ms = self.phase_start.elapsed().as_millis() as u64,
+            "BFT phase timeout — engine taking timeout action"
+        );
         match self.state.phase {
             BftPhase::Propose => {
                 // No proposal received — prevote nil

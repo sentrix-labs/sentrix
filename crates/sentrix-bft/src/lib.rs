@@ -19,6 +19,7 @@
 pub mod engine;
 pub mod last_sign_guard;
 pub mod messages;
+pub mod metrics;
 
 pub use engine::{BftAction, BftEngine, BftPhase, BftRoundState, VoteCollector};
 pub use engine::{MAX_ROUND, PRECOMMIT_TIMEOUT_MS, PREVOTE_TIMEOUT_MS, PROPOSE_TIMEOUT_MS};
@@ -27,3 +28,4 @@ pub use messages::{
     BftMessage, BlockJustification, Precommit, Prevote, Proposal, RoundStatus,
     supermajority_threshold,
 };
+pub use metrics::{BftMetrics, jail_reason, phase};
