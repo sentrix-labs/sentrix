@@ -1,0 +1,35 @@
+services:
+  sentrix-fullnode:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sentrix-fullnode
+    restart: unless-stopped
+    environment:
+      SENTRIX_DATA_DIR: /data
+      SENTRIX_CHAIN_ID: "${SENTRIX_CHAIN_ID:-7120}"
+      SENTRIX_ENCRYPTED_DISK: "true"
+      SENTRIX_API_HOST: "${SENTRIX_API_HOST:-0.0.0.0}"
+      SENTRIX_API_PORT: "${SENTRIX_API_PORT:-8545}"
+      SENTRIX_CORS_ORIGIN: "${SENTRIX_CORS_ORIGIN:-}"
+      RUST_LOG: "${RUST_LOG:-info}"
+    ports:
+      - "127.0.0.1:${SENTRIX_API_PORT:-8545}:${SENTRIX_API_PORT:-8545}"
+      - "${SENTRIX_P2P_PORT:-30303}:${SENTRIX_P2P_PORT:-30303}"
+    volumes:
+      - ./data/fullnode:/data
+      - ./genesis/testnet.toml:/genesis/testnet.toml:ro
+    command:
+      - start
+      - --genesis
+      - /genesis/testnet.toml
+      - --port
+      - "${SENTRIX_P2P_PORT:-30303}"
+      - --peers
+      - "${SENTRIX_PEERS:-}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${SENTRIX_API_PORT:-8545}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

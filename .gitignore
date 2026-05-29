@@ -45,6 +45,7 @@
 *.env
 *.env.*
 !.env.example
+!.env.fullnode.example
 
 # ── Build helper / dev-only scripts ─────────────────────────
 *.bat
