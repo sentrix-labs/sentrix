@@ -1777,25 +1777,45 @@ async fn cmd_start(
                     // halt where chain can't advance until operator manually
                     // clears /var/lib/sentrix/last-sign.json. See v44 incident
                     // 2026-05-07 for the failure mode.
+                    //
+                    // v2.2.20: extended to also handle the (round=0, step>=1)
+                    // case. Original condition `state.round > 0` skipped the
+                    // common nil-precommit-at-round-0 stuck pattern: cluster
+                    // loses quorum during rolling restart → vals precommit nil
+                    // at round 0 → last-sign.json persists (h, 0, 2) → restart
+                    // → engine boots at round 0 → guard rejects (h, 0, 0)
+                    // because <= (h, 0, 2) → empty sig → cluster stalls until
+                    // engine times out 12+ rounds. Now triggers when step>=1
+                    // (vote cast at this round) AND advances to next round.
+                    // 2026-05-29 testnet stall at h=5707944 was this pattern.
                     if let Some(state) = sentrix_bft::last_sign_guard::current_state()
                         && state.height == next_height
-                        && state.round > 0
                     {
-                        let target_round = state.round.saturating_add(1);
-                        // BftEngine::advance_round bumps round + resets the
-                        // vote collector + phase_start. Apply N times to
-                        // skip the prior in-progress round.
-                        for _ in 0..target_round {
-                            bft.advance_round();
+                        // If we cast a vote at this round (step >= Prevote),
+                        // engine must skip past this round entirely. If we
+                        // only proposed (step == Proposal), prevote and
+                        // precommit at the same round are still legal.
+                        let target_round = if state.step >= 1 {
+                            state.round.saturating_add(1)
+                        } else {
+                            state.round
+                        };
+                        if target_round > 0 {
+                            // BftEngine::advance_round bumps round + resets
+                            // the vote collector + phase_start. Apply N times
+                            // to skip the prior in-progress round(s).
+                            for _ in 0..target_round {
+                                bft.advance_round();
+                            }
+                            tracing::info!(
+                                "BFT engine resume: prior sign at (h={}, r={}, s={}) — \
+                                 advanced engine to round {} to bypass guard refusal",
+                                state.height,
+                                state.round,
+                                state.step,
+                                target_round,
+                            );
                         }
-                        tracing::info!(
-                            "BFT engine resume: prior sign at (h={}, r={}, s={}) — \
-                             advanced engine to round {} to bypass guard refusal",
-                            state.height,
-                            state.round,
-                            state.step,
-                            target_round,
-                        );
                     }
 
                     proposed_block = None;
