@@ -3287,4 +3287,212 @@ mod tests {
         assert!(engine.pending_precommit.is_none());
         assert_eq!(engine.state.round, 2);
     }
+
+    // ── v2.2.21 observability integration tests ──────────────────────
+    //
+    // These tests pin the contract between BftEngine state transitions
+    // and BftMetrics counters/gauges. Each test uses a fresh private
+    // registry via BftMetrics::for_test so counters don't bleed between
+    // tests. Together they cover every hot-path metric call added in
+    // PR #745 + this PR's wiring.
+
+    use crate::metrics::{BftMetrics, jail_reason, phase};
+
+    fn setup_with_metrics() -> (BftEngine, StakeRegistry, std::sync::Arc<BftMetrics>) {
+        let mut reg = StakeRegistry::new();
+        for i in 0..21 {
+            let addr = format!("0xval{:03}", i);
+            reg.register_validator(&addr, MIN_SELF_STAKE, 1000, 0)
+                .unwrap();
+        }
+        reg.update_active_set();
+        let total_stake: u64 = reg
+            .active_set
+            .iter()
+            .filter_map(|a| reg.get_validator(a))
+            .map(|v| v.total_stake())
+            .sum();
+        let metrics = BftMetrics::for_test();
+        let engine =
+            BftEngine::new_with_metrics(100, "0xval000".into(), total_stake, metrics.clone());
+        (engine, reg, metrics)
+    }
+
+    #[test]
+    fn test_new_with_metrics_sets_initial_gauges() {
+        let (_engine, _reg, m) = setup_with_metrics();
+        assert_eq!(m.current_height.get(), 100);
+        assert_eq!(m.current_round.get(), 0);
+    }
+
+    #[test]
+    fn test_advance_round_increments_counter_and_observes_duration() {
+        let (mut engine, _reg, m) = setup_with_metrics();
+        assert_eq!(m.rounds_total.get(), 0);
+        // Sleep enough that the histogram observation is non-zero (the
+        // smallest bucket boundary is 0.1s; we just need to confirm
+        // the observation count incremented, not the specific bucket).
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        engine.advance_round();
+        assert_eq!(m.rounds_total.get(), 1);
+        assert_eq!(m.current_round.get(), 1);
+        assert_eq!(m.round_duration.get_sample_count(), 1);
+        // Two more for good measure.
+        engine.advance_round();
+        engine.advance_round();
+        assert_eq!(m.rounds_total.get(), 3);
+        assert_eq!(m.current_round.get(), 3);
+        assert_eq!(m.round_duration.get_sample_count(), 3);
+    }
+
+    #[test]
+    fn test_new_height_updates_gauges_and_resets_round() {
+        let (mut engine, _reg, m) = setup_with_metrics();
+        engine.advance_round();
+        engine.advance_round();
+        assert_eq!(m.current_round.get(), 2);
+        engine.new_height(200, 10_000);
+        assert_eq!(m.current_height.get(), 200);
+        assert_eq!(m.current_round.get(), 0);
+    }
+
+    #[test]
+    fn test_on_proposal_increments_propose_vote_counter() {
+        let (mut engine, reg, m) = setup_with_metrics();
+        let proposer = reg.weighted_proposer(100, 0).unwrap();
+        let _ = engine.on_proposal("hash_abc", &proposer, &reg);
+        let cnt = m.votes_received.with_label_values(&[phase::PROPOSE]).get();
+        assert_eq!(cnt, 1);
+    }
+
+    #[test]
+    fn test_on_proposal_wrong_proposer_does_not_count() {
+        let (mut engine, reg, m) = setup_with_metrics();
+        // Pick an address that isn't the round-0 proposer.
+        let real_proposer = reg.weighted_proposer(100, 0).unwrap();
+        let wrong = if real_proposer == "0xval001" {
+            "0xval002"
+        } else {
+            "0xval001"
+        };
+        let _ = engine.on_proposal("hash_abc", wrong, &reg);
+        assert_eq!(
+            m.votes_received.with_label_values(&[phase::PROPOSE]).get(),
+            0,
+        );
+    }
+
+    #[test]
+    fn test_on_prevote_increments_prevote_counter() {
+        let (mut engine, _reg, m) = setup_with_metrics();
+        let pv = Prevote {
+            height: 100,
+            round: 0,
+            block_hash: Some("h".into()),
+            validator: "0xval005".into(),
+            signature: vec![],
+        };
+        let _ = engine.on_prevote_weighted(&pv, MIN_SELF_STAKE);
+        assert_eq!(
+            m.votes_received.with_label_values(&[phase::PREVOTE]).get(),
+            1,
+        );
+    }
+
+    #[test]
+    fn test_on_precommit_increments_precommit_counter() {
+        let (mut engine, _reg, m) = setup_with_metrics();
+        let pc = Precommit {
+            height: 100,
+            round: 0,
+            block_hash: Some("h".into()),
+            validator: "0xval005".into(),
+            signature: vec![],
+        };
+        let _ = engine.on_precommit_weighted(&pc, MIN_SELF_STAKE);
+        assert_eq!(
+            m.votes_received
+                .with_label_values(&[phase::PRECOMMIT])
+                .get(),
+            1,
+        );
+    }
+
+    #[test]
+    fn test_on_timeout_increments_phase_counter() {
+        let (mut engine, _reg, m) = setup_with_metrics();
+        // Engine starts in Propose phase, so on_timeout records a propose-timeout.
+        let _ = engine.on_timeout();
+        assert_eq!(m.timeouts.with_label_values(&[phase::PROPOSE]).get(), 1);
+        // First on_timeout populates pending_prevote (nil); subsequent
+        // calls short-circuit to BroadcastPrevote without reaching the
+        // counter. To exercise the prevote-phase timeout path, clear
+        // pending_prevote first then call timeout from Prevote phase.
+        engine.pending_prevote = None;
+        let _ = engine.on_timeout();
+        assert_eq!(m.timeouts.with_label_values(&[phase::PREVOTE]).get(), 1);
+    }
+
+    #[test]
+    fn test_jail_counter_via_inc_jail_helper() {
+        let m = BftMetrics::for_test();
+        // Engine doesn't drive jail events directly — slashing module does,
+        // but the helper API is part of the BftMetrics surface so we pin it.
+        m.inc_jail(jail_reason::LIVENESS);
+        m.inc_jail(jail_reason::LIVENESS);
+        m.inc_jail(jail_reason::DOUBLE_SIGN);
+        m.inc_jail(jail_reason::MANUAL);
+        assert_eq!(
+            m.jail_events
+                .with_label_values(&[jail_reason::LIVENESS])
+                .get(),
+            2,
+        );
+        assert_eq!(
+            m.jail_events
+                .with_label_values(&[jail_reason::DOUBLE_SIGN])
+                .get(),
+            1,
+        );
+        assert_eq!(
+            m.jail_events
+                .with_label_values(&[jail_reason::MANUAL])
+                .get(),
+            1,
+        );
+    }
+
+    #[test]
+    fn test_attach_metrics_after_construction() {
+        let (mut engine, _reg, _m1) = setup_with_metrics();
+        // Construct without metrics, attach later — same gauge updates apply.
+        let mut engine2 = BftEngine::new(100, "0xval000".into(), 21 * MIN_SELF_STAKE);
+        let m2 = BftMetrics::for_test();
+        engine2.attach_metrics(m2.clone());
+        assert_eq!(m2.current_height.get(), 100);
+        assert_eq!(m2.current_round.get(), 0);
+        engine2.advance_round();
+        assert_eq!(m2.rounds_total.get(), 1);
+        assert_eq!(m2.current_round.get(), 1);
+        // Sanity: the original engine's metrics didn't pick up the second
+        // engine's increments.
+        // (The setup_with_metrics m1 is unused here but proves isolation
+        // works — see metrics::tests::test_for_test_helper_isolates.)
+        engine.advance_round();
+        assert!(engine.metrics().is_some());
+    }
+
+    #[test]
+    fn test_engine_without_metrics_skips_all_calls() {
+        // Legacy hot path: no metric ops, no panics, behaviour identical
+        // to the pre-PR engine.
+        let (mut engine, reg) = setup();
+        assert!(engine.metrics().is_none());
+        engine.advance_round();
+        engine.new_height(101, 10_000);
+        let proposer = reg.weighted_proposer(101, 0).unwrap();
+        let _ = engine.on_proposal("h", &proposer, &reg);
+        let _ = engine.on_timeout();
+        // Reached here without panic — that's the test.
+    }
 }
