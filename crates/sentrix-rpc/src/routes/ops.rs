@@ -364,6 +364,23 @@ pub(super) async fn metrics(State(state): State<SharedState>) -> axum::response:
         0.0
     };
 
+    // v2.2.21 follow-up: append default-registry metrics (bft_*, plus
+    // anything else other modules register against the global registry).
+    // TextEncoder produces the standard Prometheus exposition format, so
+    // appending after the hand-rolled sentrix_* block is wire-compatible.
+    let mut registry_buf: Vec<u8> = Vec::new();
+    let encoder = prometheus::TextEncoder::new();
+    let metric_families = prometheus::default_registry().gather();
+    if let Err(e) = prometheus::Encoder::encode(&encoder, &metric_families, &mut registry_buf) {
+        tracing::warn!(
+            "metrics endpoint: default-registry encode failed: {} \
+             — sentrix_* metrics still served, bft_* omitted",
+            e
+        );
+        registry_buf.clear();
+    }
+    let registry_metrics = String::from_utf8(registry_buf).unwrap_or_default();
+
     let body = format!(
         "# HELP sentrix_block_height Current chain height.\n\
          # TYPE sentrix_block_height gauge\n\
@@ -400,7 +417,8 @@ pub(super) async fn metrics(State(state): State<SharedState>) -> axum::response:
          sentrix_circulating_supply_sentri {circulating_sentri}\n\
          # HELP sentrix_peer_block_save_fails_total Count of P2P-received blocks whose MDBX save failed (BACKLOG #16). Rate>0 means chain history is developing TABLE_META gaps — investigate MDBX disk / lock / permissions immediately.\n\
          # TYPE sentrix_peer_block_save_fails_total counter\n\
-         sentrix_peer_block_save_fails_total {peer_save_fails}\n",
+         sentrix_peer_block_save_fails_total {peer_save_fails}\n\
+         {registry_metrics}",
         peer_save_fails = PEER_BLOCK_SAVE_FAILS.load(std::sync::atomic::Ordering::Relaxed)
     );
 

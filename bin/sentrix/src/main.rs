@@ -1214,6 +1214,28 @@ async fn cmd_start(
                 voyager_activated = false;
                 evm_activated = false;
             }
+            // v2.2.21 follow-up: BFT observability. Construct BftMetrics once
+            // per validator process against the default Prometheus registry;
+            // it lives for the duration of the validator task and gets cloned
+            // into every BftEngine instantiation below. The /metrics endpoint
+            // in sentrix-rpc exposes default_registry().gather() so scrapers
+            // (sentrix-prom-exporter, Grafana, anything) see the bft_* series.
+            let bft_metrics = match sentrix_bft::BftMetrics::new(prometheus::default_registry()) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    // Non-fatal: if the registry already has our metrics (test
+                    // process, hot-reload), keep running without observability.
+                    // Production startup logs this once at info.
+                    tracing::warn!(
+                        "BFT observability disabled — metric registration \
+                         failed: {} (typical cause: process restart in same \
+                         registry namespace). Engine continues without metrics.",
+                        e
+                    );
+                    None
+                }
+            };
+
             // Persistent BFT state for Voyager mode
             let mut bft_engine: Option<BftEngine> = None;
             let mut voyager_tick_count: u64 = 0;
@@ -1765,8 +1787,17 @@ async fn cmd_start(
                         }
                     }
 
-                    let mut bft =
-                        BftEngine::new(next_height, wallet.address.clone(), total_active_stake);
+                    let mut bft = match &bft_metrics {
+                        Some(m) => BftEngine::new_with_metrics(
+                            next_height,
+                            wallet.address.clone(),
+                            total_active_stake,
+                            m.clone(),
+                        ),
+                        None => {
+                            BftEngine::new(next_height, wallet.address.clone(), total_active_stake)
+                        }
+                    };
 
                     // v2.1.85: resume at the correct round if we previously
                     // signed at this height pre-crash. Without this the v2.1.84

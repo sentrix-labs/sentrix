@@ -72,3 +72,7 @@ sentrix-bft = { path = "../../crates/sentrix-bft" }
 # operator could see it on screen and in the scrollback. Apache-2.0; pure
 # Rust; no native deps.
 rpassword = "7"
+# v2.2.21 follow-up: main.rs needs prometheus::default_registry() to
+# construct BftMetrics at validator startup. Same version sentrix-bft
+# and sentrix-rpc pin, so no new transitive.
+prometheus = "0.14"
