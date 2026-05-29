@@ -22,11 +22,13 @@ pub use timeouts::{
 pub use vote_collector::VoteCollector;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 // errors used by integration callers, not directly in this module
 use crate::messages::{
     BlockJustification, Precommit, Prevote, RoundStatus, supermajority_threshold,
 };
+use crate::metrics::{BftMetrics, phase};
 use sentrix_staking::StakeRegistry;
 
 // ── BFT Engine ───────────────────────────────────────────────
@@ -70,19 +72,77 @@ pub struct BftEngine {
     /// 1-round-drift livelock (issue #143) that the legacy single-peer
     /// "2+ rounds ahead" trigger could not resolve.
     peer_rounds: HashMap<String, (u32, u64)>,
+    /// Observability hook. `None` keeps the legacy hot path untouched
+    /// (tests + bench callers). Validator binary injects via
+    /// `new_with_metrics` and the engine writes to it at every state
+    /// transition. Cheap: `Option<Arc<_>>` clone is one atomic refcount.
+    metrics: Option<Arc<BftMetrics>>,
+    /// Wall-clock anchor for the in-progress round, used to observe round
+    /// duration on advance/commit. Reset on every `advance_round`,
+    /// `new_height`, and `catch_up_round`.
+    round_start: Instant,
 }
 
 impl BftEngine {
     pub fn new(height: u64, our_address: String, total_active_stake: u64) -> Self {
+        let now = Instant::now();
         Self {
             state: BftRoundState::new(height, 0, total_active_stake),
             collector: VoteCollector::new(),
             our_address,
-            phase_start: Instant::now(),
+            phase_start: now,
             pending_prevote: None,
             pending_precommit: None,
             peer_rounds: HashMap::new(),
+            metrics: None,
+            round_start: now,
         }
+    }
+
+    /// Construct with observability injected. Used by the validator binary;
+    /// tests + bench callers stick to [`Self::new`] and skip the metric
+    /// emit on hot paths via `Option`.
+    pub fn new_with_metrics(
+        height: u64,
+        our_address: String,
+        total_active_stake: u64,
+        metrics: Arc<BftMetrics>,
+    ) -> Self {
+        let now = Instant::now();
+        metrics.set_height(height);
+        metrics.set_round(0);
+        tracing::info!(
+            target: "bft::engine",
+            height,
+            our_address = %our_address,
+            "BFT engine constructed with observability hook"
+        );
+        Self {
+            state: BftRoundState::new(height, 0, total_active_stake),
+            collector: VoteCollector::new(),
+            our_address,
+            phase_start: now,
+            pending_prevote: None,
+            pending_precommit: None,
+            peer_rounds: HashMap::new(),
+            metrics: Some(metrics),
+            round_start: now,
+        }
+    }
+
+    /// Test/integration helper: attach metrics after construction. Same
+    /// semantics as `new_with_metrics` but lets call sites that already
+    /// hold an engine bolt observability on.
+    pub fn attach_metrics(&mut self, metrics: Arc<BftMetrics>) {
+        metrics.set_height(self.state.height);
+        metrics.set_round(self.state.round);
+        self.metrics = Some(metrics);
+    }
+
+    /// Read-only accessor for tests + callers that want to publish round
+    /// duration on commit (the engine itself only observes on advance).
+    pub fn metrics(&self) -> Option<&Arc<BftMetrics>> {
+        self.metrics.as_ref()
     }
 
     /// 2026-05-10: accessor for the validator-loop's vote-rebroadcast tick.
@@ -99,21 +159,54 @@ impl BftEngine {
 
     /// Reset for a new height
     pub fn new_height(&mut self, height: u64, total_active_stake: u64) {
+        let prev_height = self.state.height;
         self.state.advance_height(height, total_active_stake);
         self.collector.reset();
-        self.phase_start = Instant::now();
+        let now = Instant::now();
+        self.phase_start = now;
+        self.round_start = now;
         self.pending_prevote = None;
         self.pending_precommit = None;
         self.peer_rounds.clear();
+        if let Some(m) = &self.metrics {
+            m.set_height(height);
+            m.set_round(0);
+        }
+        tracing::info!(
+            target: "bft::engine",
+            from_height = prev_height,
+            to_height = height,
+            total_active_stake,
+            "BFT new height — engine reset"
+        );
     }
 
     /// Advance to next round (timeout or nil)
     pub fn advance_round(&mut self) {
+        let prev_round = self.state.round;
+        let prev_phase = self.state.phase;
+        let dur = self.round_start.elapsed();
         self.state.advance_round();
         self.collector.reset();
-        self.phase_start = Instant::now();
+        let now = Instant::now();
+        self.phase_start = now;
+        self.round_start = now;
         self.pending_prevote = None;
         self.pending_precommit = None;
+        if let Some(m) = &self.metrics {
+            m.inc_round();
+            m.observe_round_duration(dur.as_secs_f64());
+            m.set_round(self.state.round);
+        }
+        tracing::info!(
+            target: "bft::engine",
+            height = self.state.height,
+            prev_round,
+            new_round = self.state.round,
+            ?prev_phase,
+            elapsed_ms = dur.as_millis() as u64,
+            "BFT round advanced"
+        );
     }
 
     /// Round catch-up: if peers are at a higher round, fast-forward.
@@ -282,6 +375,17 @@ impl BftEngine {
         if expected.as_deref() != Some(proposer) {
             return BftAction::Wait; // wrong proposer, ignore
         }
+        if let Some(m) = &self.metrics {
+            m.inc_vote(phase::PROPOSE);
+        }
+        tracing::debug!(
+            target: "bft::engine",
+            height = self.state.height,
+            round = self.state.round,
+            proposer,
+            block_hash,
+            "BFT proposal received from expected proposer"
+        );
 
         // V3 defense-in-depth: refuse proposals from a jailed or
         // tombstoned validator even if `weighted_proposer` returned
@@ -590,6 +694,18 @@ impl BftEngine {
         if self.state.prevotes.contains_key(&prevote.validator) {
             return BftAction::Wait;
         }
+        if let Some(m) = &self.metrics {
+            m.inc_vote(phase::PREVOTE);
+        }
+        tracing::trace!(
+            target: "bft::engine",
+            height = prevote.height,
+            round = prevote.round,
+            validator = %prevote.validator,
+            block_hash = ?prevote.block_hash,
+            stake,
+            "BFT prevote accepted"
+        );
 
         self.state.prevotes.insert(
             prevote.validator.clone(),
@@ -679,6 +795,18 @@ impl BftEngine {
         if self.state.precommits.contains_key(&precommit.validator) {
             return BftAction::Wait;
         }
+        if let Some(m) = &self.metrics {
+            m.inc_vote(phase::PRECOMMIT);
+        }
+        tracing::trace!(
+            target: "bft::engine",
+            height = precommit.height,
+            round = precommit.round,
+            validator = %precommit.validator,
+            block_hash = ?precommit.block_hash,
+            stake,
+            "BFT precommit accepted"
+        );
 
         self.state.precommits.insert(
             precommit.validator.clone(),
@@ -778,6 +906,23 @@ impl BftEngine {
         if let Some(precommit) = &self.pending_precommit {
             return BftAction::BroadcastPrecommit(precommit.clone());
         }
+        let phase_label = match self.state.phase {
+            BftPhase::Propose => phase::PROPOSE,
+            BftPhase::Prevote => phase::PREVOTE,
+            BftPhase::Precommit => phase::PRECOMMIT,
+            BftPhase::Finalize => "finalize",
+        };
+        if let Some(m) = &self.metrics {
+            m.inc_timeout(phase_label);
+        }
+        tracing::warn!(
+            target: "bft::engine",
+            height = self.state.height,
+            round = self.state.round,
+            phase = phase_label,
+            phase_elapsed_ms = self.phase_start.elapsed().as_millis() as u64,
+            "BFT phase timeout — engine taking timeout action"
+        );
         match self.state.phase {
             BftPhase::Propose => {
                 // No proposal received — prevote nil
@@ -3141,5 +3286,213 @@ mod tests {
         assert!(engine.pending_prevote.is_none());
         assert!(engine.pending_precommit.is_none());
         assert_eq!(engine.state.round, 2);
+    }
+
+    // ── v2.2.21 observability integration tests ──────────────────────
+    //
+    // These tests pin the contract between BftEngine state transitions
+    // and BftMetrics counters/gauges. Each test uses a fresh private
+    // registry via BftMetrics::for_test so counters don't bleed between
+    // tests. Together they cover every hot-path metric call added in
+    // PR #745 + this PR's wiring.
+
+    use crate::metrics::{BftMetrics, jail_reason, phase};
+
+    fn setup_with_metrics() -> (BftEngine, StakeRegistry, std::sync::Arc<BftMetrics>) {
+        let mut reg = StakeRegistry::new();
+        for i in 0..21 {
+            let addr = format!("0xval{:03}", i);
+            reg.register_validator(&addr, MIN_SELF_STAKE, 1000, 0)
+                .unwrap();
+        }
+        reg.update_active_set();
+        let total_stake: u64 = reg
+            .active_set
+            .iter()
+            .filter_map(|a| reg.get_validator(a))
+            .map(|v| v.total_stake())
+            .sum();
+        let metrics = BftMetrics::for_test();
+        let engine =
+            BftEngine::new_with_metrics(100, "0xval000".into(), total_stake, metrics.clone());
+        (engine, reg, metrics)
+    }
+
+    #[test]
+    fn test_new_with_metrics_sets_initial_gauges() {
+        let (_engine, _reg, m) = setup_with_metrics();
+        assert_eq!(m.current_height.get(), 100);
+        assert_eq!(m.current_round.get(), 0);
+    }
+
+    #[test]
+    fn test_advance_round_increments_counter_and_observes_duration() {
+        let (mut engine, _reg, m) = setup_with_metrics();
+        assert_eq!(m.rounds_total.get(), 0);
+        // Sleep enough that the histogram observation is non-zero (the
+        // smallest bucket boundary is 0.1s; we just need to confirm
+        // the observation count incremented, not the specific bucket).
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        engine.advance_round();
+        assert_eq!(m.rounds_total.get(), 1);
+        assert_eq!(m.current_round.get(), 1);
+        assert_eq!(m.round_duration.get_sample_count(), 1);
+        // Two more for good measure.
+        engine.advance_round();
+        engine.advance_round();
+        assert_eq!(m.rounds_total.get(), 3);
+        assert_eq!(m.current_round.get(), 3);
+        assert_eq!(m.round_duration.get_sample_count(), 3);
+    }
+
+    #[test]
+    fn test_new_height_updates_gauges_and_resets_round() {
+        let (mut engine, _reg, m) = setup_with_metrics();
+        engine.advance_round();
+        engine.advance_round();
+        assert_eq!(m.current_round.get(), 2);
+        engine.new_height(200, 10_000);
+        assert_eq!(m.current_height.get(), 200);
+        assert_eq!(m.current_round.get(), 0);
+    }
+
+    #[test]
+    fn test_on_proposal_increments_propose_vote_counter() {
+        let (mut engine, reg, m) = setup_with_metrics();
+        let proposer = reg.weighted_proposer(100, 0).unwrap();
+        let _ = engine.on_proposal("hash_abc", &proposer, &reg);
+        let cnt = m.votes_received.with_label_values(&[phase::PROPOSE]).get();
+        assert_eq!(cnt, 1);
+    }
+
+    #[test]
+    fn test_on_proposal_wrong_proposer_does_not_count() {
+        let (mut engine, reg, m) = setup_with_metrics();
+        // Pick an address that isn't the round-0 proposer.
+        let real_proposer = reg.weighted_proposer(100, 0).unwrap();
+        let wrong = if real_proposer == "0xval001" {
+            "0xval002"
+        } else {
+            "0xval001"
+        };
+        let _ = engine.on_proposal("hash_abc", wrong, &reg);
+        assert_eq!(
+            m.votes_received.with_label_values(&[phase::PROPOSE]).get(),
+            0,
+        );
+    }
+
+    #[test]
+    fn test_on_prevote_increments_prevote_counter() {
+        let (mut engine, _reg, m) = setup_with_metrics();
+        let pv = Prevote {
+            height: 100,
+            round: 0,
+            block_hash: Some("h".into()),
+            validator: "0xval005".into(),
+            signature: vec![],
+        };
+        let _ = engine.on_prevote_weighted(&pv, MIN_SELF_STAKE);
+        assert_eq!(
+            m.votes_received.with_label_values(&[phase::PREVOTE]).get(),
+            1,
+        );
+    }
+
+    #[test]
+    fn test_on_precommit_increments_precommit_counter() {
+        let (mut engine, _reg, m) = setup_with_metrics();
+        let pc = Precommit {
+            height: 100,
+            round: 0,
+            block_hash: Some("h".into()),
+            validator: "0xval005".into(),
+            signature: vec![],
+        };
+        let _ = engine.on_precommit_weighted(&pc, MIN_SELF_STAKE);
+        assert_eq!(
+            m.votes_received
+                .with_label_values(&[phase::PRECOMMIT])
+                .get(),
+            1,
+        );
+    }
+
+    #[test]
+    fn test_on_timeout_increments_phase_counter() {
+        let (mut engine, _reg, m) = setup_with_metrics();
+        // Engine starts in Propose phase, so on_timeout records a propose-timeout.
+        let _ = engine.on_timeout();
+        assert_eq!(m.timeouts.with_label_values(&[phase::PROPOSE]).get(), 1);
+        // First on_timeout populates pending_prevote (nil); subsequent
+        // calls short-circuit to BroadcastPrevote without reaching the
+        // counter. To exercise the prevote-phase timeout path, clear
+        // pending_prevote first then call timeout from Prevote phase.
+        engine.pending_prevote = None;
+        let _ = engine.on_timeout();
+        assert_eq!(m.timeouts.with_label_values(&[phase::PREVOTE]).get(), 1);
+    }
+
+    #[test]
+    fn test_jail_counter_via_inc_jail_helper() {
+        let m = BftMetrics::for_test();
+        // Engine doesn't drive jail events directly — slashing module does,
+        // but the helper API is part of the BftMetrics surface so we pin it.
+        m.inc_jail(jail_reason::LIVENESS);
+        m.inc_jail(jail_reason::LIVENESS);
+        m.inc_jail(jail_reason::DOUBLE_SIGN);
+        m.inc_jail(jail_reason::MANUAL);
+        assert_eq!(
+            m.jail_events
+                .with_label_values(&[jail_reason::LIVENESS])
+                .get(),
+            2,
+        );
+        assert_eq!(
+            m.jail_events
+                .with_label_values(&[jail_reason::DOUBLE_SIGN])
+                .get(),
+            1,
+        );
+        assert_eq!(
+            m.jail_events
+                .with_label_values(&[jail_reason::MANUAL])
+                .get(),
+            1,
+        );
+    }
+
+    #[test]
+    fn test_attach_metrics_after_construction() {
+        let (mut engine, _reg, _m1) = setup_with_metrics();
+        // Construct without metrics, attach later — same gauge updates apply.
+        let mut engine2 = BftEngine::new(100, "0xval000".into(), 21 * MIN_SELF_STAKE);
+        let m2 = BftMetrics::for_test();
+        engine2.attach_metrics(m2.clone());
+        assert_eq!(m2.current_height.get(), 100);
+        assert_eq!(m2.current_round.get(), 0);
+        engine2.advance_round();
+        assert_eq!(m2.rounds_total.get(), 1);
+        assert_eq!(m2.current_round.get(), 1);
+        // Sanity: the original engine's metrics didn't pick up the second
+        // engine's increments.
+        // (The setup_with_metrics m1 is unused here but proves isolation
+        // works — see metrics::tests::test_for_test_helper_isolates.)
+        engine.advance_round();
+        assert!(engine.metrics().is_some());
+    }
+
+    #[test]
+    fn test_engine_without_metrics_skips_all_calls() {
+        // Legacy hot path: no metric ops, no panics, behaviour identical
+        // to the pre-PR engine.
+        let (mut engine, reg) = setup();
+        assert!(engine.metrics().is_none());
+        engine.advance_round();
+        engine.new_height(101, 10_000);
+        let proposer = reg.weighted_proposer(101, 0).unwrap();
+        let _ = engine.on_proposal("h", &proposer, &reg);
+        let _ = engine.on_timeout();
+        // Reached here without panic — that's the test.
     }
 }
