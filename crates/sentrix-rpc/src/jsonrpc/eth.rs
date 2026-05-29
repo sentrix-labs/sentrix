@@ -513,7 +513,7 @@ async fn eth_get_transaction_receipt(params: &Value, state: &SharedState) -> Dis
             let stored_receipt: Option<sentrix_evm::StoredReceipt> = bc
                 .mdbx_storage
                 .as_ref()
-                .and_then(|s| sentrix_evm::receipt_key(&txid).map(|k| (s, k)))
+                .zip(sentrix_evm::receipt_key(&txid))
                 .and_then(|(s, k)| {
                     s.get_bincode(sentrix_storage::tables::TABLE_RECEIPTS, &k)
                         .ok()
@@ -539,7 +539,7 @@ async fn eth_get_transaction_receipt(params: &Value, state: &SharedState) -> Dis
                     let g = bc
                         .mdbx_storage
                         .as_ref()
-                        .and_then(|s| sentrix_evm::receipt_key(&t.txid).map(|k| (s, k)))
+                        .zip(sentrix_evm::receipt_key(&t.txid))
                         .and_then(|(s, k)| {
                             s.get_bincode::<sentrix_evm::StoredReceipt>(
                                 sentrix_storage::tables::TABLE_RECEIPTS,
@@ -659,7 +659,7 @@ async fn eth_get_block_receipts(params: &Value, state: &SharedState) -> Dispatch
         let stored_receipt: Option<sentrix_evm::StoredReceipt> = bc
             .mdbx_storage
             .as_ref()
-            .and_then(|s| sentrix_evm::receipt_key(&tx.txid).map(|k| (s, k)))
+            .zip(sentrix_evm::receipt_key(&tx.txid))
             .and_then(|(s, k)| {
                 s.get_bincode(sentrix_storage::tables::TABLE_RECEIPTS, &k)
                     .ok()
