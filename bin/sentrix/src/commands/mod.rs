@@ -11,6 +11,7 @@ pub mod chain;
 pub mod init;
 pub mod mempool;
 pub mod misc;
+pub mod staking;
 pub mod state;
 pub mod token;
 pub mod validator;
