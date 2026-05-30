@@ -67,7 +67,19 @@ const NFT_TOKENOP_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// Post-fork: tx.amount transferred validator → treasury via the outer
 /// apply-Pass-2 transfer; `self_stake` incremented in registry. Supply-
 /// invariant preserving — no mint.
+///
+/// Mainnet stays disabled (u64::MAX) until a planned activation window —
+/// 2026-05-30 testnet stall recovery left val3 jailed below MIN_SELF_STAKE,
+/// motivating early testnet activation. Mainnet operators should pick an
+/// activation height during a scheduled halt-all + simul-start window, then
+/// update this constant in a separate PR before redeploy.
 const ADD_SELF_STAKE_HEIGHT_DEFAULT: u64 = u64::MAX;
+/// Testnet activates AddSelfStake at h=5,800,000 — chosen 2026-05-30 while
+/// testnet was at h=5,783,883 (~16K blocks / ~4.5h @ 1s/blk buffer). Closes
+/// the unjail recovery path for val3 (jailed at 14,985 SRX self-stake after
+/// the 0.1% liveness slash; cannot unjail without topping back up to
+/// MIN_SELF_STAKE = 15,000 SRX via AddSelfStake).
+const ADD_SELF_STAKE_HEIGHT_TESTNET_DEFAULT: u64 = 5_800_000;
 
 /// EVM value-transfer activation. Pre-fork: Pass-2 EVM apply path runs
 /// every tx with `TxEnv.value = U256::ZERO` regardless of envelope
@@ -269,13 +281,20 @@ pub fn get_nft_tokenop_height() -> u64 {
     read_height("NFT_TOKENOP_HEIGHT", NFT_TOKENOP_HEIGHT_DEFAULT)
 }
 
-/// Read AddSelfStake fork height from env, default `u64::MAX`
-/// (disabled). Post-fork: `StakingOp::AddSelfStake` dispatch active —
-/// validators can top up their own `self_stake` with real SRX.
-/// Operators activate via halt-all + simultaneous-start with
-/// `ADD_SELF_STAKE_HEIGHT=<height>`.
+/// Read AddSelfStake fork height. Mainnet default is `u64::MAX` (disabled
+/// pending a planned activation window); testnet default is 5,800,000
+/// (set 2026-05-30 to recover val3). Operators can still override either
+/// chain via `ADD_SELF_STAKE_HEIGHT=<height>` env, but every peer in the
+/// active set must agree on the value or consensus will fork at the
+/// activation boundary.
 pub fn get_add_self_stake_height() -> u64 {
-    read_height("ADD_SELF_STAKE_HEIGHT", ADD_SELF_STAKE_HEIGHT_DEFAULT)
+    read_height(
+        "ADD_SELF_STAKE_HEIGHT",
+        chain_default(
+            ADD_SELF_STAKE_HEIGHT_DEFAULT,
+            ADD_SELF_STAKE_HEIGHT_TESTNET_DEFAULT,
+        ),
+    )
 }
 
 /// Read EVM value-transfer fork height from env. Default 1,748,900 —
@@ -518,6 +537,16 @@ mod tests {
             assert!(!is_evm_gas_fix_height(3_786_999));
             assert!(is_evm_gas_fix_height(3_787_000));
 
+            // AddSelfStake activates on testnet at 5,800,000 (see
+            // ADD_SELF_STAKE_HEIGHT_TESTNET_DEFAULT — scheduled
+            // 2026-05-30 to recover val3). Pin both the height and
+            // the gate-boundary semantics.
+            std::env::remove_var("ADD_SELF_STAKE_HEIGHT");
+            assert_eq!(get_add_self_stake_height(), 5_800_000);
+            assert!(!is_add_self_stake_height(5_799_999));
+            assert!(is_add_self_stake_height(5_800_000));
+            assert!(is_add_self_stake_height(6_000_000));
+
             std::env::remove_var("SENTRIX_CHAIN_ID");
         }
     }
@@ -530,22 +559,22 @@ mod tests {
             for var in [
                 "JAIL_CONSENSUS_HEIGHT",
                 "NFT_TOKENOP_HEIGHT",
-                "ADD_SELF_STAKE_HEIGHT",
                 "EXTENDED_TOUCH_LIST_HEIGHT",
                 "STRICT_JUSTIFICATION_HEIGHT",
             ] {
                 std::env::remove_var(var);
             }
 
+            // AddSelfStake moved out of this test in v2.2.22 — it's now
+            // an enabled testnet fork (see mature_testnet_forks_have_code_
+            // _level_defaults). Mainnet still defaults disabled.
             assert_eq!(get_jail_consensus_height(), u64::MAX);
             assert_eq!(get_nft_tokenop_height(), u64::MAX);
-            assert_eq!(get_add_self_stake_height(), u64::MAX);
             assert_eq!(get_extended_touch_list_height(), u64::MAX);
             assert_eq!(get_strict_justification_height(), u64::MAX);
 
             assert!(!is_jail_consensus_height(0));
             assert!(!is_nft_tokenop_height(0));
-            assert!(!is_add_self_stake_height(0));
             assert!(!is_extended_touch_list_height(0));
             assert!(!is_strict_justification_height(0));
 
@@ -566,6 +595,7 @@ mod tests {
                 "BFT_GATE_RELAX_HEIGHT",
                 "EVM_VALUE_TRANSFER_HEIGHT",
                 "EVM_GAS_FIX_HEIGHT",
+                "ADD_SELF_STAKE_HEIGHT",
             ] {
                 std::env::remove_var(var);
             }
@@ -577,6 +607,11 @@ mod tests {
             assert_eq!(get_bft_gate_relax_height(), u64::MAX);
             assert_eq!(get_evm_value_transfer_height(), 1_748_900);
             assert_eq!(get_evm_gas_fix_height(), 1_748_900);
+            // AddSelfStake stays disabled on mainnet until a planned
+            // activation window (see ADD_SELF_STAKE_HEIGHT_DEFAULT doc).
+            assert_eq!(get_add_self_stake_height(), u64::MAX);
+            assert!(!is_add_self_stake_height(0));
+            assert!(!is_add_self_stake_height(u64::MAX - 1));
 
             std::env::remove_var("SENTRIX_CHAIN_ID");
         }
