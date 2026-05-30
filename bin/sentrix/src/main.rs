@@ -219,6 +219,19 @@ enum Commands {
         #[command(subcommand)]
         action: ValidatorCommands,
     },
+    /// Staking operations — proper TX-based path for validator + delegator
+    /// state changes (register, add-self-stake, unjail, claim-rewards).
+    ///
+    /// Unlike `sentrix validator unjail` / `force-unjail` which mutate
+    /// `stake_registry` directly in MDBX without updating `state_trie`
+    /// (creating a one-way trap that needs cluster-wide trie reconciliation
+    /// to recover), every command here builds a signed transaction, injects
+    /// into mempool, and lets the chain's normal apply path execute the op
+    /// — so `state_trie` stays consistent on every peer.
+    Staking {
+        #[command(subcommand)]
+        action: StakingCommands,
+    },
     /// Start the node (P2P + API + validator loop).
     ///
     /// Validator key sources, tried in order:
@@ -477,6 +490,73 @@ enum TokenCommands {
     },
     /// List all deployed tokens
     List,
+}
+
+#[derive(Subcommand)]
+enum StakingCommands {
+    /// Register the sender as a validator. The sender wallet must hold
+    /// `self_stake + fee` SRX; on apply, `self_stake` is escrowed to
+    /// `PROTOCOL_TREASURY` and the sender enters the candidate pool.
+    /// Active set entry happens at the next epoch boundary if total
+    /// stake ranks in the top 21.
+    Register {
+        /// Path to the sender's keystore file (Argon2id v2 format).
+        /// Password from `SENTRIX_WALLET_PASSWORD` env var or stdin prompt.
+        #[arg(long)]
+        keystore: String,
+        /// Self-stake in whole SRX (must be >= 15000 for current MIN_SELF_STAKE).
+        #[arg(long)]
+        self_stake: u64,
+        /// Commission rate in basis points (1000 = 10%, max 10000 = 100%).
+        #[arg(long)]
+        commission_rate: u16,
+        /// Tx fee in sentri (1 SRX = 100_000_000 sentri).
+        #[arg(long, default_value_t = 10_000)]
+        fee: u64,
+    },
+    /// Top up the sender's self_stake by `amount` SRX. Common use is
+    /// unblocking a jailed validator whose self_stake fell below
+    /// `MIN_SELF_STAKE` after a downtime slash.
+    ///
+    /// **Dispatch is fork-gated**: `ADD_SELF_STAKE_HEIGHT` defaults to
+    /// `u64::MAX` (dormant). Operator must set the env var on every
+    /// validator and halt-all + simul-start before this tx will pass apply.
+    AddSelfStake {
+        /// Path to the sender's keystore file.
+        #[arg(long)]
+        keystore: String,
+        /// Amount to add to self_stake, in whole SRX.
+        #[arg(long)]
+        amount: u64,
+        /// Tx fee in sentri.
+        #[arg(long, default_value_t = 10_000)]
+        fee: u64,
+    },
+    /// Submit an Unjail tx — proper TX-based path that goes through
+    /// apply_block so the state_trie stays consistent.
+    ///
+    /// Requires: `self_stake >= MIN_SELF_STAKE` (use `add-self-stake`
+    /// first if slashed below), current height >= jail_until (jail
+    /// period expired), not tombstoned.
+    Unjail {
+        /// Path to the sender's keystore file.
+        #[arg(long)]
+        keystore: String,
+        /// Tx fee in sentri.
+        #[arg(long, default_value_t = 10_000)]
+        fee: u64,
+    },
+    /// Claim accumulated rewards (validator-side and delegator-side
+    /// pending_rewards transfer from `PROTOCOL_TREASURY` into the
+    /// sender's account balance).
+    ClaimRewards {
+        /// Path to the sender's keystore file.
+        #[arg(long)]
+        keystore: String,
+        /// Tx fee in sentri.
+        #[arg(long, default_value_t = 10_000)]
+        fee: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -766,6 +846,35 @@ async fn main() -> anyhow::Result<()> {
                 commands::token::cmd_token_info(&contract)?;
             }
             TokenCommands::List => commands::token::cmd_token_list()?,
+        },
+
+        Commands::Staking { action } => match action {
+            StakingCommands::Register {
+                keystore,
+                self_stake,
+                commission_rate,
+                fee,
+            } => {
+                commands::staking::cmd_staking_register(
+                    &keystore,
+                    self_stake,
+                    commission_rate,
+                    fee,
+                )?;
+            }
+            StakingCommands::AddSelfStake {
+                keystore,
+                amount,
+                fee,
+            } => {
+                commands::staking::cmd_staking_add_self_stake(&keystore, amount, fee)?;
+            }
+            StakingCommands::Unjail { keystore, fee } => {
+                commands::staking::cmd_staking_unjail(&keystore, fee)?;
+            }
+            StakingCommands::ClaimRewards { keystore, fee } => {
+                commands::staking::cmd_staking_claim_rewards(&keystore, fee)?;
+            }
         },
 
         Commands::State { action } => match action {
