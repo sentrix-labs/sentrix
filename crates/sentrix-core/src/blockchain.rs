@@ -36,8 +36,8 @@ pub use crate::fork_heights::{
     get_add_self_stake_height, get_bft_gate_relax_height, get_evm_fork_height,
     get_evm_gas_fix_height, get_evm_value_transfer_height, get_extended_touch_list_height,
     get_jail_consensus_height, get_nft_tokenop_height, get_reward_v2_fork_height,
-    get_strict_justification_height, get_tokenomics_v2_height, get_voyager_fork_height,
-    warn_if_jail_consensus_armed,
+    get_state_in_trie_height, get_strict_justification_height, get_tokenomics_v2_height,
+    get_voyager_fork_height, warn_if_jail_consensus_armed,
 };
 
 // Mempool consts live in `crate::mempool` now (next to the only code

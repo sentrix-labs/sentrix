@@ -139,6 +139,29 @@ const EXTENDED_TOUCH_LIST_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// not the sender's `stake_weight` field.
 const STRICT_JUSTIFICATION_HEIGHT_DEFAULT: u64 = u64::MAX;
 
+/// Bug A fix — off-trie consensus state migration to state trie
+/// (SIP-6, drafted 2026-05-31 post testnet cascade 2026-05-30).
+///
+/// Pre-fork: `pending_rewards`, `total_minted`, `liveness`
+/// (`blocks_signed`/`blocks_missed`/`jail_*`), and `epoch_state` are
+/// stored on `StakeRegistry`'s in-memory `HashMap<String,
+/// ValidatorStake>` and slashing/epoch engines. Their mutations on the
+/// apply path land AFTER state_root commitment, so silent drift across
+/// validators is undetectable until a consuming tx (ClaimRewards,
+/// Unjail, AddSelfStake) re-reads the diverged value and forks the
+/// cluster. Surfaced on 2026-05-30 testnet: val3 ClaimRewards triggered
+/// 3-way state fork at h=5,817,131 → cascade.
+///
+/// Post-fork: those four consensus state pieces are written through
+/// the state trie inside the apply path (before state_root is taken),
+/// so any drift across validators surfaces immediately as a state_root
+/// mismatch instead of silently accumulating. See
+/// [SIP-6](https://github.com/sentrix-labs/SIPs/pull/3) for the
+/// migration design (F2 — proper architectural fix; F3 B3b-style
+/// epoch-boundary reconciliation and F1 preemptive consuming-ops
+/// gate were considered and rejected).
+const STATE_IN_TRIE_HEIGHT_DEFAULT: u64 = u64::MAX;
+
 // ── Runtime readers (env → u64, default to compile-time default) ──────
 
 fn configured_chain_id() -> u64 {
@@ -347,6 +370,16 @@ pub fn get_strict_justification_height() -> u64 {
     )
 }
 
+/// State-in-trie fork height — SIP-6 Bug A migration. See
+/// [`STATE_IN_TRIE_HEIGHT_DEFAULT`] for context + design link.
+/// Default `u64::MAX` keeps the legacy off-trie write path
+/// bit-identical; once an activation height is pinned via env,
+/// the apply path routes the 4 consensus state pieces through the
+/// state trie before state_root commitment.
+pub fn get_state_in_trie_height() -> u64 {
+    read_height("STATE_IN_TRIE_HEIGHT", STATE_IN_TRIE_HEIGHT_DEFAULT)
+}
+
 // ── Height predicates ────────────────────────────────────
 //
 // Every fork-height predicate has the same shape:
@@ -462,6 +495,18 @@ pub fn is_extended_touch_list_height(height: u64) -> bool {
 /// fork class identified by halt #9.
 pub fn is_strict_justification_height(height: u64) -> bool {
     let fork = get_strict_justification_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// SIP-6 Bug A fix — true once `STATE_IN_TRIE_HEIGHT` activates.
+/// Post-fork: the apply path commits `pending_rewards`,
+/// `total_minted`, validator liveness, and `epoch_state` into the
+/// state trie before state_root is taken — drift across validators
+/// surfaces immediately as state_root mismatch instead of silent
+/// off-trie divergence. Pre-fork the legacy in-memory write path is
+/// preserved bit-identically.
+pub fn is_state_in_trie_height(height: u64) -> bool {
+    let fork = get_state_in_trie_height();
     fork != u64::MAX && height >= fork
 }
 
