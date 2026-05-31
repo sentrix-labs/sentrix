@@ -167,8 +167,7 @@ pub fn commit_state_to_account_db(
 mod tests {
     use super::*;
     use revm::primitives::KECCAK_EMPTY;
-    use revm::state::{Account, AccountInfo, AccountStatus, EvmStorageSlot};
-    use std::collections::HashMap;
+    use revm::state::{Account, AccountInfo, AccountStatus, EvmStorageSlot, TransactionId};
 
     fn addr(b: u8) -> Address {
         Address::from([b; 20])
@@ -182,13 +181,14 @@ mod tests {
             account_id: None,
             code: None,
         };
-        Account {
-            original_info: Box::new(info.clone()),
-            info,
-            storage: HashMap::default(),
-            transaction_id: 0,
-            status: AccountStatus::Touched,
-        }
+        // revm 40: Account has a private `original_info` field, can't use struct
+        // literal. Default::default() + field assignment keeps the test helper
+        // ergonomic without needing the private field.
+        let mut acc = Account::default();
+        acc.info = info;
+        acc.transaction_id = TransactionId::ZERO;
+        acc.status = AccountStatus::Touched;
+        acc
     }
 
     #[test]
@@ -227,7 +227,7 @@ mod tests {
         // slot 0 → 42
         account.storage.insert(
             U256::ZERO,
-            EvmStorageSlot::new_changed(U256::ZERO, U256::from(42u64), 0),
+            EvmStorageSlot::new_changed(U256::ZERO, U256::from(42u64), TransactionId::ZERO),
         );
         state.insert(addr(0x03), account);
 
@@ -320,13 +320,11 @@ mod tests {
             account_id: None,
             code: None,
         };
-        let account = Account {
-            original_info: Box::new(info.clone()),
-            info,
-            storage: HashMap::default(),
-            transaction_id: 0,
-            status: AccountStatus::default(), // NOT touched
-        };
+        // revm 40 private field workaround — same as touched_account above.
+        let mut account = Account::default();
+        account.info = info;
+        account.transaction_id = TransactionId::ZERO;
+        account.status = AccountStatus::default(); // NOT touched
         state.insert(addr(0x06), account);
 
         let mut db = AccountDB::new();
@@ -353,11 +351,19 @@ mod tests {
                 touched_account(U256::from((i as u64 + 1) * 10_000_000_000u64), i as u64);
             acc_a.storage.insert(
                 U256::ZERO,
-                EvmStorageSlot::new_changed(U256::ZERO, U256::from(i as u64 + 100), 0),
+                EvmStorageSlot::new_changed(
+                    U256::ZERO,
+                    U256::from(i as u64 + 100),
+                    TransactionId::ZERO,
+                ),
             );
             acc_b.storage.insert(
                 U256::ZERO,
-                EvmStorageSlot::new_changed(U256::ZERO, U256::from(i as u64 + 100), 0),
+                EvmStorageSlot::new_changed(
+                    U256::ZERO,
+                    U256::from(i as u64 + 100),
+                    TransactionId::ZERO,
+                ),
             );
             state_a.insert(addr(i + 1), acc_a);
             state_b.insert(addr(i + 1), acc_b);
