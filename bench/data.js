@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779953387017,
+  "lastUpdate": 1780221580569,
   "repoUrl": "https://github.com/sentrix-labs/sentrix",
   "entries": {
     "sentrix-trie benches": [
@@ -209,6 +209,48 @@ window.BENCHMARK_DATA = {
             "name": "commit_after_100_inserts",
             "value": 1351622,
             "range": "± 1655050",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9e21df6ec037218e76ff916d431868c7812196a5",
+          "message": "chore(deps): bump revm from 38.0.0 to 40.0.3 (#722)\n\n* chore(deps): bump revm from 38.0.0 to 40.0.3\n\nBumps [revm](https://github.com/bluealloy/revm) from 38.0.0 to 40.0.3.\n- [Release notes](https://github.com/bluealloy/revm/releases)\n- [Changelog](https://github.com/bluealloy/revm/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/bluealloy/revm/commits)\n\n---\nupdated-dependencies:\n- dependency-name: revm\n  dependency-version: 40.0.3\n  dependency-type: direct:production\n  update-type: version-update:semver-major\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\n\n* fix(evm): adapt writeback tests to revm 40 Account API changes\n\nrevm 38 → 40 changes:\n1. Account.original_info: Box<AccountInfo> → Option<Box<AccountInfo>>,\n   now PRIVATE — can't construct via struct literal anymore\n2. Account.transaction_id: u64 → TransactionId(NonMaxU32) newtype\n3. EvmStorageSlot::new_changed third arg same TransactionId\n\nTest helpers in writeback.rs use Account::default() + field mutation\nto sidestep the private original_info field. Functional behaviour\nidentical (default is None which matches the prior Box::new(info.clone())\nsemantics for fresh accounts).\n\n41/41 writeback tests pass. Full workspace 986/986 tests pass with\nrevm 40.0.3. Cargo fmt clean.\n\n---------\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: satyakwok <119509589+satyakwok@users.noreply.github.com>",
+          "timestamp": "2026-05-31T09:57:20Z",
+          "tree_id": "8db765e4486fa64f4e87002593947594aa13eb30",
+          "url": "https://github.com/sentrix-labs/sentrix/commit/9e21df6ec037218e76ff916d431868c7812196a5"
+        },
+        "date": 1780221579764,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "insert_single",
+            "value": 171175,
+            "range": "± 10444",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "insert_batch_100",
+            "value": 548054,
+            "range": "± 54323",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "commit_after_100_inserts",
+            "value": 1383586,
+            "range": "± 56450",
             "unit": "ns/iter"
           }
         ]
