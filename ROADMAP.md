@@ -69,8 +69,8 @@ Conceptual, no timeline commitments:
 
 ## Where to plug in
 
-- **Validator**: see [Validator Onboarding](https://docs.sentrixchain.com/docs/operations/VALIDATOR_ONBOARDING)
-- **dApp dev**: [Integration Cookbook](https://docs.sentrixchain.com/docs/operations/INTEGRATION_COOKBOOK)
+- **Validator**: see [Validator Onboarding](https://docs.sentrixchain.com/operations/validator-onboarding)
+- **dApp dev**: [Integration Cookbook](https://docs.sentrixchain.com/operations/integration-cookbook)
 - **Bug reports**: [GitHub issues](https://github.com/sentrix-labs/sentrix/issues)
 - **Protocol proposals**: [SIPs repo](https://github.com/sentrix-labs/SIPs)
 - **Security disclosures**: see [SECURITY.md](https://github.com/sentrix-labs/sentrix/blob/main/SECURITY.md)

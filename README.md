@@ -83,7 +83,7 @@ After the node is healthy: bond ≥ 15,000 SRX and submit `StakingOp::RegisterVa
 
 For incident coordination + ops support (not registration), contact **`validators@sentrixchain.com`**.
 
-Full operator guide: **[docs.sentrixchain.com/operations/VALIDATOR_ONBOARDING](https://docs.sentrixchain.com/operations/VALIDATOR_ONBOARDING)** (hardware, security, monitoring, recovery paths).
+Full operator guide: **[docs.sentrixchain.com/operations/validator-onboarding](https://docs.sentrixchain.com/operations/validator-onboarding)** (hardware, security, monitoring, recovery paths).
 
 ## Connect MetaMask (Testnet)
 
