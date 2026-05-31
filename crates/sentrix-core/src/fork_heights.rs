@@ -157,11 +157,10 @@ const STRICT_JUSTIFICATION_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// so any drift across validators surfaces immediately as a state_root
 /// mismatch instead of silently accumulating. See
 /// [SIP-6](https://github.com/sentrix-labs/SIPs/pull/3) for the
-/// migration design (F2 — proper architectural fix; F3
-/// reconciliation and F1 disable-on-cascade were considered and
-/// rejected).
+/// migration design (F2 — proper architectural fix; F3 B3b-style
+/// epoch-boundary reconciliation and F1 preemptive consuming-ops
+/// gate were considered and rejected).
 const STATE_IN_TRIE_HEIGHT_DEFAULT: u64 = u64::MAX;
-const STATE_IN_TRIE_HEIGHT_TESTNET_DEFAULT: u64 = u64::MAX;
 
 // ── Runtime readers (env → u64, default to compile-time default) ──────
 
@@ -378,13 +377,7 @@ pub fn get_strict_justification_height() -> u64 {
 /// the apply path routes the 4 consensus state pieces through the
 /// state trie before state_root commitment.
 pub fn get_state_in_trie_height() -> u64 {
-    read_height(
-        "STATE_IN_TRIE_HEIGHT",
-        chain_default(
-            STATE_IN_TRIE_HEIGHT_DEFAULT,
-            STATE_IN_TRIE_HEIGHT_TESTNET_DEFAULT,
-        ),
-    )
+    read_height("STATE_IN_TRIE_HEIGHT", STATE_IN_TRIE_HEIGHT_DEFAULT)
 }
 
 // ── Height predicates ────────────────────────────────────
