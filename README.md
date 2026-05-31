@@ -147,10 +147,14 @@ bin/
 
 ## Roadmap
 
+See **[ROADMAP.md](ROADMAP.md)** for current focus, recently shipped work, and direction.
+
+Phase history:
+
 | Phase | Status | Focus |
 |-------|--------|-------|
 | **Pioneer** | Completed (mainnet h=0…579,046) | PoA round-robin, MDBX storage, 1s blocks, SRC-20 tokens — succeeded by Voyager 2026-04-25 |
-| **Voyager** | **Live on mainnet** | DPoS proposer rotation + BFT finality, EVM (revm 38), V4 reward distribution v2 (treasury escrow + ClaimRewards), tokenomics v2 (315M cap + 4-year halving), `StakingOp::AddSelfStake`, side-car gRPC + gRPC-Web |
+| **Voyager** | **Live on mainnet** | DPoS proposer rotation + BFT finality, EVM (revm 40), V4 reward distribution v2 (treasury escrow + ClaimRewards), tokenomics v2 (315M cap + 4-year halving), `StakingOp::AddSelfStake`, side-car gRPC + gRPC-Web |
 | **Frontier** | Phase F-1 scaffold landed; F-2…F-10 planned | Parallel transaction execution, sub-1s block time, mainnet hard fork |
 | **Odyssey** | Future | Cross-chain bridges, mature ecosystem, light clients |
 
