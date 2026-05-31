@@ -239,6 +239,33 @@ impl Blockchain {
             // reject if threshold not met.
             if Self::is_strict_justification_height(expected_index) {
                 use sentrix_bft::messages::{Precommit, recover_signer};
+                // 2026-05-31 add: block ↔ justification hash consistency.
+                // A block with `block.hash=X, justification.block_hash=Y`
+                // and precommits validly signed for Y passes signature
+                // recovery + threshold checks because every check below
+                // uses `j.block_hash` as the signing payload. But the
+                // STORED block has hash X, so the chain accumulates
+                // internally-inconsistent blocks. Discovered live on
+                // 2026-05-31 testnet h=5817132: val4's self-produced
+                // block had hash=H2 (post-state_root recompute) while
+                // its embedded justification still referenced H1
+                // (pre-recompute hash collected by engine). Strictly
+                // gate so legacy blocks pre-fork stay accepted, and
+                // the consensus stack must produce hash-consistent
+                // blocks going forward. The producer-side architectural
+                // fix (block.hash committed BEFORE state_root stamp,
+                // OR speculative apply at propose time) ships separately;
+                // this check stops the bad block from being accepted
+                // by receivers in the meantime.
+                if j.block_hash != block.hash {
+                    return Err(SentrixError::InvalidBlock(format!(
+                        "block {} hash mismatch: block.hash={} != \
+                         justification.block_hash={} — peer block has \
+                         inconsistent block/justification refs, refusing \
+                         to apply",
+                        expected_index, block.hash, j.block_hash,
+                    )));
+                }
                 let mut verified_stake: u64 = 0;
                 let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
                 for p in &j.precommits {
