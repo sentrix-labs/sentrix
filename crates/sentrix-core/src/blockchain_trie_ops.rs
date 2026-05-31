@@ -24,7 +24,10 @@ use hex;
 use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::transaction::{PROTOCOL_TREASURY, TOKEN_OP_ADDRESS};
 use sentrix_storage::MdbxStorage;
-use sentrix_trie::address::{account_value_bytes, address_to_key};
+use sentrix_trie::address::{
+    account_value_bytes, address_to_key, pending_rewards_value_bytes,
+    validator_pending_rewards_key,
+};
 use sentrix_trie::tree::SentrixTrie;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -438,6 +441,30 @@ impl Blockchain {
             .collect();
         // Borrow of `accounts` ends after collect().
 
+        // Phase 1c — SIP-6 Bug A (post-fork only): snapshot every
+        // validator's `pending_rewards` into the trie inputs BEFORE
+        // we re-borrow `self.state_trie` mutably. Pre-fork this is an
+        // empty Vec, so the legacy trie write path is bit-identical.
+        //
+        // Sorted by address for cross-validator determinism (the
+        // HashMap iteration order is per-process, but a sorted Vec is
+        // identical everywhere — same property the balance write path
+        // gets from its BTreeSet above).
+        let pending_rewards_updates: Vec<(String, u64)> =
+            if Self::is_state_in_trie_height(block_index) {
+                let mut rows: Vec<(String, u64)> = self
+                    .stake_registry
+                    .validators
+                    .iter()
+                    .map(|(addr, val)| (addr.clone(), val.pending_rewards))
+                    .collect();
+                rows.sort_by(|a, b| a.0.cmp(&b.0));
+                rows
+            } else {
+                Vec::new()
+            };
+        // Borrow of `stake_registry` ends after collect()+sort.
+
         if trace {
             eprintln!("[trie-trace] update_trie_for_block at h={block_index}");
             eprintln!("[trie-trace] touched (sorted): {} addresses", updates.len());
@@ -489,6 +516,35 @@ impl Blockchain {
                 );
             }
         }
+
+        // Phase 2b — SIP-6 Bug A (post-fork only): commit per-validator
+        // pending_rewards into the trie under a domain-separated key
+        // (`validator_pending_rewards_key`) so any drift across
+        // validators surfaces immediately as a state_root mismatch
+        // instead of silently diverging on the off-trie HashMap until
+        // a ClaimRewards / Unjail / AddSelfStake tx consumes the
+        // drifted value.
+        //
+        // Empty `pending_rewards == 0` is written as `delete` to keep
+        // the trie footprint minimal and the key absent for vals that
+        // have never accrued (or have just claimed) — matches the
+        // balance loop's zero handling above.
+        for (addr, rewards) in &pending_rewards_updates {
+            let key = validator_pending_rewards_key(addr);
+            if *rewards == 0 {
+                trie.delete(&key)?;
+            } else {
+                let value = pending_rewards_value_bytes(*rewards);
+                trie.insert(&key, &value)?;
+            }
+            if trace {
+                eprintln!(
+                    "[trie-trace]   pending_rewards {addr}={rewards} → root={}",
+                    hex::encode(trie.root_hash())
+                );
+            }
+        }
+
         let root = trie.commit(block_index)?;
         if trace {
             eprintln!(

@@ -39,6 +39,41 @@ pub fn account_value_decode(bytes: &[u8]) -> Option<(u64, u64)> {
     Some((balance, nonce))
 }
 
+/// SIP-6 Bug A — trie key for a validator's `pending_rewards` accumulator.
+///
+/// Distinct domain from `address_to_key` via a fixed prefix
+/// (`"sentrix/v1/pending_rewards/"`) so this namespace cannot collide
+/// with account-balance keys regardless of SHA-256 input length.
+///
+/// Post-`STATE_IN_TRIE_HEIGHT` the apply path writes each validator's
+/// `pending_rewards` to this key before state_root is taken, so any
+/// drift surfaces immediately as a state_root mismatch instead of
+/// silently diverging on the off-trie HashMap.
+pub fn validator_pending_rewards_key(address: &str) -> NodeHash {
+    const DOMAIN: &[u8] = b"sentrix/v1/pending_rewards/";
+    let addr = address.trim_start_matches("0x").to_lowercase();
+    let bytes = hex::decode(&addr).unwrap_or_else(|_| addr.as_bytes().to_vec());
+    let mut h = Sha256::new();
+    h.update(DOMAIN);
+    h.update(&bytes);
+    h.finalize().into()
+}
+
+/// Encode a `pending_rewards` value (u64 sentri) as 8 big-endian bytes
+/// for trie value storage.
+pub fn pending_rewards_value_bytes(rewards: u64) -> [u8; 8] {
+    rewards.to_be_bytes()
+}
+
+/// Decode trie value bytes produced by [`pending_rewards_value_bytes`].
+/// Returns `None` if the slice is shorter than 8 bytes.
+pub fn pending_rewards_value_decode(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() < 8 {
+        return None;
+    }
+    Some(u64::from_be_bytes(bytes[0..8].try_into().ok()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +130,53 @@ mod tests {
     fn test_account_value_decode_short_returns_none() {
         assert!(account_value_decode(&[0u8; 8]).is_none());
         assert!(account_value_decode(&[]).is_none());
+    }
+
+    // ── SIP-6 pending_rewards trie key tests ────────────────────────
+
+    #[test]
+    fn test_pending_rewards_key_deterministic() {
+        let addr = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        assert_eq!(
+            validator_pending_rewards_key(addr),
+            validator_pending_rewards_key(addr)
+        );
+    }
+
+    #[test]
+    fn test_pending_rewards_key_case_insensitive() {
+        let a = validator_pending_rewards_key("0xDEADBEEF");
+        let b = validator_pending_rewards_key("0xdeadbeef");
+        assert_eq!(a, b);
+    }
+
+    /// Domain separation guarantee: pending_rewards key for an address
+    /// MUST differ from the balance trie key for the SAME address.
+    /// Otherwise a balance write would clobber pending_rewards (and
+    /// vice versa) at the same trie slot — silent state corruption.
+    #[test]
+    fn test_pending_rewards_key_distinct_from_balance_key() {
+        let addr = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        let bal_key = address_to_key(addr);
+        let rew_key = validator_pending_rewards_key(addr);
+        assert_ne!(
+            bal_key, rew_key,
+            "pending_rewards and balance trie keys must be distinct \
+             for the same address — otherwise writes collide"
+        );
+    }
+
+    #[test]
+    fn test_pending_rewards_value_roundtrip() {
+        let rewards = 1_234_567_890u64;
+        let encoded = pending_rewards_value_bytes(rewards);
+        assert_eq!(encoded.len(), 8);
+        assert_eq!(pending_rewards_value_decode(&encoded), Some(rewards));
+    }
+
+    #[test]
+    fn test_pending_rewards_value_decode_short_returns_none() {
+        assert!(pending_rewards_value_decode(&[0u8; 4]).is_none());
+        assert!(pending_rewards_value_decode(&[]).is_none());
     }
 }

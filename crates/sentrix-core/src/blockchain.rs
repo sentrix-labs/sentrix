@@ -356,6 +356,10 @@ impl Blockchain {
         crate::fork_heights::is_strict_justification_height(height)
     }
 
+    pub fn is_state_in_trie_height(height: u64) -> bool {
+        crate::fork_heights::is_state_in_trie_height(height)
+    }
+
     pub fn is_bft_gate_relax_height(height: u64) -> bool {
         crate::fork_heights::is_bft_gate_relax_height(height)
     }

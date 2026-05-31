@@ -17,7 +17,10 @@ pub mod storage;
 pub mod tree;
 
 // Re-export commonly used types
-pub use address::{account_value_bytes, account_value_decode, address_to_key};
+pub use address::{
+    account_value_bytes, account_value_decode, address_to_key,
+    pending_rewards_value_bytes, pending_rewards_value_decode, validator_pending_rewards_key,
+};
 pub use node::{NodeHash, TrieNode};
 pub use proof::MerkleProof;
 pub use tree::SentrixTrie;
