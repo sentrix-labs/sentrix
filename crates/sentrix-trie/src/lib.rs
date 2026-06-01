@@ -18,8 +18,10 @@ pub mod tree;
 
 // Re-export commonly used types
 pub use address::{
-    account_value_bytes, account_value_decode, address_to_key,
-    pending_rewards_value_bytes, pending_rewards_value_decode, validator_pending_rewards_key,
+    account_value_bytes, account_value_decode, address_to_key, liveness_value_bytes,
+    liveness_value_decode, pending_rewards_value_bytes, pending_rewards_value_decode,
+    total_minted_key, total_minted_value_bytes, total_minted_value_decode,
+    validator_liveness_key, validator_pending_rewards_key,
 };
 pub use node::{NodeHash, TrieNode};
 pub use proof::MerkleProof;

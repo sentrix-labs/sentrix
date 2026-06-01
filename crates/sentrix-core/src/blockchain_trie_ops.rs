@@ -25,7 +25,8 @@ use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::transaction::{PROTOCOL_TREASURY, TOKEN_OP_ADDRESS};
 use sentrix_storage::MdbxStorage;
 use sentrix_trie::address::{
-    account_value_bytes, address_to_key, pending_rewards_value_bytes,
+    account_value_bytes, address_to_key, liveness_value_bytes, pending_rewards_value_bytes,
+    total_minted_key, total_minted_value_bytes, validator_liveness_key,
     validator_pending_rewards_key,
 };
 use sentrix_trie::tree::SentrixTrie;
@@ -442,28 +443,45 @@ impl Blockchain {
         // Borrow of `accounts` ends after collect().
 
         // Phase 1c — SIP-6 Bug A (post-fork only): snapshot every
-        // validator's `pending_rewards` into the trie inputs BEFORE
-        // we re-borrow `self.state_trie` mutably. Pre-fork this is an
-        // empty Vec, so the legacy trie write path is bit-identical.
+        // validator's off-trie consensus state into trie inputs BEFORE
+        // we re-borrow `self.state_trie` mutably. Pre-fork these are
+        // empty `Vec`s / `None`, so the legacy trie write path is
+        // bit-identical.
         //
         // Sorted by address for cross-validator determinism (the
         // HashMap iteration order is per-process, but a sorted Vec is
         // identical everywhere — same property the balance write path
         // gets from its BTreeSet above).
-        let pending_rewards_updates: Vec<(String, u64)> =
-            if Self::is_state_in_trie_height(block_index) {
-                let mut rows: Vec<(String, u64)> = self
-                    .stake_registry
-                    .validators
-                    .iter()
-                    .map(|(addr, val)| (addr.clone(), val.pending_rewards))
-                    .collect();
-                rows.sort_by(|a, b| a.0.cmp(&b.0));
-                rows
-            } else {
-                Vec::new()
-            };
-        // Borrow of `stake_registry` ends after collect()+sort.
+        let (pending_rewards_updates, liveness_updates, total_minted_snapshot): (
+            Vec<(String, u64)>,
+            Vec<(String, u64, u64, u64, bool)>,
+            Option<u64>,
+        ) = if Self::is_state_in_trie_height(block_index) {
+            let mut rewards: Vec<(String, u64)> = self
+                .stake_registry
+                .validators
+                .iter()
+                .map(|(addr, val)| (addr.clone(), val.pending_rewards))
+                .collect();
+            rewards.sort_by(|a, b| a.0.cmp(&b.0));
+
+            // (addr, signed_count, missed_count, jail_until, is_jailed)
+            let mut liveness: Vec<(String, u64, u64, u64, bool)> = self
+                .stake_registry
+                .validators
+                .iter()
+                .map(|(addr, val)| {
+                    let (signed, missed) = self.slashing.liveness.get_stats(addr);
+                    (addr.clone(), signed, missed, val.jail_until, val.is_jailed)
+                })
+                .collect();
+            liveness.sort_by(|a, b| a.0.cmp(&b.0));
+
+            (rewards, liveness, Some(self.total_minted))
+        } else {
+            (Vec::new(), Vec::new(), None)
+        };
+        // Borrow of `stake_registry` / `slashing` / `total_minted` ends here.
 
         if trace {
             eprintln!("[trie-trace] update_trie_for_block at h={block_index}");
@@ -540,6 +558,48 @@ impl Blockchain {
             if trace {
                 eprintln!(
                     "[trie-trace]   pending_rewards {addr}={rewards} → root={}",
+                    hex::encode(trie.root_hash())
+                );
+            }
+        }
+
+        // Phase 2c — SIP-6 Bug A (post-fork only): commit per-validator
+        // liveness snapshot (signed_count, missed_count, jail_until,
+        // is_jailed) under `validator_liveness_key`. Drift on any of
+        // these fields silently changed active_set / jail evaluation
+        // pre-fork (mainnet halt #9 class). Post-fork divergence
+        // surfaces in state_root at the block where it first appears.
+        //
+        // Unlike pending_rewards we always insert (never delete) —
+        // a value of (0,0,0,false) is a legitimate "validator
+        // registered, no signing yet, not jailed" state distinct from
+        // "validator not in registry"; using delete would conflate them.
+        for (addr, signed, missed, jail_until, is_jailed) in &liveness_updates {
+            let key = validator_liveness_key(addr);
+            let value = liveness_value_bytes(*signed, *missed, *jail_until, *is_jailed);
+            trie.insert(&key, &value)?;
+            if trace {
+                eprintln!(
+                    "[trie-trace]   liveness {addr} signed={signed} missed={missed} \
+                     jail_until={jail_until} is_jailed={is_jailed} → root={}",
+                    hex::encode(trie.root_hash())
+                );
+            }
+        }
+
+        // Phase 2d — SIP-6 Bug A (post-fork only): commit the global
+        // `Blockchain.total_minted` counter under a fixed key
+        // (`total_minted_key`). Drift here meant validators disagreed
+        // on circulating supply for tokenomics gating (halving math,
+        // ClaimRewards budget) — surfaced on apply paths that read it
+        // back later. Same insert-always semantics as Phase 2c.
+        if let Some(total) = total_minted_snapshot {
+            let key = total_minted_key();
+            let value = total_minted_value_bytes(total);
+            trie.insert(&key, &value)?;
+            if trace {
+                eprintln!(
+                    "[trie-trace]   total_minted={total} → root={}",
                     hex::encode(trie.root_hash())
                 );
             }
