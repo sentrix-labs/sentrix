@@ -11,6 +11,7 @@ use rand::RngCore;
 use sentrix_primitives::{SentrixError, SentrixResult};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use zeroize::Zeroize;
 
 #[cfg(test)]
 const PBKDF2_ITERATIONS: u32 = 600_000; // NIST SP 800-132 recommended minimum (v1, tests only)
@@ -69,7 +70,7 @@ impl Keystore {
             .hash_password_into(password.as_bytes(), &salt, &mut key_bytes)
             .map_err(|e| SentrixError::KeystoreError(e.to_string()))?;
 
-        let private_key_bytes = hex::decode(wallet.secret_key_hex())
+        let mut private_key_bytes = hex::decode(wallet.secret_key_hex())
             .map_err(|_| SentrixError::KeystoreError("invalid private key".to_string()))?;
 
         let cipher_key = Key::<Aes256Gcm>::from_slice(&key_bytes);
@@ -85,6 +86,15 @@ impl Keystore {
         mac_input.extend_from_slice(&key_bytes[16..32]);
         mac_input.extend_from_slice(&ciphertext);
         let mac = Sha256Hasher::digest(&mac_input);
+
+        // Zero out the derived KDF key + raw private-key bytes before the
+        // stack frame unwinds. Defense in depth — limits the window where
+        // a core dump or post-free memory inspection could recover the
+        // AES-GCM key or the plaintext private key. The `zeroize` crate
+        // uses volatile writes the compiler can't optimise away.
+        key_bytes.zeroize();
+        private_key_bytes.zeroize();
+        mac_input.zeroize();
 
         Ok(Self {
             version: 2,
@@ -164,6 +174,12 @@ impl Keystore {
         // length leak here is negligible — stored MACs are always 64 hex
         // chars — but the explicit check keeps the invariant tight.
         if stored.len() != computed.len() || computed.ct_eq(stored).unwrap_u8() != 1 {
+            // Even on the wrong-password path, zero the derived KDF
+            // key + MAC input before unwinding — a core dump taken
+            // mid-MAC-failure would otherwise still contain the AES
+            // key derived from this attempt.
+            key_bytes.zeroize();
+            mac_input.zeroize();
             return Err(SentrixError::WrongPassword);
         }
 
@@ -172,12 +188,21 @@ impl Keystore {
         let cipher = Aes256Gcm::new(cipher_key);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
-        let private_key_bytes = cipher
+        let mut private_key_bytes = cipher
             .decrypt(nonce, ciphertext.as_ref())
             .map_err(|_| SentrixError::WrongPassword)?;
 
-        let private_key_hex = hex::encode(private_key_bytes);
-        Wallet::from_private_key(&private_key_hex)
+        let mut private_key_hex = hex::encode(&private_key_bytes);
+        let wallet = Wallet::from_private_key(&private_key_hex);
+
+        // Defense in depth — zero the derived KDF key + raw + hex
+        // private-key bytes before the stack frame unwinds. Same
+        // rationale as `encrypt`.
+        key_bytes.zeroize();
+        private_key_bytes.zeroize();
+        mac_input.zeroize();
+        private_key_hex.zeroize();
+        wallet
     }
 
     // Migrate a v1 (PBKDF2) keystore to v2 (Argon2id) for stronger key derivation.
@@ -191,10 +216,23 @@ impl Keystore {
         Self::encrypt(&wallet, password)
     }
 
-    // Save keystore to JSON file
+    // Save keystore to JSON file with 0600 (owner-read/write only) on
+    // Unix. Default `std::fs::write` honours the process umask, which
+    // on most systems leaves the file world-readable (0644). Even
+    // though the contents are AES-GCM ciphertext over an Argon2id-
+    // derived key, leaking the file to a co-tenant user enables
+    // offline brute-force against the password — and the per-user
+    // bound is the strongest one we can set from this binary without
+    // mandating a specific filesystem layout. Windows keeps the
+    // default; ACL hardening there is the operator's responsibility.
     pub fn save(&self, path: &str) -> SentrixResult<()> {
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(path, json)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
     }
 
@@ -269,6 +307,31 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_file(path_str);
+    }
+
+    /// Pin the file-mode contract: `save` writes 0600 (owner rw only) on
+    /// Unix. Leaking the keystore file to a co-tenant user would enable
+    /// offline brute-force against the password.
+    #[cfg(unix)]
+    #[test]
+    fn test_save_file_mode_is_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let wallet = Wallet::generate();
+        let keystore = Keystore::encrypt(&wallet, "perm_test").unwrap();
+        let tmp_path = std::env::temp_dir().join(format!(
+            "sentrix_test_perms_{}.json",
+            std::process::id()
+        ));
+        let path_str = tmp_path.to_str().unwrap();
+        keystore.save(path_str).unwrap();
+        let meta = std::fs::metadata(path_str).unwrap();
+        let mode = meta.permissions().mode() & 0o777;
+        let _ = std::fs::remove_file(path_str);
+        assert_eq!(
+            mode, 0o600,
+            "keystore file must be 0600 (owner-only); got 0{:o}",
+            mode
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //! Metrics:
 //!   sentrix_chain_height{validator,network}             — per-validator tip height
 //!   sentrix_block_age_seconds{validator,network}        — now() - latest_block_time
-//!   sentrix_chain_tip_hash_short{validator,network}     — first 4 hex of latest_block_hash as u32 (lets PromQL count distinct values for divergence alert)
+//!   sentrix_chain_tip_hash_short{validator,network}     — first 8 hex of latest_block_hash as u32 (lets PromQL count distinct values for divergence alert)
 //!   sentrix_active_validators{network}                  — chain-wide count
 //!   sentrix_mempool_size{validator,network}             — mempool entries
 //!   sentrix_uptime_seconds{validator,network}
@@ -246,6 +246,15 @@ fn parse_targets() -> Vec<Target> {
                     url: parts[2].into(),
                 })
             } else {
+                // Don't silently drop malformed entries — operator that
+                // misconfigured SENTRIX_TARGETS would otherwise see the
+                // exporter run with fewer (or zero) targets and no log
+                // hint why the dashboard went dark.
+                warn!(
+                    item = %item,
+                    "SENTRIX_TARGETS entry skipped — expected 'name:network:url', got {} parts",
+                    parts.len()
+                );
                 None
             }
         })
