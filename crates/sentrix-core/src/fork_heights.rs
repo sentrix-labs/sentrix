@@ -160,7 +160,20 @@ const STRICT_JUSTIFICATION_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// migration design (F2 — proper architectural fix; F3 B3b-style
 /// epoch-boundary reconciliation and F1 preemptive consuming-ops
 /// gate were considered and rejected).
+///
+/// Mainnet: stays `u64::MAX` until canonical-override design lands
+/// (the activation hazard from STATE_ROOT_V2 first-activation fork
+/// 2026-05-06 applies here too — first post-fork block writes any
+/// pre-existing drift directly into state_root and forks).
+///
+/// Testnet: activation pinned at 6_026_000 (~46 min after the
+/// 2026-06-01 v2.2.24 deploy window), preceded by halt-all + cp
+/// val2/chain.db → val1+val4 + simul-start to harmonize the
+/// pre-fork off-trie state across the active set. Mechanism
+/// modelled on the 2026-05-30 testnet val3 recovery — proven to
+/// land all vals on identical in-memory state on restart.
 const STATE_IN_TRIE_HEIGHT_DEFAULT: u64 = u64::MAX;
+const STATE_IN_TRIE_HEIGHT_TESTNET_DEFAULT: u64 = 6_026_000;
 
 // ── Runtime readers (env → u64, default to compile-time default) ──────
 
@@ -377,7 +390,13 @@ pub fn get_strict_justification_height() -> u64 {
 /// the apply path routes the 4 consensus state pieces through the
 /// state trie before state_root commitment.
 pub fn get_state_in_trie_height() -> u64 {
-    read_height("STATE_IN_TRIE_HEIGHT", STATE_IN_TRIE_HEIGHT_DEFAULT)
+    read_height(
+        "STATE_IN_TRIE_HEIGHT",
+        chain_default(
+            STATE_IN_TRIE_HEIGHT_DEFAULT,
+            STATE_IN_TRIE_HEIGHT_TESTNET_DEFAULT,
+        ),
+    )
 }
 
 // ── Height predicates ────────────────────────────────────
