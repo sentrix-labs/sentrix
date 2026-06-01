@@ -29,7 +29,7 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
-use dashmap::DashMap;
+use dashmap::{DashMap, mapref::entry::Entry};
 use secp256k1::{PublicKey, SecretKey};
 use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
 use sentrix_wallet::{Keystore, Wallet};
@@ -218,17 +218,28 @@ fn check_rate_limits(state: &AppState, ip: IpAddr, recipient: &str) -> Result<()
         entry.push(now);
     }
 
-    // Per-recipient: cooldown check
-    if let Some(last) = state.addr_last_drip.get(recipient)
-        && now.duration_since(*last) < state.addr_cooldown
-    {
-        let remaining = state.addr_cooldown - now.duration_since(*last);
-        return Err(format!(
-            "address cooldown: try again in {} seconds",
-            remaining.as_secs()
-        ));
+    // Per-recipient cooldown — atomic via Entry guard. The old
+    // `get` + check + `insert` pattern released the lock between
+    // read and write, so two parallel requests for the same address
+    // could each see "no prior drip" and both proceed → cooldown
+    // bypass. Matching on `Entry` holds the per-key lock for the
+    // entire check + update so concurrent callers serialize cleanly.
+    match state.addr_last_drip.entry(recipient.to_string()) {
+        Entry::Occupied(mut o) => {
+            let last = *o.get();
+            if now.duration_since(last) < state.addr_cooldown {
+                let remaining = state.addr_cooldown - now.duration_since(last);
+                return Err(format!(
+                    "address cooldown: try again in {} seconds",
+                    remaining.as_secs()
+                ));
+            }
+            o.insert(now);
+        }
+        Entry::Vacant(v) => {
+            v.insert(now);
+        }
     }
-    state.addr_last_drip.insert(recipient.to_string(), now);
 
     Ok(())
 }
