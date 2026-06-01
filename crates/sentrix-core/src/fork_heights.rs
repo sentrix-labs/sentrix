@@ -611,6 +611,19 @@ mod tests {
             assert!(is_add_self_stake_height(5_800_000));
             assert!(is_add_self_stake_height(6_000_000));
 
+            // SIP-6 STATE_IN_TRIE activates on testnet at 6,026,000
+            // (STATE_IN_TRIE_HEIGHT_TESTNET_DEFAULT — pinned 2026-06-01
+            // for the v2.2.24 deploy + chain.db harmonize window).
+            // Mainnet stays u64::MAX until canonical-override design.
+            // Pin the height + gate-boundary semantics here so a
+            // future edit of the testnet const can't silently drift
+            // the activation block.
+            std::env::remove_var("STATE_IN_TRIE_HEIGHT");
+            assert_eq!(get_state_in_trie_height(), 6_026_000);
+            assert!(!is_state_in_trie_height(6_025_999));
+            assert!(is_state_in_trie_height(6_026_000));
+            assert!(is_state_in_trie_height(6_026_001));
+
             std::env::remove_var("SENTRIX_CHAIN_ID");
         }
     }
@@ -677,6 +690,14 @@ mod tests {
             assert!(!is_add_self_stake_height(0));
             assert!(!is_add_self_stake_height(u64::MAX - 1));
 
+            // SIP-6 STATE_IN_TRIE stays disabled on mainnet until a
+            // canonical-override design lands for the first-activation
+            // drift hazard (see STATE_IN_TRIE_HEIGHT_DEFAULT doc).
+            std::env::remove_var("STATE_IN_TRIE_HEIGHT");
+            assert_eq!(get_state_in_trie_height(), u64::MAX);
+            assert!(!is_state_in_trie_height(0));
+            assert!(!is_state_in_trie_height(u64::MAX - 1));
+
             std::env::remove_var("SENTRIX_CHAIN_ID");
         }
     }
@@ -694,6 +715,7 @@ mod tests {
                 "BFT_GATE_RELAX_HEIGHT",
                 "EVM_VALUE_TRANSFER_HEIGHT",
                 "EVM_GAS_FIX_HEIGHT",
+                "STATE_IN_TRIE_HEIGHT",
             ] {
                 std::env::remove_var(var);
             }
@@ -705,6 +727,7 @@ mod tests {
             assert_eq!(get_bft_gate_relax_height(), u64::MAX);
             assert_eq!(get_evm_value_transfer_height(), 1_748_900);
             assert_eq!(get_evm_gas_fix_height(), 1_748_900);
+            assert_eq!(get_state_in_trie_height(), u64::MAX);
 
             std::env::remove_var("SENTRIX_CHAIN_ID");
         }
