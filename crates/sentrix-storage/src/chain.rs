@@ -159,16 +159,34 @@ impl ChainStorage {
 
     // ── Per-block operations ────────────────────────────────
 
+    /// Persist a single block atomically: block JSON + hash-to-height
+    /// index + tip-height key all land in one MDBX write transaction,
+    /// matching the atomic-write contract `save_blockchain` already
+    /// provides. A crash mid-transaction commits nothing; a crash after
+    /// `commit()` commits everything.
+    ///
+    /// Pre-fix the three puts ran as separate transactions, so a crash
+    /// between them could leave the block stored without its hash
+    /// index (recoverable by `ensure_hash_index` on next boot) or with
+    /// a stale `height` key (= orphaned block until the next save).
+    /// The atomic batch closes both windows.
     pub fn save_block(&self, block: &Block) -> StorageResult<()> {
         let key = format!("block:{}", block.index);
         let block_json = serde_json::to_vec(block)?;
-        self.mdbx.put(TABLE_META, key.as_bytes(), &block_json)?;
-        self.mdbx.put(
+        let height_bytes = serde_json::to_vec(&block.index)?;
+
+        let batch = self.mdbx.begin_write()?;
+        batch.put(TABLE_META, key.as_bytes(), &block_json)?;
+        batch.put(
             TABLE_BLOCK_HASHES,
             block.hash.as_bytes(),
             &height_key(block.index),
         )?;
-        self.save_height(block.index)?;
+        // Tip-height key — same TABLE_META as the per-block keys, written
+        // inside the same transaction so a torn write cannot leave the
+        // height key out of sync with the block JSON.
+        batch.put(TABLE_META, b"height", &height_bytes)?;
+        batch.commit()?;
         self.mdbx.sync()?;
         Ok(())
     }
