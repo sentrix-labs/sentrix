@@ -25,9 +25,9 @@ use sentrix_primitives::error::{SentrixError, SentrixResult};
 use sentrix_primitives::transaction::{PROTOCOL_TREASURY, TOKEN_OP_ADDRESS};
 use sentrix_storage::MdbxStorage;
 use sentrix_trie::address::{
-    account_value_bytes, address_to_key, liveness_value_bytes, pending_rewards_value_bytes,
-    total_minted_key, total_minted_value_bytes, validator_liveness_key,
-    validator_pending_rewards_key,
+    account_value_bytes, address_to_key, epoch_state_key, epoch_state_value_bytes,
+    liveness_value_bytes, pending_rewards_value_bytes, total_minted_key, total_minted_value_bytes,
+    validator_liveness_key, validator_pending_rewards_key,
 };
 
 /// SIP-6 Phase 1c snapshot row for a single validator's liveness +
@@ -35,6 +35,20 @@ use sentrix_trie::address::{
 /// in Phase 2c. Tuple: (address, signed_count, missed_count,
 /// jail_until, is_jailed).
 type LivenessSnapshotRow = (String, u64, u64, u64, bool);
+
+/// SIP-6 Phase 1c snapshot of `EpochManager.current_epoch` — captured
+/// before the `state_trie` mut-borrow, written in Phase 2e as a
+/// single 80-byte commitment under `epoch_state_key`. Field order
+/// mirrors [`sentrix_trie::address::epoch_state_value_bytes`].
+struct EpochSnapshot {
+    epoch_number: u64,
+    start_height: u64,
+    end_height: u64,
+    total_staked: u64,
+    total_rewards: u64,
+    total_blocks_produced: u64,
+    validator_set: Vec<String>,
+}
 use sentrix_trie::tree::SentrixTrie;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -461,6 +475,7 @@ impl Blockchain {
         let pending_rewards_updates: Vec<(String, u64)>;
         let liveness_updates: Vec<LivenessSnapshotRow>;
         let total_minted_snapshot: Option<u64>;
+        let epoch_snapshot: Option<EpochSnapshot>;
         if Self::is_state_in_trie_height(block_index) {
             let mut rewards: Vec<(String, u64)> = self
                 .stake_registry
@@ -481,13 +496,24 @@ impl Blockchain {
                 .collect();
             liveness.sort_by(|a, b| a.0.cmp(&b.0));
 
+            let epoch = &self.epoch_manager.current_epoch;
             pending_rewards_updates = rewards;
             liveness_updates = liveness;
             total_minted_snapshot = Some(self.total_minted);
+            epoch_snapshot = Some(EpochSnapshot {
+                epoch_number: epoch.epoch_number,
+                start_height: epoch.start_height,
+                end_height: epoch.end_height,
+                total_staked: epoch.total_staked,
+                total_rewards: epoch.total_rewards,
+                total_blocks_produced: epoch.total_blocks_produced,
+                validator_set: epoch.validator_set.clone(),
+            });
         } else {
             pending_rewards_updates = Vec::new();
             liveness_updates = Vec::new();
             total_minted_snapshot = None;
+            epoch_snapshot = None;
         }
         // Borrow of `stake_registry` / `slashing` / `total_minted` ends here.
 
@@ -608,6 +634,36 @@ impl Blockchain {
             if trace {
                 eprintln!(
                     "[trie-trace]   total_minted={total} → root={}",
+                    hex::encode(trie.root_hash())
+                );
+            }
+        }
+
+        // Phase 2e — SIP-6 Bug A (post-fork only): commit
+        // `EpochManager.current_epoch` as a single 80-byte snapshot
+        // (epoch_number + start/end_height + total_staked +
+        // total_rewards + total_blocks_produced + validator_set_hash).
+        // Closes the last off-trie consensus state class — drift on
+        // any epoch field (active-set rotation, accumulators) surfaces
+        // as state_root mismatch at the block where it first appears.
+        if let Some(snap) = epoch_snapshot {
+            let key = epoch_state_key();
+            let value = epoch_state_value_bytes(
+                snap.epoch_number,
+                snap.start_height,
+                snap.end_height,
+                snap.total_staked,
+                snap.total_rewards,
+                snap.total_blocks_produced,
+                &snap.validator_set,
+            );
+            trie.insert(&key, &value)?;
+            if trace {
+                eprintln!(
+                    "[trie-trace]   epoch_state epoch={} blocks={} rewards={} → root={}",
+                    snap.epoch_number,
+                    snap.total_blocks_produced,
+                    snap.total_rewards,
                     hex::encode(trie.root_hash())
                 );
             }
