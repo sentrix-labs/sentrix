@@ -146,6 +146,88 @@ pub fn total_minted_value_decode(bytes: &[u8]) -> Option<u64> {
     Some(u64::from_be_bytes(bytes[0..8].try_into().ok()?))
 }
 
+/// SIP-6 Bug A — trie key for the global `EpochManager.current_epoch`
+/// snapshot. Single fixed key — writes always overwrite, so the
+/// state_root reflects the current epoch's accumulators at every
+/// block (post-fork). Drift on any field surfaces as state_root
+/// mismatch immediately.
+pub fn epoch_state_key() -> NodeHash {
+    const DOMAIN: &[u8] = b"sentrix/v1/epoch_state";
+    let mut h = Sha256::new();
+    h.update(DOMAIN);
+    h.finalize().into()
+}
+
+/// Encode the current epoch's commitment-relevant fields for trie
+/// value storage. Fixed 80 bytes:
+///
+/// - 0..8:   `epoch_number` (u64 BE)
+/// - 8..16:  `start_height` (u64 BE)
+/// - 16..24: `end_height` (u64 BE)
+/// - 24..32: `total_staked` (u64 BE)
+/// - 32..40: `total_rewards` (u64 BE)
+/// - 40..48: `total_blocks_produced` (u64 BE)
+/// - 48..80: SHA-256 of the sorted validator-set addresses (32 bytes)
+///
+/// `validator_set` is sorted by address before hashing so cross-host
+/// commitments match regardless of the source iteration order.
+pub fn epoch_state_value_bytes(
+    epoch_number: u64,
+    start_height: u64,
+    end_height: u64,
+    total_staked: u64,
+    total_rewards: u64,
+    total_blocks_produced: u64,
+    validator_set: &[String],
+) -> [u8; 80] {
+    let mut v = [0u8; 80];
+    v[0..8].copy_from_slice(&epoch_number.to_be_bytes());
+    v[8..16].copy_from_slice(&start_height.to_be_bytes());
+    v[16..24].copy_from_slice(&end_height.to_be_bytes());
+    v[24..32].copy_from_slice(&total_staked.to_be_bytes());
+    v[32..40].copy_from_slice(&total_rewards.to_be_bytes());
+    v[40..48].copy_from_slice(&total_blocks_produced.to_be_bytes());
+
+    let mut sorted: Vec<&String> = validator_set.iter().collect();
+    sorted.sort();
+    let mut h = Sha256::new();
+    for addr in sorted {
+        h.update(addr.as_bytes());
+        h.update(b"\n");
+    }
+    let validator_set_hash: [u8; 32] = h.finalize().into();
+    v[48..80].copy_from_slice(&validator_set_hash);
+    v
+}
+
+/// Decode the 6 scalar fields from trie value bytes produced by
+/// [`epoch_state_value_bytes`]. The validator-set hash is the last 32
+/// bytes (verbatim from the trie value — the original set can't be
+/// recovered from a SHA-256). Returns `None` if shorter than 80 bytes.
+#[allow(clippy::type_complexity)]
+pub fn epoch_state_value_decode(bytes: &[u8]) -> Option<(u64, u64, u64, u64, u64, u64, [u8; 32])> {
+    if bytes.len() < 80 {
+        return None;
+    }
+    let epoch_number = u64::from_be_bytes(bytes[0..8].try_into().ok()?);
+    let start_height = u64::from_be_bytes(bytes[8..16].try_into().ok()?);
+    let end_height = u64::from_be_bytes(bytes[16..24].try_into().ok()?);
+    let total_staked = u64::from_be_bytes(bytes[24..32].try_into().ok()?);
+    let total_rewards = u64::from_be_bytes(bytes[32..40].try_into().ok()?);
+    let total_blocks_produced = u64::from_be_bytes(bytes[40..48].try_into().ok()?);
+    let mut validator_set_hash = [0u8; 32];
+    validator_set_hash.copy_from_slice(&bytes[48..80]);
+    Some((
+        epoch_number,
+        start_height,
+        end_height,
+        total_staked,
+        total_rewards,
+        total_blocks_produced,
+        validator_set_hash,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +411,68 @@ mod tests {
         let encoded = total_minted_value_bytes(v);
         assert_eq!(encoded.len(), 8);
         assert_eq!(total_minted_value_decode(&encoded), Some(v));
+    }
+
+    // ── SIP-6 epoch_state trie tests ────────────────────────────────
+
+    #[test]
+    fn test_epoch_state_key_deterministic_and_distinct() {
+        let k = epoch_state_key();
+        assert_eq!(k, epoch_state_key());
+        // Must not collide with the other system-level / per-addr keys.
+        assert_ne!(k, total_minted_key());
+        assert_ne!(k, address_to_key("0xdeadbeef"));
+        assert_ne!(k, validator_pending_rewards_key("0xdeadbeef"));
+        assert_ne!(k, validator_liveness_key("0xdeadbeef"));
+    }
+
+    #[test]
+    fn test_epoch_state_value_roundtrip() {
+        let validators = vec![
+            "0xaaaa".to_string(),
+            "0xbbbb".to_string(),
+            "0xcccc".to_string(),
+        ];
+        let encoded =
+            epoch_state_value_bytes(7, 201_600, 230_399, 1_000_000, 42_000, 28_800, &validators);
+        assert_eq!(encoded.len(), 80);
+        let (en, sh, eh, ts, tr, tb, _hash) = epoch_state_value_decode(&encoded).unwrap();
+        assert_eq!(en, 7);
+        assert_eq!(sh, 201_600);
+        assert_eq!(eh, 230_399);
+        assert_eq!(ts, 1_000_000);
+        assert_eq!(tr, 42_000);
+        assert_eq!(tb, 28_800);
+    }
+
+    /// Critical: validator_set hash MUST be independent of iteration
+    /// order — same set in different orders must produce identical
+    /// trie value bytes. Otherwise HashMap-derived sets fork the chain
+    /// across validators.
+    #[test]
+    fn test_epoch_state_value_validator_set_order_independent() {
+        let order1 = vec![
+            "0xaaaa".to_string(),
+            "0xbbbb".to_string(),
+            "0xcccc".to_string(),
+        ];
+        let order2 = vec![
+            "0xcccc".to_string(),
+            "0xaaaa".to_string(),
+            "0xbbbb".to_string(),
+        ];
+        let v1 = epoch_state_value_bytes(7, 0, 0, 0, 0, 0, &order1);
+        let v2 = epoch_state_value_bytes(7, 0, 0, 0, 0, 0, &order2);
+        assert_eq!(
+            v1, v2,
+            "validator_set hash must be order-independent — otherwise \
+             HashMap-iteration drift forks the chain"
+        );
+    }
+
+    #[test]
+    fn test_epoch_state_value_decode_short_returns_none() {
+        assert!(epoch_state_value_decode(&[0u8; 79]).is_none());
+        assert!(epoch_state_value_decode(&[]).is_none());
     }
 }
