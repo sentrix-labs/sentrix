@@ -29,6 +29,12 @@ use sentrix_trie::address::{
     total_minted_key, total_minted_value_bytes, validator_liveness_key,
     validator_pending_rewards_key,
 };
+
+/// SIP-6 Phase 1c snapshot row for a single validator's liveness +
+/// jail state — captured before the `state_trie` mut-borrow, written
+/// in Phase 2c. Tuple: (address, signed_count, missed_count,
+/// jail_until, is_jailed).
+type LivenessSnapshotRow = (String, u64, u64, u64, bool);
 use sentrix_trie::tree::SentrixTrie;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -452,11 +458,10 @@ impl Blockchain {
         // HashMap iteration order is per-process, but a sorted Vec is
         // identical everywhere — same property the balance write path
         // gets from its BTreeSet above).
-        let (pending_rewards_updates, liveness_updates, total_minted_snapshot): (
-            Vec<(String, u64)>,
-            Vec<(String, u64, u64, u64, bool)>,
-            Option<u64>,
-        ) = if Self::is_state_in_trie_height(block_index) {
+        let pending_rewards_updates: Vec<(String, u64)>;
+        let liveness_updates: Vec<LivenessSnapshotRow>;
+        let total_minted_snapshot: Option<u64>;
+        if Self::is_state_in_trie_height(block_index) {
             let mut rewards: Vec<(String, u64)> = self
                 .stake_registry
                 .validators
@@ -465,8 +470,7 @@ impl Blockchain {
                 .collect();
             rewards.sort_by(|a, b| a.0.cmp(&b.0));
 
-            // (addr, signed_count, missed_count, jail_until, is_jailed)
-            let mut liveness: Vec<(String, u64, u64, u64, bool)> = self
+            let mut liveness: Vec<LivenessSnapshotRow> = self
                 .stake_registry
                 .validators
                 .iter()
@@ -477,10 +481,14 @@ impl Blockchain {
                 .collect();
             liveness.sort_by(|a, b| a.0.cmp(&b.0));
 
-            (rewards, liveness, Some(self.total_minted))
+            pending_rewards_updates = rewards;
+            liveness_updates = liveness;
+            total_minted_snapshot = Some(self.total_minted);
         } else {
-            (Vec::new(), Vec::new(), None)
-        };
+            pending_rewards_updates = Vec::new();
+            liveness_updates = Vec::new();
+            total_minted_snapshot = None;
+        }
         // Borrow of `stake_registry` / `slashing` / `total_minted` ends here.
 
         if trace {

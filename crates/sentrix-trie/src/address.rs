@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn test_total_minted_value_roundtrip() {
-        let v = 315_000_000_00_000_000u64; // 315M SRX in sentri
+        let v = 31_500_000_000_000_000u64; // 315M SRX × 1e8 sentri
         let encoded = total_minted_value_bytes(v);
         assert_eq!(encoded.len(), 8);
         assert_eq!(total_minted_value_decode(&encoded), Some(v));
