@@ -1132,6 +1132,11 @@ async fn on_swarm_event(
                                         );
                                         // Epoch tracking — mirror main.rs validator-finalize.
                                         chain.epoch_manager.record_block(reward);
+                                        // Epoch boundary transition — rotate active set,
+                                        // release unbonding, run liveness slashing.
+                                        // Previously missing here; libp2p-synced nodes
+                                        // diverged from BFT-finalize path at boundaries.
+                                        chain.run_epoch_bookkeeping(gossip.block.index);
                                     }
                                     let updated =
                                         chain.latest_block().ok().cloned().unwrap_or(gossip.block);
@@ -2018,6 +2023,11 @@ async fn on_inbound_response(
                                 0,
                             );
                             chain.epoch_manager.record_block(reward);
+                            // Epoch boundary transition — rotate active set,
+                            // release unbonding, run liveness slashing.
+                            // Previously missing here; batch-syncing nodes
+                            // diverged from BFT-finalize path at boundaries.
+                            chain.run_epoch_bookkeeping(block.index);
                         }
                         // Use H2 (post-add_block state_root hash) — not the raw peer block (PR #78).
                         let updated = chain

@@ -188,10 +188,13 @@ pub fn epoch_state_value_bytes(
     v[32..40].copy_from_slice(&total_rewards.to_be_bytes());
     v[40..48].copy_from_slice(&total_blocks_produced.to_be_bytes());
 
-    let mut sorted: Vec<&String> = validator_set.iter().collect();
+    let mut sorted: Vec<String> = validator_set
+        .iter()
+        .map(|a| a.trim_start_matches("0x").to_lowercase())
+        .collect();
     sorted.sort();
     let mut h = Sha256::new();
-    for addr in sorted {
+    for addr in &sorted {
         h.update(addr.as_bytes());
         h.update(b"\n");
     }
@@ -468,6 +471,31 @@ mod tests {
             "validator_set hash must be order-independent — otherwise \
              HashMap-iteration drift forks the chain"
         );
+    }
+
+    /// validator_set hash must be case-insensitive and strip 0x prefix.
+    /// If one node stores addresses as "0xABCD" and another as "0xabcd",
+    /// both must hash to the same bytes — otherwise state_root forks at
+    /// every post-SIP-6 block.
+    #[test]
+    fn test_epoch_state_value_validator_set_case_insensitive() {
+        let lower = vec![
+            "0xaaaa".to_string(),
+            "0xbbbb".to_string(),
+        ];
+        let upper = vec![
+            "0xAAAA".to_string(),
+            "0xBBBB".to_string(),
+        ];
+        let no_prefix = vec![
+            "aaaa".to_string(),
+            "bbbb".to_string(),
+        ];
+        let v_lower = epoch_state_value_bytes(1, 0, 0, 0, 0, 0, &lower);
+        let v_upper = epoch_state_value_bytes(1, 0, 0, 0, 0, 0, &upper);
+        let v_noprefix = epoch_state_value_bytes(1, 0, 0, 0, 0, 0, &no_prefix);
+        assert_eq!(v_lower, v_upper, "validator_set hash must be case-insensitive");
+        assert_eq!(v_lower, v_noprefix, "validator_set hash must strip 0x prefix");
     }
 
     #[test]
