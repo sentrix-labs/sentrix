@@ -123,13 +123,22 @@ pub(super) async fn health(State(state): State<SharedState>) -> impl IntoRespons
 
     const STALE_THRESHOLD_SECS: u64 = 120;
 
-    let fork = FORK_DETECTED.load(Ordering::Relaxed);
-    let fork_height = FORK_DETECTED_HEIGHT.load(Ordering::Relaxed);
-    let fork_at_unix = FORK_DETECTED_AT_UNIX.load(Ordering::Relaxed);
+    // Acquire loads: pairs with the Release swap in main.rs so that when we
+    // observe FORK_DETECTED=true we are guaranteed to see the up-to-date
+    // HEIGHT/AT_UNIX values written before the swap.
+    let fork = FORK_DETECTED.load(Ordering::Acquire);
+    let fork_height = FORK_DETECTED_HEIGHT.load(Ordering::Acquire);
+    let fork_at_unix = FORK_DETECTED_AT_UNIX.load(Ordering::Acquire);
+    // Mutex::lock() provides its own Acquire fence for the string content.
+    // Clone inside the closure so the MutexGuard is dropped before any await.
+    // On poisoning: recover the inner value so diagnostic info is not lost.
     let fork_local_head = FORK_LOCAL_HEAD
         .lock()
         .map(|g| g.clone())
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            tracing::warn!("FORK_LOCAL_HEAD mutex poisoned — recovering inner value");
+            e.into_inner().clone()
+        });
 
     let bc = state.read().await;
     let (height, head_hash, last_block_ts) = bc
@@ -550,12 +559,18 @@ mod tests {
     use super::*;
     use axum::{body::to_bytes, http::StatusCode};
     use sentrix_core::blockchain::Blockchain;
-    use std::sync::{Arc, Mutex, atomic::Ordering};
+    use std::sync::{Arc, atomic::Ordering};
     use tokio::sync::RwLock;
 
-    // Tests that touch process-level atomics must run sequentially to
-    // avoid races between parallel test threads.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    // Tests that touch process-level atomics must run sequentially to avoid
+    // races between parallel test threads. Using tokio::sync::Mutex so the
+    // guard can be held across .await points without triggering the
+    // `clippy::await_holding_lock` lint.
+    static TEST_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+    fn test_lock() -> &'static tokio::sync::Mutex<()> {
+        TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
 
     fn make_state() -> SharedState {
         Arc::new(RwLock::new(Blockchain::new(
@@ -577,7 +592,7 @@ mod tests {
     /// the stale guard `last_block_ts > 0` prevents a false stale alarm.)
     #[tokio::test]
     async fn test_health_ok_when_no_fork() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = test_lock().lock().await;
         reset_fork_state();
 
         let state = make_state();
@@ -594,7 +609,7 @@ mod tests {
     /// divergent branch.
     #[tokio::test]
     async fn test_health_503_when_fork_detected() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = test_lock().lock().await;
         reset_fork_state();
 
         FORK_DETECTED.store(true, Ordering::SeqCst);
@@ -621,7 +636,7 @@ mod tests {
     /// back to 200. This simulates a transient fork that resolved after sync.
     #[tokio::test]
     async fn test_health_recovers_when_fork_cleared() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = test_lock().lock().await;
         reset_fork_state();
 
         // Simulate: fork detected, then NewBlock clears the flag.

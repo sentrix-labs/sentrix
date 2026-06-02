@@ -1154,7 +1154,7 @@ async fn on_swarm_event(
                                         .unwrap_or_default();
                                     tracing::error!(
                                         target: "sentrix::fork",
-                                        "FORK DETECTED (gossip): block {} from {:?} — \
+                                        "FORK DETECTED (gossip): block {} from {} — \
                                          local head {} on divergent branch.",
                                         gossip.block.index, peer, local_hash
                                     );
@@ -1167,7 +1167,7 @@ async fn on_swarm_event(
                                 }
                                 Err(e) => {
                                     APPLY_ERR.fetch_add(1, Ordering::Relaxed);
-                                    tracing::debug!("gossip block from {:?} rejected: {}", peer, e);
+                                    tracing::debug!("gossip block from {} rejected: {}", peer, e);
                                 }
                             }
                         });
