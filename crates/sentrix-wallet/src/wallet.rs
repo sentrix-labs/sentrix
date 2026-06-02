@@ -136,7 +136,10 @@ mod tests {
         let w1 = Wallet::generate();
         let w2 = Wallet::generate();
         assert_ne!(w1.address, w2.address);
-        assert_ne!(w1.secret_key_hex().expose_str(), w2.secret_key_hex().expose_str());
+        assert_ne!(
+            w1.secret_key_hex().expose_str(),
+            w2.secret_key_hex().expose_str()
+        );
     }
 
     #[test]
@@ -155,7 +158,10 @@ mod tests {
         let wallet = Wallet::generate();
         let sk = wallet.get_secret_key().unwrap();
         let wallet2 = Wallet::from_keypair(&sk, &wallet.get_public_key().unwrap());
-        assert_eq!(wallet.secret_key_hex().expose_str(), wallet2.secret_key_hex().expose_str());
+        assert_eq!(
+            wallet.secret_key_hex().expose_str(),
+            wallet2.secret_key_hex().expose_str()
+        );
         assert_eq!(wallet.address, wallet2.address);
     }
 }
