@@ -558,7 +558,6 @@ impl Blockchain {
             .map(|v| v.total_stake())
             .sum();
 
-        self.epoch_manager.record_block(0);
         let finished = self.epoch_manager.current_epoch.clone();
         self.epoch_manager.history.push(finished);
         if self.epoch_manager.history.len() > self.epoch_manager.max_history {
