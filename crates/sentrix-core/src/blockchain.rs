@@ -519,6 +519,82 @@ impl Blockchain {
         self.total_minted
     }
 
+    /// Run epoch-boundary bookkeeping for the block at `height` if it is
+    /// an epoch boundary. Encapsulates process_unbonding → unbond releases
+    /// → update_active_set → epoch rotation → slashing.check_liveness so
+    /// both the BFT-finalize path (main.rs) and the libp2p sync paths
+    /// (gossip + GetBlocks catch-up) run identical logic.
+    ///
+    /// Call AFTER record_block + distribute_reward have already run for
+    /// this block. Returns without doing anything if the height is not
+    /// an epoch boundary.
+    pub fn run_epoch_bookkeeping(&mut self, height: u64) {
+        use sentrix_primitives::transaction::PROTOCOL_TREASURY;
+        use sentrix_staking::epoch::{EpochInfo, EpochManager, EPOCH_LENGTH};
+
+        if !EpochManager::is_epoch_boundary(height) {
+            return;
+        }
+
+        tracing::info!("Epoch boundary at height {} — transitioning", height);
+        let released = self.stake_registry.process_unbonding(height);
+        for (delegator, amount) in &released {
+            let r = if Self::is_reward_v2_height(height) {
+                self.accounts.transfer(PROTOCOL_TREASURY, delegator, *amount, 0)
+            } else {
+                self.accounts.credit(delegator, *amount)
+            };
+            r.unwrap_or_else(|e| tracing::warn!("unbonding release failed: {}", e));
+        }
+        if !released.is_empty() {
+            tracing::info!("Released {} unbonding entries", released.len());
+        }
+
+        self.stake_registry.update_active_set();
+        let active_set = self.stake_registry.active_set.clone();
+        let total_staked: u64 = active_set
+            .iter()
+            .filter_map(|a| self.stake_registry.get_validator(a))
+            .map(|v| v.total_stake())
+            .sum();
+
+        self.epoch_manager.record_block(0);
+        let finished = self.epoch_manager.current_epoch.clone();
+        self.epoch_manager.history.push(finished);
+        if self.epoch_manager.history.len() > self.epoch_manager.max_history {
+            self.epoch_manager.history.remove(0);
+        }
+        let next_num = self.epoch_manager.current_epoch.epoch_number + 1;
+        let next_start = next_num * EPOCH_LENGTH;
+        self.epoch_manager.current_epoch = EpochInfo {
+            epoch_number: next_num,
+            start_height: next_start,
+            end_height: next_start + EPOCH_LENGTH - 1,
+            validator_set: active_set.clone(),
+            total_staked,
+            total_rewards: 0,
+            total_blocks_produced: 0,
+        };
+
+        if let Some(emitter) = &self.event_emitter {
+            emitter.emit_validator_set(next_num, &active_set);
+        }
+        tracing::info!(
+            "Epoch {} started — {} validators, {} staked",
+            next_num,
+            active_set.len(),
+            total_staked
+        );
+
+        let mut slashing = std::mem::take(&mut self.slashing);
+        let slashed = slashing.check_liveness(&mut self.stake_registry, &active_set, height);
+        self.slashing = slashing;
+        for (val, amt) in &slashed {
+            tracing::warn!("Slashed {} for {} sentri (downtime)", val, amt);
+            self.accounts.burn(*amt);
+        }
+    }
+
     // Memory estimate reflects the in-memory window, not the full historical chain
     pub fn get_memory_estimate(&self) -> String {
         let window_blocks = self.chain.len();

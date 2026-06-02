@@ -6,7 +6,6 @@ use libp2p::Multiaddr;
 use sentrix::api::events::EventBus;
 use sentrix::api::routes::{SharedState, create_router_with_bus};
 use sentrix::core::blockchain::{BLOCK_TIME_SECS, Blockchain};
-use sentrix::core::transaction::PROTOCOL_TREASURY;
 use sentrix::network::libp2p_node::{LibP2pNode, make_multiaddr};
 use sentrix::network::node::{DEFAULT_PORT, NodeEvent};
 use sentrix::storage::db::Storage;
@@ -2347,74 +2346,7 @@ async fn cmd_start(
                                                                 validator_fee,
                                                             );
 
-                                                        if sentrix::core::epoch::EpochManager::is_epoch_boundary(height) {
-                                                            tracing::info!("Epoch boundary at height {} — transitioning", height);
-                                                            let released = bc.stake_registry.process_unbonding(height);
-                                                            for (delegator, amount) in &released {
-                                                                // V4 Step 3: post-reward-v2 fork, unbonded
-                                                                // stake returns from treasury (where it
-                                                                // was escrowed on Delegate), not a fresh
-                                                                // mint. Pre-fork path keeps legacy credit
-                                                                // behaviour for existing chain.db state.
-                                                                let r = if Blockchain::is_reward_v2_height(height) {
-                                                                    bc.accounts.transfer(
-                                                                        PROTOCOL_TREASURY,
-                                                                        delegator,
-                                                                        *amount,
-                                                                        0,
-                                                                    )
-                                                                } else {
-                                                                    bc.accounts.credit(delegator, *amount)
-                                                                };
-                                                                r.unwrap_or_else(|e| tracing::warn!("unbonding release failed: {}", e));
-                                                            }
-                                                            if !released.is_empty() {
-                                                                tracing::info!("Released {} unbonding entries", released.len());
-                                                            }
-
-                                                            bc.stake_registry.update_active_set();
-                                                            let active_set = bc.stake_registry.active_set.clone();
-                                                            let total_staked: u64 = active_set.iter()
-                                                                .filter_map(|a| bc.stake_registry.get_validator(a))
-                                                                .map(|v| v.total_stake())
-                                                                .sum();
-                                                            bc.epoch_manager.record_block(0);
-                                                            let finished = bc.epoch_manager.current_epoch.clone();
-                                                            bc.epoch_manager.history.push(finished);
-                                                            if bc.epoch_manager.history.len() > bc.epoch_manager.max_history {
-                                                                bc.epoch_manager.history.remove(0);
-                                                            }
-                                                            let next_num = bc.epoch_manager.current_epoch.epoch_number + 1;
-                                                            let next_start = next_num * sentrix::core::epoch::EPOCH_LENGTH;
-                                                            bc.epoch_manager.current_epoch = sentrix::core::epoch::EpochInfo {
-                                                                epoch_number: next_num,
-                                                                start_height: next_start,
-                                                                end_height: next_start + sentrix::core::epoch::EPOCH_LENGTH - 1,
-                                                                validator_set: active_set.clone(),
-                                                                total_staked,
-                                                                total_rewards: 0,
-                                                                total_blocks_produced: 0,
-                                                            };
-                                                            // Phase 3 WS: notify sentrix_subscribe(validatorSet)
-                                                            // — full epoch-advance wire-up. Subscribers see
-                                                            // the new active set on every epoch boundary,
-                                                            // not just AddSelfStake re-entry.
-                                                            if let Some(emitter) = &bc.event_emitter {
-                                                                emitter.emit_validator_set(next_num, &active_set);
-                                                            }
-                                                            tracing::info!("Epoch {} started — {} validators, {} staked",
-                                                                next_num, active_set.len(), total_staked);
-
-                                                            let mut slashing = std::mem::take(&mut bc.slashing);
-                                                            let slashed = slashing.check_liveness(
-                                                                &mut bc.stake_registry, &active_set, height,
-                                                            );
-                                                            bc.slashing = slashing;
-                                                            for (val, amt) in &slashed {
-                                                                tracing::warn!("Slashed {} for {} sentri (downtime)", val, amt);
-                                                                bc.accounts.burn(*amt);
-                                                            }
-                                                        }
+                                                        bc.run_epoch_bookkeeping(height);
 
                                                         tracing::info!(
                                                             "BFT finalized height={} round={}",
@@ -2963,73 +2895,7 @@ async fn cmd_start(
                                                     validator_fee,
                                                 );
 
-                                                if sentrix::core::epoch::EpochManager::is_epoch_boundary(height) {
-                                                    tracing::info!("Epoch boundary at height {} — transitioning", height);
-                                                    let released = bc.stake_registry.process_unbonding(height);
-                                                    for (delegator, amount) in &released {
-                                                        // V4 Step 3 — mirror of the self-produced
-                                                        // finalize handler above; unbonded stake
-                                                        // returns from treasury post-fork.
-                                                        let r = if Blockchain::is_reward_v2_height(height) {
-                                                            bc.accounts.transfer(
-                                                                PROTOCOL_TREASURY,
-                                                                delegator,
-                                                                *amount,
-                                                                0,
-                                                            )
-                                                        } else {
-                                                            bc.accounts.credit(delegator, *amount)
-                                                        };
-                                                        r.unwrap_or_else(|e| tracing::warn!("unbonding release failed: {}", e));
-                                                    }
-                                                    if !released.is_empty() {
-                                                        tracing::info!("Released {} unbonding entries", released.len());
-                                                    }
-
-                                                    bc.stake_registry.update_active_set();
-                                                    let active_set = bc.stake_registry.active_set.clone();
-                                                    let total_staked: u64 = active_set.iter()
-                                                        .filter_map(|a| bc.stake_registry.get_validator(a))
-                                                        .map(|v| v.total_stake())
-                                                        .sum();
-                                                    bc.epoch_manager.record_block(0);
-                                                    let finished = bc.epoch_manager.current_epoch.clone();
-                                                    bc.epoch_manager.history.push(finished);
-                                                    if bc.epoch_manager.history.len() > bc.epoch_manager.max_history {
-                                                        bc.epoch_manager.history.remove(0);
-                                                    }
-                                                    let next_num = bc.epoch_manager.current_epoch.epoch_number + 1;
-                                                    let next_start = next_num * sentrix::core::epoch::EPOCH_LENGTH;
-                                                    bc.epoch_manager.current_epoch = sentrix::core::epoch::EpochInfo {
-                                                        epoch_number: next_num,
-                                                        start_height: next_start,
-                                                        end_height: next_start + sentrix::core::epoch::EPOCH_LENGTH - 1,
-                                                        validator_set: active_set.clone(),
-                                                        total_staked,
-                                                        total_rewards: 0,
-                                                        total_blocks_produced: 0,
-                                                    };
-                                                    // Phase 3 WS: notify sentrix_subscribe(validatorSet) —
-                                                    // libp2p-applied path mirror of the validator-finalize
-                                                    // emit above. Both call sites must emit so subscribers
-                                                    // see the rotation regardless of which path applied
-                                                    // the boundary block.
-                                                    if let Some(emitter) = &bc.event_emitter {
-                                                        emitter.emit_validator_set(next_num, &active_set);
-                                                    }
-                                                    tracing::info!("Epoch {} started — {} validators, {} staked",
-                                                        next_num, active_set.len(), total_staked);
-
-                                                    let mut slashing = std::mem::take(&mut bc.slashing);
-                                                    let slashed = slashing.check_liveness(
-                                                        &mut bc.stake_registry, &active_set, height,
-                                                    );
-                                                    bc.slashing = slashing;
-                                                    for (val, amt) in &slashed {
-                                                        tracing::warn!("Slashed {} for {} sentri (downtime)", val, amt);
-                                                        bc.accounts.burn(*amt);
-                                                    }
-                                                }
+                                                bc.run_epoch_bookkeeping(height);
 
                                                 tracing::info!(
                                                     "BFT finalized height={} round={}",
