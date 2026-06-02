@@ -30,7 +30,7 @@ pub fn cmd_wallet_generate(password: Option<String>) -> anyhow::Result<()> {
         println!("  Keystore:    {}", filename);
         println!("\nWARNING: Back up your keystore file and password securely.");
     } else {
-        println!("  Private key: {}", wallet.secret_key_hex());
+        println!("  Private key: {}", wallet.secret_key_hex().expose_str());
         println!("\nWARNING: Save your private key securely. It will not be shown again.");
     }
     Ok(())

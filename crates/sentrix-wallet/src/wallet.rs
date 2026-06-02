@@ -1,5 +1,6 @@
 // wallet.rs - Sentrix
 
+use reliakit_secret::SecretString;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use sentrix_primitives::{SentrixError, SentrixResult};
 use sha3::Digest;
@@ -68,9 +69,9 @@ impl Wallet {
         format!("0x{}", hex::encode(address_bytes))
     }
 
-    // Returns the private key as a hex string (use sparingly — creates a heap copy)
-    pub fn secret_key_hex(&self) -> String {
-        hex::encode(*self.secret_key_bytes)
+    // Returns the private key as a redacted secret (use .expose_str() at explicit call sites only)
+    pub fn secret_key_hex(&self) -> SecretString {
+        SecretString::from_string(hex::encode(*self.secret_key_bytes))
     }
 
     pub fn get_secret_key(&self) -> SentrixResult<SecretKey> {
@@ -94,7 +95,7 @@ mod tests {
         assert!(wallet.address.starts_with("0x"));
         assert_eq!(wallet.address.len(), 42); // 0x + 40 hex chars
         assert!(!wallet.public_key.is_empty());
-        assert!(!wallet.secret_key_hex().is_empty());
+        assert!(!wallet.secret_key_hex().expose_str().is_empty());
     }
 
     #[test]
@@ -109,7 +110,7 @@ mod tests {
     #[test]
     fn test_import_from_private_key() {
         let wallet = Wallet::generate();
-        let imported = Wallet::from_private_key(&wallet.secret_key_hex()).unwrap();
+        let imported = Wallet::from_private_key(wallet.secret_key_hex().expose_str()).unwrap();
         assert_eq!(wallet.address, imported.address);
         assert_eq!(wallet.public_key, imported.public_key);
     }
@@ -135,7 +136,7 @@ mod tests {
         let w1 = Wallet::generate();
         let w2 = Wallet::generate();
         assert_ne!(w1.address, w2.address);
-        assert_ne!(w1.secret_key_hex(), w2.secret_key_hex());
+        assert_ne!(w1.secret_key_hex().expose_str(), w2.secret_key_hex().expose_str());
     }
 
     #[test]
@@ -144,8 +145,8 @@ mod tests {
         // secret_key_hex() method provides access; field is not directly accessible.
         let wallet = Wallet::generate();
         let hex = wallet.secret_key_hex();
-        assert_eq!(hex.len(), 64); // 32 bytes = 64 hex chars
-        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(hex.expose_str().len(), 64); // 32 bytes = 64 hex chars
+        assert!(hex.expose_str().chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -154,7 +155,7 @@ mod tests {
         let wallet = Wallet::generate();
         let sk = wallet.get_secret_key().unwrap();
         let wallet2 = Wallet::from_keypair(&sk, &wallet.get_public_key().unwrap());
-        assert_eq!(wallet.secret_key_hex(), wallet2.secret_key_hex());
+        assert_eq!(wallet.secret_key_hex().expose_str(), wallet2.secret_key_hex().expose_str());
         assert_eq!(wallet.address, wallet2.address);
     }
 }
