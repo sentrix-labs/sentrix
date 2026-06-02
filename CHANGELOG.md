@@ -14,6 +14,55 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.25] — 2026-06-02 — SIP-6 activation fixes + wallet key safety
+
+**SIP-6 is now testnet-active** on Sentrix Testnet at `h=6,026,000`. Two pre-deploy blockers discovered during code review were fixed before activation, and one post-activation bug was caught and fixed in the same session.
+
+### Consensus — SIP-6 (STATE_IN_TRIE) activation fixes
+
+- **Fix: epoch_state validator-set hash is now case-insensitive** (PR #763). `epoch_state_value_bytes` hashed raw validator address strings without normalizing case or stripping the `0x` prefix. If any two validators stored the same address with different casing, the 32-byte `validator_set_hash` diverged — causing `state_root` mismatch at every post-SIP-6 block. Fix: normalize each address with `trim_start_matches("0x").to_lowercase()` before hashing, matching `address_to_key`. New test `test_epoch_state_value_validator_set_case_insensitive` pins the contract.
+- **Fix: epoch boundary transition missing in libp2p sync paths** (PR #763). The gossip and `GetBlocks` batch-sync paths applied `record_block_signatures + distribute_reward + epoch_manager.record_block` but skipped the full boundary transition (`process_unbonding → unbond releases → update_active_set → epoch rotation → check_liveness`). Nodes catching up via these paths had a stale `active_set` and wrong `epoch_state` after every epoch boundary. With SIP-6 active this surfaced immediately as `state_root` mismatch. Fix: extracted the boundary block from two duplicate `main.rs` FinalizeBlock arms into `Blockchain::run_epoch_bookkeeping(height)` and added the call to both libp2p paths.
+- **Fix: double `record_block(0)` at epoch boundary** (PR #764). `run_epoch_bookkeeping` called `epoch_manager.record_block(0)` a second time before pushing the finished epoch to history. Callers already called `record_block(reward)` before entering the helper, so `total_blocks_produced` was inflated by one at every epoch rollover. Removed the redundant call.
+
+### Consensus — SIP-6 implementation (PRs #755–#759)
+
+SIP-6 moves four consensus state fields — `pending_rewards`, `liveness` (signed/missed/jail), `total_minted`, and `epoch_state` — from off-trie in-memory storage into the state trie. Before this, silent drift across validators was undetectable until a consuming transaction (ClaimRewards, Unjail, AddSelfStake) re-read the diverged value and forked the cluster. Post-SIP-6, any drift surfaces immediately as a `state_root` mismatch at the block where it first appears.
+
+- Fork gate: `STATE_IN_TRIE_HEIGHT`. Mainnet stays at `u64::MAX` until a canonical-override design lands. Testnet activated at `h=6,026,000` (2026-06-01).
+- New trie keys: `sentrix/v1/pending_rewards/<addr>`, `sentrix/v1/liveness/<addr>`, `sentrix/v1/total_minted`, `sentrix/v1/epoch_state` — all SHA-256 domain-separated, written inside `update_trie_for_block` before `state_root` is taken.
+- Validator set sorted and normalized before hashing to ensure cross-host determinism.
+
+### Storage
+
+- **Fix: `save_block` is now atomic** (PR #762). Previously three separate MDBX puts (block JSON → hash index → height key). A crash between them left on-disk state partially consistent. Now all three land in one MDBX write transaction — crash either commits nothing or everything.
+
+### Security
+
+- **Fix: faucet per-recipient cooldown TOCTOU closed** (PR #760). A check-then-insert race allowed two concurrent requests for the same address to both see "not present" and both receive tokens. Replaced with `DashMap` Entry API that holds the per-shard lock through the check and insert.
+- **Fix: keystore file permissions + key material handling** (PR #761). Keystore files now written with `0600` permissions. `secret_key_bytes` wrapped in `Zeroizing` via `zeroize` crate for automatic zeroing on drop. `prom-exporter` label documentation added.
+- **Feat: `secret_key_hex()` returns `SecretString`** (PR #765). `Wallet::secret_key_hex()` now returns `reliakit_secret::SecretString` instead of a plain `String`. `Debug` and `Display` print `[REDACTED]` — the private key cannot leak through tracing macros or accidental format output. CLI commands that legitimately display the key call `.expose_str()` explicitly.
+
+### BFT observability
+
+- **Feat: `BftMetrics` struct with per-path tracing** (PRs #745–#746). Tracks round durations, proposal receive latency, prevote/precommit counts, and finalization rate. Exposed on the `/metrics` Prometheus endpoint as `sentrix_bft_*` gauges.
+
+### BFT reliability
+
+- **Fix: engine resume handles `round=0 step≥1` stuck state** (PR #742). On restart into an already-advanced round at step ≥ 1, the engine skipped the `Propose` phase but stalled because `step<1` guards blocked further progress. Now resumes from the correct step when re-entering an in-progress round.
+- **Fix: reject self-produced blocks where `block.hash ≠ justification.block_hash`** (PR #752). `block.hash` is recomputed post-apply (after `state_root` is stamped); the embedded justification carried the pre-apply hash. Receivers now reject such blocks under the `strict_justification` fork gate (default `u64::MAX`; activation requires explicit operator decision per chain). Closes the surface that surfaced during the 2026-05-31 testnet h=5,817,132 stall.
+
+### CLI
+
+- **Feat: `sentrix staking` subcommands** (PR #749). TX-based `unjail`, `stake`, and `claim` helpers that broadcast signed staking operations directly from the CLI. Replaces the previous admin-path workarounds.
+
+### Dependencies
+
+- **Bump: revm 38 → 40** (PR #722). Tracks the latest EVM execution library. API breaks in `AccountInfo` shape, `TransactionId`, and `writeback.rs` were resolved.
+
+---
+
+## [2.2.19] — 2026-05-29 — apply-watchdog for fullnode silent-stall class
+
 ## [2.2.17] — 2026-05-25 — B3b uses emission schedule, not per-block disk reads
 
 **Hotfix for v2.2.16 boot-stall regression.** The v2.2.16 B3b `total_minted` self-heal iterated `load_block` per height to sum coinbase amounts. At mainnet h≈2.2M with six containers booting in parallel after a halt-all, MDBX I/O contention turned the "~30-60s sanity pass" estimate into a multi-minute per-container stall — every node sat past `Blockchain state loaded` without proceeding to the BFT round loop. Public RPC stayed down, health checks failed, the v2.2.16 deploy was rolled back at T+~24min.

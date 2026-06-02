@@ -4550,6 +4550,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "reliakit-secret"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71fc95b189ee53987da09d1e42fe985c458f0fce63b435fd7a907b9c4d921e19"
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5154,7 +5160,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "aes-gcm",
  "alloy-consensus",
@@ -5202,7 +5208,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-bft"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "bincode",
  "hex",
@@ -5230,7 +5236,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-core"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -5260,7 +5266,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-evm"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "alloy-primitives",
  "hex",
@@ -5275,7 +5281,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-faucet"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "anyhow",
  "axum",
@@ -5296,7 +5302,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-grpc"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "async-stream",
  "bincode",
@@ -5315,7 +5321,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-network"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "async-trait",
  "bincode",
@@ -5333,7 +5339,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-node"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "anyhow",
  "axum",
@@ -5359,14 +5365,14 @@ dependencies = [
 
 [[package]]
 name = "sentrix-precompiles"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "alloy-primitives",
 ]
 
 [[package]]
 name = "sentrix-primitives"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "hex",
  "proptest",
@@ -5381,7 +5387,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-prom-exporter"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "http-body-util",
  "hyper",
@@ -5409,7 +5415,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-rpc"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -5440,14 +5446,14 @@ dependencies = [
 
 [[package]]
 name = "sentrix-rpc-types"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "sentrix-staking"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "sentrix-primitives",
  "serde",
@@ -5457,7 +5463,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-storage"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "bincode",
  "libmdbx",
@@ -5472,7 +5478,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-trie"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "bincode",
  "blake3",
@@ -5489,13 +5495,14 @@ dependencies = [
 
 [[package]]
 name = "sentrix-wallet"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "aes-gcm",
  "argon2",
  "hex",
  "pbkdf2",
  "rand 0.9.3",
+ "reliakit-secret",
  "secp256k1 0.31.1",
  "sentrix-primitives",
  "serde",
@@ -5508,7 +5515,7 @@ dependencies = [
 
 [[package]]
 name = "sentrix-wire"
-version = "2.2.24"
+version = "2.2.25"
 dependencies = [
  "bincode",
  "secp256k1 0.31.1",
