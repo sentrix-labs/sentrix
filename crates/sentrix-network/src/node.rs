@@ -25,7 +25,22 @@ pub enum NodeEvent {
     NewTransaction(Transaction),
     PeerConnected(String),
     PeerDisconnected(String),
-    SyncNeeded { peer_addr: String, peer_height: u64 },
+    SyncNeeded {
+        peer_addr: String,
+        peer_height: u64,
+    },
+    /// Emitted when a block import fails because the incoming block's
+    /// `previous_hash` doesn't match our local head hash. This means
+    /// the local chain is on a divergent branch from the canonical
+    /// network. Automatic recovery is not possible without a storage
+    /// rollback primitive; the health endpoint marks the node unhealthy
+    /// until the operator copies a canonical chain.db.
+    SyncForkDetected {
+        /// Height of the incoming canonical block that couldn't be applied.
+        height: u64,
+        /// Our local head hash at the time of the mismatch.
+        local_head_hash: String,
+    },
     BftProposal(sentrix_bft::messages::Proposal),
     BftPrevote(sentrix_bft::messages::Prevote),
     BftPrecommit(sentrix_bft::messages::Precommit),

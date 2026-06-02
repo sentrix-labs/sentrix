@@ -530,7 +530,7 @@ impl Blockchain {
     /// an epoch boundary.
     pub fn run_epoch_bookkeeping(&mut self, height: u64) {
         use sentrix_primitives::transaction::PROTOCOL_TREASURY;
-        use sentrix_staking::epoch::{EpochInfo, EpochManager, EPOCH_LENGTH};
+        use sentrix_staking::epoch::{EPOCH_LENGTH, EpochInfo, EpochManager};
 
         if !EpochManager::is_epoch_boundary(height) {
             return;
@@ -540,7 +540,8 @@ impl Blockchain {
         let released = self.stake_registry.process_unbonding(height);
         for (delegator, amount) in &released {
             let r = if Self::is_reward_v2_height(height) {
-                self.accounts.transfer(PROTOCOL_TREASURY, delegator, *amount, 0)
+                self.accounts
+                    .transfer(PROTOCOL_TREASURY, delegator, *amount, 0)
             } else {
                 self.accounts.credit(delegator, *amount)
             };

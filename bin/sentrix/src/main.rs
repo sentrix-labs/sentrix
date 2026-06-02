@@ -3310,7 +3310,64 @@ async fn cmd_start(
             match event {
                 NodeEvent::PeerConnected(addr) => tracing::info!("Peer connected: {}", addr),
                 NodeEvent::PeerDisconnected(addr) => tracing::info!("Peer disconnected: {}", addr),
+                NodeEvent::SyncForkDetected {
+                    height,
+                    local_head_hash,
+                } => {
+                    use std::sync::atomic::Ordering;
+                    // Store metadata before setting the flag so readers that
+                    // observe FORK_DETECTED=true (with Acquire) are guaranteed
+                    // to also see the up-to-date height/timestamp (Release).
+                    sentrix::api::routes::ops::FORK_DETECTED_HEIGHT
+                        .store(height, Ordering::Relaxed);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    sentrix::api::routes::ops::FORK_DETECTED_AT_UNIX.store(now, Ordering::Relaxed);
+                    if let Ok(mut g) = sentrix::api::routes::ops::FORK_LOCAL_HEAD.lock() {
+                        // lock() provides the Release/Acquire fence for FORK_LOCAL_HEAD;
+                        // only write if not already set (first detection wins).
+                        if g.is_empty() {
+                            *g = local_head_hash.clone();
+                        }
+                    }
+                    // Release fence: HEIGHT/AT_UNIX stores above are visible to
+                    // any thread that observes FORK_DETECTED=true with Acquire.
+                    let already =
+                        sentrix::api::routes::ops::FORK_DETECTED.swap(true, Ordering::Release);
+                    if !already {
+                        tracing::error!(
+                            "FORK: node is on a divergent branch (local head {} cannot \
+                             attach canonical block {}). Health endpoint now returns 503. \
+                             Stop this node and copy chain.db from a healthy validator to recover.",
+                            local_head_hash,
+                            height
+                        );
+                    }
+                }
                 NodeEvent::NewBlock(block) => {
+                    // Clear fork state only if the new block is at or beyond the
+                    // height where the fork was detected — a block below the fork
+                    // point cannot prove we're back on the canonical chain.
+                    use std::sync::atomic::Ordering;
+                    let fork_h =
+                        sentrix::api::routes::ops::FORK_DETECTED_HEIGHT.load(Ordering::Acquire);
+                    if sentrix::api::routes::ops::FORK_DETECTED.load(Ordering::Acquire)
+                        && block.index >= fork_h
+                    {
+                        sentrix::api::routes::ops::FORK_DETECTED.store(false, Ordering::Release);
+                        // Also clear the stored local hash so it's accurate on re-detection.
+                        if let Ok(mut g) = sentrix::api::routes::ops::FORK_LOCAL_HEAD.lock() {
+                            g.clear();
+                        }
+                        tracing::info!(
+                            "FORK cleared: block {} (>= fork h={}) applied successfully; \
+                             node is back on canonical chain.",
+                            block.index,
+                            fork_h
+                        );
+                    }
                     // 2026-05-05 v2.1.63: explicit log for the libp2p-applied
                     // path so the BFT-engine vs chain.height race we hit on
                     // 2026-05-04 is greppable in journalctl. Pair this with

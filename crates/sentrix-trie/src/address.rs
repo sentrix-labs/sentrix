@@ -479,23 +479,20 @@ mod tests {
     /// every post-SIP-6 block.
     #[test]
     fn test_epoch_state_value_validator_set_case_insensitive() {
-        let lower = vec![
-            "0xaaaa".to_string(),
-            "0xbbbb".to_string(),
-        ];
-        let upper = vec![
-            "0xAAAA".to_string(),
-            "0xBBBB".to_string(),
-        ];
-        let no_prefix = vec![
-            "aaaa".to_string(),
-            "bbbb".to_string(),
-        ];
+        let lower = vec!["0xaaaa".to_string(), "0xbbbb".to_string()];
+        let upper = vec!["0xAAAA".to_string(), "0xBBBB".to_string()];
+        let no_prefix = vec!["aaaa".to_string(), "bbbb".to_string()];
         let v_lower = epoch_state_value_bytes(1, 0, 0, 0, 0, 0, &lower);
         let v_upper = epoch_state_value_bytes(1, 0, 0, 0, 0, 0, &upper);
         let v_noprefix = epoch_state_value_bytes(1, 0, 0, 0, 0, 0, &no_prefix);
-        assert_eq!(v_lower, v_upper, "validator_set hash must be case-insensitive");
-        assert_eq!(v_lower, v_noprefix, "validator_set hash must strip 0x prefix");
+        assert_eq!(
+            v_lower, v_upper,
+            "validator_set hash must be case-insensitive"
+        );
+        assert_eq!(
+            v_lower, v_noprefix,
+            "validator_set hash must strip 0x prefix"
+        );
     }
 
     #[test]

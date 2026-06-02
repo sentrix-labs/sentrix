@@ -7,7 +7,7 @@
 // `create_router` so the first /sentrix_status call after boot sees a
 // non-zero value.
 
-use axum::{Json, extract::State, response::IntoResponse};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 
 use super::{ApiKey, SharedState};
 
@@ -20,6 +20,29 @@ pub(super) static START_TIME: std::sync::OnceLock<std::time::Instant> = std::syn
 /// disk persistence fails, CHAIN_WINDOW_SIZE rolls → permanent gap).
 pub static PEER_BLOCK_SAVE_FAILS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+
+/// Set by main.rs when a `NodeEvent::SyncForkDetected` is received —
+/// meaning a block import failed because our local chain head has a
+/// different hash than the canonical network expects. Cleared when a
+/// new block is successfully applied (sync recovered).
+///
+/// While true, `/health` returns HTTP 503 so the Docker healthcheck
+/// fails and operators are alerted. Automatic recovery is not possible
+/// without a storage rollback API; the operator must copy a canonical
+/// `chain.db` from a healthy validator.
+pub static FORK_DETECTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Block height at which the fork was first detected.
+pub static FORK_DETECTED_HEIGHT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Unix timestamp (seconds) when fork was first detected.
+pub static FORK_DETECTED_AT_UNIX: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Our local head hash at the time fork was detected, stored as a
+/// newline-terminated string in an atomic-compatible slot via a Mutex.
+pub static FORK_LOCAL_HEAD: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 pub(super) async fn root(State(state): State<SharedState>) -> Json<serde_json::Value> {
     // Read the runtime consensus state from chain.db's persistent
@@ -85,8 +108,98 @@ pub(super) async fn root(State(state): State<SharedState>) -> Json<serde_json::V
     }))
 }
 
-pub(super) async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "status": "ok", "node": "sentrix-chain" }))
+/// Node health check. Returns HTTP 200 when healthy, HTTP 503 when the
+/// node is forked or stale. The Docker healthcheck hits this endpoint;
+/// a 503 causes the container to be marked unhealthy, surfacing the
+/// condition to operators via `docker ps` and alerting pipelines.
+///
+/// Unhealthy conditions:
+/// - `FORK_DETECTED`: local chain head doesn't match canonical network.
+///   Requires operator intervention (copy canonical chain.db).
+/// - Chain stale: latest block timestamp > `STALE_THRESHOLD_SECS` ago.
+///   Indicates the node has stopped receiving/finalising blocks.
+pub(super) async fn health(State(state): State<SharedState>) -> impl IntoResponse {
+    use std::sync::atomic::Ordering;
+
+    const STALE_THRESHOLD_SECS: u64 = 120;
+
+    // Acquire loads: pairs with the Release swap in main.rs so that when we
+    // observe FORK_DETECTED=true we are guaranteed to see the up-to-date
+    // HEIGHT/AT_UNIX values written before the swap.
+    let fork = FORK_DETECTED.load(Ordering::Acquire);
+    let fork_height = FORK_DETECTED_HEIGHT.load(Ordering::Acquire);
+    let fork_at_unix = FORK_DETECTED_AT_UNIX.load(Ordering::Acquire);
+    // Mutex::lock() provides its own Acquire fence for the string content.
+    // Clone inside the closure so the MutexGuard is dropped before any await.
+    // On poisoning: recover the inner value so diagnostic info is not lost.
+    let fork_local_head = FORK_LOCAL_HEAD
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_else(|e| {
+            tracing::warn!("FORK_LOCAL_HEAD mutex poisoned — recovering inner value");
+            e.into_inner().clone()
+        });
+
+    let bc = state.read().await;
+    let (height, head_hash, last_block_ts) = bc
+        .latest_block()
+        .ok()
+        .map(|b| (b.index, b.hash.clone(), b.timestamp))
+        .unwrap_or((0, String::new(), 0));
+    drop(bc);
+
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Only flag stale if the node has been running longer than the threshold.
+    // A fresh start (or a node catching up from a cold chain.db) shouldn't
+    // appear stale during the initial boot window — the old chain.db timestamp
+    // predates the current run.
+    let uptime_secs = START_TIME.get().map(|t| t.elapsed().as_secs()).unwrap_or(0);
+    let stale = uptime_secs > STALE_THRESHOLD_SECS
+        && last_block_ts > 0
+        && now_unix.saturating_sub(last_block_ts) > STALE_THRESHOLD_SECS;
+
+    if fork {
+        let body = serde_json::json!({
+            "status": "fork_detected",
+            "node": "sentrix-chain",
+            "height": height,
+            "head_hash": head_hash,
+            "fork_detected": true,
+            "fork_at_height": fork_height,
+            "fork_detected_at_unix": fork_at_unix,
+            "fork_local_head_at_detection": fork_local_head,
+            "stale": stale,
+            "recovery": "Copy canonical chain.db from a healthy validator and restart."
+        });
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(body));
+    }
+
+    if stale {
+        let body = serde_json::json!({
+            "status": "stale",
+            "node": "sentrix-chain",
+            "height": height,
+            "head_hash": head_hash,
+            "fork_detected": false,
+            "stale": true,
+            "last_block_unix": last_block_ts,
+            "stale_for_secs": now_unix.saturating_sub(last_block_ts),
+        });
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(body));
+    }
+
+    let body = serde_json::json!({
+        "status": "ok",
+        "node": "sentrix-chain",
+        "height": height,
+        "head_hash": head_hash,
+        "fork_detected": false,
+        "stale": false,
+    });
+    (StatusCode::OK, Json(body))
 }
 
 /// Structured node status (NEAR-style).
@@ -439,4 +552,99 @@ pub(super) async fn get_admin_log(
         "log": bc.authority.admin_log,
         "count": bc.authority.admin_log.len(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::to_bytes, http::StatusCode};
+    use sentrix_core::blockchain::Blockchain;
+    use std::sync::{Arc, atomic::Ordering};
+    use tokio::sync::RwLock;
+
+    // Tests that touch process-level atomics must run sequentially to avoid
+    // races between parallel test threads. Using tokio::sync::Mutex so the
+    // guard can be held across .await points without triggering the
+    // `clippy::await_holding_lock` lint.
+    static TEST_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+    fn test_lock() -> &'static tokio::sync::Mutex<()> {
+        TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
+
+    fn make_state() -> SharedState {
+        Arc::new(RwLock::new(Blockchain::new(
+            "0x0000000000000000000000000000000000000001".into(),
+        )))
+    }
+
+    fn reset_fork_state() {
+        FORK_DETECTED.store(false, Ordering::SeqCst);
+        FORK_DETECTED_HEIGHT.store(0, Ordering::SeqCst);
+        FORK_DETECTED_AT_UNIX.store(0, Ordering::SeqCst);
+        if let Ok(mut g) = FORK_LOCAL_HEAD.lock() {
+            g.clear();
+        }
+    }
+
+    /// Health returns 200 + `status: ok` when no fork is detected and chain
+    /// is fresh. (The genesis block has no blocks so last_block_ts=0 and
+    /// the stale guard `last_block_ts > 0` prevents a false stale alarm.)
+    #[tokio::test]
+    async fn test_health_ok_when_no_fork() {
+        let _guard = test_lock().lock().await;
+        reset_fork_state();
+
+        let state = make_state();
+        let resp = health(State(state)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["fork_detected"], false);
+    }
+
+    /// Health returns 503 + `status: fork_detected` when FORK_DETECTED is set.
+    /// This is what the Docker healthcheck sees when the node is on a
+    /// divergent branch.
+    #[tokio::test]
+    async fn test_health_503_when_fork_detected() {
+        let _guard = test_lock().lock().await;
+        reset_fork_state();
+
+        FORK_DETECTED.store(true, Ordering::SeqCst);
+        FORK_DETECTED_HEIGHT.store(6_132_038, Ordering::SeqCst);
+        FORK_DETECTED_AT_UNIX.store(1_748_000_000, Ordering::SeqCst);
+        if let Ok(mut g) = FORK_LOCAL_HEAD.lock() {
+            *g = "deadbeef01234567".to_string();
+        }
+
+        let state = make_state();
+        let resp = health(State(state)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "fork_detected");
+        assert_eq!(json["fork_detected"], true);
+        assert_eq!(json["fork_at_height"], 6_132_038u64);
+        assert_eq!(json["fork_local_head_at_detection"], "deadbeef01234567");
+
+        reset_fork_state();
+    }
+
+    /// Clearing FORK_DETECTED (as the NewBlock handler does) switches health
+    /// back to 200. This simulates a transient fork that resolved after sync.
+    #[tokio::test]
+    async fn test_health_recovers_when_fork_cleared() {
+        let _guard = test_lock().lock().await;
+        reset_fork_state();
+
+        // Simulate: fork detected, then NewBlock clears the flag.
+        FORK_DETECTED.store(true, Ordering::SeqCst);
+        FORK_DETECTED.store(false, Ordering::SeqCst);
+
+        let state = make_state();
+        let resp = health(State(state)).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 }

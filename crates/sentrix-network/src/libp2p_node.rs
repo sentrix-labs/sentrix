@@ -1143,6 +1143,28 @@ async fn on_swarm_event(
                                     drop(chain);
                                     let _ = etx.send(NodeEvent::NewBlock(updated)).await;
                                 }
+                                Err(SentrixError::InvalidBlock(ref msg))
+                                    if msg.contains("invalid previous hash") =>
+                                {
+                                    APPLY_ERR.fetch_add(1, Ordering::Relaxed);
+                                    let local_hash = chain
+                                        .latest_block()
+                                        .ok()
+                                        .map(|b| b.hash.clone())
+                                        .unwrap_or_default();
+                                    tracing::error!(
+                                        target: "sentrix::fork",
+                                        "FORK DETECTED (gossip): block {} from {} — \
+                                         local head {} on divergent branch.",
+                                        gossip.block.index, peer, local_hash
+                                    );
+                                    let _ = etx
+                                        .send(NodeEvent::SyncForkDetected {
+                                            height: gossip.block.index,
+                                            local_head_hash: local_hash,
+                                        })
+                                        .await;
+                                }
                                 Err(e) => {
                                     APPLY_ERR.fetch_add(1, Ordering::Relaxed);
                                     tracing::debug!("gossip block from {} rejected: {}", peer, e);
@@ -1719,6 +1741,28 @@ async fn on_inbound_request(
                         drop(chain);
                         let _ = etx.send(NodeEvent::NewBlock(updated)).await;
                     }
+                    Err(SentrixError::InvalidBlock(ref msg))
+                        if msg.contains("invalid previous hash") =>
+                    {
+                        APPLY_ERR.fetch_add(1, Ordering::Relaxed);
+                        let local_hash = chain
+                            .latest_block()
+                            .ok()
+                            .map(|b| b.hash.clone())
+                            .unwrap_or_default();
+                        tracing::error!(
+                            target: "sentrix::fork",
+                            "FORK DETECTED (direct): block {} from {} — \
+                             local head {} on divergent branch.",
+                            block_idx, peer, local_hash
+                        );
+                        let _ = etx
+                            .send(NodeEvent::SyncForkDetected {
+                                height: block_idx,
+                                local_head_hash: local_hash,
+                            })
+                            .await;
+                    }
                     Err(e) => {
                         APPLY_ERR.fetch_add(1, Ordering::Relaxed);
                         tracing::warn!("libp2p: rejected block from {}: {}", peer, e);
@@ -2037,6 +2081,31 @@ async fn on_inbound_response(
                             .unwrap_or_else(|| block.clone());
                         let _ = etx.send(NodeEvent::NewBlock(updated)).await;
                         synced += 1;
+                    }
+                    Err(SentrixError::InvalidBlock(ref msg))
+                        if msg.contains("invalid previous hash") =>
+                    {
+                        APPLY_ERR.fetch_add(1, Ordering::Relaxed);
+                        let local_hash = chain
+                            .latest_block()
+                            .ok()
+                            .map(|b| b.hash.clone())
+                            .unwrap_or_default();
+                        tracing::error!(
+                            target: "sentrix::fork",
+                            "FORK DETECTED: block {} from {} cannot attach — \
+                             local head {} is on a divergent branch. \
+                             Node marked unhealthy. Operator must copy canonical \
+                             chain.db from a healthy validator to recover.",
+                            block.index, peer_str, local_hash
+                        );
+                        let _ = etx
+                            .send(NodeEvent::SyncForkDetected {
+                                height: block.index,
+                                local_head_hash: local_hash,
+                            })
+                            .await;
+                        break;
                     }
                     Err(e) => {
                         APPLY_ERR.fetch_add(1, Ordering::Relaxed);

@@ -259,7 +259,10 @@ mod tests {
 
         assert_eq!(wallet.address, decrypted.address);
         assert_eq!(wallet.public_key, decrypted.public_key);
-        assert_eq!(wallet.secret_key_hex().expose_str(), decrypted.secret_key_hex().expose_str());
+        assert_eq!(
+            wallet.secret_key_hex().expose_str(),
+            decrypted.secret_key_hex().expose_str()
+        );
     }
 
     #[test]
@@ -303,7 +306,10 @@ mod tests {
         let decrypted = loaded.decrypt(password).unwrap();
 
         assert_eq!(wallet.address, decrypted.address);
-        assert_eq!(wallet.secret_key_hex().expose_str(), decrypted.secret_key_hex().expose_str());
+        assert_eq!(
+            wallet.secret_key_hex().expose_str(),
+            decrypted.secret_key_hex().expose_str()
+        );
 
         // Cleanup
         let _ = std::fs::remove_file(path_str);
@@ -318,10 +324,8 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let wallet = Wallet::generate();
         let keystore = Keystore::encrypt(&wallet, "perm_test").unwrap();
-        let tmp_path = std::env::temp_dir().join(format!(
-            "sentrix_test_perms_{}.json",
-            std::process::id()
-        ));
+        let tmp_path =
+            std::env::temp_dir().join(format!("sentrix_test_perms_{}.json", std::process::id()));
         let path_str = tmp_path.to_str().unwrap();
         keystore.save(path_str).unwrap();
         let meta = std::fs::metadata(path_str).unwrap();
@@ -365,7 +369,10 @@ mod tests {
 
         let decrypted = ks.decrypt(password).unwrap();
         assert_eq!(wallet.address, decrypted.address);
-        assert_eq!(wallet.secret_key_hex().expose_str(), decrypted.secret_key_hex().expose_str());
+        assert_eq!(
+            wallet.secret_key_hex().expose_str(),
+            decrypted.secret_key_hex().expose_str()
+        );
     }
 
     #[test]
@@ -421,7 +428,10 @@ mod tests {
         // Must still decrypt correctly
         let decrypted = v1_ks.decrypt(password).unwrap();
         assert_eq!(wallet.address, decrypted.address);
-        assert_eq!(wallet.secret_key_hex().expose_str(), decrypted.secret_key_hex().expose_str());
+        assert_eq!(
+            wallet.secret_key_hex().expose_str(),
+            decrypted.secret_key_hex().expose_str()
+        );
     }
 
     #[test]
@@ -489,7 +499,10 @@ mod tests {
         // Decrypting the migrated keystore must yield the same key
         let decrypted = v2_ks.decrypt(password).unwrap();
         assert_eq!(wallet.address, decrypted.address);
-        assert_eq!(wallet.secret_key_hex().expose_str(), decrypted.secret_key_hex().expose_str());
+        assert_eq!(
+            wallet.secret_key_hex().expose_str(),
+            decrypted.secret_key_hex().expose_str()
+        );
     }
 
     #[test]
