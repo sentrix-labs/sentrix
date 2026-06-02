@@ -3310,7 +3310,49 @@ async fn cmd_start(
             match event {
                 NodeEvent::PeerConnected(addr) => tracing::info!("Peer connected: {}", addr),
                 NodeEvent::PeerDisconnected(addr) => tracing::info!("Peer disconnected: {}", addr),
+                NodeEvent::SyncForkDetected {
+                    height,
+                    local_head_hash,
+                } => {
+                    use std::sync::atomic::Ordering;
+                    let already =
+                        sentrix::api::routes::ops::FORK_DETECTED.swap(true, Ordering::Relaxed);
+                    if !already {
+                        // First detection — record height + timestamp + local hash.
+                        sentrix::api::routes::ops::FORK_DETECTED_HEIGHT
+                            .store(height, Ordering::Relaxed);
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        sentrix::api::routes::ops::FORK_DETECTED_AT_UNIX
+                            .store(now, Ordering::Relaxed);
+                        if let Ok(mut g) = sentrix::api::routes::ops::FORK_LOCAL_HEAD.lock() {
+                            *g = local_head_hash.clone();
+                        }
+                        tracing::error!(
+                            "FORK: node is on a divergent branch (local head {} cannot \
+                             attach canonical block {}). Health endpoint now returns 503. \
+                             Stop this node and copy chain.db from a healthy validator to recover.",
+                            local_head_hash,
+                            height
+                        );
+                    }
+                }
                 NodeEvent::NewBlock(block) => {
+                    // Clear fork state if it was set — a successful block arrival
+                    // means sync recovered (or the fork was transient / false alarm).
+                    if sentrix::api::routes::ops::FORK_DETECTED
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                    {
+                        sentrix::api::routes::ops::FORK_DETECTED
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        tracing::info!(
+                            "FORK cleared: block {} applied successfully after fork detection; \
+                             node is back on canonical chain.",
+                            block.index
+                        );
+                    }
                     // 2026-05-05 v2.1.63: explicit log for the libp2p-applied
                     // path so the BFT-engine vs chain.height race we hit on
                     // 2026-05-04 is greppable in journalctl. Pair this with

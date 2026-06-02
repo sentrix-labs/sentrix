@@ -396,4 +396,20 @@ mod tests {
             "is_valid_hash must fail when state_root changed after hash was set"
         );
     }
+
+    /// Pins the exact error string produced on a prev-hash mismatch.
+    /// The fork detection in libp2p_node.rs matches on "invalid previous hash"
+    /// inside the `InvalidBlock` payload — this test ensures the string stays
+    /// stable so fork detection never silently stops working after a refactor.
+    #[test]
+    fn test_invalid_previous_hash_error_string_is_stable() {
+        let genesis = Block::genesis();
+        let wrong_prev = "a".repeat(64);
+        let err = genesis.validate_structure(0, &wrong_prev).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("invalid previous hash"),
+            "fork detection relies on this exact substring; got: {msg}"
+        );
+    }
 }
