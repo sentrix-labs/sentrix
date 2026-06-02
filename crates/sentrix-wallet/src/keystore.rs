@@ -70,7 +70,7 @@ impl Keystore {
             .hash_password_into(password.as_bytes(), &salt, &mut key_bytes)
             .map_err(|e| SentrixError::KeystoreError(e.to_string()))?;
 
-        let mut private_key_bytes = hex::decode(wallet.secret_key_hex())
+        let mut private_key_bytes = hex::decode(wallet.secret_key_hex().expose_str())
             .map_err(|_| SentrixError::KeystoreError("invalid private key".to_string()))?;
 
         let cipher_key = Key::<Aes256Gcm>::from_slice(&key_bytes);
@@ -259,7 +259,7 @@ mod tests {
 
         assert_eq!(wallet.address, decrypted.address);
         assert_eq!(wallet.public_key, decrypted.public_key);
-        assert_eq!(wallet.secret_key_hex(), decrypted.secret_key_hex());
+        assert_eq!(wallet.secret_key_hex().expose_str(), decrypted.secret_key_hex().expose_str());
     }
 
     #[test]
@@ -303,7 +303,7 @@ mod tests {
         let decrypted = loaded.decrypt(password).unwrap();
 
         assert_eq!(wallet.address, decrypted.address);
-        assert_eq!(wallet.secret_key_hex(), decrypted.secret_key_hex());
+        assert_eq!(wallet.secret_key_hex().expose_str(), decrypted.secret_key_hex().expose_str());
 
         // Cleanup
         let _ = std::fs::remove_file(path_str);
@@ -365,7 +365,7 @@ mod tests {
 
         let decrypted = ks.decrypt(password).unwrap();
         assert_eq!(wallet.address, decrypted.address);
-        assert_eq!(wallet.secret_key_hex(), decrypted.secret_key_hex());
+        assert_eq!(wallet.secret_key_hex().expose_str(), decrypted.secret_key_hex().expose_str());
     }
 
     #[test]
@@ -389,7 +389,7 @@ mod tests {
             &mut key_bytes,
         );
 
-        let private_key_bytes = hex::decode(wallet.secret_key_hex()).unwrap();
+        let private_key_bytes = hex::decode(wallet.secret_key_hex().expose_str()).unwrap();
         let cipher_key = Key::<Aes256Gcm>::from_slice(&key_bytes);
         let cipher = Aes256Gcm::new(cipher_key);
         let nonce = Nonce::from_slice(&nonce_bytes);
@@ -421,7 +421,7 @@ mod tests {
         // Must still decrypt correctly
         let decrypted = v1_ks.decrypt(password).unwrap();
         assert_eq!(wallet.address, decrypted.address);
-        assert_eq!(wallet.secret_key_hex(), decrypted.secret_key_hex());
+        assert_eq!(wallet.secret_key_hex().expose_str(), decrypted.secret_key_hex().expose_str());
     }
 
     #[test]
@@ -445,7 +445,7 @@ mod tests {
             &mut key_bytes,
         );
 
-        let private_key_bytes = hex::decode(wallet.secret_key_hex()).unwrap();
+        let private_key_bytes = hex::decode(wallet.secret_key_hex().expose_str()).unwrap();
         let cipher_key = Key::<Aes256Gcm>::from_slice(&key_bytes);
         let cipher = Aes256Gcm::new(cipher_key);
         let nonce = Nonce::from_slice(&nonce_bytes);
@@ -489,7 +489,7 @@ mod tests {
         // Decrypting the migrated keystore must yield the same key
         let decrypted = v2_ks.decrypt(password).unwrap();
         assert_eq!(wallet.address, decrypted.address);
-        assert_eq!(wallet.secret_key_hex(), decrypted.secret_key_hex());
+        assert_eq!(wallet.secret_key_hex().expose_str(), decrypted.secret_key_hex().expose_str());
     }
 
     #[test]
