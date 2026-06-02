@@ -143,7 +143,7 @@ bin/
 **Verifier:** [verify.sentrixchain.com](https://verify.sentrixchain.com) (Sourcify)
 **gRPC + gRPC-Web:** [grpc.sentrixchain.com](https://grpc.sentrixchain.com) · [grpc-testnet.sentrixchain.com](https://grpc-testnet.sentrixchain.com)
 **WebSocket:** `wss://api.sentrixchain.com/ws` (mainnet) · `wss://testnet-api.sentrixchain.com/ws` (testnet)
-**Telegram:** [t.me/SentrixChain](https://t.me/SentrixChain) (announcements) · [t.me/SentrixCommunity](https://t.me/SentrixCommunity) (community chat)
+**Telegram:** [t.me/SentrixChain](https://t.me/SentrixChain) (announcements) · [t.me/Sentrix_Chain](https://t.me/Sentrix_Chain) (current community chat)
 
 ## Roadmap
 
