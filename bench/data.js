@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1780221580569,
+  "lastUpdate": 1780514703439,
   "repoUrl": "https://github.com/sentrix-labs/sentrix",
   "entries": {
     "sentrix-trie benches": [
@@ -251,6 +251,48 @@ window.BENCHMARK_DATA = {
             "name": "commit_after_100_inserts",
             "value": 1383586,
             "range": "± 56450",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "satyakwikp77@gmail.com",
+            "name": "satyakwok",
+            "username": "satyakwok"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9fb02d9abac3e3a1d46610aa57fd4c2c32bbda74",
+          "message": "feat(state): commit native module state into trie/state_root (fork-gated) (#779)\n\n* feat(state): commit native module state into trie/state_root (fork-gated)\n\nNative-module state (SRC-20 ContractRegistry + NFT NftRegistry) was\ncommitted only to the STATE-FP fingerprint (#776), not the consensus\nstate_root — so a divergent registry was not rejected by peers. Commit\nboth registries' canonical hashes into the state trie behind a new fork\ngate, mirroring the proven SIP-6 STATE_IN_TRIE pattern.\n\n- new gate NATIVE_STATE_IN_TRIE_HEIGHT, default u64::MAX on BOTH nets.\n  Deliberately NOT reusing STATE_IN_TRIE_HEIGHT (already active on testnet\n  at 6,026,000) — reusing it would retroactively fork testnet's state_root.\n- two fixed trie keys: sentrix/v1/native_src20_registry +\n  sentrix/v1/native_nft_registry; value = registry canonical_hash (sorted,\n  HashMap-order-independent — from #776). Always-insert post-fork (empty\n  registry has a stable hash), same semantics as total_minted/epoch.\n- update_trie_for_block captures both hashes before the trie mut-borrow\n  (Phase 2f), independent of the SIP-6 gate.\n\nPre-fork: state_root is bit-identical to today (native state stays\noff-trie). Post-fork: SRC-20 / NFT state changes move state_root.\n\nCommitment model: the trie stores the registry canonical HASH, not the\nfull registry — divergence is detected (peers reject the block); recovery\nis via peer resync (the blob remains the data source). Activation requires\nhalt-all + state-root-alignment pre-flight + simul-start so every validator\ncommits identical native state at the activation block (STATE_IN_TRIE\nplaybook). NFT_TOKENOP_HEIGHT stays disabled — the NFT registry commits as\nempty until it is enabled.\n\nTests: pre-fork preserved; post-fork SRC-20 + NFT changes move state_root;\nreplay-deterministic; different supply/owner differ; deploy-order\nindependent; empty commitment stable; fork-gate default-disabled on both\nnets + activates at pinned height.\n\n* test(trie): cover native registry key builders\n\ncodecov/patch on #779 flagged 10 uncovered lines (0%) in\nsentrix-trie/src/address.rs: the two new native_*_registry_key builders.\nThey're exercised by sentrix-core's integration tests, but codecov\nmeasures sentrix-trie in its own package run where its unit tests didn't\ncall them. Add a unit test asserting both keys are deterministic, mutually\ndistinct, and distinct from total_minted/epoch/account keys.",
+          "timestamp": "2026-06-04T02:22:55+07:00",
+          "tree_id": "30d654f6aaa3d9cf2e510bef4ef87d1b060aabc1",
+          "url": "https://github.com/sentrix-labs/sentrix/commit/9fb02d9abac3e3a1d46610aa57fd4c2c32bbda74"
+        },
+        "date": 1780514702577,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "insert_single",
+            "value": 170297,
+            "range": "± 7705",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "insert_batch_100",
+            "value": 497328,
+            "range": "± 31234",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "commit_after_100_inserts",
+            "value": 1444333,
+            "range": "± 46519",
             "unit": "ns/iter"
           }
         ]
