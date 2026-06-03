@@ -26,20 +26,30 @@ use tokio::sync::Mutex;
 pub type IpRateLimiter = Arc<Mutex<HashMap<String, (u32, Instant)>>>;
 const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
-/// Parse a rate-limit env override into a positive u32.
+/// Pure parse/validate of a rate-limit override string into a positive u32.
+///
+/// Split out from the env read so it can be unit-tested without touching
+/// the process environment — `std::env::set_var` is `unsafe` under edition
+/// 2024 and is not safe to call from parallel tests (the race is on the
+/// global env table, not key names, so unique keys don't help).
 ///
 /// `PositiveInt` rejects a value of `0` — without this guard, setting
 /// `SENTRIX_GLOBAL_RATE_LIMIT=0` (or the write equivalent) would cap the
 /// limiter at zero requests, silently locking every client out of the
-/// endpoint. A `0` or unparseable value now falls back to `default`.
+/// endpoint. A `0`, unparseable, or absent value falls back to `default`.
 /// The `min(u32::MAX)` clamp keeps the u64 → u32 cast lossless.
-fn rate_limit_from_env(var: &str, default: u32) -> u32 {
-    std::env::var(var)
-        .ok()
+fn rate_limit_from_str(value: Option<&str>, default: u32) -> u32 {
+    value
         .and_then(|v| v.parse::<u64>().ok())
         .and_then(|n| PositiveInt::new(n).ok())
         .map(|p| p.get().min(u32::MAX as u64) as u32)
         .unwrap_or(default)
+}
+
+/// Read a rate-limit override from `var` and parse it via
+/// [`rate_limit_from_str`].
+fn rate_limit_from_env(var: &str, default: u32) -> u32 {
+    rate_limit_from_str(std::env::var(var).ok().as_deref(), default)
 }
 
 /// Override via `SENTRIX_GLOBAL_RATE_LIMIT` env var for benchmarking.
@@ -207,38 +217,36 @@ pub(super) async fn write_rate_limit_middleware(
 
 #[cfg(test)]
 mod tests {
-    use super::rate_limit_from_env;
+    use super::rate_limit_from_str;
 
-    // Each test uses a unique env var name so parallel test threads don't
-    // race on a shared key.
+    // Tests target the pure `rate_limit_from_str` helper — no env mutation,
+    // so they are sound and parallel-safe (no `unsafe std::env::set_var`).
 
     #[test]
     fn zero_falls_back_to_default() {
-        // SAFETY: unique var, set+remove within this test.
-        unsafe { std::env::set_var("SENTRIX_TEST_RL_ZERO", "0") };
         // PositiveInt rejects 0 → default returned, not 0 (which would lock
         // every client out of the endpoint).
-        assert_eq!(rate_limit_from_env("SENTRIX_TEST_RL_ZERO", 300), 300);
-        unsafe { std::env::remove_var("SENTRIX_TEST_RL_ZERO") };
+        assert_eq!(rate_limit_from_str(Some("0"), 300), 300);
     }
 
     #[test]
     fn unparseable_falls_back_to_default() {
-        unsafe { std::env::set_var("SENTRIX_TEST_RL_BAD", "not_a_number") };
-        assert_eq!(rate_limit_from_env("SENTRIX_TEST_RL_BAD", 10), 10);
-        unsafe { std::env::remove_var("SENTRIX_TEST_RL_BAD") };
+        assert_eq!(rate_limit_from_str(Some("not_a_number"), 10), 10);
     }
 
     #[test]
     fn valid_positive_overrides_default() {
-        unsafe { std::env::set_var("SENTRIX_TEST_RL_OK", "5000") };
-        assert_eq!(rate_limit_from_env("SENTRIX_TEST_RL_OK", 10), 5000);
-        unsafe { std::env::remove_var("SENTRIX_TEST_RL_OK") };
+        assert_eq!(rate_limit_from_str(Some("5000"), 10), 5000);
     }
 
     #[test]
-    fn unset_returns_default() {
-        // A var name that is definitely not set.
-        assert_eq!(rate_limit_from_env("SENTRIX_TEST_RL_UNSET_XYZ", 42), 42);
+    fn absent_returns_default() {
+        assert_eq!(rate_limit_from_str(None, 42), 42);
+    }
+
+    #[test]
+    fn above_u32_max_clamps_not_truncates() {
+        // u64 value beyond u32::MAX clamps to u32::MAX rather than wrapping.
+        assert_eq!(rate_limit_from_str(Some("99999999999"), 10), u32::MAX);
     }
 }
