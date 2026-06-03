@@ -8,6 +8,7 @@ The files here are operator-side analysis documents written during incident resp
 
 - **Incident root-cause analyses** — `*-root-cause-analysis.md`, `jail-cascade-*`, etc. Written shortly after the incident, references commits + log lines + recovery steps.
 - **Design docs for non-trivial changes** — `consensus-computed-jail-design.md`, etc. Pre-implementation reasoning for decisions that touched consensus rules.
+- **Fork activation playbooks** — `native-state-in-trie-activation-playbook.md`, etc. Pre-flight + halt-all/simul-start + monitoring + rollback procedures for turning on a fork-gated consensus change without splitting the chain.
 - **Audit-style code reviews** — `codebase-areas-*-audit.md`, `libp2p-resilience-audit-*`, `reward-distribution-flow-audit-*`. Internal reviews to surface concerns before they became incidents.
 - **Production-readiness reviews** — `sentrix-production-readiness-audit-*`. Snapshot assessments of where the chain stood vs production-ready criteria at a given moment.
 
