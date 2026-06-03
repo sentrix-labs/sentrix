@@ -614,6 +614,17 @@ enum StateCommands {
         /// Snapshot file to verify
         input: String,
     },
+    /// Read-only preflight for native-module state_root activation readiness.
+    /// Reports chain height/tip, state_root, SRC-20 + NFT canonical hashes,
+    /// fork-gate status, and a local READY/WARNING/NOT_READY verdict. Does not
+    /// mutate state, touch the trie, set env, or enable any fork. Compare the
+    /// reported hashes across ALL validators before activating (see
+    /// audits/native-state-in-trie-activation-playbook.md).
+    Preflight {
+        /// Emit JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -882,6 +893,7 @@ async fn main() -> anyhow::Result<()> {
                 commands::state::cmd_state_import(&input, force)?
             }
             StateCommands::Verify { input } => commands::state::cmd_state_verify(&input)?,
+            StateCommands::Preflight { json } => commands::state::cmd_state_preflight(json)?,
         },
 
         Commands::Mempool { action } => match action {
