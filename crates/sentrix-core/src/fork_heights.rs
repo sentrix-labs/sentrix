@@ -175,6 +175,17 @@ const STRICT_JUSTIFICATION_HEIGHT_DEFAULT: u64 = u64::MAX;
 const STATE_IN_TRIE_HEIGHT_DEFAULT: u64 = u64::MAX;
 const STATE_IN_TRIE_HEIGHT_TESTNET_DEFAULT: u64 = 6_026_000;
 
+/// Native-module state-root commitment (SRC-20 ContractRegistry + NFT
+/// NftRegistry into the trie). Default `u64::MAX` on BOTH mainnet AND
+/// testnet — deliberately NOT reusing `STATE_IN_TRIE_HEIGHT` (already
+/// active on testnet at 6,026,000): reusing it would retroactively change
+/// testnet's state_root and fork the chain. This is a fresh, independent
+/// gate that stays disabled everywhere until an explicit activation
+/// height is set via env, preceded by halt-all + state-root-alignment
+/// pre-flight + simul-start so every validator commits identical native
+/// state at the activation block.
+const NATIVE_STATE_IN_TRIE_HEIGHT_DEFAULT: u64 = u64::MAX;
+
 // ── Runtime readers (env → u64, default to compile-time default) ──────
 
 fn configured_chain_id() -> u64 {
@@ -399,6 +410,17 @@ pub fn get_state_in_trie_height() -> u64 {
     )
 }
 
+/// Native-module state-root commitment fork height. Default `u64::MAX`
+/// on both nets (see [`NATIVE_STATE_IN_TRIE_HEIGHT_DEFAULT`]). Once
+/// pinned via env, the apply path commits the SRC-20 + NFT registry
+/// canonical hashes into the trie before state_root.
+pub fn get_native_state_in_trie_height() -> u64 {
+    read_height(
+        "NATIVE_STATE_IN_TRIE_HEIGHT",
+        NATIVE_STATE_IN_TRIE_HEIGHT_DEFAULT,
+    )
+}
+
 // ── Height predicates ────────────────────────────────────
 //
 // Every fork-height predicate has the same shape:
@@ -526,6 +548,18 @@ pub fn is_strict_justification_height(height: u64) -> bool {
 /// preserved bit-identically.
 pub fn is_state_in_trie_height(height: u64) -> bool {
     let fork = get_state_in_trie_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// Native-module state-root commitment — true once
+/// `NATIVE_STATE_IN_TRIE_HEIGHT` activates. Post-fork: the apply path
+/// commits the SRC-20 `ContractRegistry` and NFT `NftRegistry` canonical
+/// hashes into the state trie before state_root, so divergence in native
+/// token/NFT state surfaces as a state_root mismatch instead of relying
+/// on deterministic re-execution + the (uncommitted) blob. Pre-fork the
+/// state_root is computed exactly as before (native state stays off-trie).
+pub fn is_native_state_in_trie_height(height: u64) -> bool {
+    let fork = get_native_state_in_trie_height();
     fork != u64::MAX && height >= fork
 }
 
@@ -747,6 +781,47 @@ mod tests {
             warn_if_jail_consensus_armed(); // armed path — should emit warning
 
             std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
+        }
+    }
+
+    /// NATIVE_STATE_IN_TRIE must default to disabled (`u64::MAX`) on BOTH
+    /// mainnet and testnet — unlike SIP-6 STATE_IN_TRIE, which is already
+    /// armed on testnet. Reusing that gate would have forked testnet; this
+    /// fresh gate stays closed everywhere until explicitly pinned.
+    #[test]
+    fn native_state_in_trie_disabled_by_default_both_nets() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::remove_var("NATIVE_STATE_IN_TRIE_HEIGHT");
+
+            std::env::set_var("SENTRIX_CHAIN_ID", MAINNET_CHAIN_ID.to_string());
+            assert_eq!(get_native_state_in_trie_height(), u64::MAX);
+            assert!(!is_native_state_in_trie_height(0));
+            assert!(!is_native_state_in_trie_height(u64::MAX - 1));
+
+            std::env::set_var("SENTRIX_CHAIN_ID", TESTNET_CHAIN_ID.to_string());
+            assert_eq!(
+                get_native_state_in_trie_height(),
+                u64::MAX,
+                "must stay disabled on testnet too (STATE_IN_TRIE is already armed there)"
+            );
+            assert!(!is_native_state_in_trie_height(6_026_000));
+
+            std::env::remove_var("SENTRIX_CHAIN_ID");
+        }
+    }
+
+    /// Once pinned, the gate flips open exactly at the activation height.
+    #[test]
+    fn native_state_in_trie_activates_at_pinned_height() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::set_var("NATIVE_STATE_IN_TRIE_HEIGHT", "1000");
+            assert_eq!(get_native_state_in_trie_height(), 1000);
+            assert!(!is_native_state_in_trie_height(999));
+            assert!(is_native_state_in_trie_height(1000));
+            assert!(is_native_state_in_trie_height(1001));
+            std::env::remove_var("NATIVE_STATE_IN_TRIE_HEIGHT");
         }
     }
 }
