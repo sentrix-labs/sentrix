@@ -5,9 +5,17 @@
 //! the integrating layer (`sentrix-core`) can emit it without re-deriving the
 //! effect.
 //!
+//! Invariant-carrying fields are private; read them through the getters. This
+//! prevents external code from mutating supply counters, balances, ownership,
+//! or approvals out from under the invariants the methods enforce.
+//!
 //! Determinism: state lives in `HashMap`s. In-memory order is per-process and
 //! is never hashed directly; when this state is committed to the state trie
 //! (future work in `sentrix-core`), maps are iterated in sorted order.
+//!
+//! Atomicity: every state-changing method performs all validation and checked
+//! arithmetic into locals first, and only commits mutations once every fallible
+//! step has succeeded — so a rejected operation never leaves partial state.
 
 use crate::error::{NftError, NftResult};
 use crate::events::NftEvent;
@@ -16,49 +24,30 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// A native NFT collection (the Proof Asset issuer unit).
+///
+/// Fields are private; construct via [`NftCollection::new`] and read via the
+/// getters. Mutate only through the methods, which enforce authorization,
+/// supply, soulbound, freeze, and metadata-lock invariants.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NftCollection {
-    /// Collection id/address (deterministic; see [`crate::NftRegistry`]).
-    pub id: String,
-    /// Address that created the collection.
-    pub creator: String,
-    /// Address with administrative rights (mint, freeze, metadata). Defaults
-    /// to `creator` at creation.
-    pub admin: String,
-    /// Human-readable name.
-    pub name: String,
-    /// Ticker symbol.
-    pub symbol: String,
-    /// Optional free-text description (empty = none).
-    pub description: String,
-    /// Metadata-URI prefix; per-token URI is `{base_uri}{token_id}` unless the
-    /// token carries an explicit override.
-    pub base_uri: String,
-    /// Optional external URL for the collection (empty = none).
-    pub external_url: String,
-    /// Maximum number of tokens that may ever be minted. `None` = unlimited.
-    /// Counted against ever-minted, so burning never frees a slot.
-    pub max_supply: Option<u64>,
-    /// Count of currently-live (non-burned) tokens.
-    pub total_supply: u64,
-    /// Monotonic count of tokens ever minted. Backs `max_supply` and the
-    /// no-reuse guarantee. Never decreases.
-    pub total_minted: u64,
-    /// Default transferability applied to mints that don't override it.
-    pub default_transferable: bool,
-    /// Whether token metadata URIs may be updated after mint.
-    pub metadata_mutable: bool,
-    /// Whether the whole collection is frozen (blocks all transfers).
-    pub frozen: bool,
-    /// token_id → token. Includes burned tombstones (never removed) so ids are
-    /// never reused.
-    pub tokens: HashMap<u64, NftToken>,
-    /// owner → count of live tokens held.
-    pub balances: HashMap<String, u64>,
-    /// token_id → approved spender (single-token approval).
-    pub token_approvals: HashMap<u64, String>,
-    /// owner → (operator → approved) for operator-for-all.
-    pub operator_approvals: HashMap<String, HashMap<String, bool>>,
+    id: String,
+    creator: String,
+    admin: String,
+    name: String,
+    symbol: String,
+    description: String,
+    base_uri: String,
+    external_url: String,
+    max_supply: Option<u64>,
+    total_supply: u64,
+    total_minted: u64,
+    default_transferable: bool,
+    metadata_mutable: bool,
+    frozen: bool,
+    tokens: HashMap<u64, NftToken>,
+    balances: HashMap<String, u64>,
+    token_approvals: HashMap<u64, String>,
+    operator_approvals: HashMap<String, HashMap<String, bool>>,
 }
 
 impl NftCollection {
@@ -95,12 +84,74 @@ impl NftCollection {
         }
     }
 
-    // ── Reads ────────────────────────────────────────────
+    // ── Getters (read-only) ──────────────────────────────
+
+    /// Collection id/address.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    /// Address that created the collection.
+    pub fn creator(&self) -> &str {
+        &self.creator
+    }
+    /// Address with administrative rights.
+    pub fn admin(&self) -> &str {
+        &self.admin
+    }
+    /// Human-readable name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    /// Ticker symbol.
+    pub fn symbol(&self) -> &str {
+        &self.symbol
+    }
+    /// Free-text description (empty = none).
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+    /// Metadata-URI prefix.
+    pub fn base_uri(&self) -> &str {
+        &self.base_uri
+    }
+    /// External URL (empty = none).
+    pub fn external_url(&self) -> &str {
+        &self.external_url
+    }
+    /// Configured maximum supply (`None` = unlimited).
+    pub fn max_supply(&self) -> Option<u64> {
+        self.max_supply
+    }
+    /// Current live (non-burned) supply.
+    pub fn total_supply(&self) -> u64 {
+        self.total_supply
+    }
+    /// Monotonic count of tokens ever minted (backs `max_supply` + no-reuse).
+    pub fn total_minted(&self) -> u64 {
+        self.total_minted
+    }
+    /// Default transferability applied to mints that don't override it.
+    pub fn default_transferable(&self) -> bool {
+        self.default_transferable
+    }
+    /// Whether token metadata URIs may still be updated.
+    pub fn metadata_mutable(&self) -> bool {
+        self.metadata_mutable
+    }
+    /// Whether the whole collection is frozen.
+    pub fn frozen(&self) -> bool {
+        self.frozen
+    }
+
+    /// Borrow a token (including burned tombstones) for inspection.
+    pub fn token(&self, token_id: u64) -> Option<&NftToken> {
+        self.tokens.get(&token_id)
+    }
 
     /// Current owner of a live token, or `None` if it doesn't exist or is burned.
-    pub fn owner_of(&self, token_id: u64) -> Option<&String> {
+    pub fn owner_of(&self, token_id: u64) -> Option<&str> {
         match self.tokens.get(&token_id) {
-            Some(t) if !t.burned => Some(&t.owner),
+            Some(t) if !t.burned() => Some(t.owner()),
             _ => None,
         }
     }
@@ -128,30 +179,15 @@ impl NftCollection {
     /// `{base_uri}{token_id}` convention. Empty for nonexistent/burned tokens.
     pub fn token_uri(&self, token_id: u64) -> String {
         match self.tokens.get(&token_id) {
-            Some(t) if !t.burned => {
-                if t.uri.is_empty() {
+            Some(t) if !t.burned() => {
+                if t.uri().is_empty() {
                     format!("{}{}", self.base_uri, token_id)
                 } else {
-                    t.uri.clone()
+                    t.uri().to_string()
                 }
             }
             _ => String::new(),
         }
-    }
-
-    /// Current live supply.
-    pub fn total_supply(&self) -> u64 {
-        self.total_supply
-    }
-
-    /// Configured maximum supply (`None` = unlimited).
-    pub fn max_supply(&self) -> Option<u64> {
-        self.max_supply
-    }
-
-    /// Borrow a token (including burned tombstones) for inspection.
-    pub fn get_token(&self, token_id: u64) -> Option<&NftToken> {
-        self.tokens.get(&token_id)
     }
 
     /// Authorization for transfer: owner, single-token approvee, or operator.
@@ -176,6 +212,7 @@ impl NftCollection {
         uri: &str,
         transferable: Option<bool>,
     ) -> NftResult<NftEvent> {
+        // ── validate + compute (no mutation yet) ──
         if caller != self.admin {
             return Err(NftError::Unauthorized(
                 "only the collection admin can mint".into(),
@@ -196,8 +233,21 @@ impl NftCollection {
                 max,
             });
         }
-
         let transferable = transferable.unwrap_or(self.default_transferable);
+        let new_balance = self
+            .balance_of(to)
+            .checked_add(1)
+            .ok_or_else(|| NftError::Overflow("balance".into()))?;
+        let new_total_supply = self
+            .total_supply
+            .checked_add(1)
+            .ok_or_else(|| NftError::Overflow("total_supply".into()))?;
+        let new_total_minted = self
+            .total_minted
+            .checked_add(1)
+            .ok_or_else(|| NftError::Overflow("total_minted".into()))?;
+
+        // ── commit (all infallible) ──
         self.tokens.insert(
             token_id,
             NftToken::new(
@@ -208,18 +258,9 @@ impl NftCollection {
                 transferable,
             ),
         );
-        let bal = self.balances.entry(to.to_string()).or_insert(0);
-        *bal = bal
-            .checked_add(1)
-            .ok_or_else(|| NftError::Overflow("balance".into()))?;
-        self.total_supply = self
-            .total_supply
-            .checked_add(1)
-            .ok_or_else(|| NftError::Overflow("total_supply".into()))?;
-        self.total_minted = self
-            .total_minted
-            .checked_add(1)
-            .ok_or_else(|| NftError::Overflow("total_minted".into()))?;
+        self.balances.insert(to.to_string(), new_balance);
+        self.total_supply = new_total_supply;
+        self.total_minted = new_total_minted;
 
         Ok(NftEvent::TokenMinted {
             collection_id: self.id.clone(),
@@ -238,26 +279,29 @@ impl NftCollection {
         to: &str,
         token_id: u64,
     ) -> NftResult<NftEvent> {
+        // ── validate + compute (no mutation yet) ──
         if from.is_empty() || to.is_empty() {
             return Err(NftError::InvalidParams("empty address".into()));
         }
         if from == to {
             return Err(NftError::InvalidParams("cannot transfer to self".into()));
         }
-        // Existence (burned tokens read as not-found).
-        let token = self.tokens.get(&token_id).filter(|t| !t.burned);
-        let token = token.ok_or(NftError::TokenNotFound(token_id))?;
+        let token = self
+            .tokens
+            .get(&token_id)
+            .filter(|t| !t.burned())
+            .ok_or(NftError::TokenNotFound(token_id))?;
         // Soulbound — checked first; no approval bypasses it.
-        if !token.transferable {
+        if !token.transferable() {
             return Err(NftError::NotTransferable(token_id));
         }
-        if token.frozen {
+        if token.frozen() {
             return Err(NftError::TokenFrozen(token_id));
         }
         if self.frozen {
             return Err(NftError::CollectionFrozen);
         }
-        if token.owner != from {
+        if token.owner() != from {
             return Err(NftError::NotOwner {
                 token_id,
                 claimed: from.to_string(),
@@ -269,19 +313,20 @@ impl NftCollection {
                 caller, token_id
             )));
         }
-
-        // Apply.
-        let from_bal = self.balances.entry(from.to_string()).or_insert(0);
-        *from_bal = from_bal
+        let new_from = self
+            .balance_of(from)
             .checked_sub(1)
             .ok_or_else(|| NftError::Overflow("transfer underflow".into()))?;
-        let to_bal = self.balances.entry(to.to_string()).or_insert(0);
-        *to_bal = to_bal
+        let new_to = self
+            .balance_of(to)
             .checked_add(1)
             .ok_or_else(|| NftError::Overflow("transfer overflow".into()))?;
-        // Owner update + approval clear.
+
+        // ── commit (all infallible) ──
+        self.balances.insert(from.to_string(), new_from);
+        self.balances.insert(to.to_string(), new_to);
         if let Some(t) = self.tokens.get_mut(&token_id) {
-            t.owner = to.to_string();
+            t.set_owner(to.to_string());
         }
         self.token_approvals.remove(&token_id);
 
@@ -336,15 +381,22 @@ impl NftCollection {
         })
     }
 
-    /// Grant or revoke `operator` over all of `owner`'s tokens.
+    /// Grant or revoke `operator` over all of `owner`'s tokens. `caller` must be
+    /// `owner` — a caller can only manage operators for their own tokens.
     pub fn set_approval_for_all(
         &mut self,
+        caller: &str,
         owner: &str,
         operator: &str,
         approved: bool,
     ) -> NftResult<NftEvent> {
         if owner.is_empty() || operator.is_empty() {
             return Err(NftError::InvalidParams("empty address".into()));
+        }
+        if caller != owner {
+            return Err(NftError::Unauthorized(
+                "caller may only set operator approvals for itself".into(),
+            ));
         }
         if owner == operator {
             return Err(NftError::InvalidParams(
@@ -366,6 +418,7 @@ impl NftCollection {
     /// Burn a token. Caller must be the owner or the collection admin. The id
     /// is retired permanently (tombstone) and can never be reminted.
     pub fn burn(&mut self, caller: &str, token_id: u64) -> NftResult<NftEvent> {
+        // ── validate + compute (no mutation yet) ──
         let owner = self.live_owner(token_id)?;
         if caller != owner && caller != self.admin {
             return Err(NftError::Unauthorized(format!(
@@ -373,19 +426,22 @@ impl NftCollection {
                 token_id
             )));
         }
-        let bal = self.balances.entry(owner.clone()).or_insert(0);
-        *bal = bal
+        let new_balance = self
+            .balance_of(&owner)
             .checked_sub(1)
             .ok_or_else(|| NftError::Overflow("burn underflow".into()))?;
-        self.total_supply = self
+        let new_total_supply = self
             .total_supply
             .checked_sub(1)
             .ok_or_else(|| NftError::Overflow("total_supply underflow".into()))?;
+
+        // ── commit (all infallible) ──
+        self.balances.insert(owner.clone(), new_balance);
+        self.total_supply = new_total_supply;
         self.token_approvals.remove(&token_id);
         // Tombstone: keep the entry so the id is never reusable; record audit.
         if let Some(t) = self.tokens.get_mut(&token_id) {
-            t.burned = true;
-            t.frozen = false;
+            t.mark_burned();
         }
         Ok(NftEvent::TokenBurned {
             collection_id: self.id.clone(),
@@ -416,12 +472,12 @@ impl NftCollection {
                 caller, token_id
             )));
         }
-        // Safe: live_owner proved a live token exists.
+        // A live token frozen individually also blocks its URI update.
+        if self.tokens.get(&token_id).is_some_and(|t| t.frozen()) {
+            return Err(NftError::TokenFrozen(token_id));
+        }
         if let Some(t) = self.tokens.get_mut(&token_id) {
-            if t.frozen {
-                return Err(NftError::TokenFrozen(token_id));
-            }
-            t.uri = new_uri.to_string();
+            t.set_uri(new_uri.to_string());
         }
         Ok(NftEvent::TokenUriUpdated {
             collection_id: self.id.clone(),
@@ -429,7 +485,8 @@ impl NftCollection {
         })
     }
 
-    /// Update collection-level metadata. Admin-only; fails if frozen.
+    /// Update collection-level metadata. Admin-only; fails if the collection is
+    /// frozen or its metadata is locked.
     pub fn update_collection_metadata(
         &mut self,
         caller: &str,
@@ -444,6 +501,9 @@ impl NftCollection {
         }
         if self.frozen {
             return Err(NftError::CollectionFrozen);
+        }
+        if !self.metadata_mutable {
+            return Err(NftError::MetadataLocked);
         }
         if let Some(d) = description {
             self.description = d;
@@ -470,7 +530,8 @@ impl NftCollection {
         })
     }
 
-    /// Lock collection metadata (token URIs become immutable). Admin-only.
+    /// Lock collection metadata (collection + token URIs become immutable).
+    /// Admin-only.
     pub fn lock_metadata(&mut self, caller: &str) -> NftResult<NftEvent> {
         if caller != self.admin {
             return Err(NftError::Unauthorized(
@@ -498,7 +559,7 @@ impl NftCollection {
         // Must be a live token.
         self.live_owner(token_id)?;
         if let Some(t) = self.tokens.get_mut(&token_id) {
-            t.frozen = frozen;
+            t.set_frozen(frozen);
         }
         let collection_id = self.id.clone();
         Ok(if frozen {
@@ -517,7 +578,7 @@ impl NftCollection {
     /// Resolve the owner of a live token or error. Burned/absent → `TokenNotFound`.
     fn live_owner(&self, token_id: u64) -> NftResult<String> {
         match self.tokens.get(&token_id) {
-            Some(t) if !t.burned => Ok(t.owner.clone()),
+            Some(t) if !t.burned() => Ok(t.owner().to_string()),
             _ => Err(NftError::TokenNotFound(token_id)),
         }
     }

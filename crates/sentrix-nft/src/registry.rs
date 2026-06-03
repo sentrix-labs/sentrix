@@ -13,17 +13,31 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 /// Derive a deterministic collection address from creator + seed.
+///
+/// Uses length-prefixed encoding (`len(creator) ‖ creator ‖ len(seed) ‖ seed`,
+/// lengths as `u64` big-endian) rather than a separator string. A separator
+/// like `"{creator}|{seed}"` is ambiguous — `("a|b", "c")` and `("a", "b|c")`
+/// would hash identically and collide on the same collection id. Length
+/// prefixing makes the preimage unambiguous.
 pub fn compute_collection_id(creator: &str, seed: &str) -> String {
-    let payload = format!("{}|{}", creator, seed);
-    let hash = Sha256::digest(payload.as_bytes());
+    let mut h = Sha256::new();
+    h.update((creator.len() as u64).to_be_bytes());
+    h.update(creator.as_bytes());
+    h.update((seed.len() as u64).to_be_bytes());
+    h.update(seed.as_bytes());
+    let hash = h.finalize();
     format!("SRC721_{}", hex::encode(&hash[..20]))
 }
 
 /// Holds every deployed native NFT collection.
+///
+/// The `collections` map is private: collections are only ever created through
+/// [`NftRegistry::deploy_collection`] (which validates params and assigns the
+/// deterministic id), so external code cannot insert an unvalidated collection
+/// under an arbitrary id or delete one. serde still persists the field.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NftRegistry {
-    /// collection id → collection.
-    pub collections: HashMap<String, NftCollection>,
+    collections: HashMap<String, NftCollection>,
 }
 
 impl NftRegistry {

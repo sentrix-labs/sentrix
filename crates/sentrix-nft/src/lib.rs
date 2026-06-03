@@ -56,7 +56,7 @@
 //! let col = reg.get_collection_mut(&id).unwrap();
 //! // admin (= creator) mints a soulbound badge to a builder.
 //! col.mint("0xfoundation", "0xbuilder", 1, "", None).unwrap();
-//! assert_eq!(col.owner_of(1), Some(&"0xbuilder".to_string()));
+//! assert_eq!(col.owner_of(1), Some("0xbuilder"));
 //! ```
 //!
 //! Soulbound transfer fails; a transferable token moves normally:
@@ -77,7 +77,7 @@
 //! // explicitly transferable → moves
 //! col.mint("0xadmin", "0xalice", 2, "", Some(true)).unwrap();
 //! col.transfer("0xalice", "0xalice", "0xbob", 2).unwrap();
-//! assert_eq!(col.owner_of(2), Some(&"0xbob".to_string()));
+//! assert_eq!(col.owner_of(2), Some("0xbob"));
 //! ```
 
 pub mod collection;
@@ -196,7 +196,7 @@ mod tests {
     fn mint_sets_owner_balance_supply_and_event() {
         let mut c = transferable_collection();
         let ev = c.mint(ADMIN, ALICE, 1, "", None).unwrap();
-        assert_eq!(c.owner_of(1), Some(&ALICE.to_string()));
+        assert_eq!(c.owner_of(1), Some(ALICE));
         assert_eq!(c.balance_of(ALICE), 1);
         assert_eq!(c.total_supply(), 1);
         assert!(matches!(ev, NftEvent::TokenMinted { token_id: 1, .. }));
@@ -214,7 +214,7 @@ mod tests {
         let mut c = transferable_collection();
         c.mint(ADMIN, ALICE, 1, "", None).unwrap();
         assert!(c.mint(ADMIN, BOB, 1, "", None).is_err());
-        assert_eq!(c.owner_of(1), Some(&ALICE.to_string()));
+        assert_eq!(c.owner_of(1), Some(ALICE));
     }
 
     #[test]
@@ -241,9 +241,9 @@ mod tests {
     fn mint_soulbound_and_transferable() {
         let mut c = soulbound_collection();
         c.mint(ADMIN, ALICE, 1, "", None).unwrap(); // default soulbound
-        assert!(!c.get_token(1).unwrap().transferable);
+        assert!(!c.token(1).unwrap().transferable());
         c.mint(ADMIN, ALICE, 2, "", Some(true)).unwrap(); // override
-        assert!(c.get_token(2).unwrap().transferable);
+        assert!(c.token(2).unwrap().transferable());
     }
 
     #[test]
@@ -262,7 +262,7 @@ mod tests {
         let mut c = transferable_collection();
         c.mint(ADMIN, ALICE, 1, "", None).unwrap();
         let ev = c.transfer(ALICE, ALICE, BOB, 1).unwrap();
-        assert_eq!(c.owner_of(1), Some(&BOB.to_string()));
+        assert_eq!(c.owner_of(1), Some(BOB));
         assert_eq!(c.balance_of(ALICE), 0);
         assert_eq!(c.balance_of(BOB), 1);
         assert!(matches!(ev, NftEvent::TokenTransferred { .. }));
@@ -276,7 +276,7 @@ mod tests {
             c.transfer(ALICE, ALICE, BOB, 1),
             Err(NftError::NotTransferable(1))
         );
-        assert_eq!(c.owner_of(1), Some(&ALICE.to_string()));
+        assert_eq!(c.owner_of(1), Some(ALICE));
     }
 
     #[test]
@@ -284,7 +284,7 @@ mod tests {
         let mut c = soulbound_collection();
         c.mint(ADMIN, ALICE, 1, "", None).unwrap();
         // even if an operator is set, soulbound still can't move
-        c.set_approval_for_all(ALICE, BOB, true).unwrap();
+        c.set_approval_for_all(ALICE, ALICE, BOB, true).unwrap();
         assert_eq!(
             c.transfer(BOB, ALICE, CAROL, 1),
             Err(NftError::NotTransferable(1))
@@ -326,7 +326,7 @@ mod tests {
         c.approve(ALICE, BOB, 1).unwrap();
         assert_eq!(c.get_approved(1), Some(&BOB.to_string()));
         c.transfer(BOB, ALICE, CAROL, 1).unwrap();
-        assert_eq!(c.owner_of(1), Some(&CAROL.to_string()));
+        assert_eq!(c.owner_of(1), Some(CAROL));
         assert_eq!(c.get_approved(1), None); // cleared by transfer
     }
 
@@ -335,9 +335,9 @@ mod tests {
         let mut c = transferable_collection();
         c.mint(ADMIN, ALICE, 1, "", None).unwrap();
         c.mint(ADMIN, ALICE, 2, "", None).unwrap();
-        c.set_approval_for_all(ALICE, BOB, true).unwrap();
+        c.set_approval_for_all(ALICE, ALICE, BOB, true).unwrap();
         c.transfer(BOB, ALICE, CAROL, 1).unwrap();
-        c.set_approval_for_all(ALICE, BOB, false).unwrap();
+        c.set_approval_for_all(ALICE, ALICE, BOB, false).unwrap();
         assert!(c.transfer(BOB, ALICE, CAROL, 2).is_err());
     }
 
@@ -370,7 +370,7 @@ mod tests {
         c.mint(ADMIN, ALICE, 1, "", None).unwrap();
         assert!(c.approve(BOB, BOB, 1).is_err());
         // operator may approve on owner's behalf
-        c.set_approval_for_all(ALICE, BOB, true).unwrap();
+        c.set_approval_for_all(ALICE, ALICE, BOB, true).unwrap();
         c.approve(BOB, CAROL, 1).unwrap();
         assert_eq!(c.get_approved(1), Some(&CAROL.to_string()));
     }
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn set_approval_for_all_rejects_self() {
         let mut c = transferable_collection();
-        assert!(c.set_approval_for_all(ALICE, ALICE, true).is_err());
+        assert!(c.set_approval_for_all(ALICE, ALICE, ALICE, true).is_err());
     }
 
     // ── burn (strict no-reuse) ───────────────────────────
@@ -426,7 +426,7 @@ mod tests {
         let mut c = transferable_collection();
         c.mint(ADMIN, ALICE, 1, "", None).unwrap();
         assert!(c.burn(BOB, 1).is_err());
-        assert_eq!(c.owner_of(1), Some(&ALICE.to_string()));
+        assert_eq!(c.owner_of(1), Some(ALICE));
     }
 
     #[test]
@@ -449,7 +449,7 @@ mod tests {
             Err(NftError::TokenAlreadyExists(1))
         );
         // tombstone preserved for audit
-        assert!(c.get_token(1).unwrap().burned);
+        assert!(c.token(1).unwrap().burned());
     }
 
     #[test]
@@ -502,8 +502,8 @@ mod tests {
         );
         c.update_collection_metadata(ADMIN, Some("desc".into()), Some("ipfs://b/".into()), None)
             .unwrap();
-        assert_eq!(c.description, "desc");
-        assert_eq!(c.base_uri, "ipfs://b/");
+        assert_eq!(c.description(), "desc");
+        assert_eq!(c.base_uri(), "ipfs://b/");
     }
 
     #[test]
@@ -522,16 +522,64 @@ mod tests {
     }
 
     #[test]
-    fn uri_hash_field_round_trips() {
-        let mut c = transferable_collection();
-        c.mint(ADMIN, ALICE, 1, "ipfs://x", None).unwrap();
-        // set integrity hashes directly on the token (no media bytes stored)
-        let t = c.tokens.get_mut(&1).unwrap();
+    fn uri_hash_fields_serde_round_trip() {
+        // Integrity hashes are optional URI references (never media bytes) and
+        // survive serialization. Tested on NftToken directly — collection
+        // internals are sealed.
+        let mut t = NftToken::new("SRC721_c".into(), 1, ALICE.into(), "ipfs://x".into(), true);
         t.uri_hash = Some("deadbeef".into());
         t.metadata_hash = Some("cafebabe".into());
-        let got = c.get_token(1).unwrap();
-        assert_eq!(got.uri_hash.as_deref(), Some("deadbeef"));
-        assert_eq!(got.metadata_hash.as_deref(), Some("cafebabe"));
+        let json = serde_json::to_string(&t).unwrap();
+        let back: NftToken = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.uri_hash.as_deref(), Some("deadbeef"));
+        assert_eq!(back.metadata_hash.as_deref(), Some("cafebabe"));
+        assert!(!back.burned());
+    }
+
+    // ── CodeRabbit hardening regressions ─────────────────
+
+    #[test]
+    fn set_approval_for_all_non_owner_rejected() {
+        // F1: a caller cannot set operator approvals on someone else's behalf.
+        let mut c = transferable_collection();
+        c.mint(ADMIN, ALICE, 1, "", None).unwrap();
+        // BOB tries to make CAROL an operator over ALICE's tokens.
+        assert_eq!(
+            c.set_approval_for_all(BOB, ALICE, CAROL, true),
+            Err(NftError::Unauthorized(
+                "caller may only set operator approvals for itself".into()
+            ))
+        );
+        assert!(!c.is_approved_for_all(ALICE, CAROL));
+    }
+
+    #[test]
+    fn collection_id_no_separator_collision() {
+        // F2: ambiguous-separator inputs must NOT collide.
+        let a = compute_collection_id("alice|x", "1");
+        let b = compute_collection_id("alice", "x|1");
+        assert_ne!(a, b, "length-prefixing must disambiguate the preimage");
+        // determinism preserved for identical inputs
+        assert_eq!(
+            compute_collection_id("alice", "x|1"),
+            compute_collection_id("alice", "x|1")
+        );
+    }
+
+    #[test]
+    fn collection_metadata_update_fails_after_lock() {
+        // F5: lock must block collection-level metadata, not just token URIs.
+        let mut c = transferable_collection();
+        // works before lock
+        c.update_collection_metadata(ADMIN, Some("d1".into()), None, None)
+            .unwrap();
+        c.lock_metadata(ADMIN).unwrap();
+        assert_eq!(
+            c.update_collection_metadata(ADMIN, Some("d2".into()), None, None),
+            Err(NftError::MetadataLocked)
+        );
+        // collection-level field unchanged
+        assert_eq!(c.description(), "d1");
     }
 
     // ── events ───────────────────────────────────────────
