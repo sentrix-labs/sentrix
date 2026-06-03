@@ -9,12 +9,18 @@ name: Coverage
 # direct Codecov upload via lcov.
 #
 # Scope: EVM-free crates only for now (primitives, bft, staking,
-# trie, codec, wallet). The EVM-touching set (sentrix-evm, sentrix-
+# trie, codec, wallet, nft). The EVM-touching set (sentrix-evm, sentrix-
 # precompiles, sentrix-core, sentrix-rpc, sentrix-network, sentrix-
 # grpc, sentrix-storage, bin/sentrix) compiles and tests fine but
 # llvm-cov instrumentation against the revm dep tree is brittle on
 # CI runners; revisit when we drop a revm version that ships
 # explicit const-eval guard.
+#
+# sentrix-nft (pure Proof Asset domain crate, no revm) is in-scope. Note
+# the native-NFT *apply path* (dispatch + block wiring) lives in
+# sentrix-core, which is in the EVM-excluded set — those tests still run
+# in ci.yml's `cargo test`, they're just not in this coverage upload
+# until the EVM crates can be instrumented on CI.
 
 on:
   push:
@@ -67,6 +73,7 @@ jobs:
             --package sentrix-trie \
             --package sentrix-codec \
             --package sentrix-wallet \
+            --package sentrix-nft \
             --package sentrix-prom-exporter \
             --lcov --output-path lcov.info \
             --ignore-filename-regex '/(tests|benches)/'
@@ -80,6 +87,7 @@ jobs:
             --package sentrix-trie \
             --package sentrix-codec \
             --package sentrix-wallet \
+            --package sentrix-nft \
             --package sentrix-prom-exporter \
             --summary-only
 

@@ -68,6 +68,18 @@ pub struct Blockchain {
     pub accounts: AccountDB, // pub: main.rs uses accounts.get_balance() for CLI display
     pub authority: AuthorityManager, // pub: main.rs uses authority.* for validator management
     pub contracts: ContractRegistry,
+    /// Native NFT / Proof Asset registry (SRC-721). Follows the same
+    /// persistence model as `contracts`: serialized in the chain.db state
+    /// blob, NOT committed into the trie/state_root yet. `#[serde(default)]`
+    /// so pre-NFT chain.db blobs deserialize cleanly (empty registry).
+    ///
+    /// KNOWN GAP (deferred to `feat/native-module-state-commitment`): like
+    /// SRC-20 `contracts`, this state is reproduced by deterministic
+    /// re-execution + the blob cache, but a divergent registry is NOT caught
+    /// by a state_root mismatch. Not production/testnet-deploy ready until
+    /// native-module state is committed into the trie.
+    #[serde(default)]
+    pub nft_registry: sentrix_nft::NftRegistry,
     pub mempool: VecDeque<Transaction>,
     /// Audit M6 (2026-05-06): O(1) duplicate-txid check sidecar for
     /// `add_to_mempool`. Pre-fix the dup-scan was `mempool.iter().any(...)`
@@ -212,6 +224,7 @@ impl Blockchain {
             accounts: AccountDB::new(),
             authority: AuthorityManager::new(admin_address),
             contracts: ContractRegistry::new(),
+            nft_registry: sentrix_nft::NftRegistry::new(),
             mempool: VecDeque::new(),
             mempool_txids: std::collections::HashSet::new(),
             mempool_sender_count: std::collections::HashMap::new(),
