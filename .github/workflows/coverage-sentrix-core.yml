@@ -1,0 +1,87 @@
+name: Coverage (sentrix-core, report-only)
+
+# Report-only coverage for sentrix-core. sentrix-core is deliberately excluded
+# from the required `cargo-llvm-cov` job (see coverage.yml) because llvm-cov
+# instrumentation of the revm dependency tree has been brittle on CI runners.
+#
+# This job exists so we still get a coverage number for sentrix-core's own
+# logic (apply paths, fingerprint, native-module commitment, etc.) WITHOUT any
+# of the risk:
+#   - it is NOT in the branch ruleset's required status checks, so it can never
+#     block a merge;
+#   - `continue-on-error: true` means a flaky/failed instrumentation run is a
+#     soft failure, not a red gate;
+#   - it does NOT run codecov/codecov-action, so it cannot change Codecov
+#     project/patch coverage for the repo.
+#
+# Output is an lcov + text summary published as a downloadable CI artifact for
+# manual inspection. Promote sentrix-core into the main coverage upload only
+# once revm instrumentation is proven reliable on CI runners.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/sentrix-core/**"
+      - ".github/workflows/coverage-sentrix-core.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  sentrix-core-coverage:
+    name: sentrix-core coverage (report-only, non-blocking)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    # Soft failure: never gate a merge on this, even if revm instrumentation
+    # is unstable on the runner.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust stable + llvm-tools-preview
+        run: |
+          rustup default stable
+          rustup component add llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@c070f87102a1c75b3183910f391c1cb887fe13c8 # v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cov-core-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cov-core-${{ runner.os }}-
+
+      - name: Coverage (sentrix-core) — report only, never uploaded to Codecov
+        run: |
+          cargo llvm-cov \
+            --package sentrix-core \
+            --lcov --output-path sentrix-core-lcov.info \
+            --ignore-filename-regex '/(tests|benches)/'
+          cargo llvm-cov report \
+            --package sentrix-core \
+            --ignore-filename-regex '/(tests|benches)/' \
+            --summary-only | tee sentrix-core-coverage-summary.txt
+
+      - name: Upload coverage report as artifact (NOT Codecov)
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: sentrix-core-coverage
+          path: |
+            sentrix-core-lcov.info
+            sentrix-core-coverage-summary.txt
+          retention-days: 30
