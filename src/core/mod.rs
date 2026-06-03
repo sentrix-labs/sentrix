@@ -27,6 +27,7 @@ pub use sentrix_core::block_executor;
 pub use sentrix_core::block_producer;
 pub use sentrix_core::blockchain;
 pub use sentrix_core::chain_queries;
+pub use sentrix_core::fork_heights;
 pub use sentrix_core::genesis;
 pub use sentrix_core::mempool;
 pub use sentrix_core::state_export;
