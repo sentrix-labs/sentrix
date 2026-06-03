@@ -522,4 +522,32 @@ mod tests {
         assert!(epoch_state_value_decode(&[0u8; 79]).is_none());
         assert!(epoch_state_value_decode(&[]).is_none());
     }
+
+    /// Native-module registry keys must be deterministic, mutually distinct,
+    /// and distinct from every other fixed/derived trie key — otherwise their
+    /// commitments would collide with each other or with account/SIP-6 state.
+    #[test]
+    fn test_native_registry_keys_deterministic_and_distinct() {
+        // Deterministic: same call → same key.
+        assert_eq!(native_src20_registry_key(), native_src20_registry_key());
+        assert_eq!(native_nft_registry_key(), native_nft_registry_key());
+
+        // SRC-20 vs NFT must differ.
+        assert_ne!(
+            native_src20_registry_key(),
+            native_nft_registry_key(),
+            "SRC-20 and NFT registry keys must not collide"
+        );
+
+        // Distinct from the other fixed-key domains.
+        for other in [total_minted_key(), epoch_state_key()] {
+            assert_ne!(native_src20_registry_key(), other);
+            assert_ne!(native_nft_registry_key(), other);
+        }
+
+        // Distinct from an address-derived key.
+        let addr_key = address_to_key("0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
+        assert_ne!(native_src20_registry_key(), addr_key);
+        assert_ne!(native_nft_registry_key(), addr_key);
+    }
 }
