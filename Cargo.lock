@@ -4551,9 +4551,9 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "reliakit-primitives"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b320cee5e0da720c8254daed83dacf78e1aa5d52d1771760ad268c85251988f"
+checksum = "fdd920a56c8d9c7bb55fc8db757f8fc4e442f2ca029e9dabae5125f8fecc8d2b"
 
 [[package]]
 name = "reliakit-secret"
@@ -5407,6 +5407,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "prometheus",
+ "reliakit-primitives",
  "reqwest",
  "serde",
  "serde_json",
@@ -5440,6 +5441,8 @@ dependencies = [
  "futures-util",
  "hex",
  "prometheus",
+ "reliakit-primitives",
+ "reliakit-secret",
  "revm",
  "sentrix-codec",
  "sentrix-core",
