@@ -17,6 +17,7 @@
 //   first while read traffic from the same IP keeps flowing.
 
 use axum::{Json, http::StatusCode, response::IntoResponse};
+use reliakit_primitives::PositiveInt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -25,15 +26,28 @@ use tokio::sync::Mutex;
 pub type IpRateLimiter = Arc<Mutex<HashMap<String, (u32, Instant)>>>;
 const RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
+/// Parse a rate-limit env override into a positive u32.
+///
+/// `PositiveInt` rejects a value of `0` — without this guard, setting
+/// `SENTRIX_GLOBAL_RATE_LIMIT=0` (or the write equivalent) would cap the
+/// limiter at zero requests, silently locking every client out of the
+/// endpoint. A `0` or unparseable value now falls back to `default`.
+/// The `min(u32::MAX)` clamp keeps the u64 → u32 cast lossless.
+fn rate_limit_from_env(var: &str, default: u32) -> u32 {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .and_then(|n| PositiveInt::new(n).ok())
+        .map(|p| p.get().min(u32::MAX as u64) as u32)
+        .unwrap_or(default)
+}
+
 /// Override via `SENTRIX_GLOBAL_RATE_LIMIT` env var for benchmarking.
 /// Default raised from 60 to 300 on 2026-04-21 — block-explorer
 /// frontend polls ~8 stats endpoints per tick, single user on shared
 /// IP was hitting 60/min within seconds.
 pub(super) fn global_rate_limit_max() -> u32 {
-    std::env::var("SENTRIX_GLOBAL_RATE_LIMIT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(300)
+    rate_limit_from_env("SENTRIX_GLOBAL_RATE_LIMIT", 300)
 }
 
 /// A7: tighter per-IP cap applied only to write / expensive endpoints
@@ -43,10 +57,7 @@ pub(super) fn global_rate_limit_max() -> u32 {
 /// limit. Override via `SENTRIX_WRITE_RATE_LIMIT` env var for
 /// benchmarking (e.g. 10000).
 pub(super) fn write_rate_limit_max() -> u32 {
-    std::env::var("SENTRIX_WRITE_RATE_LIMIT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10)
+    rate_limit_from_env("SENTRIX_WRITE_RATE_LIMIT", 10)
 }
 
 /// Comma-separated list of IPs that bypass both rate limiters. Set via
@@ -191,5 +202,43 @@ pub(super) async fn write_rate_limit_middleware(
         next.run(request).await
     } else {
         rate_limit_response(write_rate_limit_max(), RATE_LIMIT_WINDOW_SECS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rate_limit_from_env;
+
+    // Each test uses a unique env var name so parallel test threads don't
+    // race on a shared key.
+
+    #[test]
+    fn zero_falls_back_to_default() {
+        // SAFETY: unique var, set+remove within this test.
+        unsafe { std::env::set_var("SENTRIX_TEST_RL_ZERO", "0") };
+        // PositiveInt rejects 0 → default returned, not 0 (which would lock
+        // every client out of the endpoint).
+        assert_eq!(rate_limit_from_env("SENTRIX_TEST_RL_ZERO", 300), 300);
+        unsafe { std::env::remove_var("SENTRIX_TEST_RL_ZERO") };
+    }
+
+    #[test]
+    fn unparseable_falls_back_to_default() {
+        unsafe { std::env::set_var("SENTRIX_TEST_RL_BAD", "not_a_number") };
+        assert_eq!(rate_limit_from_env("SENTRIX_TEST_RL_BAD", 10), 10);
+        unsafe { std::env::remove_var("SENTRIX_TEST_RL_BAD") };
+    }
+
+    #[test]
+    fn valid_positive_overrides_default() {
+        unsafe { std::env::set_var("SENTRIX_TEST_RL_OK", "5000") };
+        assert_eq!(rate_limit_from_env("SENTRIX_TEST_RL_OK", 10), 5000);
+        unsafe { std::env::remove_var("SENTRIX_TEST_RL_OK") };
+    }
+
+    #[test]
+    fn unset_returns_default() {
+        // A var name that is definitely not set.
+        assert_eq!(rate_limit_from_env("SENTRIX_TEST_RL_UNSET_XYZ", 42), 42);
     }
 }

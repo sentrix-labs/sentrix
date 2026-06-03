@@ -272,9 +272,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let targets = parse_targets();
     info!(count = targets.len(), "starting prom-exporter");
 
+    // PositiveInt rejects 0 — a probe interval of 0s would turn poll_loop
+    // into a busy spin (Duration::from_secs(0) = no sleep between probes),
+    // hammering every target and pinning a core. Invalid / 0 / unparseable
+    // falls back to the 15s default.
     let interval = std::env::var("SENTRIX_PROBE_INTERVAL_SEC")
         .ok()
-        .and_then(|s| s.parse().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .and_then(|n| reliakit_primitives::PositiveInt::new(n).ok())
+        .map(|p| p.get())
         .unwrap_or(15u64);
 
     tokio::spawn(poll_loop(targets, Duration::from_secs(interval)));

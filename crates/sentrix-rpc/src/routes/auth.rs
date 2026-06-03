@@ -3,6 +3,7 @@
 // refactor.
 
 use axum::{extract::FromRequestParts, http::StatusCode, http::request::Parts};
+use reliakit_secret::{ExposeSecret, SecretString};
 
 // ── API key extractor ─────────────────────────────────────
 /// Add `_auth: ApiKey` as the first parameter of any handler that needs
@@ -21,9 +22,14 @@ impl<S: Send + Sync> FromRequestParts<S> for ApiKey {
         // empty or too-short value now behaves as "not configured" —
         // endpoints stay open rather than silently trusting a
         // hopelessly weak secret.
+        //
+        // SecretString wraps the key so accidental Debug/Display of
+        // `required` prints `[REDACTED]` rather than the raw value.
+        // .expose_secret() is the only way to read it — every call
+        // site is auditable.
         const MIN_API_KEY_LEN: usize = 16;
-        let required = match std::env::var("SENTRIX_API_KEY") {
-            Ok(k) if k.len() >= MIN_API_KEY_LEN => k,
+        let required: SecretString = match std::env::var("SENTRIX_API_KEY") {
+            Ok(k) if k.len() >= MIN_API_KEY_LEN => SecretString::from_string(k),
             Ok(k) if !k.is_empty() => {
                 tracing::warn!(
                     "SENTRIX_API_KEY is set but too short ({} chars, need ≥ {}); \
@@ -40,7 +46,7 @@ impl<S: Send + Sync> FromRequestParts<S> for ApiKey {
             .get("X-API-Key")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        if constant_time_eq(provided, &required) {
+        if constant_time_eq(provided, required.expose_secret()) {
             Ok(ApiKey)
         } else {
             Err(StatusCode::UNAUTHORIZED)
