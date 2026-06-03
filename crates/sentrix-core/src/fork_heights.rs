@@ -186,6 +186,20 @@ const STATE_IN_TRIE_HEIGHT_TESTNET_DEFAULT: u64 = 6_026_000;
 /// state at the activation block.
 const NATIVE_STATE_IN_TRIE_HEIGHT_DEFAULT: u64 = u64::MAX;
 
+/// Reward bookkeeping in the deterministic apply path. Fixes the
+/// PROTOCOL_TREASURY drift class: pre-fork, reward distribution +
+/// liveness + epoch bookkeeping is done in 5 separate network/finalize
+/// receive paths (gossip-apply, peer-apply, catch-up-sync, validator-
+/// finalize ×2), so a block's reward is applied a per-node-variable
+/// number of times → `sum(pending_rewards+delegator_rewards)` (=
+/// PROTOCOL_TREASURY) drifts → state_root divergence. Post-fork, the
+/// bundle runs exactly once inside `apply_block_pass2` (keyed off the
+/// block's justification), and the 5 external call sites skip it.
+/// Default `u64::MAX` on both nets — consensus-changing, so it stays off
+/// until an activation height is pinned (halt-all + aligned state +
+/// simul-start). See `audits/reward-distribution-flow-audit-2026-04-27.md`.
+const REWARD_APPLY_PATH_HEIGHT_DEFAULT: u64 = u64::MAX;
+
 // ── Runtime readers (env → u64, default to compile-time default) ──────
 
 fn configured_chain_id() -> u64 {
@@ -421,6 +435,14 @@ pub fn get_native_state_in_trie_height() -> u64 {
     )
 }
 
+/// Reward-apply-path fork height. Default `u64::MAX` on both nets (see
+/// [`REWARD_APPLY_PATH_HEIGHT_DEFAULT`]). Post-fork, reward/liveness/epoch
+/// bookkeeping runs once in `apply_block_pass2`; pre-fork it stays in the
+/// network/finalize receive paths (current behaviour, bit-identical).
+pub fn get_reward_apply_path_height() -> u64 {
+    read_height("REWARD_APPLY_PATH_HEIGHT", REWARD_APPLY_PATH_HEIGHT_DEFAULT)
+}
+
 // ── Height predicates ────────────────────────────────────
 //
 // Every fork-height predicate has the same shape:
@@ -560,6 +582,16 @@ pub fn is_state_in_trie_height(height: u64) -> bool {
 /// state_root is computed exactly as before (native state stays off-trie).
 pub fn is_native_state_in_trie_height(height: u64) -> bool {
     let fork = get_native_state_in_trie_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// Reward-apply-path — true once `REWARD_APPLY_PATH_HEIGHT` activates.
+/// Post-fork: `apply_block_pass2` runs reward/liveness/epoch bookkeeping
+/// exactly once per block (off the block's justification), and the 5
+/// network/finalize receive-path call sites skip it — eliminating the
+/// per-node-variable application count that drifted PROTOCOL_TREASURY.
+pub fn is_reward_apply_path_height(height: u64) -> bool {
+    let fork = get_reward_apply_path_height();
     fork != u64::MAX && height >= fork
 }
 
@@ -808,6 +840,43 @@ mod tests {
             assert!(!is_native_state_in_trie_height(6_026_000));
 
             std::env::remove_var("SENTRIX_CHAIN_ID");
+        }
+    }
+
+    /// REWARD_APPLY_PATH must default disabled (`u64::MAX`) on both nets — it's
+    /// a consensus-changing move of reward bookkeeping into the apply path, so
+    /// pre-activation behaviour must be bit-identical (bookkeeping stays in the
+    /// network/finalize receive paths).
+    #[test]
+    fn reward_apply_path_disabled_by_default_both_nets() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::remove_var("REWARD_APPLY_PATH_HEIGHT");
+
+            std::env::set_var("SENTRIX_CHAIN_ID", MAINNET_CHAIN_ID.to_string());
+            assert_eq!(get_reward_apply_path_height(), u64::MAX);
+            assert!(!is_reward_apply_path_height(0));
+            assert!(!is_reward_apply_path_height(u64::MAX - 1));
+
+            std::env::set_var("SENTRIX_CHAIN_ID", TESTNET_CHAIN_ID.to_string());
+            assert_eq!(get_reward_apply_path_height(), u64::MAX);
+            assert!(!is_reward_apply_path_height(6_026_000));
+
+            std::env::remove_var("SENTRIX_CHAIN_ID");
+        }
+    }
+
+    /// Once pinned, the reward-apply-path gate flips at the activation height.
+    #[test]
+    fn reward_apply_path_activates_at_pinned_height() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::set_var("REWARD_APPLY_PATH_HEIGHT", "2000");
+            assert_eq!(get_reward_apply_path_height(), 2000);
+            assert!(!is_reward_apply_path_height(1999));
+            assert!(is_reward_apply_path_height(2000));
+            assert!(is_reward_apply_path_height(2001));
+            std::env::remove_var("REWARD_APPLY_PATH_HEIGHT");
         }
     }
 

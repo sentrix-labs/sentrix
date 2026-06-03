@@ -1571,6 +1571,31 @@ impl Blockchain {
             self.chain.drain(..excess);
         }
 
+        // Reward-apply-path fork: run ALL per-block bookkeeping here, exactly
+        // once per block, instead of in the 5 network/finalize receive paths
+        // (which applied it a per-node-variable number of times and drifted
+        // consensus state). Two pieces, both deterministic off the committed
+        // block + justification, run BEFORE update_trie_for_block so their
+        // mutations land in THIS block's state_root:
+        //
+        //   1. reward / liveness / epoch-record bundle (every block) — drifted
+        //      PROTOCOL_TREASURY = sum(pending_rewards + delegator_rewards).
+        //   2. run_epoch_bookkeeping (epoch boundaries only) — active-set
+        //      rotation, unbonding release, liveness slashing. NOT idempotent
+        //      (advances epoch_number, pushes history, slashes), so a per-node-
+        //      variable application count would corrupt epoch_state (trie-
+        //      committed) + double-slash. Runs AFTER the bundle so it sees the
+        //      bundle's fresh liveness counts + pre-rotation active_set, matching
+        //      the external ordering.
+        //
+        // Pre-fork: skipped here; the external receive-path call sites still do
+        // it (bit-identical to today). Inside Pass-2 → covered by the snapshot/
+        // rollback if a later step fails.
+        if Self::is_reward_apply_path_height(self.height()) {
+            self.apply_reward_bookkeeping_for_latest_block();
+            self.run_epoch_bookkeeping(self.height());
+        }
+
         // Update state trie after block commit, stamp state_root on the block header,
         // and verify the sender's committed root when receiving from peers.
         let profile_t1 = profile_t0.map(|_| std::time::Instant::now());
@@ -1746,6 +1771,61 @@ impl Blockchain {
     ///   `accounts[TREASURY] == sum(pending_rewards) + sum(delegator_rewards)`
     /// load-bearing from block 0 of the post-fork era onward.
     ///
+    /// Reward / liveness / epoch bookkeeping for the just-committed latest
+    /// block, run once inside `apply_block_pass2` post `REWARD_APPLY_PATH_HEIGHT`.
+    ///
+    /// This is the deterministic home for the bundle that pre-fork lived in 5
+    /// separate network/finalize receive paths (gossip-apply, peer-apply,
+    /// catch-up-sync, validator-finalize ×2). Because those paths covered
+    /// blocks unevenly, a block's reward got applied a per-node-variable number
+    /// of times → `pending_rewards` / `delegator_rewards` (and thus
+    /// PROTOCOL_TREASURY = their sum) drifted → state_root divergence. Running
+    /// it here, keyed off the committed block's justification, guarantees
+    /// exactly-once application on every node regardless of how the block
+    /// arrived.
+    ///
+    /// Mirrors the external call sites exactly: proposer = block.validator,
+    /// signer stakes = justification precommit `stake_weight`, reward =
+    /// `get_block_reward()`, fee_share = 0. No-op for Pioneer blocks (no
+    /// justification).
+    fn apply_reward_bookkeeping_for_latest_block(&mut self) {
+        // Pull everything we need out of the committed block first so the
+        // immutable borrow of `self.chain` ends before the mutable borrows.
+        let (block_index, proposer, signers, reward_signers) = {
+            let Some(latest) = self.chain.last() else {
+                return;
+            };
+            let Some(j) = latest.justification.as_ref() else {
+                return; // Pioneer / no-justification block — nothing to do.
+            };
+            let signers: Vec<String> = j.precommits.iter().map(|p| p.validator.clone()).collect();
+            let reward_signers: Vec<(String, u64)> = j
+                .precommits
+                .iter()
+                .map(|p| (p.validator.clone(), p.stake_weight))
+                .collect();
+            (
+                latest.index,
+                latest.validator.clone(),
+                signers,
+                reward_signers,
+            )
+        };
+
+        let active = self.stake_registry.active_set.clone();
+        let reward = self.get_block_reward();
+
+        // 1. Liveness (signed/missed per validator).
+        self.slashing
+            .record_block_signatures(&active, &signers, block_index);
+        // 2. Reward accumulators (validator pending_rewards + delegator_rewards).
+        let _ = self
+            .stake_registry
+            .distribute_reward(&proposer, &reward_signers, reward, 0);
+        // 3. Epoch accounting.
+        self.epoch_manager.record_block(reward);
+    }
+
     /// Called exactly once by `apply_block_pass2` on the single
     /// transition block, gated by
     /// `is_reward_v2_height(block.index) && !is_reward_v2_height(block.index - 1)`.
@@ -2987,5 +3067,75 @@ mod tests {
             std::env::remove_var("JAIL_CONSENSUS_HEIGHT");
             std::env::remove_var("VOYAGER_REWARD_V2_HEIGHT");
         }
+    }
+
+    // ── Reward-apply-path determinism (centralized bookkeeping) ──────────
+    //
+    // The bundle (liveness + reward + epoch-record) was moved out of the 5
+    // network/finalize receive paths into apply_block_pass2, gated by
+    // REWARD_APPLY_PATH_HEIGHT, to run exactly once per block. These exercise
+    // the relocated helper directly (the gate itself is tested in fork_heights).
+
+    #[test]
+    fn reward_apply_path_credits_pending_rewards_once() {
+        use sentrix_primitives::justification::BlockJustification;
+        let mut bc = setup();
+        let val = format!("0x{}", "77".repeat(20));
+        // Register a single staker so it receives the whole signer share.
+        bc.stake_registry
+            .register_validator(&val, 15_000 * 100_000_000, 1000, bc.height())
+            .unwrap();
+        bc.stake_registry.active_set = vec![val.clone()];
+        let before = bc
+            .stake_registry
+            .validators
+            .get(&val)
+            .unwrap()
+            .pending_rewards;
+
+        // A block proposed by `val` with `val` as the sole precommit signer.
+        let mut block = bc.create_block("v1").unwrap();
+        let mut just = BlockJustification::new(block.index, 0, block.hash.clone());
+        just.add_precommit(val.clone(), vec![], 15_000 * 100_000_000);
+        block.validator = val.clone();
+        block.justification = Some(just);
+        bc.chain.push(block);
+
+        bc.apply_reward_bookkeeping_for_latest_block();
+        let after = bc
+            .stake_registry
+            .validators
+            .get(&val)
+            .unwrap()
+            .pending_rewards;
+        assert!(
+            after > before,
+            "apply-path bookkeeping must credit pending_rewards (before={before} after={after})"
+        );
+
+        // Idempotency-of-inputs check: it is NOT internally idempotent (each
+        // call distributes another block's worth) — so the gate/caller must
+        // ensure exactly-once. A second call credits again, proving each
+        // invocation = one distribution (caller runs it once per block).
+        bc.apply_reward_bookkeeping_for_latest_block();
+        let twice = bc
+            .stake_registry
+            .validators
+            .get(&val)
+            .unwrap()
+            .pending_rewards;
+        assert!(
+            twice > after,
+            "second call distributes a second time as expected"
+        );
+    }
+
+    #[test]
+    fn reward_apply_path_noop_without_justification() {
+        let mut bc = setup();
+        let block = bc.create_block("v1").unwrap(); // Pioneer-style: no justification
+        bc.chain.push(block);
+        // Must be a clean no-op (no panic, no state change) when justification absent.
+        bc.apply_reward_bookkeeping_for_latest_block();
     }
 }

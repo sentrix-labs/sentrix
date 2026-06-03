@@ -1109,43 +1109,55 @@ async fn on_swarm_event(
                                     // Apply same bookkeeping that main.rs validator-finalize paths apply,
                                     // so libp2p-applied blocks have identical state mutations.
                                     if let Some(j) = &gossip.block.justification {
-                                        let active = chain.stake_registry.active_set.clone();
-                                        let signers: Vec<String> = j
-                                            .precommits
-                                            .iter()
-                                            .map(|p| p.validator.clone())
-                                            .collect();
-                                        chain.slashing.record_block_signatures(
-                                            &active,
-                                            &signers,
+                                        // Reward / liveness / epoch-record bundle: pre-fork only.
+                                        // Post REWARD_APPLY_PATH_HEIGHT this runs exactly once in
+                                        // apply_block_pass2 (off the same justification), so this
+                                        // receive-path copy is skipped to avoid double-application.
+                                        if !sentrix_core::fork_heights::is_reward_apply_path_height(
                                             gossip.block.index,
-                                        );
+                                        ) {
+                                            let active = chain.stake_registry.active_set.clone();
+                                            let signers: Vec<String> = j
+                                                .precommits
+                                                .iter()
+                                                .map(|p| p.validator.clone())
+                                                .collect();
+                                            chain.slashing.record_block_signatures(
+                                                &active,
+                                                &signers,
+                                                gossip.block.index,
+                                            );
 
-                                        // Reward distribution — mirror main.rs validator-finalize.
-                                        // Without this, libp2p-synced validators have stale
-                                        // pending_rewards / delegator_rewards accumulators
-                                        // → ClaimRewards tx credits divergent amounts (HIGH severity
-                                        // latent consensus-divergence bug).
-                                        let proposer = gossip.block.validator.clone();
-                                        let reward_signers: Vec<(String, u64)> = j
-                                            .precommits
-                                            .iter()
-                                            .map(|p| (p.validator.clone(), p.stake_weight))
-                                            .collect();
-                                        let reward = chain.get_block_reward();
-                                        let _ = chain.stake_registry.distribute_reward(
-                                            &proposer,
-                                            &reward_signers,
-                                            reward,
-                                            0,
-                                        );
-                                        // Epoch tracking — mirror main.rs validator-finalize.
-                                        chain.epoch_manager.record_block(reward);
+                                            // Reward distribution — mirror main.rs validator-finalize.
+                                            // Without this, libp2p-synced validators have stale
+                                            // pending_rewards / delegator_rewards accumulators
+                                            // → ClaimRewards tx credits divergent amounts (HIGH severity
+                                            // latent consensus-divergence bug).
+                                            let proposer = gossip.block.validator.clone();
+                                            let reward_signers: Vec<(String, u64)> = j
+                                                .precommits
+                                                .iter()
+                                                .map(|p| (p.validator.clone(), p.stake_weight))
+                                                .collect();
+                                            let reward = chain.get_block_reward();
+                                            let _ = chain.stake_registry.distribute_reward(
+                                                &proposer,
+                                                &reward_signers,
+                                                reward,
+                                                0,
+                                            );
+                                            // Epoch tracking — mirror main.rs validator-finalize.
+                                            chain.epoch_manager.record_block(reward);
+                                        }
                                         // Epoch boundary transition — rotate active set,
                                         // release unbonding, run liveness slashing.
-                                        // Previously missing here; libp2p-synced nodes
-                                        // diverged from BFT-finalize path at boundaries.
-                                        chain.run_epoch_bookkeeping(gossip.block.index);
+                                        // Pre-fork only; post REWARD_APPLY_PATH_HEIGHT this
+                                        // runs once in apply_block_pass2.
+                                        if !sentrix_core::fork_heights::is_reward_apply_path_height(
+                                            gossip.block.index,
+                                        ) {
+                                            chain.run_epoch_bookkeeping(gossip.block.index);
+                                        }
                                     }
                                     let updated =
                                         chain.latest_block().ok().cloned().unwrap_or(gossip.block);
@@ -1731,27 +1743,35 @@ async fn on_inbound_request(
                         }
                         // Asymmetric-recording fix bundle (see audits/reward-distribution-flow-audit-2026-04-27.md).
                         if let Some(j) = &block_justification {
-                            let active = chain.stake_registry.active_set.clone();
-                            let signers: Vec<String> =
-                                j.precommits.iter().map(|p| p.validator.clone()).collect();
-                            chain
-                                .slashing
-                                .record_block_signatures(&active, &signers, block_idx);
-                            // Reward distribution + epoch tracking (mirror main.rs validator-finalize).
-                            let reward_signers: Vec<(String, u64)> = j
-                                .precommits
-                                .iter()
-                                .map(|p| (p.validator.clone(), p.stake_weight))
-                                .collect();
-                            let reward = chain.get_block_reward();
-                            let _ = chain.stake_registry.distribute_reward(
-                                &block_validator,
-                                &reward_signers,
-                                reward,
-                                0,
-                            );
-                            chain.epoch_manager.record_block(reward);
-                            chain.run_epoch_bookkeeping(block_idx);
+                            // Reward / liveness / epoch-record bundle: pre-fork only (post
+                            // REWARD_APPLY_PATH_HEIGHT it runs once in apply_block_pass2).
+                            if !sentrix_core::fork_heights::is_reward_apply_path_height(block_idx) {
+                                let active = chain.stake_registry.active_set.clone();
+                                let signers: Vec<String> =
+                                    j.precommits.iter().map(|p| p.validator.clone()).collect();
+                                chain
+                                    .slashing
+                                    .record_block_signatures(&active, &signers, block_idx);
+                                // Reward distribution + epoch tracking (mirror main.rs validator-finalize).
+                                let reward_signers: Vec<(String, u64)> = j
+                                    .precommits
+                                    .iter()
+                                    .map(|p| (p.validator.clone(), p.stake_weight))
+                                    .collect();
+                                let reward = chain.get_block_reward();
+                                let _ = chain.stake_registry.distribute_reward(
+                                    &block_validator,
+                                    &reward_signers,
+                                    reward,
+                                    0,
+                                );
+                                chain.epoch_manager.record_block(reward);
+                            }
+                            // Epoch boundary transition — pre-fork only; post
+                            // REWARD_APPLY_PATH_HEIGHT it runs in apply_block_pass2.
+                            if !sentrix_core::fork_heights::is_reward_apply_path_height(block_idx) {
+                                chain.run_epoch_bookkeeping(block_idx);
+                            }
                         }
                         tracing::info!("libp2p: applied block {} from {}", block_idx, peer);
                         // Capture H2 (with state_root + recomputed hash) before releasing
@@ -2065,32 +2085,42 @@ async fn on_inbound_response(
                         // state across validators. Fix mirrors all 3 calls.
                         // See `audits/reward-distribution-flow-audit-2026-04-27.md`.
                         if let Some(j) = &block.justification {
-                            let active = chain.stake_registry.active_set.clone();
-                            let signers: Vec<String> =
-                                j.precommits.iter().map(|p| p.validator.clone()).collect();
-                            chain
-                                .slashing
-                                .record_block_signatures(&active, &signers, block.index);
-                            // Reward distribution + epoch tracking.
-                            let proposer = block.validator.clone();
-                            let reward_signers: Vec<(String, u64)> = j
-                                .precommits
-                                .iter()
-                                .map(|p| (p.validator.clone(), p.stake_weight))
-                                .collect();
-                            let reward = chain.get_block_reward();
-                            let _ = chain.stake_registry.distribute_reward(
-                                &proposer,
-                                &reward_signers,
-                                reward,
-                                0,
-                            );
-                            chain.epoch_manager.record_block(reward);
+                            // Reward / liveness / epoch-record bundle: pre-fork only (post
+                            // REWARD_APPLY_PATH_HEIGHT it runs once in apply_block_pass2).
+                            if !sentrix_core::fork_heights::is_reward_apply_path_height(block.index)
+                            {
+                                let active = chain.stake_registry.active_set.clone();
+                                let signers: Vec<String> =
+                                    j.precommits.iter().map(|p| p.validator.clone()).collect();
+                                chain.slashing.record_block_signatures(
+                                    &active,
+                                    &signers,
+                                    block.index,
+                                );
+                                // Reward distribution + epoch tracking.
+                                let proposer = block.validator.clone();
+                                let reward_signers: Vec<(String, u64)> = j
+                                    .precommits
+                                    .iter()
+                                    .map(|p| (p.validator.clone(), p.stake_weight))
+                                    .collect();
+                                let reward = chain.get_block_reward();
+                                let _ = chain.stake_registry.distribute_reward(
+                                    &proposer,
+                                    &reward_signers,
+                                    reward,
+                                    0,
+                                );
+                                chain.epoch_manager.record_block(reward);
+                            }
                             // Epoch boundary transition — rotate active set,
                             // release unbonding, run liveness slashing.
-                            // Previously missing here; batch-syncing nodes
-                            // diverged from BFT-finalize path at boundaries.
-                            chain.run_epoch_bookkeeping(block.index);
+                            // Pre-fork only; post REWARD_APPLY_PATH_HEIGHT it runs
+                            // in apply_block_pass2.
+                            if !sentrix_core::fork_heights::is_reward_apply_path_height(block.index)
+                            {
+                                chain.run_epoch_bookkeeping(block.index);
+                            }
                         }
                         // Use H2 (post-add_block state_root hash) — not the raw peer block (PR #78).
                         let updated = chain
