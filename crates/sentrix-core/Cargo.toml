@@ -13,6 +13,7 @@ sentrix-trie = { path = "../sentrix-trie" }
 sentrix-staking = { path = "../sentrix-staking" }
 sentrix-evm = { path = "../sentrix-evm" }
 sentrix-bft = { path = "../sentrix-bft" }
+sentrix-nft = { path = "../sentrix-nft" }
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

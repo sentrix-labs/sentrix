@@ -20,6 +20,7 @@ pub(crate) mod divergence;
 pub mod fork_heights;
 pub mod genesis;
 pub mod mempool;
+pub mod nft;
 pub mod parallel;
 pub mod state_export;
 pub mod storage;
