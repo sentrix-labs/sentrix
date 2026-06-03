@@ -14,6 +14,30 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.27] — 2026-06-04 — Deterministic per-block bookkeeping (fork-gated)
+
+### Consensus — reward/epoch bookkeeping moved to the apply path
+
+Root cause of the 2026-06-03 testnet 4-way state drift (only
+`PROTOCOL_TREASURY` diverged): reward distribution, liveness recording,
+epoch accounting, and epoch-boundary rotation/slashing ran in 5 separate
+network/finalize receive paths instead of the deterministic block-apply
+path. Uneven path coverage applied a block's bookkeeping a per-node-variable
+number of times → `pending_rewards`/`delegator_rewards` (hence the treasury
+balance) and `epoch_state` drifted → `state_root` divergence (masked because
+`state_root` is excluded from the block hash).
+
+Fix (PR #782): the full bundle (`record_block_signatures` +
+`distribute_reward` + `epoch_manager.record_block` + `run_epoch_bookkeeping`)
+now runs exactly once inside `apply_block_pass2`, keyed off the committed
+block's justification, before `update_trie_for_block`. The 5 receive-path
+copies are gated off post-fork.
+
+Fork-gated by `REWARD_APPLY_PATH_HEIGHT` (default `u64::MAX` on both nets):
+pre-fork is bit-identical to today; post-fork the bookkeeping is
+deterministic regardless of how a block arrived. Consensus-changing —
+activate only via halt-all + state-root-aligned + simul-start.
+
 ## [2.2.26] — 2026-06-03 — BFT block-hash consistency + fork detection
 
 ### Consensus — Bug B: block hash now correct before BFT voting
