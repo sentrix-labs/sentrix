@@ -4550,10 +4550,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "reliakit-primitives"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b320cee5e0da720c8254daed83dacf78e1aa5d52d1771760ad268c85251988f"
+
+[[package]]
 name = "reliakit-secret"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71fc95b189ee53987da09d1e42fe985c458f0fce63b435fd7a907b9c4d921e19"
+
+[[package]]
+name = "reliakit-validate"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00bfe73bc05eca3fc925280d4348d3d1eb91633d75fa927d85eec7b3da6fa9ae"
 
 [[package]]
 name = "reqwest"
@@ -5288,6 +5300,8 @@ dependencies = [
  "clap",
  "dashmap",
  "hex",
+ "reliakit-primitives",
+ "reliakit-validate",
  "reqwest",
  "secp256k1 0.31.1",
  "sentrix-primitives",
