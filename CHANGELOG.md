@@ -14,6 +14,25 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.26] — 2026-06-03 — BFT block-hash consistency + fork detection
+
+### Consensus — Bug B: block hash now correct before BFT voting
+
+- **Fix: proposer pre-applies block on scratch clone before signing** (PR #769). `create_block_voyager` returned a block before `state_root` was stamped; the hash BFT peers voted on (H1) differed from the hash stored after `add_block` (H2, which includes `state_root`). This caused `block.hash ≠ justification.block_hash` — the root of the 2026-05-31 testnet cascade at h=5,817,132. Fix: clone `Blockchain`, call `add_block` on the scratch copy, then use the resulting H2 as the proposal hash. Applied at three call sites: initial proposal, speculative pre-build, and peer-finalize path.
+- **Fix: BftAction::SyncNeeded now calls `trigger_sync()`** (PR #769). Previously logged `"peer ahead, need block sync"` and broke out of the action loop without actually requesting blocks. Now calls `lp2p.trigger_sync()` before breaking. Fixed at both call sites in the validator loop.
+- **Fix: FinalizeBlock with peer-proposed block triggers sync instead of local execution** (PR #769). When the finalized block was proposed by a different validator (not the local node), the BFT loop attempted to execute it locally via `add_block`. That path races with the libp2p gossip path, causing double-apply and prev-hash mismatches. Now detects `blk.validator ≠ wallet.address` and calls `trigger_sync()` instead, letting the libp2p NewBlock path handle application.
+- **Fix: skip stale blocks in gossip and direct-apply paths** (PR #769). Added `if block.index <= chain.height() { return; }` guard before `add_block_from_peer` in both the gossip spawned task and the direct `NewBlock` inbound-request handler. The batch-sync (GetBlocks) path already had this guard; the other two paths did not, causing redundant apply attempts on already-known blocks.
+- **Fix: missing `run_epoch_bookkeeping` in direct-apply path** (PR #769). The inbound `NewBlock` request handler (direct peer-to-peer, not gossip or batch sync) was missing the epoch boundary call added in PR #763. Now consistent across all three apply paths.
+
+### Observability — fork detection + health hardening (PR #768)
+
+- **`/health` now returns HTTP 503 when the node is forked or stale.** Previously returned `{"status":"ok"}` unconditionally. A forked validator now correctly reports unhealthy so Docker marks the container unhealthy and operators are alerted.
+- **Fork detection via `NodeEvent::SyncForkDetected`**: when any block-apply path sees `"invalid previous hash"`, emits the event with local head hash. Main.rs records `FORK_DETECTED`, `FORK_DETECTED_HEIGHT`, `FORK_DETECTED_AT_UNIX`, and `FORK_LOCAL_HEAD` in process-level atomics.
+- **Fork flag cleared only on recovery**: `NodeEvent::NewBlock` clears `FORK_DETECTED` only when `block.index ≥ FORK_DETECTED_HEIGHT`, preventing a block below the fork point from silently clearing the alarm.
+- **Stale detection** (uptime-gated): flags the node stale when chain tip is >120 s old and the node has been running >120 s. Fresh-start nodes are excluded.
+- **Structured 503 body** includes `fork_at_height`, `fork_local_head_at_detection`, and `"recovery": "Copy canonical chain.db from a healthy validator and restart."` for operator actionability.
+- **Atomic ordering**: `FORK_DETECTED` uses `Release` on write / `Acquire` on read; metadata stores are ordered before the flag swap so readers never see `FORK_DETECTED=true` with stale height/timestamp.
+
 ## [2.2.25] — 2026-06-02 — SIP-6 activation fixes + wallet key safety
 
 **SIP-6 is now testnet-active** on Sentrix Testnet at `h=6,026,000`. Two pre-deploy blockers discovered during code review were fixed before activation, and one post-activation bug was caught and fixed in the same session.
