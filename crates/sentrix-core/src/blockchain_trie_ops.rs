@@ -26,7 +26,8 @@ use sentrix_primitives::transaction::{PROTOCOL_TREASURY, TOKEN_OP_ADDRESS};
 use sentrix_storage::MdbxStorage;
 use sentrix_trie::address::{
     account_value_bytes, address_to_key, epoch_state_key, epoch_state_value_bytes,
-    liveness_value_bytes, pending_rewards_value_bytes, total_minted_key, total_minted_value_bytes,
+    liveness_value_bytes, native_nft_registry_key, native_src20_registry_key,
+    pending_rewards_value_bytes, total_minted_key, total_minted_value_bytes,
     validator_liveness_key, validator_pending_rewards_key,
 };
 
@@ -517,6 +518,22 @@ impl Blockchain {
         }
         // Borrow of `stake_registry` / `slashing` / `total_minted` ends here.
 
+        // Native-module state commitment. Independent of the SIP-6
+        // STATE_IN_TRIE gate above (which is already active on testnet —
+        // reusing it would retroactively fork testnet's state_root). Capture
+        // the SRC-20 + NFT registry canonical hashes here, before the trie
+        // mut-borrow, and commit them in Phase 2f. Pre-fork both are None and
+        // the state_root is unchanged from today.
+        let native_src20_hash: Option<[u8; 32]>;
+        let native_nft_hash: Option<[u8; 32]>;
+        if Self::is_native_state_in_trie_height(block_index) {
+            native_src20_hash = Some(self.contracts.canonical_hash());
+            native_nft_hash = Some(self.nft_registry.canonical_hash());
+        } else {
+            native_src20_hash = None;
+            native_nft_hash = None;
+        }
+
         if trace {
             eprintln!("[trie-trace] update_trie_for_block at h={block_index}");
             eprintln!("[trie-trace] touched (sorted): {} addresses", updates.len());
@@ -664,6 +681,33 @@ impl Blockchain {
                     snap.epoch_number,
                     snap.total_blocks_produced,
                     snap.total_rewards,
+                    hex::encode(trie.root_hash())
+                );
+            }
+        }
+
+        // Phase 2f — native-module state commitment (post
+        // NATIVE_STATE_IN_TRIE fork only). Each registry's canonical hash is
+        // written under a single fixed key, overwritten every block, so the
+        // state_root reflects all SRC-20 + NFT state. Always-insert (even when
+        // empty) — an empty registry has a stable canonical hash distinct from
+        // any populated one, same insert-always semantics as total_minted.
+        if let Some(h) = native_src20_hash {
+            trie.insert(&native_src20_registry_key(), &h)?;
+            if trace {
+                eprintln!(
+                    "[trie-trace]   native_src20 hash={} → root={}",
+                    hex::encode(&h[..8]),
+                    hex::encode(trie.root_hash())
+                );
+            }
+        }
+        if let Some(h) = native_nft_hash {
+            trie.insert(&native_nft_registry_key(), &h)?;
+            if trace {
+                eprintln!(
+                    "[trie-trace]   native_nft hash={} → root={}",
+                    hex::encode(&h[..8]),
                     hex::encode(trie.root_hash())
                 );
             }

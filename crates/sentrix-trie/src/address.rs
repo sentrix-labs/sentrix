@@ -146,6 +146,28 @@ pub fn total_minted_value_decode(bytes: &[u8]) -> Option<u64> {
     Some(u64::from_be_bytes(bytes[0..8].try_into().ok()?))
 }
 
+/// Native-module state commitment — trie key for the SRC-20
+/// `ContractRegistry`. Single fixed key (no address); the value is the
+/// registry's canonical hash, overwritten every block post-fork so the
+/// state_root captures all SRC-20 contract state (balances, supply,
+/// allowances). Gated by `NATIVE_STATE_IN_TRIE_HEIGHT`.
+pub fn native_src20_registry_key() -> NodeHash {
+    const DOMAIN: &[u8] = b"sentrix/v1/native_src20_registry";
+    let mut h = Sha256::new();
+    h.update(DOMAIN);
+    h.finalize().into()
+}
+
+/// Native-module state commitment — trie key for the NFT `NftRegistry`.
+/// Single fixed key; value is the registry's canonical hash. Same model
+/// and fork gate as [`native_src20_registry_key`].
+pub fn native_nft_registry_key() -> NodeHash {
+    const DOMAIN: &[u8] = b"sentrix/v1/native_nft_registry";
+    let mut h = Sha256::new();
+    h.update(DOMAIN);
+    h.finalize().into()
+}
+
 /// SIP-6 Bug A — trie key for the global `EpochManager.current_epoch`
 /// snapshot. Single fixed key — writes always overwrite, so the
 /// state_root reflects the current epoch's accumulators at every
