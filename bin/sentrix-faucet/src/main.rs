@@ -30,6 +30,8 @@ use axum::{
 };
 use clap::Parser;
 use dashmap::{DashMap, mapref::entry::Entry};
+use reliakit_primitives::{HexString, NonEmptyStr, PositiveInt};
+use reliakit_validate::{Valid, Validate, ValidationError};
 use secp256k1::{PublicKey, SecretKey};
 use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
 use sentrix_wallet::{Keystore, Wallet};
@@ -121,6 +123,21 @@ struct DripRequest {
     to: String,
 }
 
+impl Validate for DripRequest {
+    type Error = ValidationError;
+
+    fn validate(&self) -> Result<(), Self::Error> {
+        let lower = self.to.to_lowercase();
+        let without_prefix = lower.strip_prefix("0x").unwrap_or(&lower);
+        if without_prefix.len() != 40 {
+            return Err(ValidationError::new("address must be 0x + 40 hex chars"));
+        }
+        HexString::new(without_prefix)
+            .map_err(|_| ValidationError::new("address contains invalid hex characters"))?;
+        Ok(())
+    }
+}
+
 #[derive(Serialize)]
 struct DripResponse {
     txid: String,
@@ -162,9 +179,8 @@ fn validate_address(addr: &str) -> Result<String> {
     if without_prefix.len() != 40 {
         bail!("address must be 0x + 40 hex chars");
     }
-    if !without_prefix.chars().all(|c| c.is_ascii_hexdigit()) {
-        bail!("address must be 0x + 40 hex chars");
-    }
+    // HexString validates that all chars are valid hex digits (0-9, a-f, A-F).
+    HexString::new(without_prefix).map_err(|_| anyhow!("address must be 0x + 40 hex chars"))?;
     Ok(format!("0x{}", without_prefix))
 }
 
@@ -249,16 +265,12 @@ async fn handle_drip(
     ConnectInfo(client): ConnectInfo<SocketAddr>,
     Json(req): Json<DripRequest>,
 ) -> Result<Json<DripResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let recipient = match validate_address(&req.to) {
-        Ok(a) => a,
-        Err(e) => {
-            return Err(err_with(
-                StatusCode::BAD_REQUEST,
-                "bad address",
-                e.to_string(),
-            ));
-        }
-    };
+    // Valid::new runs DripRequest::validate() — rejects bad addresses before
+    // any state mutation or RPC call.
+    let req = Valid::new(req)
+        .map_err(|e| err_with(StatusCode::BAD_REQUEST, "bad address", e.to_string()))?;
+    // validate_address already ran inside Validate; safe to unwrap the Ok.
+    let recipient = validate_address(&req.to).expect("already validated");
 
     if recipient == state.address {
         return Err(err(StatusCode::BAD_REQUEST, "cannot drip to self"));
@@ -361,6 +373,12 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // Reject invalid config values early — before any I/O — using reliakit-primitives.
+    PositiveInt::new(cli.drip_amount)
+        .map_err(|_| anyhow!("SENTRIX_FAUCET_DRIP_AMOUNT must be > 0"))?;
+    NonEmptyStr::new(&cli.rpc_url)
+        .map_err(|_| anyhow!("SENTRIX_FAUCET_RPC_URL must not be empty"))?;
 
     info!(keystore = %cli.keystore, "loading keystore");
     let keystore = Keystore::load(&cli.keystore).context("load keystore")?;
