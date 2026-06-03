@@ -1087,6 +1087,15 @@ async fn on_swarm_event(
                         let peer = propagation_source;
                         tokio::spawn(async move {
                             let mut chain = bc.write().await;
+                            if gossip.block.index <= chain.height() {
+                                tracing::debug!(
+                                    "gossip: skipping stale block {} from {} (local height {})",
+                                    gossip.block.index,
+                                    peer,
+                                    chain.height()
+                                );
+                                return;
+                            }
                             match chain.add_block_from_peer(gossip.block.clone()) {
                                 Ok(()) => {
                                     APPLY_OK.fetch_add(1, Ordering::Relaxed);
@@ -1702,6 +1711,15 @@ async fn on_inbound_request(
                 let block_idx = block.index;
                 let block_validator = block.validator.clone();
                 let block_justification = block.justification.clone();
+                if block_idx <= chain.height() {
+                    tracing::debug!(
+                        "libp2p: skipping stale block {} from {} (local height {})",
+                        block_idx,
+                        peer,
+                        chain.height()
+                    );
+                    return;
+                }
                 match chain.add_block_from_peer(*block.clone()) {
                     Ok(()) => {
                         APPLY_OK.fetch_add(1, Ordering::Relaxed);
@@ -1733,6 +1751,7 @@ async fn on_inbound_request(
                                 0,
                             );
                             chain.epoch_manager.record_block(reward);
+                            chain.run_epoch_bookkeeping(block_idx);
                         }
                         tracing::info!("libp2p: applied block {} from {}", block_idx, peer);
                         // Capture H2 (with state_root + recomputed hash) before releasing
