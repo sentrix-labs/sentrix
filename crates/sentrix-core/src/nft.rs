@@ -70,6 +70,32 @@ pub fn apply_nft_token_op(
             .ok_or_else(|| SentrixError::NotFound(format!("nft collection {contract}")))
     }
 
+    // Address-format validation at the apply boundary, mirroring the SRC-20
+    // path (M-02 validates token recipients via is_spendable_sentrix_address).
+    // The domain layer only rejects empty strings; this rejects malformed /
+    // zero addresses before they enter the registry, so an NFT can't be
+    // minted/transferred to an unspendable (lost) address. `sender` is already
+    // cryptographically valid (tx.verify binds it to the pubkey-derived addr).
+    use crate::address::{is_spendable_sentrix_address, is_valid_sentrix_address};
+    let recipient = |label: &str, a: &str| -> Result<(), SentrixError> {
+        if is_spendable_sentrix_address(a) {
+            Ok(())
+        } else {
+            Err(SentrixError::InvalidTransaction(format!(
+                "invalid NFT {label} address: {a}"
+            )))
+        }
+    };
+    let party = |label: &str, a: &str| -> Result<(), SentrixError> {
+        if is_valid_sentrix_address(a) {
+            Ok(())
+        } else {
+            Err(SentrixError::InvalidTransaction(format!(
+                "invalid NFT {label} address: {a}"
+            )))
+        }
+    };
+
     let event = match op {
         TokenOp::DeployNft {
             name,
@@ -97,20 +123,27 @@ pub fn apply_nft_token_op(
             to,
             token_id,
             metadata_uri,
-        } => collection_mut(registry, contract)?
-            // transferable = None → use the collection default.
-            .mint(sender, to, *token_id, metadata_uri, None)
-            .map_err(nft_err_to_sentrix)?,
+        } => {
+            recipient("mint to", to)?;
+            collection_mut(registry, contract)?
+                // transferable = None → use the collection default.
+                .mint(sender, to, *token_id, metadata_uri, None)
+                .map_err(nft_err_to_sentrix)?
+        }
         TokenOp::TransferNft {
             contract,
             from,
             to,
             token_id,
-        } => collection_mut(registry, contract)?
-            // `from` is untrusted claimed data; the domain checks it against
-            // the real owner. Authority is `sender` (caller).
-            .transfer(sender, from, to, *token_id)
-            .map_err(nft_err_to_sentrix)?,
+        } => {
+            party("transfer from", from)?;
+            recipient("transfer to", to)?;
+            collection_mut(registry, contract)?
+                // `from` is untrusted claimed data; the domain checks it
+                // against the real owner. Authority is `sender` (caller).
+                .transfer(sender, from, to, *token_id)
+                .map_err(nft_err_to_sentrix)?
+        }
         TokenOp::BurnNft { contract, token_id } => collection_mut(registry, contract)?
             // Domain clears the token's approval as part of the burn.
             .burn(sender, *token_id)
@@ -119,19 +152,25 @@ pub fn apply_nft_token_op(
             contract,
             spender,
             token_id,
-        } => collection_mut(registry, contract)?
-            .approve(sender, spender, *token_id)
-            .map_err(nft_err_to_sentrix)?,
+        } => {
+            party("approve spender", spender)?;
+            collection_mut(registry, contract)?
+                .approve(sender, spender, *token_id)
+                .map_err(nft_err_to_sentrix)?
+        }
         TokenOp::SetApprovalForAll {
             contract,
             operator,
             approved,
-        } => collection_mut(registry, contract)?
-            // owner == sender: a caller may only manage operators for tokens
-            // it owns. The domain re-enforces caller == owner, so a payload
-            // can never set approvals on behalf of a different owner.
-            .set_approval_for_all(sender, sender, operator, *approved)
-            .map_err(nft_err_to_sentrix)?,
+        } => {
+            party("operator", operator)?;
+            collection_mut(registry, contract)?
+                // owner == sender: a caller may only manage operators for
+                // tokens it owns. The domain re-enforces caller == owner, so a
+                // payload can never set approvals on behalf of a different owner.
+                .set_approval_for_all(sender, sender, operator, *approved)
+                .map_err(nft_err_to_sentrix)?
+        }
         _ => {
             return Err(SentrixError::InvalidTransaction(
                 "unsupported NFT TokenOp in apply path \
@@ -299,9 +338,11 @@ mod tests {
     // snapshot rollback, cross-node determinism) is covered separately in
     // `block_executor.rs`.
 
-    const ADMIN: &str = "0xadmin";
-    const ALICE: &str = "0xalice";
-    const BOB: &str = "0xbob";
+    // Valid 42-char Sentrix addresses (apply path now validates address format).
+    const ADMIN: &str = "0x1111111111111111111111111111111111111111";
+    const ALICE: &str = "0x2222222222222222222222222222222222222222";
+    const BOB: &str = "0x3333333333333333333333333333333333333333";
+    const CAROL: &str = "0x4444444444444444444444444444444444444444";
 
     fn deploy(reg: &mut NftRegistry, seed: &str) -> String {
         let op = TokenOp::DeployNft {
@@ -450,13 +491,13 @@ mod tests {
         // pinned to the sender (BOB), so this grants BOB→operate-on-BOB only.
         let op = TokenOp::SetApprovalForAll {
             contract: cid.clone(),
-            operator: "0xcarol".into(),
+            operator: CAROL.into(),
             approved: true,
         };
         apply_nft_token_op(&mut reg, &op, BOB, "evilseed").expect("sets for BOB only");
         let c = reg.get_collection(&cid).unwrap();
         // Carol is NOT an operator over ALICE.
-        assert!(!c.is_approved_for_all(ALICE, "0xcarol"));
+        assert!(!c.is_approved_for_all(ALICE, CAROL));
         // BOB still cannot move ALICE's token.
         let err = transfer(&mut reg, &cid, ALICE, BOB, 1, BOB).unwrap_err();
         assert!(matches!(err, SentrixError::UnauthorizedValidator(_)));

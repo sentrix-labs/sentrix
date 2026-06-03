@@ -126,4 +126,24 @@ impl NftRegistry {
     pub fn collection_count(&self) -> usize {
         self.collections.len()
     }
+
+    /// Canonical, deterministic hash of the whole registry.
+    ///
+    /// Collections are folded in sorted-id order, each via
+    /// [`NftCollection::canonical_hash`], so the digest is independent of
+    /// `HashMap` iteration order. An empty registry hashes to a stable value
+    /// distinct from any populated one. Backs native-module state commitment.
+    pub fn canonical_hash(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut ids: Vec<&String> = self.collections.keys().collect();
+        ids.sort_unstable();
+        let mut h = Sha256::new();
+        h.update((ids.len() as u64).to_be_bytes());
+        for id in ids {
+            h.update((id.len() as u64).to_be_bytes());
+            h.update(id.as_bytes());
+            h.update(self.collections[id].canonical_hash());
+        }
+        h.finalize().into()
+    }
 }
