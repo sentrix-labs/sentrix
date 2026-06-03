@@ -52,6 +52,10 @@ pub enum BlockSource {
 pub(crate) struct BlockchainSnapshot {
     accounts: AccountDB,
     contracts: ContractRegistry,
+    /// Native NFT registry snapshot — restored alongside `contracts` on a
+    /// Pass-2 failure so a half-applied NFT op never survives a rolled-back
+    /// block (same atomicity contract as SRC-20 contract state).
+    nft_registry: sentrix_nft::NftRegistry,
     authority: AuthorityManager,
     mempool: VecDeque<Transaction>,
     total_minted: u64,
@@ -384,6 +388,12 @@ impl Blockchain {
         let mut working_balances: HashMap<String, u64> = HashMap::new();
         let mut working_nonces: HashMap<String, u64> = HashMap::new();
         let mut seen_sender_nonce: HashSet<(String, u64)> = HashSet::new();
+        // Pass-1 NFT dry-run state. Lazily cloned from `self.nft_registry`
+        // on the first NFT op so a deploy-then-mint within the same block
+        // validates against the in-block working registry, exactly mirroring
+        // what Pass-2 will mutate — without touching real state. Mirrors the
+        // working_balances / working_nonces clone pattern used for SRX.
+        let mut working_nft: Option<sentrix_nft::NftRegistry> = None;
 
         for tx in block.transactions.iter().skip(1) {
             // Phase D: system-emitted txs (JailEvidenceBundle from PROTOCOL_TREASURY)
@@ -536,6 +546,13 @@ impl Blockchain {
                                     .into(),
                             ));
                         }
+                        // Dry-run the op against a working clone so any
+                        // domain error (bad auth, unknown collection,
+                        // soulbound transfer, supply cap, id reuse) fails
+                        // here without mutating real state. Pass-2 re-applies
+                        // identically as the source of truth.
+                        let working = working_nft.get_or_insert_with(|| self.nft_registry.clone());
+                        crate::nft::apply_nft_token_op(working, op, &tx.from_address, &tx.txid)?;
                     }
                     // Audit L3 (2026-05-06): pre-fix this was
                     // `unreachable!("TokenOp variant handled above")`,
@@ -583,6 +600,7 @@ impl Blockchain {
         let snap = BlockchainSnapshot {
             accounts: self.accounts.clone(),
             contracts: self.contracts.clone(),
+            nft_registry: self.nft_registry.clone(),
             authority: self.authority.clone(),
             mempool: self.mempool.clone(),
             total_minted: self.total_minted,
@@ -625,6 +643,7 @@ impl Blockchain {
             Err(e) => {
                 self.accounts = snap.accounts;
                 self.contracts = snap.contracts;
+                self.nft_registry = snap.nft_registry;
                 self.authority = snap.authority;
                 self.mempool = snap.mempool;
                 // Audit M6: snapshot-restored `mempool` is the
@@ -907,11 +926,9 @@ impl Blockchain {
                         }
                     }
                     op if op.is_nft_family() => {
-                        // Pass-2 apply path: NFT TokenOp dispatch is
-                        // gated by NFT_TOKENOP_HEIGHT fork. Pre-fork:
-                        // reject (Pass-1 already rejected; this is
-                        // belt-and-suspenders). Storage layer handlers
-                        // land in the follow-up PR.
+                        // Pass-2 apply path: NFT TokenOp dispatch is gated by
+                        // NFT_TOKENOP_HEIGHT fork. Pre-fork: reject (Pass-1
+                        // already rejected; belt-and-suspenders).
                         if !Self::is_nft_tokenop_height(block.index) {
                             return Err(SentrixError::InvalidTransaction(
                                 "NFT TokenOp dispatch is gated by \
@@ -919,15 +936,26 @@ impl Blockchain {
                                     .into(),
                             ));
                         }
-                        // Post-fork dispatch land in follow-up PR; for
-                        // now reject explicitly so accidentally enabling
-                        // the fork doesn't silently apply non-existent
-                        // handlers.
-                        return Err(SentrixError::InvalidTransaction(
-                            "NFT TokenOp dispatch handlers not yet wired \
-                             (Phase B follow-up PR)"
-                                .into(),
-                        ));
+                        // Authority is the authenticated sender
+                        // (`tx.from_address`); the deterministic collection
+                        // seed is `tx.txid` (SRC-20 precedent). On Err the
+                        // Pass-2 snapshot restores `nft_registry`, so a
+                        // failed NFT op leaves no partial state.
+                        let events = crate::nft::apply_nft_token_op(
+                            &mut self.nft_registry,
+                            &op,
+                            &tx.from_address,
+                            &tx.txid,
+                        )?;
+                        if let Some(emitter) = &self.event_emitter {
+                            for ev in &events {
+                                emitter.emit_token_op(&crate::nft::nft_event_to_token_op_event(
+                                    ev,
+                                    &tx.txid,
+                                    block.index,
+                                ));
+                            }
+                        }
                     }
                     // Audit L3 sister site (Pass-2 dispatch). Same
                     // rationale as the Pass-1 fallthrough above — fail
@@ -1842,6 +1870,7 @@ mod tests {
     use crate::block_executor::BlockSource;
     use crate::blockchain::{Blockchain, CHAIN_ID};
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
+    use sentrix_primitives::error::{SentrixError, SentrixResult};
     use sentrix_primitives::transaction::{MIN_TX_FEE, TOKEN_OP_ADDRESS, TokenOp, Transaction};
 
     fn make_keypair() -> (SecretKey, PublicKey) {
@@ -2053,6 +2082,214 @@ mod tests {
             format!("{err:?}").contains("coinbase recipient"),
             "expected recipient-mismatch rejection, got: {err:?}"
         );
+    }
+
+    // ── Native NFT apply-path E2E (through add_block) ─────────
+    //
+    // These drive the full block path (mempool → create_block → add_block →
+    // Pass-1 dry-run → Pass-2 apply) to prove the wiring: the NFT_TOKENOP_HEIGHT
+    // fork gate, the `nft_registry` state field, and cross-node determinism.
+    // Behavioural depth (auth, soulbound, no-reuse, supply) is covered by the
+    // dispatch tests in `nft.rs`. NFT forks default to u64::MAX, so these set
+    // the height env var under the shared `env_test_lock` to avoid racing other
+    // env-touching tests.
+
+    fn nft_tx(op: &TokenOp, sk: &SecretKey, pk: &PublicKey, from: &str, nonce: u64) -> Transaction {
+        Transaction::new(
+            from.to_string(),
+            TOKEN_OP_ADDRESS.to_string(),
+            0,
+            MIN_TX_FEE,
+            nonce,
+            op.encode().unwrap(),
+            CHAIN_ID,
+            sk,
+            pk,
+        )
+        .unwrap()
+    }
+
+    /// Mine a single-tx block carrying `tx` onto `bc`.
+    fn mine(bc: &mut Blockchain, tx: Transaction) -> SentrixResult<()> {
+        bc.add_to_mempool(tx)?;
+        let block = bc.create_block("v1")?;
+        bc.add_block(block)
+    }
+
+    #[test]
+    fn nft_deploy_mint_transfer_through_add_block() {
+        let _guard = crate::test_util::env_test_lock();
+        unsafe {
+            std::env::set_var("NFT_TOKENOP_HEIGHT", "1");
+        }
+        let mut bc = setup();
+        let (sk, pk) = make_keypair();
+        let admin = derive_addr(&pk);
+        let (sk2, pk2) = make_keypair();
+        let bob = derive_addr(&pk2);
+        bc.accounts.credit(&admin, 10_000_000_000).unwrap();
+        bc.accounts.credit(&bob, 10_000_000_000).unwrap();
+
+        // Block 1: deploy.
+        let deploy = TokenOp::DeployNft {
+            name: "Validator Proof".into(),
+            symbol: "VPRF".into(),
+            base_uri: "ipfs://Q/".into(),
+            max_supply: 0,
+        };
+        let dtx = nft_tx(&deploy, &sk, &pk, &admin, 0);
+        let cid = crate::nft::compute_collection_id(&admin, &dtx.txid);
+        mine(&mut bc, dtx).expect("deploy block");
+        assert!(
+            bc.nft_registry.collection_exists(&cid),
+            "collection must exist after add_block"
+        );
+
+        // Block 2: mint token 1 to bob.
+        let mint = TokenOp::MintNft {
+            contract: cid.clone(),
+            to: bob.clone(),
+            token_id: 1,
+            metadata_uri: String::new(),
+        };
+        mine(&mut bc, nft_tx(&mint, &sk, &pk, &admin, 1)).expect("mint block");
+        assert_eq!(
+            bc.nft_registry.get_collection(&cid).unwrap().owner_of(1),
+            Some(bob.as_str())
+        );
+
+        // Block 3: bob transfers token 1 back to admin.
+        let xfer = TokenOp::TransferNft {
+            contract: cid.clone(),
+            from: bob.clone(),
+            to: admin.clone(),
+            token_id: 1,
+        };
+        mine(&mut bc, nft_tx(&xfer, &sk2, &pk2, &bob, 0)).expect("transfer block");
+        assert_eq!(
+            bc.nft_registry.get_collection(&cid).unwrap().owner_of(1),
+            Some(admin.as_str())
+        );
+
+        unsafe {
+            std::env::remove_var("NFT_TOKENOP_HEIGHT");
+        }
+    }
+
+    #[test]
+    fn nft_rejected_pre_fork_through_add_block() {
+        let _guard = crate::test_util::env_test_lock();
+        unsafe {
+            std::env::remove_var("NFT_TOKENOP_HEIGHT"); // default u64::MAX = disabled
+        }
+        let mut bc = setup();
+        let (sk, pk) = make_keypair();
+        let admin = derive_addr(&pk);
+        bc.accounts.credit(&admin, 10_000_000_000).unwrap();
+
+        let deploy = TokenOp::DeployNft {
+            name: "Too Early".into(),
+            symbol: "EARLY".into(),
+            base_uri: "u".into(),
+            max_supply: 0,
+        };
+        let err = mine(&mut bc, nft_tx(&deploy, &sk, &pk, &admin, 0)).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("NFT_TOKENOP_HEIGHT"),
+            "pre-fork NFT op must be gated, got {err:?}"
+        );
+        assert_eq!(bc.nft_registry.collection_count(), 0);
+    }
+
+    #[test]
+    fn nft_collection_id_deterministic_across_nodes() {
+        let _guard = crate::test_util::env_test_lock();
+        unsafe {
+            std::env::set_var("NFT_TOKENOP_HEIGHT", "1");
+        }
+        let mut bc1 = setup();
+        let mut bc2 = setup();
+        let (sk, pk) = make_keypair();
+        let admin = derive_addr(&pk);
+        bc1.accounts.credit(&admin, 10_000_000_000).unwrap();
+        bc2.accounts.credit(&admin, 10_000_000_000).unwrap();
+
+        let deploy = TokenOp::DeployNft {
+            name: "Genesis Proof".into(),
+            symbol: "GEN".into(),
+            base_uri: "u".into(),
+            max_supply: 0,
+        };
+        // Same signed tx applied to both nodes → identical txid → identical id.
+        let tx = nft_tx(&deploy, &sk, &pk, &admin, 0);
+        let cid = crate::nft::compute_collection_id(&admin, &tx.txid);
+        mine(&mut bc1, tx.clone()).unwrap();
+        mine(&mut bc2, tx).unwrap();
+
+        assert_eq!(bc1.nft_registry.collection_count(), 1);
+        assert_eq!(bc2.nft_registry.collection_count(), 1);
+        // Compare by value (order-independent PartialEq), not serialized
+        // bytes — HashMap iteration order is per-process.
+        assert_eq!(
+            bc1.nft_registry.get_collection(&cid),
+            bc2.nft_registry.get_collection(&cid),
+            "both nodes must derive identical NFT state"
+        );
+
+        unsafe {
+            std::env::remove_var("NFT_TOKENOP_HEIGHT");
+        }
+    }
+
+    #[test]
+    fn nft_failed_block_leaves_registry_unchanged() {
+        let _guard = crate::test_util::env_test_lock();
+        unsafe {
+            std::env::set_var("NFT_TOKENOP_HEIGHT", "1");
+        }
+        let mut bc = setup();
+        let (sk, pk) = make_keypair();
+        let admin = derive_addr(&pk);
+        bc.accounts.credit(&admin, 10_000_000_000).unwrap();
+
+        // Deploy ok.
+        let deploy = TokenOp::DeployNft {
+            name: "Proof".into(),
+            symbol: "PRF".into(),
+            base_uri: "u".into(),
+            max_supply: 0,
+        };
+        let dtx = nft_tx(&deploy, &sk, &pk, &admin, 0);
+        let cid = crate::nft::compute_collection_id(&admin, &dtx.txid);
+        mine(&mut bc, dtx).unwrap();
+        let before = bc.nft_registry.get_collection(&cid).cloned();
+
+        // A block whose NFT op fails (mint by non-admin) must not mutate state.
+        let (sk2, pk2) = make_keypair();
+        let mallory = derive_addr(&pk2);
+        bc.accounts.credit(&mallory, 10_000_000_000).unwrap();
+        let mint = TokenOp::MintNft {
+            contract: cid.clone(),
+            to: mallory.clone(),
+            token_id: 1,
+            metadata_uri: String::new(),
+        };
+        let err = mine(&mut bc, nft_tx(&mint, &sk2, &pk2, &mallory, 0)).unwrap_err();
+        assert!(matches!(err, SentrixError::UnauthorizedValidator(_)));
+        // Registry unchanged (no token minted), compared by value.
+        assert_eq!(
+            bc.nft_registry.get_collection(&cid).cloned(),
+            before,
+            "failed block must leave nft_registry unchanged"
+        );
+        assert_eq!(
+            bc.nft_registry.get_collection(&cid).unwrap().owner_of(1),
+            None
+        );
+
+        unsafe {
+            std::env::remove_var("NFT_TOKENOP_HEIGHT");
+        }
     }
 
     // Contract address must be deterministic — same txid on any node produces the same address

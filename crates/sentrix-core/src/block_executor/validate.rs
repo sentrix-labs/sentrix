@@ -114,6 +114,11 @@ impl Blockchain {
         let mut working_balances: HashMap<String, u64> = HashMap::new();
         let mut working_nonces: HashMap<String, u64> = HashMap::new();
         let mut seen_sender_nonce: HashSet<(String, u64)> = HashSet::new();
+        // Read-only NFT pre-flight: lazily clone the registry and dry-run NFT
+        // ops so RPC/BFT readers reject obviously-broken NFT txs without the
+        // write lock. Optimisation only — Pass-1/Pass-2 in `add_block` re-run
+        // the same dispatch as the source of truth.
+        let mut working_nft: Option<sentrix_nft::NftRegistry> = None;
 
         for tx in block.transactions.iter().skip(1) {
             // Phase D: system-emitted txs (JailEvidenceBundle from PROTOCOL_TREASURY)
@@ -245,10 +250,8 @@ impl Blockchain {
                         }
                     }
                     op if op.is_nft_family() => {
-                        // SRC-721 + SRC-1155 dispatch is gated by
-                        // NFT_TOKENOP_HEIGHT fork. Pre-fork: reject. Wire
-                        // format stable from this PR; storage layer +
-                        // dispatch land in the follow-up PR.
+                        // SRC-721 dispatch is gated by NFT_TOKENOP_HEIGHT
+                        // fork. Pre-fork: reject.
                         if !Self::is_nft_tokenop_height(self.height() + 1) {
                             return Err(SentrixError::InvalidTransaction(
                                 "NFT TokenOp dispatch is gated by \
@@ -256,6 +259,10 @@ impl Blockchain {
                                     .into(),
                             ));
                         }
+                        // Post-fork read-only pre-flight: dry-run against a
+                        // working clone (same dispatch Pass-1/Pass-2 use).
+                        let working = working_nft.get_or_insert_with(|| self.nft_registry.clone());
+                        crate::nft::apply_nft_token_op(working, op, &tx.from_address, &tx.txid)?;
                     }
                     _ => unreachable!("TokenOp variant handled above"),
                 }
