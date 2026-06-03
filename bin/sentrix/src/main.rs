@@ -1264,7 +1264,29 @@ async fn cmd_start(
                     }
                 }
                 match bc.create_block_voyager(wallet_address) {
-                    Ok(block) => {
+                    Ok(raw_block) => {
+                        // BFT votes must commit to the same hash that will be
+                        // stored after execution. Past STATE_ROOT_FORK_HEIGHT
+                        // add_block stamps state_root into the header hash, so
+                        // pre-apply on a scratch clone before signing proposal.
+                        let mut scratch = bc.clone();
+                        if let Err(e) = scratch.add_block(raw_block.clone()) {
+                            tracing::warn!(
+                                "create_block_voyager pre-apply failed at h={} r={}: {}",
+                                height,
+                                bft.round(),
+                                e
+                            );
+                            return None;
+                        }
+                        let Some(block) = scratch.latest_block().ok().cloned() else {
+                            tracing::warn!(
+                                "create_block_voyager pre-apply produced no latest block at h={} r={}",
+                                height,
+                                bft.round(),
+                            );
+                            return None;
+                        };
                         let block_hash = block.hash.clone();
                         let block_data = bincode::serialize(&block).unwrap_or_default();
                         let cur_round = bft.round();
@@ -2371,7 +2393,29 @@ async fn cmd_start(
                                                             match bc.create_block_voyager(
                                                                 &wallet.address,
                                                             ) {
-                                                                Ok(block) => {
+                                                                Ok(raw_block) => {
+                                                                    let mut scratch = bc.clone();
+                                                                    let block = match scratch
+                                                                        .add_block(
+                                                                            raw_block.clone(),
+                                                                        ) {
+                                                                        Ok(()) => scratch
+                                                                            .latest_block()
+                                                                            .ok()
+                                                                            .cloned(),
+                                                                        Err(e) => {
+                                                                            tracing::warn!(
+                                                                                "speculative pre-apply for h={} failed: {}",
+                                                                                next_h,
+                                                                                e,
+                                                                            );
+                                                                            None
+                                                                        }
+                                                                    };
+                                                                    let Some(block) = block else {
+                                                                        speculative_proposal = None;
+                                                                        break;
+                                                                    };
                                                                     let block_hash =
                                                                         block.hash.clone();
                                                                     let block_data =
@@ -2554,8 +2598,12 @@ async fn cmd_start(
                                             }
                                             break;
                                         }
-                                        BftAction::SyncNeeded { .. } => {
-                                            tracing::info!("BFT: peer ahead, need block sync");
+                                        BftAction::SyncNeeded { peer_height } => {
+                                            tracing::info!(
+                                                "BFT: peer at height {}, triggering block sync",
+                                                peer_height
+                                            );
+                                            lp2p_clone.trigger_sync().await;
                                             break;
                                         }
                                         BftAction::Wait | BftAction::ProposeBlock => break,
@@ -2837,6 +2885,23 @@ async fn cmd_start(
                                     }
 
                                     if let Some(mut blk) = proposed_block.take() {
+                                        if blk.validator != wallet.address {
+                                            tracing::info!(
+                                                target: "finalize_trace",
+                                                "BFT finalize peer-propose: h={} round={} block={:.16}… \
+                                                 proposer={} is not local validator {}; waiting for \
+                                                 libp2p NewBlock/sync instead of executing peer block \
+                                                 in the BFT loop",
+                                                height,
+                                                round,
+                                                block_hash,
+                                                blk.validator,
+                                                wallet.address,
+                                            );
+                                            lp2p_clone.trigger_sync().await;
+                                            break;
+                                        }
+
                                         blk.round = round;
                                         blk.justification = Some(justification.clone());
                                         let proposer = blk.validator.clone();
@@ -2915,7 +2980,28 @@ async fn cmd_start(
                                                     == Some(wallet.address.as_str());
                                                 if we_next_pf {
                                                     match bc.create_block_voyager(&wallet.address) {
-                                                        Ok(block) => {
+                                                        Ok(raw_block) => {
+                                                            let mut scratch = bc.clone();
+                                                            let block = match scratch
+                                                                .add_block(raw_block.clone())
+                                                            {
+                                                                Ok(()) => scratch
+                                                                    .latest_block()
+                                                                    .ok()
+                                                                    .cloned(),
+                                                                Err(e) => {
+                                                                    tracing::warn!(
+                                                                        "speculative pre-apply for h={} failed: {}",
+                                                                        next_h_pf,
+                                                                        e,
+                                                                    );
+                                                                    None
+                                                                }
+                                                            };
+                                                            let Some(block) = block else {
+                                                                speculative_proposal = None;
+                                                                break;
+                                                            };
                                                             let block_hash = block.hash.clone();
                                                             let block_data =
                                                                 bincode::serialize(&block)
@@ -3076,9 +3162,10 @@ async fn cmd_start(
                                 }
                                 BftAction::SyncNeeded { peer_height } => {
                                     tracing::info!(
-                                        "BFT: peer at height {}, need block sync",
+                                        "BFT: peer at height {}, triggering block sync",
                                         peer_height
                                     );
+                                    lp2p_clone.trigger_sync().await;
                                     break;
                                 }
                                 BftAction::Wait | BftAction::ProposeBlock => break,
