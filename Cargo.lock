@@ -5261,6 +5261,7 @@ dependencies = [
  "secp256k1 0.31.1",
  "sentrix-bft",
  "sentrix-evm",
+ "sentrix-nft",
  "sentrix-primitives",
  "sentrix-staking",
  "sentrix-storage",
@@ -5349,6 +5350,17 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "sentrix-nft"
+version = "2.2.26"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
