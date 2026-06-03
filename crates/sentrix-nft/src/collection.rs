@@ -687,3 +687,44 @@ impl NftCollection {
         }
     }
 }
+
+#[cfg(test)]
+mod canonical_tests {
+    use super::*;
+
+    /// `uri_hash` / `metadata_hash` are optional integrity hashes with no
+    /// public setter yet (they're populated by a future update API), so the
+    /// `Some` arm of `canonical_hash` is only reachable white-box. Setting
+    /// them on a live token must move the canonical hash — proving the
+    /// integrity hashes are part of committed state.
+    #[test]
+    fn canonical_hash_includes_token_integrity_hashes() {
+        let mut c = NftCollection::new(
+            "SRC721_x".into(),
+            "0xadmin".into(),
+            "C".into(),
+            "C".into(),
+            "u".into(),
+            None,
+            true,
+            true,
+        );
+        c.mint("0xadmin", "0xowner", 1, "", None).unwrap();
+        let baseline = c.canonical_hash();
+
+        let t = c.tokens.get_mut(&1).expect("token 1");
+        t.uri_hash = Some("deadbeef".into());
+        let after_uri_hash = c.canonical_hash();
+        assert_ne!(
+            baseline, after_uri_hash,
+            "uri_hash must affect canonical hash"
+        );
+
+        c.tokens.get_mut(&1).unwrap().metadata_hash = Some("cafe".into());
+        assert_ne!(
+            after_uri_hash,
+            c.canonical_hash(),
+            "metadata_hash must affect canonical hash"
+        );
+    }
+}

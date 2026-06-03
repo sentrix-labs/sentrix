@@ -695,4 +695,27 @@ mod tests {
         );
         assert_ne!(NftRegistry::new().canonical_hash(), [0u8; 32]);
     }
+
+    /// Exercise the remaining canonical_hash branches: bounded `max_supply`
+    /// (the `Some` arm), a non-empty token URI, a single-token approval, and
+    /// an operator-for-all approval. Toggling the operator must move the hash.
+    #[test]
+    fn canonical_hash_covers_max_supply_uri_and_operator() {
+        let mut r = NftRegistry::new();
+        let (id, _) = r
+            .deploy_collection(ADMIN, "C", "C", "u", Some(100), true, true, "s")
+            .unwrap();
+        let c = r.get_collection_mut(&id).unwrap();
+        c.mint(ADMIN, ALICE, 1, "ipfs://token/1", None).unwrap();
+        c.approve(ALICE, BOB, 1).unwrap();
+        c.set_approval_for_all(ALICE, ALICE, CAROL, true).unwrap();
+        let with_operator = r.canonical_hash();
+
+        // Revoking the operator approval must change the canonical hash.
+        r.get_collection_mut(&id)
+            .unwrap()
+            .set_approval_for_all(ALICE, ALICE, CAROL, false)
+            .unwrap();
+        assert_ne!(with_operator, r.canonical_hash());
+    }
 }
