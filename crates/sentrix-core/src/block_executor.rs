@@ -1817,6 +1817,34 @@ fn emit_state_fingerprint(bc: &Blockchain, height: u64) {
     if std::env::var_os("SENTRIX_STATE_FINGERPRINT").is_none() {
         return;
     }
+    let (acc_fp, fp) = compute_state_fingerprint(bc);
+    // eprintln! matches the existing `[V2-DBG]` trace pattern in
+    // `update_trie_for_block` — guaranteed journalctl visibility
+    // regardless of RUST_LOG / tracing subscriber filter config.
+    eprintln!(
+        "[STATE-FP] h={} acc={} fp={}",
+        height,
+        hex::encode(&acc_fp[..8]),
+        hex::encode(&fp[..8]),
+    );
+}
+
+/// Compute `(account_fingerprint, combined_fingerprint)` for the current
+/// state. Split out of `emit_state_fingerprint` so it's testable without the
+/// `SENTRIX_STATE_FINGERPRINT` env gate or stderr capture.
+///
+/// The combined fingerprint folds, in fixed order:
+///   account state · total_minted · SRC-20 ContractRegistry · NFT NftRegistry
+///
+/// Native-module state commitment (2026-06-03): before this, the fingerprint
+/// hashed only accounts + total_minted + EVM code/storage, so two validators
+/// could diverge purely in SRC-20 or NFT state and still print identical
+/// `[STATE-FP]` lines — the incident tool was blind on those paths. Both
+/// registries now contribute via their `canonical_hash()` (sorted, HashMap-
+/// order-independent). Consensus-enforced trie/state_root commitment of the
+/// same state is the fork-gated follow-up; this closes the debug-visibility
+/// gap without a consensus change.
+fn compute_state_fingerprint(bc: &Blockchain) -> ([u8; 32], [u8; 32]) {
     use sha2::{Digest, Sha256};
 
     let mut acc_hasher = Sha256::new();
@@ -1851,17 +1879,12 @@ fn emit_state_fingerprint(bc: &Blockchain, height: u64) {
     let mut combined = Sha256::new();
     combined.update(acc_fp);
     combined.update(bc.total_minted.to_be_bytes());
+    // Native-module state: SRC-20 then NFT, each canonical (sorted) so
+    // HashMap iteration order can't move the fingerprint.
+    combined.update(bc.contracts.canonical_hash());
+    combined.update(bc.nft_registry.canonical_hash());
     let fp: [u8; 32] = combined.finalize().into();
-
-    // eprintln! matches the existing `[V2-DBG]` trace pattern in
-    // `update_trie_for_block` — guaranteed journalctl visibility
-    // regardless of RUST_LOG / tracing subscriber filter config.
-    eprintln!(
-        "[STATE-FP] h={} acc={} fp={}",
-        height,
-        hex::encode(&acc_fp[..8]),
-        hex::encode(&fp[..8]),
-    );
+    (acc_fp, fp)
 }
 
 // ── Tests ─────────────────────────────────────────────────
@@ -2082,6 +2105,149 @@ mod tests {
             format!("{err:?}").contains("coinbase recipient"),
             "expected recipient-mismatch rejection, got: {err:?}"
         );
+    }
+
+    // ── Native module state commitment (fingerprint) ─────────
+    //
+    // compute_state_fingerprint folds account state + total_minted + the
+    // SRC-20 ContractRegistry + the NFT NftRegistry (the last two via their
+    // canonical_hash). These tests prove the fingerprint moves on native-state
+    // changes, is replay-deterministic, and is HashMap-order-independent.
+
+    const NFT_ADDR_A: &str = "0x1111111111111111111111111111111111111111";
+    const NFT_ADDR_B: &str = "0x2222222222222222222222222222222222222222";
+
+    /// 1. SRC-20 state changes move the fingerprint.
+    #[test]
+    fn fingerprint_tracks_src20_state() {
+        let mut bc = setup();
+        let (_, fp_empty) = super::compute_state_fingerprint(&bc);
+        bc.contracts
+            .deploy("0xowner", "Tok", "TOK", 8, 1000, 0, "seed1")
+            .unwrap();
+        let (_, fp_deploy) = super::compute_state_fingerprint(&bc);
+        assert_ne!(fp_empty, fp_deploy, "SRC-20 deploy must move fingerprint");
+    }
+
+    /// 2. NFT state changes move the fingerprint.
+    #[test]
+    fn fingerprint_tracks_nft_state() {
+        let mut bc = setup();
+        let (_, fp_empty) = super::compute_state_fingerprint(&bc);
+        bc.nft_registry
+            .deploy_collection(NFT_ADDR_A, "C", "C", "u", None, true, true, "seed")
+            .unwrap();
+        let (_, fp_deploy) = super::compute_state_fingerprint(&bc);
+        assert_ne!(fp_empty, fp_deploy, "NFT deploy must move fingerprint");
+    }
+
+    /// 3. Same native-op sequence on fresh state ⇒ identical fingerprint.
+    #[test]
+    fn fingerprint_replay_deterministic() {
+        let build = || {
+            let mut bc = setup();
+            bc.contracts
+                .deploy("0xowner", "Tok", "TOK", 8, 1000, 0, "seed1")
+                .unwrap();
+            let (cid, _) = bc
+                .nft_registry
+                .deploy_collection(NFT_ADDR_A, "C", "C", "u", None, true, true, "ns")
+                .unwrap();
+            bc.nft_registry
+                .get_collection_mut(&cid)
+                .unwrap()
+                .mint(NFT_ADDR_A, NFT_ADDR_B, 7, "", None)
+                .unwrap();
+            super::compute_state_fingerprint(&bc).1
+        };
+        assert_eq!(build(), build(), "replayed native state must match");
+    }
+
+    /// 4. Different SRC-20 supply ⇒ different fingerprint.
+    #[test]
+    fn fingerprint_distinguishes_src20_supply() {
+        let make = |supply: u64| {
+            let mut bc = setup();
+            bc.contracts
+                .deploy("0xowner", "Tok", "TOK", 8, supply, 0, "seed1")
+                .unwrap();
+            super::compute_state_fingerprint(&bc).1
+        };
+        assert_ne!(make(1000), make(2000));
+    }
+
+    /// 5. Different NFT owner ⇒ different fingerprint.
+    #[test]
+    fn fingerprint_distinguishes_nft_owner() {
+        let make = |owner: &str| {
+            let mut bc = setup();
+            let (cid, _) = bc
+                .nft_registry
+                .deploy_collection(NFT_ADDR_A, "C", "C", "u", None, true, true, "ns")
+                .unwrap();
+            bc.nft_registry
+                .get_collection_mut(&cid)
+                .unwrap()
+                .mint(NFT_ADDR_A, owner, 1, "", None)
+                .unwrap();
+            super::compute_state_fingerprint(&bc).1
+        };
+        assert_ne!(make(NFT_ADDR_A), make(NFT_ADDR_B));
+    }
+
+    /// 6. SRC-20 contract insertion order does not change the fingerprint.
+    #[test]
+    fn fingerprint_src20_order_independent() {
+        let mut a = setup();
+        a.contracts
+            .deploy("0xowner", "A", "AAA", 8, 1, 0, "s1")
+            .unwrap();
+        a.contracts
+            .deploy("0xowner", "B", "BBB", 8, 1, 0, "s2")
+            .unwrap();
+        let mut b = setup();
+        b.contracts
+            .deploy("0xowner", "B", "BBB", 8, 1, 0, "s2")
+            .unwrap();
+        b.contracts
+            .deploy("0xowner", "A", "AAA", 8, 1, 0, "s1")
+            .unwrap();
+        assert_eq!(
+            super::compute_state_fingerprint(&a).1,
+            super::compute_state_fingerprint(&b).1,
+            "deploy order must not affect fingerprint"
+        );
+    }
+
+    /// 7. Invalid addresses are rejected at the NFT apply boundary.
+    #[test]
+    fn apply_rejects_invalid_nft_addresses() {
+        let mut reg = sentrix_nft::NftRegistry::new();
+        let (cid, _) = reg
+            .deploy_collection(NFT_ADDR_A, "C", "C", "u", None, true, true, "ns")
+            .unwrap();
+        // mint to a malformed address
+        let bad_mint = TokenOp::MintNft {
+            contract: cid.clone(),
+            to: "0xnothex".into(),
+            token_id: 1,
+            metadata_uri: String::new(),
+        };
+        let err =
+            crate::nft::apply_nft_token_op(&mut reg, &bad_mint, NFT_ADDR_A, "tx").unwrap_err();
+        assert!(
+            matches!(err, SentrixError::InvalidTransaction(ref m) if m.contains("invalid NFT"))
+        );
+        // mint to the zero address (valid format, not spendable)
+        let zero_mint = TokenOp::MintNft {
+            contract: cid,
+            to: "0x0000000000000000000000000000000000000000".into(),
+            token_id: 1,
+            metadata_uri: String::new(),
+        };
+        let err =
+            crate::nft::apply_nft_token_op(&mut reg, &zero_mint, NFT_ADDR_A, "tx").unwrap_err();
+        assert!(matches!(err, SentrixError::InvalidTransaction(_)));
     }
 
     // ── Native NFT apply-path E2E (through add_block) ─────────

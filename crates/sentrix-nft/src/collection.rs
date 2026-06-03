@@ -575,6 +575,110 @@ impl NftCollection {
         })
     }
 
+    /// Canonical, deterministic hash of this collection's full state.
+    ///
+    /// Every field and every map is folded in a fixed order with map keys
+    /// sorted, so the result is independent of `HashMap` iteration order and
+    /// identical across nodes/processes for the same logical state. This is
+    /// the building block for native-module state commitment (fingerprint
+    /// today; trie/state_root commitment is the fork-gated follow-up). The
+    /// domain owns its canonical form so encapsulation stays intact — this is
+    /// read-only and adds no mutable access to internals.
+    pub fn canonical_hash(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        // Scalar / string fields, length-prefixed where ambiguous.
+        for s in [
+            self.id.as_str(),
+            self.creator.as_str(),
+            self.admin.as_str(),
+            self.name.as_str(),
+            self.symbol.as_str(),
+            self.description.as_str(),
+            self.base_uri.as_str(),
+            self.external_url.as_str(),
+        ] {
+            h.update((s.len() as u64).to_be_bytes());
+            h.update(s.as_bytes());
+        }
+        // Option<u64> max_supply: tag byte then value.
+        match self.max_supply {
+            Some(m) => {
+                h.update([1u8]);
+                h.update(m.to_be_bytes());
+            }
+            None => h.update([0u8]),
+        }
+        h.update(self.total_supply.to_be_bytes());
+        h.update(self.total_minted.to_be_bytes());
+        h.update([
+            self.default_transferable as u8,
+            self.metadata_mutable as u8,
+            self.frozen as u8,
+        ]);
+
+        // tokens — sorted by token_id.
+        let mut token_ids: Vec<&u64> = self.tokens.keys().collect();
+        token_ids.sort_unstable();
+        h.update((token_ids.len() as u64).to_be_bytes());
+        for tid in token_ids {
+            let t = &self.tokens[tid];
+            h.update(tid.to_be_bytes());
+            for s in [t.owner(), t.uri()] {
+                h.update((s.len() as u64).to_be_bytes());
+                h.update(s.as_bytes());
+            }
+            for opt in [t.uri_hash.as_deref(), t.metadata_hash.as_deref()] {
+                match opt {
+                    Some(s) => {
+                        h.update([1u8]);
+                        h.update((s.len() as u64).to_be_bytes());
+                        h.update(s.as_bytes());
+                    }
+                    None => h.update([0u8]),
+                }
+            }
+            h.update([t.transferable() as u8, t.frozen() as u8, t.burned() as u8]);
+        }
+
+        // balances — sorted by address.
+        let mut bal: Vec<(&String, &u64)> = self.balances.iter().collect();
+        bal.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        h.update((bal.len() as u64).to_be_bytes());
+        for (addr, n) in bal {
+            h.update((addr.len() as u64).to_be_bytes());
+            h.update(addr.as_bytes());
+            h.update(n.to_be_bytes());
+        }
+
+        // token_approvals — sorted by token_id.
+        let mut appr: Vec<(&u64, &String)> = self.token_approvals.iter().collect();
+        appr.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        h.update((appr.len() as u64).to_be_bytes());
+        for (tid, spender) in appr {
+            h.update(tid.to_be_bytes());
+            h.update((spender.len() as u64).to_be_bytes());
+            h.update(spender.as_bytes());
+        }
+
+        // operator_approvals — sorted by (owner, operator).
+        let mut ops: Vec<(&String, &String, &bool)> = self
+            .operator_approvals
+            .iter()
+            .flat_map(|(owner, m)| m.iter().map(move |(op, v)| (owner, op, v)))
+            .collect();
+        ops.sort_unstable_by(|a, b| a.0.cmp(b.0).then(a.1.cmp(b.1)));
+        h.update((ops.len() as u64).to_be_bytes());
+        for (owner, op, v) in ops {
+            h.update((owner.len() as u64).to_be_bytes());
+            h.update(owner.as_bytes());
+            h.update((op.len() as u64).to_be_bytes());
+            h.update(op.as_bytes());
+            h.update([*v as u8]);
+        }
+        h.finalize().into()
+    }
+
     /// Resolve the owner of a live token or error. Burned/absent → `TokenNotFound`.
     fn live_owner(&self, token_id: u64) -> NftResult<String> {
         match self.tokens.get(&token_id) {

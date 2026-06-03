@@ -273,6 +273,52 @@ impl SRC20Contract {
         self.balances.values().filter(|&&b| b > 0).count()
     }
 
+    /// Canonical, deterministic hash of this contract's state. Fixed field
+    /// order; `balances` and `allowances` maps folded with keys sorted, so
+    /// the digest is independent of `HashMap` iteration order.
+    pub fn canonical_hash(&self) -> [u8; 32] {
+        let mut h = Sha256::new();
+        for s in [
+            self.contract_address.as_str(),
+            self.name.as_str(),
+            self.symbol.as_str(),
+            self.owner.as_str(),
+        ] {
+            h.update((s.len() as u64).to_be_bytes());
+            h.update(s.as_bytes());
+        }
+        h.update([self.decimals]);
+        h.update(self.total_supply.to_be_bytes());
+        h.update(self.max_supply.to_be_bytes());
+
+        // balances — sorted by address.
+        let mut bal: Vec<(&String, &u64)> = self.balances.iter().collect();
+        bal.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        h.update((bal.len() as u64).to_be_bytes());
+        for (addr, n) in bal {
+            h.update((addr.len() as u64).to_be_bytes());
+            h.update(addr.as_bytes());
+            h.update(n.to_be_bytes());
+        }
+
+        // allowances — sorted by (owner, spender).
+        let mut allow: Vec<(&String, &String, &u64)> = self
+            .allowances
+            .iter()
+            .flat_map(|(owner, m)| m.iter().map(move |(sp, v)| (owner, sp, v)))
+            .collect();
+        allow.sort_unstable_by(|a, b| a.0.cmp(b.0).then(a.1.cmp(b.1)));
+        h.update((allow.len() as u64).to_be_bytes());
+        for (owner, sp, v) in allow {
+            h.update((owner.len() as u64).to_be_bytes());
+            h.update(owner.as_bytes());
+            h.update((sp.len() as u64).to_be_bytes());
+            h.update(sp.as_bytes());
+            h.update(v.to_be_bytes());
+        }
+        h.finalize().into()
+    }
+
     pub fn get_info(&self) -> serde_json::Value {
         serde_json::json!({
             "contract_address": self.contract_address,
@@ -386,6 +432,26 @@ impl ContractRegistry {
 
     pub fn exists(&self, address: &str) -> bool {
         self.contracts.contains_key(address)
+    }
+
+    /// Canonical, deterministic hash of every SRC-20 contract's state.
+    ///
+    /// Contracts are folded in sorted-address order, each via
+    /// [`SRC20Contract::canonical_hash`], so the digest is independent of
+    /// `HashMap` iteration order. This is the SRC-20 half of native-module
+    /// state commitment — today it feeds the STATE-FP fingerprint; the
+    /// fork-gated trie/state_root commitment is the documented follow-up.
+    pub fn canonical_hash(&self) -> [u8; 32] {
+        let mut addrs: Vec<&String> = self.contracts.keys().collect();
+        addrs.sort_unstable();
+        let mut h = Sha256::new();
+        h.update((addrs.len() as u64).to_be_bytes());
+        for addr in addrs {
+            h.update((addr.len() as u64).to_be_bytes());
+            h.update(addr.as_bytes());
+            h.update(self.contracts[addr].canonical_hash());
+        }
+        h.finalize().into()
     }
 
     pub fn get_token_balance(&self, contract: &str, address: &str) -> u64 {

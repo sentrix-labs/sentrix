@@ -609,4 +609,90 @@ mod tests {
             NftEvent::TokenBurned { .. }
         ));
     }
+
+    // ── canonical_hash (native-module state commitment) ──────
+
+    /// Building the same logical state via a different mint order must yield
+    /// the same canonical hash — proves HashMap iteration order can't move it.
+    #[test]
+    fn canonical_hash_is_order_independent() {
+        let build = |order: &[u64]| -> [u8; 32] {
+            let mut r = NftRegistry::new();
+            let (id, _) = r
+                .deploy_collection(ADMIN, "C", "C", "u", None, true, true, "seed")
+                .unwrap();
+            let c = r.get_collection_mut(&id).unwrap();
+            for &t in order {
+                c.mint(ADMIN, ALICE, t, "", None).unwrap();
+            }
+            r.canonical_hash()
+        };
+        assert_eq!(build(&[1, 2, 3, 4, 5]), build(&[5, 4, 3, 2, 1]));
+        assert_eq!(build(&[3, 1, 4, 5, 2]), build(&[1, 2, 3, 4, 5]));
+    }
+
+    /// Every state transition must move the canonical hash.
+    #[test]
+    fn canonical_hash_tracks_state_changes() {
+        let mut r = NftRegistry::new();
+        let empty = r.canonical_hash();
+
+        let (id, _) = r
+            .deploy_collection(ADMIN, "C", "C", "u", None, true, true, "seed")
+            .unwrap();
+        let after_deploy = r.canonical_hash();
+        assert_ne!(empty, after_deploy, "deploy must change hash");
+
+        r.get_collection_mut(&id)
+            .unwrap()
+            .mint(ADMIN, ALICE, 1, "", None)
+            .unwrap();
+        let after_mint = r.canonical_hash();
+        assert_ne!(after_deploy, after_mint, "mint must change hash");
+
+        r.get_collection_mut(&id)
+            .unwrap()
+            .approve(ALICE, BOB, 1)
+            .unwrap();
+        let after_approve = r.canonical_hash();
+        assert_ne!(after_mint, after_approve, "approve must change hash");
+
+        r.get_collection_mut(&id)
+            .unwrap()
+            .transfer(ALICE, ALICE, CAROL, 1)
+            .unwrap();
+        let after_transfer = r.canonical_hash();
+        assert_ne!(after_approve, after_transfer, "transfer must change hash");
+
+        r.get_collection_mut(&id).unwrap().burn(CAROL, 1).unwrap();
+        assert_ne!(after_transfer, r.canonical_hash(), "burn must change hash");
+    }
+
+    /// Different owners ⇒ different hash; identical logical state ⇒ identical.
+    #[test]
+    fn canonical_hash_distinguishes_owners_and_is_deterministic() {
+        let make = |owner: &str| -> [u8; 32] {
+            let mut r = NftRegistry::new();
+            let (id, _) = r
+                .deploy_collection(ADMIN, "C", "C", "u", None, true, true, "seed")
+                .unwrap();
+            r.get_collection_mut(&id)
+                .unwrap()
+                .mint(ADMIN, owner, 1, "", None)
+                .unwrap();
+            r.canonical_hash()
+        };
+        assert_ne!(make(ALICE), make(BOB), "different owner ⇒ different hash");
+        assert_eq!(make(ALICE), make(ALICE), "same state ⇒ same hash");
+    }
+
+    /// Empty registry hashes to a stable, non-zero, distinct value.
+    #[test]
+    fn canonical_hash_empty_is_stable() {
+        assert_eq!(
+            NftRegistry::new().canonical_hash(),
+            NftRegistry::new().canonical_hash()
+        );
+        assert_ne!(NftRegistry::new().canonical_hash(), [0u8; 32]);
+    }
 }
