@@ -2332,53 +2332,59 @@ async fn cmd_start(
                                                             bc.latest_block().ok().cloned();
 
                                                         // ── Post-block Voyager bookkeeping ──
-                                                        let reward = bc.get_block_reward();
-                                                        bc.epoch_manager.record_block(reward);
+                                                        // Reward / liveness / epoch-record bundle:
+                                                        // pre-fork only. Post REWARD_APPLY_PATH_HEIGHT
+                                                        // this runs once in apply_block_pass2, so the
+                                                        // validator-finalize copy is skipped.
+                                                        if !sentrix::core::fork_heights::is_reward_apply_path_height(height) {
+                                                            let reward = bc.get_block_reward();
+                                                            bc.epoch_manager.record_block(reward);
 
-                                                        let active =
-                                                            bc.stake_registry.active_set.clone();
-                                                        // #253: liveness-signers bug — the old
-                                                        // `signers = vec![proposer]` marked every
-                                                        // non-proposer as MISSED each block, so on
-                                                        // a 4-validator BFT chain each validator
-                                                        // signed only 25% of blocks vs the 30%
-                                                        // MIN_SIGNED_PER_WINDOW threshold, driving
-                                                        // deterministic cascade-jail every 14400
-                                                        // blocks (~80min). Correct model: every
-                                                        // precommit signer in the justification
-                                                        // signed the block, not just the proposer.
-                                                        let signers: Vec<String> = justification
-                                                            .precommits
-                                                            .iter()
-                                                            .map(|p| p.validator.clone())
-                                                            .collect();
-                                                        bc.slashing.record_block_signatures(
-                                                            &active, &signers, height,
-                                                        );
-
-                                                        // V4 Step 2: pay every signer pro-rata
-                                                        // by stake, not just the proposer. Extract
-                                                        // (validator, stake_weight) tuples from the
-                                                        // justification's precommit list.
-                                                        let reward_signers: Vec<(String, u64)> =
-                                                            justification
+                                                            let active =
+                                                                bc.stake_registry.active_set.clone();
+                                                            // #253: liveness-signers bug — the old
+                                                            // `signers = vec![proposer]` marked every
+                                                            // non-proposer as MISSED each block, so on
+                                                            // a 4-validator BFT chain each validator
+                                                            // signed only 25% of blocks vs the 30%
+                                                            // MIN_SIGNED_PER_WINDOW threshold, driving
+                                                            // deterministic cascade-jail every 14400
+                                                            // blocks (~80min). Correct model: every
+                                                            // precommit signer in the justification
+                                                            // signed the block, not just the proposer.
+                                                            let signers: Vec<String> = justification
                                                                 .precommits
                                                                 .iter()
-                                                                .map(|p| {
-                                                                    (
-                                                                        p.validator.clone(),
-                                                                        p.stake_weight,
-                                                                    )
-                                                                })
+                                                                .map(|p| p.validator.clone())
                                                                 .collect();
-                                                        let validator_fee = 0;
-                                                        let _ =
-                                                            bc.stake_registry.distribute_reward(
-                                                                &proposer,
-                                                                &reward_signers,
-                                                                reward,
-                                                                validator_fee,
+                                                            bc.slashing.record_block_signatures(
+                                                                &active, &signers, height,
                                                             );
+
+                                                            // V4 Step 2: pay every signer pro-rata
+                                                            // by stake, not just the proposer. Extract
+                                                            // (validator, stake_weight) tuples from the
+                                                            // justification's precommit list.
+                                                            let reward_signers: Vec<(String, u64)> =
+                                                                justification
+                                                                    .precommits
+                                                                    .iter()
+                                                                    .map(|p| {
+                                                                        (
+                                                                            p.validator.clone(),
+                                                                            p.stake_weight,
+                                                                        )
+                                                                    })
+                                                                    .collect();
+                                                            let validator_fee = 0;
+                                                            let _ =
+                                                                bc.stake_registry.distribute_reward(
+                                                                    &proposer,
+                                                                    &reward_signers,
+                                                                    reward,
+                                                                    validator_fee,
+                                                                );
+                                                        }
 
                                                         bc.run_epoch_bookkeeping(height);
 
@@ -2940,37 +2946,42 @@ async fn cmd_start(
                                                 let updated = bc.latest_block().ok().cloned();
 
                                                 // ── Post-block Voyager bookkeeping ──
-                                                let reward = bc.get_block_reward();
-                                                bc.epoch_manager.record_block(reward);
+                                                // Reward / liveness / epoch-record bundle: pre-fork
+                                                // only. Post REWARD_APPLY_PATH_HEIGHT it runs once in
+                                                // apply_block_pass2; skip the peer-finalize copy.
+                                                if !sentrix::core::fork_heights::is_reward_apply_path_height(height) {
+                                                    let reward = bc.get_block_reward();
+                                                    bc.epoch_manager.record_block(reward);
 
-                                                let active = bc.stake_registry.active_set.clone();
-                                                // #253: see the sibling site above for rationale.
-                                                // Peer-finalize branch — same fix, same model.
-                                                let signers: Vec<String> = justification
-                                                    .precommits
-                                                    .iter()
-                                                    .map(|p| p.validator.clone())
-                                                    .collect();
-                                                bc.slashing.record_block_signatures(
-                                                    &active, &signers, height,
-                                                );
-
-                                                // V4 Step 2 — see sibling site above for rationale.
-                                                let reward_signers: Vec<(String, u64)> =
-                                                    justification
+                                                    let active = bc.stake_registry.active_set.clone();
+                                                    // #253: see the sibling site above for rationale.
+                                                    // Peer-finalize branch — same fix, same model.
+                                                    let signers: Vec<String> = justification
                                                         .precommits
                                                         .iter()
-                                                        .map(|p| {
-                                                            (p.validator.clone(), p.stake_weight)
-                                                        })
+                                                        .map(|p| p.validator.clone())
                                                         .collect();
-                                                let validator_fee = 0;
-                                                let _ = bc.stake_registry.distribute_reward(
-                                                    &proposer,
-                                                    &reward_signers,
-                                                    reward,
-                                                    validator_fee,
-                                                );
+                                                    bc.slashing.record_block_signatures(
+                                                        &active, &signers, height,
+                                                    );
+
+                                                    // V4 Step 2 — see sibling site above for rationale.
+                                                    let reward_signers: Vec<(String, u64)> =
+                                                        justification
+                                                            .precommits
+                                                            .iter()
+                                                            .map(|p| {
+                                                                (p.validator.clone(), p.stake_weight)
+                                                            })
+                                                            .collect();
+                                                    let validator_fee = 0;
+                                                    let _ = bc.stake_registry.distribute_reward(
+                                                        &proposer,
+                                                        &reward_signers,
+                                                        reward,
+                                                        validator_fee,
+                                                    );
+                                                }
 
                                                 bc.run_epoch_bookkeeping(height);
 

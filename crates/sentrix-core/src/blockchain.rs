@@ -377,6 +377,10 @@ impl Blockchain {
         crate::fork_heights::is_native_state_in_trie_height(height)
     }
 
+    pub fn is_reward_apply_path_height(height: u64) -> bool {
+        crate::fork_heights::is_reward_apply_path_height(height)
+    }
+
     pub fn is_bft_gate_relax_height(height: u64) -> bool {
         crate::fork_heights::is_bft_gate_relax_height(height)
     }
