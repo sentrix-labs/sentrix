@@ -1151,9 +1151,13 @@ async fn on_swarm_event(
                                         }
                                         // Epoch boundary transition — rotate active set,
                                         // release unbonding, run liveness slashing.
-                                        // Previously missing here; libp2p-synced nodes
-                                        // diverged from BFT-finalize path at boundaries.
-                                        chain.run_epoch_bookkeeping(gossip.block.index);
+                                        // Pre-fork only; post REWARD_APPLY_PATH_HEIGHT this
+                                        // runs once in apply_block_pass2.
+                                        if !sentrix_core::fork_heights::is_reward_apply_path_height(
+                                            gossip.block.index,
+                                        ) {
+                                            chain.run_epoch_bookkeeping(gossip.block.index);
+                                        }
                                     }
                                     let updated =
                                         chain.latest_block().ok().cloned().unwrap_or(gossip.block);
@@ -1763,7 +1767,11 @@ async fn on_inbound_request(
                                 );
                                 chain.epoch_manager.record_block(reward);
                             }
-                            chain.run_epoch_bookkeeping(block_idx);
+                            // Epoch boundary transition — pre-fork only; post
+                            // REWARD_APPLY_PATH_HEIGHT it runs in apply_block_pass2.
+                            if !sentrix_core::fork_heights::is_reward_apply_path_height(block_idx) {
+                                chain.run_epoch_bookkeeping(block_idx);
+                            }
                         }
                         tracing::info!("libp2p: applied block {} from {}", block_idx, peer);
                         // Capture H2 (with state_root + recomputed hash) before releasing
@@ -2107,9 +2115,12 @@ async fn on_inbound_response(
                             }
                             // Epoch boundary transition — rotate active set,
                             // release unbonding, run liveness slashing.
-                            // Previously missing here; batch-syncing nodes
-                            // diverged from BFT-finalize path at boundaries.
-                            chain.run_epoch_bookkeeping(block.index);
+                            // Pre-fork only; post REWARD_APPLY_PATH_HEIGHT it runs
+                            // in apply_block_pass2.
+                            if !sentrix_core::fork_heights::is_reward_apply_path_height(block.index)
+                            {
+                                chain.run_epoch_bookkeeping(block.index);
+                            }
                         }
                         // Use H2 (post-add_block state_root hash) — not the raw peer block (PR #78).
                         let updated = chain

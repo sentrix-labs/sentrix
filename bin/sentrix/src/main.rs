@@ -2386,7 +2386,12 @@ async fn cmd_start(
                                                                 );
                                                         }
 
-                                                        bc.run_epoch_bookkeeping(height);
+                                                        // Epoch boundary transition — pre-fork
+                                                        // only; post REWARD_APPLY_PATH_HEIGHT it
+                                                        // runs in apply_block_pass2.
+                                                        if !sentrix::core::fork_heights::is_reward_apply_path_height(height) {
+                                                            bc.run_epoch_bookkeeping(height);
+                                                        }
 
                                                         tracing::info!(
                                                             "BFT finalized height={} round={}",
@@ -2983,7 +2988,11 @@ async fn cmd_start(
                                                     );
                                                 }
 
-                                                bc.run_epoch_bookkeeping(height);
+                                                // Epoch boundary transition — pre-fork only; post
+                                                // REWARD_APPLY_PATH_HEIGHT it runs in apply_block_pass2.
+                                                if !sentrix::core::fork_heights::is_reward_apply_path_height(height) {
+                                                    bc.run_epoch_bookkeeping(height);
+                                                }
 
                                                 tracing::info!(
                                                     "BFT finalized height={} round={}",

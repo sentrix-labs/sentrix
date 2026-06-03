@@ -1571,17 +1571,29 @@ impl Blockchain {
             self.chain.drain(..excess);
         }
 
-        // Reward-apply-path fork: run reward/liveness/epoch bookkeeping here,
-        // exactly once per block, off the just-committed block's justification —
-        // instead of in the 5 network/finalize receive paths, which applied it a
-        // per-node-variable number of times and drifted PROTOCOL_TREASURY (=
-        // sum of pending_rewards + delegator_rewards). Runs BEFORE
-        // update_trie_for_block so the accumulators are committed in THIS block's
-        // state_root. Pre-fork: skipped here; the external receive-path call
-        // sites still do it (bit-identical to today). Inside Pass-2 → covered by
-        // the snapshot/rollback if a later step fails.
+        // Reward-apply-path fork: run ALL per-block bookkeeping here, exactly
+        // once per block, instead of in the 5 network/finalize receive paths
+        // (which applied it a per-node-variable number of times and drifted
+        // consensus state). Two pieces, both deterministic off the committed
+        // block + justification, run BEFORE update_trie_for_block so their
+        // mutations land in THIS block's state_root:
+        //
+        //   1. reward / liveness / epoch-record bundle (every block) — drifted
+        //      PROTOCOL_TREASURY = sum(pending_rewards + delegator_rewards).
+        //   2. run_epoch_bookkeeping (epoch boundaries only) — active-set
+        //      rotation, unbonding release, liveness slashing. NOT idempotent
+        //      (advances epoch_number, pushes history, slashes), so a per-node-
+        //      variable application count would corrupt epoch_state (trie-
+        //      committed) + double-slash. Runs AFTER the bundle so it sees the
+        //      bundle's fresh liveness counts + pre-rotation active_set, matching
+        //      the external ordering.
+        //
+        // Pre-fork: skipped here; the external receive-path call sites still do
+        // it (bit-identical to today). Inside Pass-2 → covered by the snapshot/
+        // rollback if a later step fails.
         if Self::is_reward_apply_path_height(self.height()) {
             self.apply_reward_bookkeeping_for_latest_block();
+            self.run_epoch_bookkeeping(self.height());
         }
 
         // Update state trie after block commit, stamp state_root on the block header,
