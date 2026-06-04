@@ -657,46 +657,66 @@ impl SentrixTrie {
         // the prune built `live` from a snapshot that pre-dated those
         // writes and then deleted the freshly-committed data.
         //
-        // Re-load the highest version currently in TABLE_TRIE_ROOTS and
-        // walk every root committed AFTER self.version. Shrinks the
-        // race window from "full walk duration" to "the gap between
-        // this re-load and the gc_orphaned_nodes commit" — at most one
-        // block's worth of writes can still slip through, and the B3b
-        // total_minted self-heal plus boot-time verify_integrity catch
-        // those as defense in depth.
+        // Re-load the highest version currently in TABLE_TRIE_ROOTS and walk
+        // every root committed AFTER self.version, BEFORE the nodes GC.
         //
-        // A proper race-free fix requires running the live walk and the
-        // delete inside the same MDBX RW transaction. That's a bigger
-        // refactor (exposing the txn handle through TrieStorage) and
-        // belongs in its own PR. This patch is the minimal targeted
-        // closer for the observed symptom.
-        let on_disk_latest = self.cache.storage.latest_version()?.unwrap_or(self.version);
-        let mut augmented_roots = 0usize;
-        for version in (self.version + 1)..=on_disk_latest {
+        // 2026-06-04 follow-up: the original single augment above still left a
+        // hole. gc_orphaned_nodes GC'd nodes THEN values off this one snapshot,
+        // and the nodes pass alone runs 10–20 min on a big chain.db. Blocks
+        // committed during that pass wrote new leaf values the snapshot never
+        // saw, and the values pass deleted them — orphan value for a hot
+        // account leaf at testnet h=6,239,526. So we now split the GC and
+        // re-augment `live` again between the passes (see below). The complete
+        // race-free fix is still one RW txn around walk+delete (a TrieStorage
+        // refactor, tracked separately); boot-time verify_integrity is the
+        // backstop.
+        let on_disk_latest = self.augment_live_to_latest(&mut live, self.version + 1)?;
+
+        // Pass 1 — nodes. Pass 2 — values, but only after re-walking the roots
+        // committed DURING pass 1, so freshly-written leaf values survive.
+        let nodes_gc = self.cache.storage.gc_nodes(&live)?;
+        self.augment_live_to_latest(&mut live, on_disk_latest + 1)?;
+        let values_gc = self.cache.storage.gc_values(&live)?;
+
+        tracing::info!(
+            "trie prune: removed {} old roots, GC'd {} nodes + {} values",
+            roots_pruned,
+            nodes_gc,
+            values_gc
+        );
+        Ok((roots_pruned, nodes_gc + values_gc))
+    }
+
+    /// Walk every committed root in `[from_version, on-disk latest]` not yet in
+    /// `live` and add its reachable hashes. Returns the on-disk latest version
+    /// observed. Keeps the live set current across the long nodes/values GC
+    /// passes — the prune runs on a clone whose `self.version` is frozen while
+    /// the apply loop keeps committing newer roots.
+    fn augment_live_to_latest(
+        &self,
+        live: &mut std::collections::HashSet<NodeHash>,
+        from_version: u64,
+    ) -> SentrixResult<u64> {
+        let latest = self.cache.storage.latest_version()?.unwrap_or(self.version);
+        let mut added = 0usize;
+        for version in from_version..=latest {
             if let Some(root) = self.cache.storage.load_root(version)?
                 && !live.contains(&root)
             {
-                self.collect_reachable(root, 0, &mut live)?;
-                augmented_roots += 1;
+                self.collect_reachable(root, 0, live)?;
+                added += 1;
             }
         }
-        if augmented_roots > 0 {
+        if added > 0 {
             tracing::info!(
-                "trie prune: augmented live set with {} new roots committed during walk \
-                 (snapshot v{} → on-disk v{})",
-                augmented_roots,
-                self.version,
-                on_disk_latest
+                "trie prune: augmented live set with {} roots committed during walk \
+                 (from v{} → on-disk v{})",
+                added,
+                from_version,
+                latest
             );
         }
-
-        let nodes_gc = self.cache.storage.gc_orphaned_nodes(&live)?;
-        tracing::info!(
-            "trie prune: removed {} old roots, GC'd {} orphaned entries",
-            roots_pruned,
-            nodes_gc
-        );
-        Ok((roots_pruned, nodes_gc))
+        Ok(latest)
     }
 
     /// Recursively collect all node hashes reachable from `hash` at `depth`.
@@ -1102,6 +1122,63 @@ mod tests {
         assert!(
             values_after_prune < values_v1,
             "prune must reclaim the value blob of the deleted key"
+        );
+    }
+
+    /// Regression for the 2026-06-04 testnet trie corruption: a leaf value
+    /// committed DURING the (long) nodes GC pass must survive the values GC
+    /// pass. The prune runs on a clone whose version is frozen, so its initial
+    /// `live` set predates that commit; splitting node/value GC and
+    /// re-augmenting `live` between the passes is what keeps the fresh value.
+    /// Asserts both directions: the stale `live` would have deleted it (it's
+    /// absent), and the re-augmented `live` keeps it (it's present).
+    #[test]
+    fn test_values_gc_keeps_leaf_committed_during_nodes_pass() {
+        use std::collections::HashSet;
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
+
+        // v1: account A committed — this is the prune snapshot.
+        let a = address_to_key("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        trie.insert(&a, &account_value_bytes(100, 0)).unwrap();
+        trie.commit(1).unwrap();
+
+        // The background prune clones the trie frozen at v1 and builds `live`
+        // from the v1 root only.
+        let pruner = SentrixTrie::open(Arc::clone(&mdbx), 1).unwrap();
+        let mut live: HashSet<[u8; 32]> = HashSet::new();
+        pruner.collect_reachable(pruner.root, 0, &mut live).unwrap();
+
+        // --- pretend the long nodes GC pass is running here ---
+        // Meanwhile the apply loop commits account B at v2 on the live trie.
+        let b = address_to_key("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let b_val = account_value_bytes(777, 3);
+        trie.insert(&b, &b_val).unwrap();
+        trie.commit(2).unwrap();
+        let b_vh = crate::node::hash_leaf(&b, &b_val);
+        assert!(
+            pruner.cache.storage.load_value(&b_vh).unwrap().is_some(),
+            "B's value must be on disk after its commit"
+        );
+
+        // The stale snapshot live set does NOT cover B — a values GC here would
+        // delete a live value (the bug).
+        assert!(
+            !live.contains(&b_vh),
+            "stale live set must not yet contain B's value (this is what caused the bug)"
+        );
+
+        // The fix: re-augment `live` to the on-disk latest before the values
+        // pass, then GC values.
+        pruner.augment_live_to_latest(&mut live, 2).unwrap();
+        assert!(
+            live.contains(&b_vh),
+            "re-augment must add B's value hash committed during the nodes pass"
+        );
+        pruner.cache.storage.gc_values(&live).unwrap();
+        assert!(
+            pruner.cache.storage.load_value(&b_vh).unwrap().is_some(),
+            "leaf value committed during the nodes pass must survive the values GC"
         );
     }
 
