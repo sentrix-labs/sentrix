@@ -1009,6 +1009,8 @@ async fn on_swarm_event(
             // Previously, we removed on ANY close, orphaning the surviving connection.
             if num_established == 0 {
                 verified_peers.remove(&peer_id);
+                // Drop the gossipsub explicit-peer pin we set on verify.
+                swarm.behaviour_mut().remove_gossip_explicit_peer(&peer_id);
                 let _ = event_tx
                     .send(NodeEvent::PeerDisconnected(peer_id.to_string()))
                     .await;
@@ -1458,6 +1460,7 @@ async fn on_rr_event(
             },
             ..
         } => {
+            let was_verified = verified_peers.contains(&peer);
             on_inbound_request(
                 peer,
                 request,
@@ -1469,6 +1472,18 @@ async fn on_rr_event(
                 our_chain_id,
             )
             .await;
+            // Newly chain_id-verified peer → pin it as a gossipsub
+            // explicit peer so block/BFT propagation doesn't depend on
+            // the mesh heartbeat keeping it grafted (see
+            // SentrixBehaviour::add_gossip_explicit_peer).
+            if !was_verified && verified_peers.contains(&peer) {
+                swarm.behaviour_mut().add_gossip_explicit_peer(&peer);
+                tracing::info!(
+                    target: "gossip_mesh",
+                    "pinned {} as gossipsub explicit peer (inbound handshake)",
+                    peer
+                );
+            }
         }
 
         // ── Inbound: peer replied to one of our requests ─
@@ -1487,6 +1502,7 @@ async fn on_rr_event(
             pending_variants.remove(&request_id);
 
             // Check if this response matches a pending GetBlocks sync request
+            let was_verified = verified_peers.contains(&peer);
             let followup = on_inbound_response(
                 peer,
                 request_id,
@@ -1499,6 +1515,16 @@ async fn on_rr_event(
                 our_chain_id,
             )
             .await;
+            // Newly chain_id-verified peer (outbound handshake replied) →
+            // pin as gossipsub explicit peer; mirrors the inbound path.
+            if !was_verified && verified_peers.contains(&peer) {
+                swarm.behaviour_mut().add_gossip_explicit_peer(&peer);
+                tracing::info!(
+                    target: "gossip_mesh",
+                    "pinned {} as gossipsub explicit peer (outbound handshake)",
+                    peer
+                );
+            }
             // If sync returned more blocks to fetch, send another GetBlocks
             if let Some((next_peer, from_height)) = followup {
                 let req = SentrixRequest::GetBlocks { from_height };
