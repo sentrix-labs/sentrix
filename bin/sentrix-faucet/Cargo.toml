@@ -13,7 +13,7 @@ path = "src/main.rs"
 sentrix-primitives = { path = "../../crates/sentrix-primitives" }
 sentrix-wallet     = { path = "../../crates/sentrix-wallet" }
 reliakit-primitives = "0.2"
-reliakit-validate   = "0.1"
+reliakit-validate   = "0.3"
 reliakit-ratelimit  = "0.1"
 
 axum         = "0.8"
