@@ -350,6 +350,31 @@ fn render_json(r: &PreflightReport) -> String {
 }
 
 /// `sentrix state preflight [--json]` — read-only activation readiness report.
+/// Dump per-component state fingerprints for the chain.db at SENTRIX_DATA_DIR.
+/// Run against each node's data dir (node STOPPED) and diff the output to find
+/// WHICH state component diverges across nodes at the same height. Added
+/// 2026-06-04 to chase the post-#782 determinism drift.
+pub fn cmd_state_fingerprint() -> anyhow::Result<()> {
+    let storage = Storage::open(&get_db_path())?;
+    let bc = storage
+        .load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+
+    let c = sentrix::core::block_executor::state_components(&bc);
+    let hx = |b: &[u8; 32]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+
+    println!("height            {}", bc.height());
+    println!("account_count     {}", c.account_count);
+    println!("total_minted      {}", c.total_minted);
+    println!("total_burned      {}", c.total_burned);
+    println!("accounts_fp       {}", hx(&c.accounts_fp));
+    println!("contract_code_fp  {}", hx(&c.contract_code_fp));
+    println!("contract_stor_fp  {}", hx(&c.contract_storage_fp));
+    println!("src20_fp          {}", hx(&c.src20_fp));
+    println!("nft_fp            {}", hx(&c.nft_fp));
+    Ok(())
+}
+
 pub fn cmd_state_preflight(json: bool) -> anyhow::Result<()> {
     let storage = Storage::open(&get_db_path())?;
     let bc = storage

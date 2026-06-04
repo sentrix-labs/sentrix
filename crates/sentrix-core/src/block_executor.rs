@@ -1967,6 +1967,77 @@ fn compute_state_fingerprint(bc: &Blockchain) -> ([u8; 32], [u8; 32]) {
     (acc_fp, fp)
 }
 
+/// Per-component state fingerprints for cross-node drift diagnosis.
+///
+/// `compute_state_fingerprint` folds everything into one root, which tells
+/// you THAT two nodes diverged but not WHERE. This splits each component out
+/// (accounts / EVM code / EVM storage / mint / burn / SRC-20 / NFT) so a diff
+/// across nodes at the same height points straight at the divergent subsystem.
+/// Added 2026-06-04 chasing the post-#782 state-determinism drift.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateComponents {
+    /// balance + nonce + code_hash + storage_root over sorted accounts.
+    pub accounts_fp: [u8; 32],
+    /// hash over sorted EVM contract bytecode.
+    pub contract_code_fp: [u8; 32],
+    /// hash over sorted EVM contract storage slots.
+    pub contract_storage_fp: [u8; 32],
+    pub total_minted: u64,
+    pub total_burned: u64,
+    /// SRC-20 native registry canonical hash.
+    pub src20_fp: [u8; 32],
+    /// NFT native registry canonical hash.
+    pub nft_fp: [u8; 32],
+    /// account count (cheap sanity signal alongside the hashes).
+    pub account_count: usize,
+}
+
+/// Compute the per-component fingerprints — see [`StateComponents`].
+pub fn state_components(bc: &Blockchain) -> StateComponents {
+    use sha2::{Digest, Sha256};
+
+    let mut accounts: Vec<(&String, &sentrix_primitives::account::Account)> =
+        bc.accounts.accounts.iter().collect();
+    accounts.sort_by(|a, b| a.0.cmp(b.0));
+    let account_count = accounts.len();
+    let mut acc_h = Sha256::new();
+    for (addr, account) in accounts {
+        acc_h.update(addr.as_bytes());
+        acc_h.update(account.balance.to_be_bytes());
+        acc_h.update(account.nonce.to_be_bytes());
+        acc_h.update(account.code_hash);
+        acc_h.update(account.storage_root);
+    }
+
+    let mut codes: Vec<(&String, &Vec<u8>)> = bc.accounts.contract_code.iter().collect();
+    codes.sort_by(|a, b| a.0.cmp(b.0));
+    let mut code_h = Sha256::new();
+    for (k, v) in codes {
+        code_h.update(k.as_bytes());
+        let h: [u8; 32] = Sha256::digest(v).into();
+        code_h.update(h);
+    }
+
+    let mut storage: Vec<(&String, &Vec<u8>)> = bc.accounts.contract_storage.iter().collect();
+    storage.sort_by(|a, b| a.0.cmp(b.0));
+    let mut stor_h = Sha256::new();
+    for (k, v) in storage {
+        stor_h.update(k.as_bytes());
+        stor_h.update(v);
+    }
+
+    StateComponents {
+        accounts_fp: acc_h.finalize().into(),
+        contract_code_fp: code_h.finalize().into(),
+        contract_storage_fp: stor_h.finalize().into(),
+        total_minted: bc.total_minted,
+        total_burned: bc.accounts.total_burned,
+        src20_fp: bc.contracts.canonical_hash(),
+        nft_fp: bc.nft_registry.canonical_hash(),
+        account_count,
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────
 #[cfg(test)]
 mod tests {

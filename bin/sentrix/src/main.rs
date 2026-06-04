@@ -625,6 +625,11 @@ enum StateCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Dump per-component state fingerprints (accounts / EVM code / EVM
+    /// storage / total_minted / total_burned / SRC-20 / NFT) for the chain.db
+    /// at SENTRIX_DATA_DIR. Run per node (STOPPED) and diff to localize which
+    /// component diverges across nodes — drift diagnosis.
+    Fingerprint,
 }
 
 #[derive(Subcommand)]
@@ -894,6 +899,7 @@ async fn main() -> anyhow::Result<()> {
             }
             StateCommands::Verify { input } => commands::state::cmd_state_verify(&input)?,
             StateCommands::Preflight { json } => commands::state::cmd_state_preflight(json)?,
+            StateCommands::Fingerprint => commands::state::cmd_state_fingerprint()?,
         },
 
         Commands::Mempool { action } => match action {
