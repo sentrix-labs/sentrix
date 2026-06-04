@@ -4569,9 +4569,9 @@ checksum = "71fc95b189ee53987da09d1e42fe985c458f0fce63b435fd7a907b9c4d921e19"
 
 [[package]]
 name = "reliakit-validate"
-version = "0.1.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00bfe73bc05eca3fc925280d4348d3d1eb91633d75fa927d85eec7b3da6fa9ae"
+checksum = "77533b0ca27aea72d960c4e12c86627addb6b5a9139c1ab22bf1a775bbeea4b9"
 
 [[package]]
 name = "reqwest"
