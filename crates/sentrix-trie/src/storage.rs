@@ -311,13 +311,41 @@ impl TrieStorage {
     }
 
     /// Garbage-collect node and value entries not present in `live_hashes`.
+    ///
+    /// Prefer [`Self::gc_nodes`] + [`Self::gc_values`] for the periodic prune:
+    /// the nodes pass alone can run 10–20 min on a big chain.db, during which
+    /// the apply loop commits new leaf VALUES. Driving both passes from one
+    /// `live` snapshot lets the values pass delete those freshly-committed
+    /// (still-live) values — the 2026-06-04 testnet trie corruption. The split
+    /// methods let the caller refresh `live` between passes. This combined
+    /// method stays for non-racy callers (one-shot recovery / tests).
     pub fn gc_orphaned_nodes(
         &self,
         live_hashes: &std::collections::HashSet<NodeHash>,
     ) -> SentrixResult<usize> {
-        let node_count = self.gc_table(tables::TABLE_TRIE_NODES, live_hashes)?;
-        let value_count = self.gc_table(tables::TABLE_TRIE_VALUES, live_hashes)?;
+        let node_count = self.gc_nodes(live_hashes)?;
+        let value_count = self.gc_values(live_hashes)?;
         Ok(node_count + value_count)
+    }
+
+    /// GC only the trie_nodes table against `live_hashes`. See
+    /// [`Self::gc_orphaned_nodes`] for why nodes and values are split.
+    pub fn gc_nodes(
+        &self,
+        live_hashes: &std::collections::HashSet<NodeHash>,
+    ) -> SentrixResult<usize> {
+        self.gc_table(tables::TABLE_TRIE_NODES, live_hashes)
+    }
+
+    /// GC only the trie_values table against `live_hashes`. The caller MUST
+    /// refresh `live_hashes` with any roots committed since the nodes pass
+    /// before calling this, or it will delete leaf values written during the
+    /// (long) nodes pass.
+    pub fn gc_values(
+        &self,
+        live_hashes: &std::collections::HashSet<NodeHash>,
+    ) -> SentrixResult<usize> {
+        self.gc_table(tables::TABLE_TRIE_VALUES, live_hashes)
     }
 
     /// Shared helper: scan an MDBX table for hashes not in `live_hashes` and remove them.
