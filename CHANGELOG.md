@@ -14,6 +14,31 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.28] — 2026-06-04 — Pin validators as gossipsub explicit peers
+
+### Networking — silent mesh-death fix
+
+On the 4-validator testnet we kept hitting a stall where peers stayed
+TCP-connected but `apply_watchdog` reported `rx_gossip=0` ("PEER-MESH
+IDLE") — gossip stopped flowing, BFT couldn't gather precommits, and only
+a restart recovered it (which then recurred). Root cause: on a mesh this
+small, gossipsub's graft/prune heartbeat is fragile. Once a validator gets
+pruned (mesh_n_high overshoot, a transient score dip, a brief disconnect)
+it can fail to re-graft and the topic mesh collapses to zero, while the
+connection itself looks healthy.
+
+Fix: pin every chain_id-verified peer into the gossipsub **explicit-peers**
+set (`add_explicit_peer` on verified handshake — inbound and outbound —
+`remove_explicit_peer` once all connections to the peer close). Explicit
+peers receive every published *and* forwarded message directly, bypassing
+mesh graft/prune, so validator↔validator propagation is robust by
+construction instead of depending on the heartbeat keeping the mesh full.
+Complementary to `flood_publish` (which only covers the originator's first
+hop, not relays or subscription-tracking gaps).
+
+Non-consensus: this changes only message propagation, not block validation
+or state — no fork gate needed. Applies to validators and fullnodes alike.
+
 ## [2.2.27] — 2026-06-04 — Deterministic per-block bookkeeping (fork-gated)
 
 ### Consensus — reward/epoch bookkeeping moved to the apply path

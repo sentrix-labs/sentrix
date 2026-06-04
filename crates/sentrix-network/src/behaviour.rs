@@ -445,6 +445,32 @@ impl SentrixBehaviour {
             connection_limits,
         }
     }
+
+    /// Pin a verified peer into the gossipsub explicit-peers set.
+    ///
+    /// Why we need this on top of normal mesh management: on a tiny
+    /// 4-validator mesh, gossipsub's graft/prune heartbeat is fragile —
+    /// once a validator gets pruned (mesh_n_high overshoot, a transient
+    /// score dip, a brief disconnect) it can fail to re-graft, and the
+    /// mesh for a topic drops to zero. The TCP connection stays up, so
+    /// nothing looks broken, but `rx_gossip` goes to 0 and BFT can't
+    /// gather precommits → the silent mesh-death stall we kept hitting
+    /// (apply_watchdog "PEER-MESH IDLE"). Explicit peers bypass mesh
+    /// selection entirely: every published message is forwarded to them
+    /// directly regardless of mesh state, so validator↔validator gossip
+    /// is robust by construction instead of depending on the heartbeat
+    /// keeping the mesh full. Called once per peer when its chain_id-
+    /// verified handshake completes; idempotent in libp2p if re-called.
+    pub fn add_gossip_explicit_peer(&mut self, peer: &PeerId) {
+        self.gossipsub.add_explicit_peer(peer);
+    }
+
+    /// Drop a peer from the gossipsub explicit-peers set once all its
+    /// connections are gone (paired with `add_gossip_explicit_peer`).
+    /// No-op if the peer was never explicit.
+    pub fn remove_gossip_explicit_peer(&mut self, peer: &PeerId) {
+        self.gossipsub.remove_explicit_peer(peer);
+    }
 }
 
 // ── Gossipsub message types ─────────────────────────────
@@ -631,6 +657,25 @@ mod tests {
         let kp = make_keypair();
         let pid = libp2p::PeerId::from_public_key(&kp.public());
         let _behaviour = SentrixBehaviour::new_with_keypair(pid, &kp);
+    }
+
+    #[test]
+    fn test_gossip_explicit_peer_add_remove() {
+        // Pins the libp2p 0.56 gossipsub explicit-peer API used by the
+        // mesh-death fix: add on verified handshake, remove on full
+        // disconnect. add/remove return () — we assert the wiring builds
+        // and runs (idempotent re-add, remove-unknown no-op) without panic.
+        let kp = make_keypair();
+        let pid = libp2p::PeerId::from_public_key(&kp.public());
+        let mut behaviour = SentrixBehaviour::new_with_keypair(pid, &kp);
+
+        let peer_kp = make_keypair();
+        let peer = libp2p::PeerId::from_public_key(&peer_kp.public());
+
+        behaviour.add_gossip_explicit_peer(&peer);
+        behaviour.add_gossip_explicit_peer(&peer); // idempotent re-add
+        behaviour.remove_gossip_explicit_peer(&peer);
+        behaviour.remove_gossip_explicit_peer(&peer); // remove-unknown no-op
     }
 
     #[test]
