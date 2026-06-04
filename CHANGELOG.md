@@ -14,6 +14,17 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Faucet — token-bucket rate limiting via reliakit-ratelimit
+
+The faucet's per-IP limiter was a sliding-window `Vec<Instant>` that grew per
+IP (its own doc comment already described the intent as "token bucket"), and
+the per-recipient cooldown was a hand-rolled last-timestamp check. Both now use
+`reliakit-ratelimit::RateLimiter`: per-IP is `max_drips` per window with a
+burst allowance, per-recipient is a 1-token-per-cooldown bucket. O(1) memory
+per key, precise `Retry-After` hints, and the DashMap entry guard still holds
+the per-key lock across acquire so the cooldown TOCTOU fix is preserved.
+Non-consensus (testnet faucet binary only).
+
 ## [2.2.28] — 2026-06-04 — Pin validators as gossipsub explicit peers
 
 ### Networking — silent mesh-death fix

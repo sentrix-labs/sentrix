@@ -4556,6 +4556,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdd920a56c8d9c7bb55fc8db757f8fc4e442f2ca029e9dabae5125f8fecc8d2b"
 
 [[package]]
+name = "reliakit-ratelimit"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9ee2d7152b488417bb6d8a39daaac4769833857b95d085231964dce1ccad4d1"
+
+[[package]]
 name = "reliakit-secret"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5302,6 +5308,7 @@ dependencies = [
  "dashmap",
  "hex",
  "reliakit-primitives",
+ "reliakit-ratelimit",
  "reliakit-validate",
  "reqwest",
  "secp256k1 0.31.1",
