@@ -110,3 +110,6 @@ __pycache__/
 .cur[a-z]or/
 target-docker/
 *.proptest-regressions
+
+# ── Local docs preview build (node_modules + build cache only) ──
+docs-site/
