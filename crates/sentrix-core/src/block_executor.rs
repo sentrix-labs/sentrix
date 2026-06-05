@@ -1723,23 +1723,36 @@ impl Blockchain {
                                 return Ok(());
                             }
 
-                            tracing::error!(
-                                "CRITICAL #1e: state_root mismatch at block {} — received {} \
-                                 vs computed {}. Local trie and peer's trie disagree on the \
-                                 post-block state. Rejecting.",
-                                block_index,
-                                hex::encode(received_root),
-                                hex::encode(computed_root),
-                            );
-                            // 2026-04-23 divergence rate-alarm: per-event ERROR
-                            // line above is truthful but gets lost in log noise
-                            // during a real divergence (~1/s). Record the
-                            // rejection in the rolling tracker, which emits a
-                            // LOUD rate-limited alarm pointing at the rsync
-                            // recovery playbook when the rate crosses threshold.
-                            // See `DivergenceTracker` in blockchain.rs for the
-                            // full rationale.
-                            self.divergence_tracker.record_rejection(block_index);
+                            // A SelfProduced mismatch is the BFT finalize apply-from-stash
+                            // path: the stashed proposal carries the proposer's PRE-apply
+                            // state_root (computed at propose time, before this block's txs),
+                            // which never equals the freshly computed POST-apply root. That's
+                            // expected and self-heals — the block still commits via the libp2p
+                            // receive path, which CHECKs against the canonical committed root.
+                            // Only a Peer-source mismatch is a real cross-node divergence, so
+                            // keep the LOUD alarm + divergence_tracker for that case and log the
+                            // self-apply case quietly without polluting the divergence rate.
+                            if self.source_for_current_add == BlockSource::Peer {
+                                tracing::error!(
+                                    "CRITICAL #1e: state_root mismatch at block {} — received {} \
+                                     vs computed {}. Local trie and peer's trie disagree on the \
+                                     post-block state. Rejecting.",
+                                    block_index,
+                                    hex::encode(received_root),
+                                    hex::encode(computed_root),
+                                );
+                                // Record in the rolling tracker, which emits a LOUD rate-limited
+                                // alarm pointing at the recovery playbook when the rate crosses
+                                // threshold. See `DivergenceTracker` in blockchain.rs.
+                                self.divergence_tracker.record_rejection(block_index);
+                            } else {
+                                tracing::debug!(
+                                    "#1e self-apply mismatch at block {} (expected: stashed \
+                                     proposal carries the pre-apply root) — block commits via \
+                                     the receive path",
+                                    block_index,
+                                );
+                            }
                             return Err(SentrixError::ChainValidationFailed(format!(
                                 "state_root mismatch at block {}: received {}, computed {}",
                                 block_index,
