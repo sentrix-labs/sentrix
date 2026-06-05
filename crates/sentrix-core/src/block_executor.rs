@@ -64,6 +64,17 @@ pub(crate) struct BlockchainSnapshot {
     /// Restored via `SentrixTrie::set_root` on Pass 2 failure so the
     /// next block's `update_trie_for_block` walks the correct state.
     trie_root: Option<[u8; 32]>,
+    /// Consensus/staking state. After STATE_IN_TRIE_HEIGHT these feed the
+    /// state_root, and the centralized reward bundle (apply_reward_bookkeeping)
+    /// mutates them inside `apply_block_pass2` BEFORE the #1e state_root
+    /// check. They were missing here, so a #1e reject left pending_rewards /
+    /// epoch / liveness incremented — that leak then diverged the next
+    /// block's computed root and crawled the chain once both forks were live.
+    /// Snapshot + restore them so the Pass-2 rollback is atomic over
+    /// everything the state_root now commits.
+    stake_registry: sentrix_staking::staking::StakeRegistry,
+    epoch_manager: sentrix_staking::epoch::EpochManager,
+    slashing: sentrix_staking::slashing::SlashingEngine,
 }
 
 /// Frontier Phase F-2 shadow observer. Calls into the F-1 scaffold's
@@ -606,6 +617,9 @@ impl Blockchain {
             total_minted: self.total_minted,
             chain_len: self.chain.len(),
             trie_root: self.state_trie.as_ref().map(|t| t.root_hash()),
+            stake_registry: self.stake_registry.clone(),
+            epoch_manager: self.epoch_manager.clone(),
+            slashing: self.slashing.clone(),
         };
 
         match self.apply_block_pass2(block) {
@@ -652,6 +666,13 @@ impl Blockchain {
                 self.rebuild_mempool_sidecars();
                 self.total_minted = snap.total_minted;
                 self.chain.truncate(snap.chain_len);
+                // Restore the consensus/staking state too — post STATE_IN_TRIE
+                // it's in the state_root and the reward bundle mutated it above,
+                // so leaving it dirty after a #1e reject leaks pending_rewards /
+                // epoch / liveness into the next block's root.
+                self.stake_registry = snap.stake_registry;
+                self.epoch_manager = snap.epoch_manager;
+                self.slashing = snap.slashing;
                 // Rewind trie to pre-Pass-2 root if one was captured.
                 // Orphan nodes from the failed block's partial inserts
                 // remain in MDBX but are unreachable from any committed
