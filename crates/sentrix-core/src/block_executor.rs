@@ -2865,6 +2865,110 @@ mod tests {
         );
     }
 
+    /// Regression: a Pass-2 failure (#1e state_root mismatch) must restore
+    /// `stake_registry` / `epoch_manager` / `slashing`, not just AccountDB.
+    /// Pre-fix the C-03 snapshot omitted them, so the reward bundle's
+    /// `pending_rewards` increment leaked on every rejected block — and post
+    /// STATE_IN_TRIE that leak diverged the next block's state_root.
+    #[test]
+    fn test_c03_pass2_failure_restores_staking_state() {
+        use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
+        use sentrix_primitives::justification::BlockJustification;
+        use sentrix_staking::staking::ValidatorStake;
+        use sentrix_storage::MdbxStorage;
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        let _guard = crate::test_util::env_test_lock();
+        // Forks that (a) run the reward bundle in apply and (b) commit staking
+        // state into the root, so a #1e reject can leak it absent the fix.
+        unsafe {
+            std::env::set_var("VOYAGER_REWARD_V2_HEIGHT", "0");
+            std::env::set_var("REWARD_APPLY_PATH_HEIGHT", "0");
+            std::env::set_var("STATE_IN_TRIE_HEIGHT", "0");
+        }
+
+        let mut bc = setup();
+        bc.voyager_activated = true;
+        for addr in ["v1", "v2", "v3", "v4"] {
+            bc.stake_registry.validators.insert(
+                addr.to_string(),
+                ValidatorStake {
+                    address: addr.to_string(),
+                    self_stake: 1000,
+                    total_delegated: 0,
+                    commission_rate: 1000,
+                    max_commission_rate: 2000,
+                    is_jailed: false,
+                    jail_until: 0,
+                    is_tombstoned: false,
+                    blocks_signed: 0,
+                    blocks_missed: 0,
+                    pending_rewards: 0,
+                    registration_height: 0,
+                    last_commission_change_height: 0,
+                },
+            );
+        }
+        bc.stake_registry.active_set =
+            vec!["v1".into(), "v2".into(), "v3".into(), "v4".into()];
+
+        // Pad past STATE_ROOT_FORK_HEIGHT so the #1e check enforces (the
+        // below-fork path just stamps the root instead of rejecting).
+        let pad_height = STATE_ROOT_FORK_HEIGHT + 1;
+        let prev = bc.latest_block().unwrap().hash.clone();
+        let mut pad = Block::new(
+            pad_height,
+            prev,
+            vec![Transaction::new_coinbase("v1".into(), 0, pad_height, 1_777_000_000)],
+            "v1".into(),
+        );
+        pad.timestamp = 1_777_000_000;
+        bc.chain.push(pad);
+
+        // Trie required so update_trie_for_block computes a real root to diff.
+        let dir = TempDir::new().unwrap();
+        let mdbx = Arc::new(MdbxStorage::open(dir.path()).unwrap());
+        bc.init_trie(mdbx).unwrap();
+
+        let height = bc.height() + 1;
+        let prev_hash = bc.latest_block().unwrap().hash.clone();
+        let reward = bc.get_block_reward();
+        let coinbase = Transaction::new_coinbase("v1".into(), reward, height, 1_777_000_001);
+        let mut block = Block::new(height, prev_hash, vec![coinbase], "v1".into());
+        block.timestamp = 1_777_000_001;
+        // Tamper the declared root so #1e fires AFTER the reward bundle ran.
+        block.state_root = Some([0xAB; 32]);
+        block.hash = block.calculate_hash();
+        let mut just = BlockJustification::new(height, 0, block.hash.clone());
+        just.add_precommit("v1".into(), vec![], 1000);
+        just.add_precommit("v2".into(), vec![], 1000);
+        just.add_precommit("v3".into(), vec![], 1000);
+        block.justification = Some(just);
+
+        let pending_before = bc.stake_registry.validators.get("v1").unwrap().pending_rewards;
+
+        let err = bc
+            .add_block_from_peer(block)
+            .expect_err("tampered state_root must be rejected (#1e)");
+        assert!(
+            format!("{err:?}").contains("state_root mismatch"),
+            "expected #1e state_root mismatch, got: {err:?}"
+        );
+
+        let pending_after = bc.stake_registry.validators.get("v1").unwrap().pending_rewards;
+        assert_eq!(
+            pending_after, pending_before,
+            "pending_rewards must roll back after a #1e reject (leaked pre-fix)"
+        );
+
+        unsafe {
+            std::env::remove_var("VOYAGER_REWARD_V2_HEIGHT");
+            std::env::remove_var("REWARD_APPLY_PATH_HEIGHT");
+            std::env::remove_var("STATE_IN_TRIE_HEIGHT");
+        }
+    }
+
     #[test]
     fn test_add_block_succeeds_without_trie() {
         // update_trie_for_block returning Ok(None) must not fail add_block.
