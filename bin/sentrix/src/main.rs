@@ -1136,11 +1136,6 @@ async fn cmd_start(
         let writer_storage = storage.clone();
         let writer_shared = shared.clone();
         tokio::spawn(async move {
-            // Highest block whose `block:{N}` key we've durably written. Start
-            // at the loaded tip so we only persist blocks committed from here
-            // on (history is already on disk).
-            let mut last_persisted: u64 =
-                { writer_shared.read().await.height() };
             while let Some(target_height) = save_rx.recv().await {
                 // Drain coalesced heights: if the writer is behind, multiple
                 // FinalizeBlock pushes can stack up. One snapshot covers all
@@ -1151,28 +1146,6 @@ async fn cmd_start(
                 }
                 let bc = writer_shared.read().await;
                 let height_at_save = bc.height();
-                // Persist each newly-committed block:{N} promptly. The coalesced
-                // full-state save below only captures blocks still in the
-                // in-memory window; at high block rates blocks aged out of the
-                // window before a save ran, leaving gaps in `block:{N}` storage
-                // that broke observer/fullnode GetBlocks sync (it can't fetch a
-                // missing height). Writing each block as it's finalized closes
-                // that gap. This is the async writer task (off the BFT critical
-                // path), so the per-block put doesn't stall consensus rounds.
-                let from = last_persisted.saturating_add(1);
-                for h in from..=latest {
-                    if let Some(block) = bc.get_block(h) {
-                        if let Err(e) = writer_storage.save_block(block) {
-                            tracing::warn!(
-                                target: "save_writer",
-                                "per-block persist failed at h={}: {}",
-                                h,
-                                e,
-                            );
-                        }
-                    }
-                }
-                last_persisted = latest;
                 match writer_storage.save_blockchain(&bc) {
                     Ok(()) => {
                         tracing::debug!(
