@@ -2914,21 +2914,27 @@ async fn cmd_start(
                                     }
 
                                     if let Some(mut blk) = proposed_block.take() {
+                                        // Apply the finalized block we already hold, whoever proposed
+                                        // it. The hash-match guard above proved `blk` IS the
+                                        // FinalizeBlock action's block, and `justification` carries
+                                        // its 2/3 precommit certificate — so this is the canonical
+                                        // committed block. This previously broke out and waited for
+                                        // libp2p NewBlock/sync to re-deliver a peer's block; when
+                                        // gossip missed, the node sat in Finalize re-triggering sync
+                                        // while holding the block the whole time → chain crawl/stall.
+                                        // `validate_block` below still re-checks structure + the
+                                        // justification supermajority before we write.
                                         if blk.validator != wallet.address {
                                             tracing::info!(
                                                 target: "finalize_trace",
-                                                "BFT finalize peer-propose: h={} round={} block={:.16}… \
-                                                 proposer={} is not local validator {}; waiting for \
-                                                 libp2p NewBlock/sync instead of executing peer block \
-                                                 in the BFT loop",
+                                                "BFT finalize: applying peer-proposed finalized block \
+                                                 h={} round={} block={:.16}… proposer={} from local \
+                                                 stash (valid 2/3 justification)",
                                                 height,
                                                 round,
                                                 block_hash,
                                                 blk.validator,
-                                                wallet.address,
                                             );
-                                            lp2p_clone.trigger_sync().await;
-                                            break;
                                         }
 
                                         blk.round = round;
