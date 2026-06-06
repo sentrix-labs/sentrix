@@ -672,11 +672,23 @@ impl SentrixTrie {
         // backstop.
         let on_disk_latest = self.augment_live_to_latest(&mut live, self.version + 1)?;
 
-        // Pass 1 — nodes. Pass 2 — values, but only after re-walking the roots
-        // committed DURING pass 1, so freshly-written leaf values survive.
-        let nodes_gc = self.cache.storage.gc_nodes(&live)?;
+        // Generational GC (race-free): nodes/values orphan vs this snapshot are
+        // TOMBSTONED, not deleted; a hash only gets deleted on a LATER prune if
+        // it's still orphan then. A hash committed DURING this long prune is
+        // orphan vs `live` here, but back in the live-set next cycle, so it's
+        // never deleted — closing the #791 race that the re-augment only
+        // narrowed. `self.version` is the snapshot height = this cycle's marker.
+        // The re-augment between passes is kept (cheap, shrinks the tombstone
+        // churn). Pass 1 — nodes. Pass 2 — values.
+        let nodes_gc = self
+            .cache
+            .storage
+            .gc_nodes_generational(&live, self.version)?;
         self.augment_live_to_latest(&mut live, on_disk_latest + 1)?;
-        let values_gc = self.cache.storage.gc_values(&live)?;
+        let values_gc = self
+            .cache
+            .storage
+            .gc_values_generational(&live, self.version)?;
 
         tracing::info!(
             "trie prune: removed {} old roots, GC'd {} nodes + {} values",
@@ -1007,10 +1019,17 @@ mod tests {
             "before prune, node count must grow (old leaf is still stored for v1)"
         );
 
-        // prune(keep=0) retires v1 and GCs nodes only reachable from it.
-        let (roots_pruned, nodes_gc) = trie.prune(0).unwrap();
+        // Generational GC defers deletion one cycle: the first prune tombstones
+        // the now-unreachable v1 nodes; a later prune at a higher version reaps
+        // them. Advance the version marker with a no-op commit, then prune again.
+        let (roots_pruned, _deferred) = trie.prune(0).unwrap();
         assert!(roots_pruned >= 1, "must retire at least one old root");
-        assert!(nodes_gc >= 1, "must GC at least one unreachable leaf");
+        let _ = trie.commit(3).unwrap();
+        let (_r2, nodes_gc) = trie.prune(0).unwrap();
+        assert!(
+            nodes_gc >= 1,
+            "must GC at least one unreachable leaf after the deferral cycle"
+        );
 
         let nodes_after_prune = mdbx
             .count(sentrix_storage::tables::TABLE_TRIE_NODES)
@@ -1112,9 +1131,15 @@ mod tests {
             "key must still be retrievable from v1 root after a v2 delete"
         );
 
-        // prune(keep=0) retires v1; its leaf+value become unreachable.
+        // Generational GC defers one cycle: the first prune tombstones the
+        // deleted leaf's storage; a later prune at a higher version reaps it.
+        let _ = trie.prune(0).unwrap();
+        let _ = trie.commit(3).unwrap();
         let (_roots_pruned, nodes_gc) = trie.prune(0).unwrap();
-        assert!(nodes_gc >= 1, "prune must GC the deleted leaf's storage");
+        assert!(
+            nodes_gc >= 1,
+            "prune must GC the deleted leaf's storage after the deferral cycle"
+        );
 
         let values_after_prune = mdbx
             .count(sentrix_storage::tables::TABLE_TRIE_VALUES)
@@ -1223,10 +1248,17 @@ mod tests {
         let v1_old = trie_v1.get(&k1).unwrap().unwrap();
         assert_eq!(account_value_decode(&v1_old).unwrap().0, 100);
 
-        // prune(keep=0) reclaims v1's now-unreachable internal nodes.
-        let (roots_pruned, nodes_gc) = trie.prune(0).unwrap();
+        // Generational GC defers one cycle: the first prune tombstones v1's
+        // now-unreachable internal nodes; a later prune at a higher version
+        // reaps them.
+        let (roots_pruned, _deferred) = trie.prune(0).unwrap();
         assert!(roots_pruned >= 1, "prune must retire at least v1");
-        assert!(nodes_gc >= 1, "prune must GC v1's orphaned internal nodes");
+        let _ = trie.commit(3).unwrap();
+        let (_r2, nodes_gc) = trie.prune(0).unwrap();
+        assert!(
+            nodes_gc >= 1,
+            "prune must GC v1's orphaned internal nodes after the deferral cycle"
+        );
     }
 
     /// ROOT CAUSE #3 regression guard: insert() must not delete the root node of a
