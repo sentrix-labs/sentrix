@@ -1540,36 +1540,40 @@ mod tests {
         assert_eq!(bc.mempool_size(), 1);
     }
 
-    // ── Archive-mode opt-in: SENTRIX_DISABLE_TRIE_PRUNE ─────────
+    // ── Background prune gate: OFF by default ───────────────────
 
-    /// `crate::blockchain_trie_ops::trie_prune_disabled()` reflects exactly the env var state.
-    /// Default off; set "1" to enable; other values (empty, "true",
-    /// "yes", "0") all map to disabled-flag-off-prune-still-runs.
+    /// `background_prune_enabled()` is OFF by default; it requires
+    /// `SENTRIX_ENABLE_BACKGROUND_TRIE_PRUNE=1` AND no
+    /// `SENTRIX_DISABLE_TRIE_PRUNE=1` force-disable.
     #[test]
-    fn test_trie_prune_disabled_env_var() {
+    fn test_background_prune_enabled_env_var() {
         let _guard = crate::test_util::env_test_lock();
+        let enabled = || crate::blockchain_trie_ops::background_prune_enabled();
         unsafe {
-            // Baseline: unset → prune runs (predicate false).
+            std::env::remove_var("SENTRIX_ENABLE_BACKGROUND_TRIE_PRUNE");
             std::env::remove_var("SENTRIX_DISABLE_TRIE_PRUNE");
-            assert!(!crate::blockchain_trie_ops::trie_prune_disabled());
+            // Default: OFF (the racy background prune does not run).
+            assert!(!enabled());
 
-            // Strict "1" → archive mode on.
+            // Opt in with strict "1".
+            std::env::set_var("SENTRIX_ENABLE_BACKGROUND_TRIE_PRUNE", "1");
+            assert!(enabled());
+
+            // Non-"1" values do not activate (no silent enable).
+            for v in ["", "true", "yes", "0"] {
+                std::env::set_var("SENTRIX_ENABLE_BACKGROUND_TRIE_PRUNE", v);
+                assert!(!enabled(), "value {v:?} must not enable background prune");
+            }
+
+            // Legacy force-disable wins even when enable is set.
+            std::env::set_var("SENTRIX_ENABLE_BACKGROUND_TRIE_PRUNE", "1");
             std::env::set_var("SENTRIX_DISABLE_TRIE_PRUNE", "1");
-            assert!(crate::blockchain_trie_ops::trie_prune_disabled());
-
-            // Anything else → treated as off (no silent activation).
-            std::env::set_var("SENTRIX_DISABLE_TRIE_PRUNE", "");
-            assert!(!crate::blockchain_trie_ops::trie_prune_disabled());
-            std::env::set_var("SENTRIX_DISABLE_TRIE_PRUNE", "true");
-            assert!(!crate::blockchain_trie_ops::trie_prune_disabled());
-            std::env::set_var("SENTRIX_DISABLE_TRIE_PRUNE", "yes");
-            assert!(!crate::blockchain_trie_ops::trie_prune_disabled());
-            std::env::set_var("SENTRIX_DISABLE_TRIE_PRUNE", "0");
-            assert!(!crate::blockchain_trie_ops::trie_prune_disabled());
+            assert!(!enabled(), "force-disable must override enable");
 
             // Cleanup so other tests see a clean env.
+            std::env::remove_var("SENTRIX_ENABLE_BACKGROUND_TRIE_PRUNE");
             std::env::remove_var("SENTRIX_DISABLE_TRIE_PRUNE");
-            assert!(!crate::blockchain_trie_ops::trie_prune_disabled());
+            assert!(!enabled());
         }
     }
 

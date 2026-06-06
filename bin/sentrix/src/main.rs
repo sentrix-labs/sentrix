@@ -589,6 +589,17 @@ enum ChainCommands {
     /// 2026-04-25 incident root cause). Run with the node STOPPED. Exits 0 if
     /// consistent, non-zero with a per-address report if any mismatches found.
     VerifyDeep,
+    /// Reclaim trie storage: delete trie nodes/values unreachable from the last
+    /// `--keep` committed roots. The RACE-FREE prune — run with the node STOPPED.
+    /// The background prune is off by default because it races block apply and
+    /// can delete still-live nodes ("missing node" stalls); this offline path
+    /// has no concurrency so it removes only genuine orphans. Safe on a single
+    /// peer (does not change state_root, unlike reset-trie).
+    Prune {
+        /// Number of recent trie root versions to retain (default 1000).
+        #[arg(long, default_value_t = 1000)]
+        keep: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -821,6 +832,7 @@ async fn main() -> anyhow::Result<()> {
                 i_understand_divergence_risk,
             } => commands::chain::cmd_chain_reset_trie(i_understand_divergence_risk)?,
             ChainCommands::VerifyDeep => commands::chain::cmd_chain_verify_deep()?,
+            ChainCommands::Prune { keep } => commands::chain::cmd_chain_prune(keep)?,
         },
 
         Commands::Token { action } => match action {

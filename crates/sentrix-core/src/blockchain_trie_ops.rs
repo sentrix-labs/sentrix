@@ -803,15 +803,19 @@ impl Blockchain {
         const TRIE_PRUNE_EVERY: u64 = 5000;
         const TRIE_KEEP_VERSIONS: u64 = 1000;
 
-        // Archive-mode opt-in: when SENTRIX_DISABLE_TRIE_PRUNE=1 is set
-        // in the environment, the periodic prune skips entirely. The
-        // node accumulates every historical trie version, enabling
-        // state-at-past-block queries (eth_call at historic h, bridge
-        // proofs, explorer historical analytics). Off by default — only
-        // the dedicated archive fullnode sets this; validators stay
-        // lean. Predicate matches SENTRIX_APPLY_PROFILE's "1"-only
-        // semantics (block_executor.rs:635) for consistency.
-        if trie_prune_disabled() {
+        // Background prune is OFF by default (2026-06-06). It runs on a
+        // background thread concurrently with block apply; a node committed or
+        // content-addressed-resurfaced during the multi-minute walk is absent
+        // from the frozen live-set and gets deleted as an orphan — the
+        // recurring "missing node" stalls. Five partial fixes (#711/#714/#791/
+        // #798) narrowed but never closed the window; a truly race-free
+        // background prune needs walk+delete in one MDBX RW txn (chain-blocking
+        // write lock) or refcounting (own project). Until then the fleet
+        // reclaims trie storage safely via `sentrix chain prune` during a
+        // maintenance halt (no concurrency → no race). Opt back into the racy
+        // background path only with SENTRIX_ENABLE_BACKGROUND_TRIE_PRUNE=1
+        // (and the legacy SENTRIX_DISABLE_TRIE_PRUNE=1 still force-disables).
+        if !background_prune_enabled() {
             return;
         }
 
@@ -882,22 +886,18 @@ impl Blockchain {
 /// as the existing "failed prune" semantics documented above.
 static PRUNE_RUNNING: AtomicBool = AtomicBool::new(false);
 
-/// Archive-mode opt-in. When `SENTRIX_DISABLE_TRIE_PRUNE=1` is set in
-/// the environment, [`Blockchain::maybe_prune_trie`] returns immediately
-/// without scheduling a prune. The node accumulates every historical
-/// trie version forever — enabling state-at-past-block queries
-/// (`eth_call` at historic h, bridge proofs, explorer historical
-/// analytics) at the cost of unbounded disk growth.
-///
-/// Default off. Production validators leave this unset and keep the
-/// rolling `TRIE_KEEP_VERSIONS = 1000` window. Dedicated archive
-/// fullnodes set this flag.
-///
-/// Match SENTRIX_APPLY_PROFILE's strict "1" semantics (any other value
-/// is treated as off) so accidental `=true` / `=yes` / empty-value
-/// settings don't silently activate the archive path.
-pub(crate) fn trie_prune_disabled() -> bool {
-    std::env::var_os("SENTRIX_DISABLE_TRIE_PRUNE").is_some_and(|v| v == "1")
+/// Whether the racy BACKGROUND prune is enabled. Default OFF (2026-06-06):
+/// the background prune deletes live nodes under concurrency (the recurring
+/// "missing node" class) and five partial fixes never closed the window, so
+/// the safe path is now `sentrix chain prune` during a maintenance halt
+/// (no concurrency → no race). Returns true only when
+/// `SENTRIX_ENABLE_BACKGROUND_TRIE_PRUNE=1` is set AND the legacy
+/// `SENTRIX_DISABLE_TRIE_PRUNE=1` force-disable is NOT set (the latter still
+/// wins, for back-compat with archive-node ops scripts). Strict "1" semantics
+/// (matching SENTRIX_APPLY_PROFILE) so `=true`/`=yes`/empty don't activate it.
+pub(crate) fn background_prune_enabled() -> bool {
+    std::env::var_os("SENTRIX_ENABLE_BACKGROUND_TRIE_PRUNE").is_some_and(|v| v == "1")
+        && std::env::var_os("SENTRIX_DISABLE_TRIE_PRUNE").is_none_or(|v| v != "1")
 }
 
 const TESTNET_CHAIN_ID: u64 = 7120;

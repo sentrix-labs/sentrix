@@ -699,6 +699,52 @@ impl SentrixTrie {
         Ok((roots_pruned, nodes_gc + values_gc))
     }
 
+    /// Offline (quiesced-node) prune — the RACE-FREE GC path.
+    ///
+    /// MUST run only when the node is stopped (no concurrent commits). Then the
+    /// live-set walk reads a consistent MDBX, nothing is re-committed mid-walk,
+    /// and orphan deletion cannot hit a still-live node — so the immediate
+    /// (non-generational, non-augmented) delete is safe.
+    ///
+    /// This is the safe counterpart to [`Self::prune`], which runs on a
+    /// background thread concurrently with block apply. That concurrency is the
+    /// root of the recurring "missing node" class (a node committed/resurfaced
+    /// during the walk is absent from the frozen live-set and gets deleted);
+    /// five partial fixes narrowed but never closed the window, so the
+    /// background prune is now off by default (see `maybe_prune_trie`) and the
+    /// fleet reclaims trie storage by running `sentrix chain prune` during a
+    /// maintenance halt instead. Same walk + keep-window semantics as `prune`,
+    /// minus the racy augment and the generational tombstone deferral.
+    pub fn prune_offline(&self, keep_versions: u64) -> SentrixResult<(usize, usize)> {
+        let roots_pruned = self
+            .cache
+            .storage
+            .prune_old_roots(self.version, keep_versions)?;
+        if roots_pruned == 0 {
+            return Ok((0, 0));
+        }
+
+        let mut live = std::collections::HashSet::new();
+        self.collect_reachable(self.root, 0, &mut live)?;
+        let cutoff = self.version.saturating_sub(keep_versions);
+        for version in (cutoff + 1)..=self.version {
+            if let Some(root) = self.cache.storage.load_root(version)?
+                && !live.contains(&root)
+            {
+                self.collect_reachable(root, 0, &mut live)?;
+            }
+        }
+        // No augment_live_to_latest: a quiesced node has no roots past
+        // self.version. Immediate combined delete is safe with no concurrency.
+        let gc = self.cache.storage.gc_orphaned_nodes(&live)?;
+        tracing::info!(
+            "trie prune (offline): removed {} old roots, GC'd {} nodes/values",
+            roots_pruned,
+            gc
+        );
+        Ok((roots_pruned, gc))
+    }
+
     /// Walk every committed root in `[from_version, on-disk latest]` not yet in
     /// `live` and add its reachable hashes. Returns the on-disk latest version
     /// observed. Keeps the live set current across the long nodes/values GC
@@ -1037,6 +1083,43 @@ mod tests {
         assert!(
             nodes_after_prune < nodes_after_update,
             "prune must reduce node count once old versions retire"
+        );
+    }
+
+    /// Offline prune: single immediate call reclaims orphans AND keeps every
+    /// node reachable from the current root. The `get` assertion is the
+    /// regression guard the production failure needed — a prune that deletes a
+    /// live node would make this read fail with "missing node".
+    #[test]
+    fn test_prune_offline_keeps_reachable_deletes_orphans() {
+        let (_dir, mdbx) = temp_mdbx();
+        let mut trie = SentrixTrie::open(Arc::clone(&mdbx), 0).unwrap();
+        let k = address_to_key("0xaaaa");
+
+        // v1 insert, v2 update same key → v1's old leaf becomes unreachable.
+        trie.insert(&k, &account_value_bytes(100, 0)).unwrap();
+        let _ = trie.commit(1).unwrap();
+        trie.insert(&k, &account_value_bytes(200, 1)).unwrap();
+        let _ = trie.commit(2).unwrap();
+        let nodes_before = mdbx
+            .count(sentrix_storage::tables::TABLE_TRIE_NODES)
+            .unwrap();
+
+        // Offline prune keep=0: immediate, single call (no generational defer).
+        let (roots, gc) = trie.prune_offline(0).unwrap();
+        assert!(roots >= 1, "must retire at least one old root");
+        assert!(gc >= 1, "must GC v1's orphaned leaf");
+        let nodes_after = mdbx
+            .count(sentrix_storage::tables::TABLE_TRIE_NODES)
+            .unwrap();
+        assert!(nodes_after < nodes_before, "node count must drop");
+
+        // The live value MUST survive — proves no live node was deleted.
+        let v = trie.get(&k).unwrap().unwrap();
+        assert_eq!(
+            account_value_decode(&v).unwrap().0,
+            200,
+            "current value must survive offline prune (no live-node deletion)"
         );
     }
 
