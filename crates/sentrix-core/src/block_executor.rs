@@ -1727,30 +1727,42 @@ impl Blockchain {
                                 return Ok(());
                             }
 
-                            // Observer-tolerant accept (gated, default OFF). An observer/
-                            // fullnode applies EVERY block via add_block_from_peer (Peer) and
-                            // strictly rejecting a #1e here halts it on canonical data: the
-                            // block already passed the strict 2/3-precommit justification
-                            // verification earlier in add_block_impl, so it IS the network-
-                            // agreed block (consensus is on block_hash, not state_root). The
-                            // mismatch is the chain's known imperfect state-commitment
-                            // (recurring/oscillating state_root) that validators already
-                            // tolerate via the apply-from-stash path. With
-                            // SENTRIX_OBSERVER_TOLERANT_STATE_ROOT=1 set, accept the block and
-                            // stamp the proposer's (canonical) received root so the observer's
-                            // chain stays consistent with the committed roots; its local
-                            // accounts diverge from that root (the same pre-existing imperfection
-                            // every node has), so served state is no worse than a validator's.
-                            // Default OFF → validators keep the strict #1e reject below. Only an
-                            // observer node sets this env.
+                            // #1e on a JUSTIFIED Peer block → ACCEPT (stamp the
+                            // proposer's canonical root). Consensus is on
+                            // block_hash, not state_root, and any Peer block that
+                            // reaches here already passed the 2/3 justification
+                            // gate in add_block_impl (the `Some(j)` block at
+                            // ~232: an absent/insufficient justification is
+                            // rejected there, before pass-2). So the block IS
+                            // network-canonical; the local-recompute mismatch is
+                            // the chain's known imperfect state-commitment
+                            // (recurring/oscillating state_root) that the
+                            // apply-from-stash path already tolerates. Strictly
+                            // rejecting it halts the node on canonical data — the
+                            // lagging-validator stuck-sync (val1, 2026-06-06,
+                            // recovered only by halt-all). This is the DEFAULT
+                            // for ALL nodes now, replacing the per-node
+                            // SENTRIX_OBSERVER_TOLERANT env whose validator-vs-
+                            // fullnode divergence caused that stall. The node's
+                            // local accounts diverge from the stamped root (the
+                            // same imperfection every node carries), so served
+                            // state is no worse than any validator's. A Peer
+                            // block with NO justification is NOT accepted here —
+                            // it falls through to the strict reject below.
+                            //
+                            // (Cryptographic per-signature justification
+                            // verification — STRICT_JUSTIFICATION_HEIGHT — is a
+                            // separate, currently-broken path: recover_signer
+                            // disagrees with the producer's signing payload, so
+                            // it stays off; this accept inherits the chain's
+                            // existing justification trust level, no weaker.)
                             if self.source_for_current_add == BlockSource::Peer
-                                && std::env::var_os("SENTRIX_OBSERVER_TOLERANT_STATE_ROOT")
-                                    .is_some_and(|v| v == "1")
+                                && last.justification.is_some()
                             {
                                 tracing::debug!(
-                                    "observer-tolerant: #1e at block {} (received {} vs computed \
-                                     {}) — accepting justified canonical block, stamping received \
-                                     root (local state diverges; chain state-commitment imperfect)",
+                                    "#1e accept at block {} (received {} vs computed {}) — \
+                                     justified canonical block, stamping received root \
+                                     (local state diverges; chain state-commitment imperfect)",
                                     block_index,
                                     hex::encode(received_root),
                                     hex::encode(computed_root),
@@ -2729,7 +2741,6 @@ mod tests {
     #[test]
     fn test_c03_pass2_failure_restores_staking_state() {
         use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
-        use sentrix_primitives::justification::BlockJustification;
         use sentrix_staking::staking::ValidatorStake;
         use sentrix_storage::MdbxStorage;
         use std::sync::Arc;
@@ -2794,19 +2805,18 @@ mod tests {
         let mut block = Block::new(height, prev_hash, vec![coinbase], "v1".into());
         block.timestamp = 1_777_000_001;
         // Tamper the declared root so #1e fires AFTER the reward bundle ran.
+        // Leave the block UNJUSTIFIED: a justified #1e block is now accepted
+        // (canonical-block tolerance), so to still exercise the Pass-2 reject +
+        // rollback we use the no-justification path, which #1e rejects.
         block.state_root = Some([0xAB; 32]);
         block.hash = block.calculate_hash();
-        let mut just = BlockJustification::new(height, 0, block.hash.clone());
-        just.add_precommit("v1".into(), vec![], 1000);
-        just.add_precommit("v2".into(), vec![], 1000);
-        just.add_precommit("v3".into(), vec![], 1000);
-        block.justification = Some(just);
+        block.justification = None;
 
         let pending_before = bc.stake_registry.validators.get("v1").unwrap().pending_rewards;
 
         let err = bc
             .add_block_from_peer(block)
-            .expect_err("tampered state_root must be rejected (#1e)");
+            .expect_err("tampered state_root on an unjustified block must be rejected (#1e)");
         assert!(
             format!("{err:?}").contains("state_root mismatch"),
             "expected #1e state_root mismatch, got: {err:?}"
@@ -2823,6 +2833,90 @@ mod tests {
             std::env::remove_var("REWARD_APPLY_PATH_HEIGHT");
             std::env::remove_var("STATE_IN_TRIE_HEIGHT");
         }
+    }
+
+    /// A JUSTIFIED Peer block with a tampered (mismatching) state_root past the
+    /// fork height is ACCEPTED on #1e and the proposer's root stamped —
+    /// consensus is on block_hash and the block carries a 2/3 justification.
+    /// This is the lagging-validator catch-up fix (val1 stuck-sync 2026-06-06).
+    /// The no-justification counterpart staying rejected is covered by
+    /// `test_c03_pass2_failure_restores_staking_state` above.
+    #[test]
+    fn test_justified_peer_block_accepted_on_state_root_mismatch() {
+        use sentrix_primitives::block::{Block, STATE_ROOT_FORK_HEIGHT};
+        use sentrix_primitives::justification::BlockJustification;
+        use sentrix_staking::staking::ValidatorStake;
+        use sentrix_storage::MdbxStorage;
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        let mut bc = setup();
+        bc.voyager_activated = true;
+        for addr in ["v1", "v2", "v3", "v4"] {
+            bc.stake_registry.validators.insert(
+                addr.to_string(),
+                ValidatorStake {
+                    address: addr.to_string(),
+                    self_stake: 1000,
+                    total_delegated: 0,
+                    commission_rate: 1000,
+                    max_commission_rate: 2000,
+                    is_jailed: false,
+                    jail_until: 0,
+                    is_tombstoned: false,
+                    blocks_signed: 0,
+                    blocks_missed: 0,
+                    pending_rewards: 0,
+                    registration_height: 0,
+                    last_commission_change_height: 0,
+                },
+            );
+        }
+        bc.stake_registry.active_set = vec!["v1".into(), "v2".into(), "v3".into(), "v4".into()];
+
+        // Pad past STATE_ROOT_FORK_HEIGHT so the #1e check enforces.
+        let pad_height = STATE_ROOT_FORK_HEIGHT + 1;
+        let prev = bc.latest_block().unwrap().hash.clone();
+        let mut pad = Block::new(
+            pad_height,
+            prev,
+            vec![Transaction::new_coinbase("v1".into(), 0, pad_height, 1_777_000_000)],
+            "v1".into(),
+        );
+        pad.timestamp = 1_777_000_000;
+        bc.chain.push(pad);
+
+        let dir = TempDir::new().unwrap();
+        let mdbx = Arc::new(MdbxStorage::open(dir.path()).unwrap());
+        bc.init_trie(mdbx).unwrap();
+
+        let height = bc.height() + 1;
+        let prev_hash = bc.latest_block().unwrap().hash.clone();
+        let reward = bc.get_block_reward();
+        let coinbase = Transaction::new_coinbase("v1".into(), reward, height, 1_777_000_002);
+        let mut block = Block::new(height, prev_hash, vec![coinbase], "v1".into());
+        block.timestamp = 1_777_000_002;
+        // Tampered root → forces #1e; justification present → must be accepted.
+        block.state_root = Some([0xAB; 32]);
+        block.hash = block.calculate_hash();
+        let mut just = BlockJustification::new(height, 0, block.hash.clone());
+        just.add_precommit("v1".into(), vec![], 1000);
+        just.add_precommit("v2".into(), vec![], 1000);
+        just.add_precommit("v3".into(), vec![], 1000);
+        block.justification = Some(just);
+
+        let h_before = bc.height();
+        let result = bc.add_block_from_peer(block);
+        assert!(
+            result.is_ok(),
+            "justified Peer block must be accepted despite #1e: {result:?}"
+        );
+        assert_eq!(bc.height(), h_before + 1, "justified block must commit");
+        assert_eq!(
+            bc.latest_block().unwrap().state_root,
+            Some([0xAB; 32]),
+            "proposer's (received) root must be stamped on #1e accept"
+        );
     }
 
     #[test]
