@@ -348,6 +348,117 @@ impl TrieStorage {
         self.gc_table(tables::TABLE_TRIE_VALUES, live_hashes)
     }
 
+    /// Generational GC for the trie_nodes table — see [`Self::gc_table_generational`].
+    pub fn gc_nodes_generational(
+        &self,
+        live_hashes: &std::collections::HashSet<NodeHash>,
+        version: u64,
+    ) -> SentrixResult<usize> {
+        self.gc_table_generational(tables::TABLE_TRIE_NODES, b'n', live_hashes, version)
+    }
+
+    /// Generational GC for the trie_values table — see [`Self::gc_table_generational`].
+    pub fn gc_values_generational(
+        &self,
+        live_hashes: &std::collections::HashSet<NodeHash>,
+        version: u64,
+    ) -> SentrixResult<usize> {
+        self.gc_table_generational(tables::TABLE_TRIE_VALUES, b'v', live_hashes, version)
+    }
+
+    /// Race-free generational GC: defer deletes by one prune cycle via
+    /// `TABLE_TRIE_TOMBSTONES` (keyed `disc || hash` → tombstone version u64 BE).
+    ///
+    /// The old `gc_table` deleted any hash not in the live-set snapshot. But the
+    /// snapshot is frozen when the background prune is spawned, and blocks keep
+    /// committing new (live) nodes/values during the multi-minute walk — those
+    /// aren't in the snapshot, so they were deleted as "orphans" (the recurring
+    /// "missing node" stalls; #791 only narrowed the window).
+    ///
+    /// Generational fix:
+    /// - **Phase A (reap):** for each existing tombstone of this `disc` —
+    ///   live again → drop tombstone (false orphan, keep entry); still orphan
+    ///   AND tombstoned in an earlier cycle (`tv < version`) → delete entry +
+    ///   tombstone; tombstoned this cycle → leave.
+    /// - **Phase B (mark):** tombstone any orphan not already tombstoned, at
+    ///   `version`.
+    ///
+    /// A hash committed DURING this prune is orphan vs the snapshot, so Phase B
+    /// tombstones it — but next prune it's a recent live node, so Phase A drops
+    /// the tombstone instead of deleting it. Worst-case failure mode is benign:
+    /// under-deletion (storage grows), never deletion of a live entry. Returns
+    /// the count actually deleted this cycle.
+    fn gc_table_generational(
+        &self,
+        data_table: &str,
+        disc: u8,
+        live_hashes: &std::collections::HashSet<NodeHash>,
+        version: u64,
+    ) -> SentrixResult<usize> {
+        use std::collections::HashSet;
+
+        // Phase A — scan existing tombstones for this discriminator.
+        let mut reap: Vec<NodeHash> = Vec::new(); // still-orphan, prior cycle → delete
+        let mut clear: Vec<NodeHash> = Vec::new(); // resurrected → drop tombstone only
+        let mut tombstoned: HashSet<NodeHash> = HashSet::new();
+        self.mdbx
+            .iter_from(tables::TABLE_TRIE_TOMBSTONES, &[], |k, v| {
+                if k.len() == 33 && k[0] == disc {
+                    let mut h = [0u8; 32];
+                    h.copy_from_slice(&k[1..]);
+                    tombstoned.insert(h);
+                    if live_hashes.contains(&h) {
+                        clear.push(h);
+                    } else {
+                        let tv = v.try_into().map(u64::from_be_bytes).unwrap_or(0);
+                        if tv < version {
+                            reap.push(h);
+                        }
+                    }
+                }
+                true
+            })
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+
+        let mut tomb_key = [0u8; 33];
+        tomb_key[0] = disc;
+        for h in clear.iter().chain(reap.iter()) {
+            tomb_key[1..].copy_from_slice(h);
+            self.mdbx
+                .delete(tables::TABLE_TRIE_TOMBSTONES, &tomb_key)
+                .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        }
+        let deleted = reap.len();
+        for h in &reap {
+            self.mdbx
+                .delete(data_table, h)
+                .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        }
+
+        // Phase B — tombstone new orphans not already tracked.
+        let mut new_tomb: Vec<NodeHash> = Vec::new();
+        self.mdbx
+            .iter_from(data_table, &[], |k, _v| {
+                if k.len() == 32 {
+                    let mut h = [0u8; 32];
+                    h.copy_from_slice(k);
+                    if !live_hashes.contains(&h) && !tombstoned.contains(&h) {
+                        new_tomb.push(h);
+                    }
+                }
+                true
+            })
+            .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        let vbytes = version.to_be_bytes();
+        for h in &new_tomb {
+            tomb_key[1..].copy_from_slice(h);
+            self.mdbx
+                .put(tables::TABLE_TRIE_TOMBSTONES, &tomb_key, &vbytes)
+                .map_err(|e| SentrixError::StorageError(e.to_string()))?;
+        }
+        Ok(deleted)
+    }
+
     /// Shared helper: scan an MDBX table for hashes not in `live_hashes` and remove them.
     ///
     /// Streams the table via `iter_from` so only the orphan-hash subset
@@ -514,6 +625,75 @@ mod tests {
         assert!(
             storage.load_node(&orphan_hash).unwrap().is_none(),
             "orphan must be removed by GC"
+        );
+    }
+
+    #[test]
+    fn test_generational_gc_defers_then_reaps() {
+        let (_dir, storage) = temp_storage();
+        let live_hash = dummy_hash(0x01);
+        let orphan_hash = dummy_hash(0x02);
+        let node = TrieNode::Leaf {
+            key: [0u8; 32],
+            value_hash: empty_hash(0),
+        };
+        storage.store_node(&live_hash, &node).unwrap();
+        storage.store_node(&orphan_hash, &node).unwrap();
+
+        let mut live: HashSet<NodeHash> = HashSet::new();
+        live.insert(live_hash);
+
+        // Cycle 1: orphan is tombstoned, NOT deleted (deferred).
+        let d1 = storage.gc_nodes_generational(&live, 100).unwrap();
+        assert_eq!(d1, 0, "first cycle defers all deletes (tombstone only)");
+        assert!(
+            storage.load_node(&orphan_hash).unwrap().is_some(),
+            "orphan survives the cycle it was first seen"
+        );
+
+        // Cycle 2 (higher version): still orphan → now reaped.
+        let d2 = storage.gc_nodes_generational(&live, 200).unwrap();
+        assert_eq!(d2, 1, "second cycle reaps the still-orphan tombstoned node");
+        assert!(
+            storage.load_node(&orphan_hash).unwrap().is_none(),
+            "stale orphan deleted after a full cycle"
+        );
+        assert!(
+            storage.load_node(&live_hash).unwrap().is_some(),
+            "live node always survives"
+        );
+    }
+
+    #[test]
+    fn test_generational_gc_spares_node_committed_during_prune() {
+        // The #791 race: a node orphan vs THIS cycle's snapshot (it was
+        // committed mid-prune) but live NEXT cycle must never be deleted.
+        // The old gc_table deleted it in cycle 1 → "missing node" stall.
+        let (_dir, storage) = temp_storage();
+        let raced = dummy_hash(0x03);
+        let node = TrieNode::Leaf {
+            key: [0u8; 32],
+            value_hash: empty_hash(0),
+        };
+        storage.store_node(&raced, &node).unwrap();
+
+        // Cycle 1: snapshot live-set misses it → tombstoned, not deleted.
+        let empty: HashSet<NodeHash> = HashSet::new();
+        let d1 = storage.gc_nodes_generational(&empty, 100).unwrap();
+        assert_eq!(d1, 0);
+        assert!(
+            storage.load_node(&raced).unwrap().is_some(),
+            "raced node survives cycle 1 (tombstoned, not deleted)"
+        );
+
+        // Cycle 2: now it IS live → tombstone dropped, node spared.
+        let mut live: HashSet<NodeHash> = HashSet::new();
+        live.insert(raced);
+        let d2 = storage.gc_nodes_generational(&live, 200).unwrap();
+        assert_eq!(d2, 0, "resurrected node must not be deleted");
+        assert!(
+            storage.load_node(&raced).unwrap().is_some(),
+            "raced/live node survives — #791 race fixed"
         );
     }
 

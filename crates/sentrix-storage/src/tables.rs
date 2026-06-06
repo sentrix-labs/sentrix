@@ -27,6 +27,14 @@ pub const TABLE_TRIE_ROOTS: &str = "trie_roots";
 /// Trie committed roots: height (u64 BE) → root_hash (32 bytes)
 pub const TABLE_TRIE_COMMITTED: &str = "trie_committed_roots";
 
+/// Trie GC tombstones: key = discriminator byte (b'n' nodes / b'v' values) ||
+/// hash (32 bytes) → tombstone version (u64 BE). Generational GC: the prune
+/// tombstones an orphan here instead of deleting it, and only deletes on a
+/// LATER prune if it's still orphan. A hash committed during a long prune
+/// (the #791 race) is tombstoned that cycle but back in the live-set next
+/// cycle, so it's never deleted. Deletion lags one prune interval.
+pub const TABLE_TRIE_TOMBSTONES: &str = "trie_tombstones";
+
 /// Chain metadata: key string → value bytes (height, hash_index_complete, etc.)
 pub const TABLE_META: &str = "meta";
 
@@ -55,6 +63,7 @@ pub const ALL_TABLES: &[&str] = &[
     TABLE_TRIE_VALUES,
     TABLE_TRIE_ROOTS,
     TABLE_TRIE_COMMITTED,
+    TABLE_TRIE_TOMBSTONES,
     TABLE_META,
     TABLE_LOGS,
     TABLE_BLOOM,
