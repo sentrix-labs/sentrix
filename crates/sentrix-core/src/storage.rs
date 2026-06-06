@@ -345,6 +345,14 @@ impl Storage {
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
+    /// Batched, fsync-light persist of a contiguous block run — see
+    /// `ChainStorage::save_blocks`. Used by the background block-persister.
+    pub fn save_blocks(&self, blocks: &[Block]) -> SentrixResult<()> {
+        self.chain
+            .save_blocks(blocks)
+            .map_err(|e| SentrixError::StorageError(e.to_string()))
+    }
+
     pub fn load_block(&self, index: u64) -> SentrixResult<Option<Block>> {
         self.chain
             .load_block(index)
