@@ -388,6 +388,19 @@ impl TrieStorage {
     /// the tombstone instead of deleting it. Worst-case failure mode is benign:
     /// under-deletion (storage grows), never deletion of a live entry. Returns
     /// the count actually deleted this cycle.
+    ///
+    /// CALLER CONTRACT: `live_hashes` must be augmented to the latest committed
+    /// root IMMEDIATELY before this call (`tree.rs::prune` re-walks the on-disk
+    /// roots into `live` just before each gc pass). That collapses the reap-vs-
+    /// commit window to this method's own scan+delete duration (ms — the
+    /// tombstone table is small), versus the old immediate-delete that raced the
+    /// whole multi-minute walk. RESIDUAL (CodeRabbit, 2026-06-06): a
+    /// content-addressed hash re-committed inside that ms window can still be
+    /// reaped here; fully eliminating it needs the reap coupled to writer
+    /// synchronization (walk+delete in one RW txn) — the tracked complete fix
+    /// this PR deliberately defers to avoid a 10–20 min apply-blocking write
+    /// lock. This change strictly narrows the race; it does not pretend to close
+    /// it. Boot-time verify_integrity remains the backstop.
     fn gc_table_generational(
         &self,
         data_table: &str,
@@ -410,9 +423,23 @@ impl TrieStorage {
                     if live_hashes.contains(&h) {
                         clear.push(h);
                     } else {
-                        let tv = v.try_into().map(u64::from_be_bytes).unwrap_or(0);
-                        if tv < version {
-                            reap.push(h);
+                        // Fail closed: a malformed tombstone payload must NOT
+                        // authorise deleting trie data. Defaulting to tv=0 would
+                        // make a corrupt entry instantly reapable; instead keep
+                        // the entry (skip reaping) and surface the corruption.
+                        match <[u8; 8]>::try_from(v) {
+                            Ok(b) => {
+                                if u64::from_be_bytes(b) < version {
+                                    reap.push(h);
+                                }
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                                    "trie GC: malformed tombstone payload ({} bytes) — \
+                                     keeping entry (fail-closed)",
+                                    v.len()
+                                );
+                            }
                         }
                     }
                 }
@@ -694,6 +721,40 @@ mod tests {
         assert!(
             storage.load_node(&raced).unwrap().is_some(),
             "raced/live node survives — #791 race fixed"
+        );
+    }
+
+    #[test]
+    fn test_generational_gc_keeps_data_on_malformed_tombstone() {
+        // Fail closed: a corrupt (non-8-byte) tombstone payload must NOT
+        // authorise deleting trie data.
+        let (_dir, storage) = temp_storage();
+        let orphan = dummy_hash(0x05);
+        let node = TrieNode::Leaf {
+            key: [0u8; 32],
+            value_hash: empty_hash(0),
+        };
+        storage.store_node(&orphan, &node).unwrap();
+
+        // Plant a malformed (4-byte) tombstone for the orphan as if a prior cycle.
+        let mut tk = [0u8; 33];
+        tk[0] = b'n';
+        tk[1..].copy_from_slice(&orphan);
+        storage
+            .mdbx
+            .put(
+                sentrix_storage::tables::TABLE_TRIE_TOMBSTONES,
+                &tk,
+                &[0u8; 4],
+            )
+            .unwrap();
+
+        let empty: HashSet<NodeHash> = HashSet::new();
+        let deleted = storage.gc_nodes_generational(&empty, 999).unwrap();
+        assert_eq!(deleted, 0, "malformed tombstone must not authorise deletion");
+        assert!(
+            storage.load_node(&orphan).unwrap().is_some(),
+            "trie data must survive a malformed tombstone (fail-closed)"
         );
     }
 
