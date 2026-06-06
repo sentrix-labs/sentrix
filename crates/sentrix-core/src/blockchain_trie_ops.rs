@@ -897,7 +897,7 @@ static PRUNE_RUNNING: AtomicBool = AtomicBool::new(false);
 /// (matching SENTRIX_APPLY_PROFILE) so `=true`/`=yes`/empty don't activate it.
 pub(crate) fn background_prune_enabled() -> bool {
     std::env::var_os("SENTRIX_ENABLE_BACKGROUND_TRIE_PRUNE").is_some_and(|v| v == "1")
-        && !std::env::var_os("SENTRIX_DISABLE_TRIE_PRUNE").is_some_and(|v| v == "1")
+        && std::env::var_os("SENTRIX_DISABLE_TRIE_PRUNE").is_none_or(|v| v != "1")
 }
 
 const TESTNET_CHAIN_ID: u64 = 7120;

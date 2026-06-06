@@ -32,6 +32,21 @@ impl Storage {
         self.chain.mdbx_arc()
     }
 
+    /// Whether a trie root is already persisted for `height` (the trie tables
+    /// hold this height's state). Lets maintenance commands like
+    /// `sentrix chain prune` refuse to run when they would otherwise trigger
+    /// an `init_trie` backfill rebuild (different node shape — the reset-trie
+    /// fork class) instead of operating on the existing trie.
+    pub fn has_persisted_trie_root(&self, height: u64) -> bool {
+        self.mdbx_arc()
+            .get(
+                sentrix_storage::tables::TABLE_TRIE_ROOTS,
+                &height.to_be_bytes(),
+            )
+            .map(|o| o.is_some())
+            .unwrap_or(false)
+    }
+
     // ── Blockchain state (everything except blocks) ──────
 
     pub fn save_blockchain(&self, blockchain: &Blockchain) -> SentrixResult<()> {

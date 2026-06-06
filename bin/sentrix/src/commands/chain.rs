@@ -271,22 +271,69 @@ pub fn cmd_chain_verify_deep() -> anyhow::Result<()> {
 /// nodes. Safe to run on a single peer (unlike reset-trie).
 pub fn cmd_chain_prune(keep: u64) -> anyhow::Result<()> {
     use std::sync::Arc;
+    use std::time::Duration;
 
     let storage = Storage::open(&get_db_path())?;
+    if !storage.has_blockchain() {
+        anyhow::bail!("Chain not initialized.");
+    }
+    let height = storage
+        .load_height()
+        .map_err(|e| anyhow::anyhow!("reading chain height: {e}"))?;
+
+    // Precondition 1 — the trie must already be PERSISTED. `init_trie` would
+    // otherwise backfill it from AccountDB; a backfilled trie has a different
+    // node shape than the incrementally-built one (the 2026-04-21 reset-trie
+    // fork class), so a maintenance prune must never trigger that rebuild.
+    // Require the trie root for the current height to be present on disk.
+    let mdbx = storage.mdbx_arc();
+    if height > 0 && !storage.has_persisted_trie_root(height) {
+        anyhow::bail!(
+            "Refusing prune: no persisted trie root at height {height}. \
+             `chain prune` operates on the EXISTING trie and must not trigger \
+             a backfill rebuild (which produces a different node shape — see \
+             reset-trie). Boot the node normally once so the trie persists, \
+             then halt and re-run."
+        );
+    }
+
+    // Precondition 2 — the node must be STOPPED. MDBX serialises writers, so a
+    // live validator committing concurrently would reintroduce the exact
+    // prune-vs-commit race this command exists to avoid. Detect a running node
+    // via height-stability (the repo's portable check — see
+    // validator.rs::ensure_chain_not_advancing): a producing node advances the
+    // persisted height. Sample across > the 5s poll-persist interval.
+    let h0 = storage.load_height().unwrap_or(height);
+    std::thread::sleep(Duration::from_secs(7));
+    let h1 = storage.load_height().unwrap_or(h0);
+    if h1 != h0 {
+        if std::env::var("SENTRIX_ALLOW_ONLINE_PRUNE").map(|v| v == "1").unwrap_or(false) {
+            tracing::warn!(
+                "chain prune: height advanced {h0} -> {h1} (node running) — proceeding \
+                 because SENTRIX_ALLOW_ONLINE_PRUNE=1; this can race live commits"
+            );
+        } else {
+            anyhow::bail!(
+                "Refusing prune: chain height advanced {h0} -> {h1} during the check — \
+                 a validator is producing blocks against this chain.db. Pruning \
+                 concurrently with commits is exactly the race that deletes live \
+                 nodes. Stop the node (systemctl stop / docker stop), verify \
+                 `pgrep sentrix` is empty, then re-run. (Override for a rare \
+                 recovery: SENTRIX_ALLOW_ONLINE_PRUNE=1.)"
+            );
+        }
+    }
+
     let mut bc = storage
         .load_blockchain()?
         .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
-    let mdbx = storage.mdbx_arc();
     bc.init_trie(Arc::clone(&mdbx))?;
-
-    let height = bc.height();
     let trie = bc
         .state_trie
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("trie not initialised"))?;
 
     println!("Offline trie prune at height {height}, keeping the last {keep} roots.");
-    println!("(Run ONLY with the node STOPPED — MDBX is single-writer.)");
     let (roots, gc) = trie.prune_offline(keep)?;
     if roots == 0 {
         println!("Nothing to prune (fewer than {keep} retained roots, or already lean).");
