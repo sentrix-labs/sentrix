@@ -841,7 +841,7 @@ mod tests {
     /// keep divergent `total_minted` forever — exactly the 2026-05-24
     /// STATE-FP `fp`-divergence-with-matching-`acc` symptom.
     #[test]
-    fn test_b3b_repairs_stale_total_minted_on_load() {
+    fn test_b3b_advisory_does_not_overwrite_total_minted_on_load() {
         let path = temp_db_path();
         let storage = Storage::open(&path).unwrap();
 
@@ -857,18 +857,24 @@ mod tests {
         }
         let canonical_total = bc.total_minted;
 
-        // Persist a corrupted view: blocks remain canonical, but the
-        // blob's total_minted is off by one block reward (as if save
-        // lagged one block behind apply, or a partial copy from a
-        // healthy host shipped stale state).
+        // B3b USED to overwrite total_minted with a closed-form recompute
+        // (TOTAL_PREMINE + flat BLOCK_REWARD>>halvings per height) on load.
+        // That over-counts on chains with reduced-coinbase blocks — the live
+        // sum of stamped coinbase amounts is strictly less — and total_minted
+        // feeds the state_root, so the overwrite forced a divergent root on
+        // reload (observer #1e; validator restart fork). B3b is now ADVISORY:
+        // it compares + warns but DOES NOT mutate, trusting the persisted blob
+        // (written by save_blockchain from the live accumulator) plus B2
+        // replay. Persist a blob value that differs from the closed form and
+        // assert it survives the load untouched.
         bc.total_minted = canonical_total - 1;
         storage.save_blockchain(&bc).unwrap();
 
-        // Load via the production path — B3b must catch + repair.
         let loaded = storage.load_blockchain().unwrap().unwrap();
         assert_eq!(
-            loaded.total_minted, canonical_total,
-            "B3b must repair stale total_minted from block sum"
+            loaded.total_minted,
+            canonical_total - 1,
+            "B3b is advisory: it must NOT overwrite the persisted blob total_minted"
         );
 
         let _ = std::fs::remove_dir_all(&path);
