@@ -17,7 +17,11 @@ pub mod blockchain_trie_ops;
 pub mod chain_params;
 pub mod chain_queries;
 pub(crate) mod divergence;
-pub mod fork_heights;
+// Fork-activation heights live in their own crate now (pure consts + env +
+// chain-id selection, no consensus-state coupling). Re-exported so the
+// fleet-wide `sentrix_core::fork_heights::*` / `crate::fork_heights::*` call
+// sites keep resolving unchanged.
+pub use sentrix_fork_heights as fork_heights;
 pub mod genesis;
 pub mod mempool;
 pub mod nft;

@@ -462,7 +462,7 @@ pub fn get_reward_apply_path_height() -> u64 {
 /// Default `u64::MAX` makes this return false for all heights —
 /// the mainnet-safe-default-pre-activation pattern.
 ///
-/// **Use [`crate::Blockchain::voyager_mode_for`] in consensus paths** —
+/// **Use `Blockchain::voyager_mode_for` (sentrix-core) in consensus paths** —
 /// it ORs this check with the runtime persisted `voyager_activated`
 /// flag, so post-activation chains don't depend on the env var being
 /// set correctly. The 2026-04-26 mainnet stall happened because
@@ -609,7 +609,17 @@ pub fn is_bft_gate_relax_height(height: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::env_test_lock;
+
+    /// Serialises env-var-mutating tests within this crate (env is
+    /// process-global). Inlined on extraction — was `crate::test_util`
+    /// back when these lived in sentrix-core.
+    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
 
     /// Each fork-height reader is `env::var` parse → fallback. We
     /// exercise the env-set + env-unset paths once for one

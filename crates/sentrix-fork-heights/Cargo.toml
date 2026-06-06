@@ -1,0 +1,10 @@
+[package]
+name = "sentrix-fork-heights"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sentrix fork-activation heights — chain-id-aware fork schedule (consts + env overrides) shared across the node"
+publish = false
+
+[dependencies]
+tracing = "0.1"
