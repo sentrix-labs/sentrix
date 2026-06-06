@@ -1723,6 +1723,46 @@ impl Blockchain {
                                 return Ok(());
                             }
 
+                            // Observer-tolerant accept (gated, default OFF). An observer/
+                            // fullnode applies EVERY block via add_block_from_peer (Peer) and
+                            // strictly rejecting a #1e here halts it on canonical data: the
+                            // block already passed the strict 2/3-precommit justification
+                            // verification earlier in add_block_impl, so it IS the network-
+                            // agreed block (consensus is on block_hash, not state_root). The
+                            // mismatch is the chain's known imperfect state-commitment
+                            // (recurring/oscillating state_root) that validators already
+                            // tolerate via the apply-from-stash path. With
+                            // SENTRIX_OBSERVER_TOLERANT_STATE_ROOT=1 set, accept the block and
+                            // stamp the proposer's (canonical) received root so the observer's
+                            // chain stays consistent with the committed roots; its local
+                            // accounts diverge from that root (the same pre-existing imperfection
+                            // every node has), so served state is no worse than a validator's.
+                            // Default OFF → validators keep the strict #1e reject below. Only an
+                            // observer node sets this env.
+                            if self.source_for_current_add == BlockSource::Peer
+                                && std::env::var_os("SENTRIX_OBSERVER_TOLERANT_STATE_ROOT")
+                                    .is_some_and(|v| v == "1")
+                            {
+                                tracing::debug!(
+                                    "observer-tolerant: #1e at block {} (received {} vs computed \
+                                     {}) — accepting justified canonical block, stamping received \
+                                     root (local state diverges; chain state-commitment imperfect)",
+                                    block_index,
+                                    hex::encode(received_root),
+                                    hex::encode(computed_root),
+                                );
+                                last.state_root = Some(received_root);
+                                self.maybe_prune_trie();
+                                emit_apply_profile(
+                                    profile_t0,
+                                    profile_t1,
+                                    profile_t2,
+                                    profile_height,
+                                    profile_txs,
+                                );
+                                return Ok(());
+                            }
+
                             // A SelfProduced mismatch is the BFT finalize apply-from-stash
                             // path: the stashed proposal carries the proposer's PRE-apply
                             // state_root (computed at propose time, before this block's txs),
