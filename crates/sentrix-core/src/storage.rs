@@ -240,17 +240,35 @@ impl Storage {
         // from disk. Cost: ~2 ms at mainnet h≈2.2M, vs the ~30+ minutes
         // the original block-iteration version stalled on under multi-
         // container I/O contention (2026-05-25 v2.2.16 deploy regression).
+        // B3b reconcile is ADVISORY ONLY (no longer overwrites). The
+        // closed-form `recompute_total_minted_from_blocks` (TOTAL_PREMINE +
+        // sum of flat BLOCK_REWARD>>halvings per height) assumes every block's
+        // coinbase.amount equals the flat reward, but that is false in
+        // practice — blocks with a reduced/zero coinbase (era/epoch edges)
+        // make the true minted = sum of the STAMPED coinbase.amount strictly
+        // less than the closed form (≈2996 SRX on testnet at h≈6.27M). The
+        // authoritative value is the live accumulator (block_executor.rs:795
+        // sums each block's stamped coinbase.amount), which the running
+        // validators all agree on and which feeds state_root. The persisted
+        // blob holds that live value, and B2 replay (below) re-applies the
+        // coinbase for blob_height+1..disk_height, so total_minted is already
+        // correct after load. Overwriting it with the closed form forced a
+        // divergent total_minted into state_root on any reload → the loaded
+        // node's computed root disagreed with the canonical block (observer
+        // GetBlocks #1e-rejected every block; a validator restart would fork).
+        // Keep the comparison as a signal but DO NOT mutate.
         let recomputed = self.recompute_total_minted_from_blocks(&bc)?;
         let total_minted_was_stale = recomputed != bc.total_minted;
         if total_minted_was_stale {
             tracing::warn!(
-                "load_blockchain B3b: total_minted blob={} != recomputed-from-blocks={} \
-                 at height {} — overwriting blob (block-sum is canonical)",
-                bc.total_minted,
+                "load_blockchain B3b: closed-form total_minted={} != blob/live={} at \
+                 height {} (expected: reduced-coinbase blocks make live < closed-form). \
+                 Trusting blob+replay (live accumulator is canonical, feeds state_root); \
+                 closed-form is advisory only.",
                 recomputed,
+                bc.total_minted,
                 bc.height()
             );
-            bc.total_minted = recomputed;
         }
 
         if repaired > 0 || total_minted_was_stale {
@@ -342,6 +360,14 @@ impl Storage {
     pub fn save_block(&self, block: &Block) -> SentrixResult<()> {
         self.chain
             .save_block(block)
+            .map_err(|e| SentrixError::StorageError(e.to_string()))
+    }
+
+    /// Batched, fsync-light persist of a contiguous block run — see
+    /// `ChainStorage::save_blocks`. Used by the background block-persister.
+    pub fn save_blocks(&self, blocks: &[Block]) -> SentrixResult<()> {
+        self.chain
+            .save_blocks(blocks)
             .map_err(|e| SentrixError::StorageError(e.to_string()))
     }
 
@@ -815,7 +841,7 @@ mod tests {
     /// keep divergent `total_minted` forever — exactly the 2026-05-24
     /// STATE-FP `fp`-divergence-with-matching-`acc` symptom.
     #[test]
-    fn test_b3b_repairs_stale_total_minted_on_load() {
+    fn test_b3b_advisory_does_not_overwrite_total_minted_on_load() {
         let path = temp_db_path();
         let storage = Storage::open(&path).unwrap();
 
@@ -831,18 +857,24 @@ mod tests {
         }
         let canonical_total = bc.total_minted;
 
-        // Persist a corrupted view: blocks remain canonical, but the
-        // blob's total_minted is off by one block reward (as if save
-        // lagged one block behind apply, or a partial copy from a
-        // healthy host shipped stale state).
+        // B3b USED to overwrite total_minted with a closed-form recompute
+        // (TOTAL_PREMINE + flat BLOCK_REWARD>>halvings per height) on load.
+        // That over-counts on chains with reduced-coinbase blocks — the live
+        // sum of stamped coinbase amounts is strictly less — and total_minted
+        // feeds the state_root, so the overwrite forced a divergent root on
+        // reload (observer #1e; validator restart fork). B3b is now ADVISORY:
+        // it compares + warns but DOES NOT mutate, trusting the persisted blob
+        // (written by save_blockchain from the live accumulator) plus B2
+        // replay. Persist a blob value that differs from the closed form and
+        // assert it survives the load untouched.
         bc.total_minted = canonical_total - 1;
         storage.save_blockchain(&bc).unwrap();
 
-        // Load via the production path — B3b must catch + repair.
         let loaded = storage.load_blockchain().unwrap().unwrap();
         assert_eq!(
-            loaded.total_minted, canonical_total,
-            "B3b must repair stale total_minted from block sum"
+            loaded.total_minted,
+            canonical_total - 1,
+            "B3b is advisory: it must NOT overwrite the persisted blob total_minted"
         );
 
         let _ = std::fs::remove_dir_all(&path);

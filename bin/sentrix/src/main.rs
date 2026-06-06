@@ -1136,36 +1136,76 @@ async fn cmd_start(
         let writer_storage = storage.clone();
         let writer_shared = shared.clone();
         tokio::spawn(async move {
-            while let Some(target_height) = save_rx.recv().await {
-                // Drain coalesced heights: if the writer is behind, multiple
-                // FinalizeBlock pushes can stack up. One snapshot covers all
-                // of them since save_blockchain writes the full state blob.
-                let mut latest = target_height;
-                while let Ok(h) = save_rx.try_recv() {
-                    latest = h;
-                }
-                let bc = writer_shared.read().await;
-                let height_at_save = bc.height();
-                match writer_storage.save_blockchain(&bc) {
-                    Ok(()) => {
-                        tracing::debug!(
+            // POLL-driven persistence (not save_tx-signal-driven). The signal
+            // was only pushed in the commit path that is SKIPPED when add_block
+            // returns Err on the BFT apply-from-stash state_root recompute
+            // mismatch (the proposal carries the proposer's root; our local
+            // recompute differs — the separate, open determinism issue). The
+            // block is still canonical (2/3 precommit justification) and the
+            // chain advances, but the writer never fired → its block:{N} key
+            // was never written → it aged out of the in-memory window into a
+            // permanent storage gap → observer/fullnode GetBlocks sync stalled
+            // on the missing height. Polling the chain and persisting whatever
+            // is committed decouples durability from the apply result.
+            //
+            // Block:{N} keys are written via the BATCHED save_blocks (one MDBX
+            // txn / one fsync per tick). An earlier attempt used per-block
+            // save_block, whose per-block full-env mdbx.sync() contended with
+            // the apply path's trie write txns and stalled consensus. The full
+            // state blob (save_blockchain) runs on a slow cadence purely to
+            // bound load-time B2 replay; B2 rebuilds accounts from the block:{N}
+            // keys we now persist, and the graceful-shutdown path saves the
+            // blob on clean exit.
+            let mut last_persisted: u64 = { writer_shared.read().await.height() };
+            let mut last_blob_save = std::time::Instant::now();
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                // Drain the legacy signal channel so producers' try_send does
+                // not accumulate; persistence no longer keys off it.
+                while save_rx.try_recv().is_ok() {}
+
+                // Clone the newly-committed block range under a short read lock,
+                // then release before the disk write so the lock is never held
+                // across I/O (would stall the validator's write lock).
+                let new_blocks: Vec<sentrix::core::block::Block> = {
+                    let bc = writer_shared.read().await;
+                    let h = bc.height();
+                    (last_persisted.saturating_add(1)..=h)
+                        .filter_map(|i| bc.get_block(i).cloned())
+                        .collect()
+                };
+                if let Some(top) = new_blocks.last().map(|b| b.index) {
+                    match writer_storage.save_blocks(&new_blocks) {
+                        Ok(()) => last_persisted = top,
+                        Err(e) => tracing::error!(
                             target: "save_writer",
-                            "background save_blockchain ok queued_for=h{} caught_up_to=h{}",
-                            latest,
-                            height_at_save,
-                        );
+                            "save_blocks failed for range ..={}: {}",
+                            top,
+                            e,
+                        ),
                     }
-                    Err(e) => {
+                }
+
+                // Periodic full-state checkpoint (accounts blob + blob_height)
+                // to keep B2 replay bounded on an unclean restart. Infrequent
+                // (60s) — strictly less often than the previous per-finalize
+                // save, so the brief read-lock hold during serialize can't
+                // accumulate into back-pressure.
+                if last_blob_save.elapsed() >= std::time::Duration::from_secs(60) {
+                    let bc = writer_shared.read().await;
+                    if let Err(e) = writer_storage.save_blockchain(&bc) {
                         tracing::error!(
                             target: "save_writer",
-                            "background save_blockchain failed queued_for=h{} caught_up_to=h{}: {}",
-                            latest, height_at_save, e,
+                            "periodic save_blockchain failed at h{}: {}",
+                            bc.height(),
+                            e,
                         );
                     }
+                    last_blob_save = std::time::Instant::now();
                 }
-                drop(bc);
             }
-            tracing::info!(target: "save_writer", "save channel closed; writer exiting");
         });
     }
 
@@ -2914,21 +2954,27 @@ async fn cmd_start(
                                     }
 
                                     if let Some(mut blk) = proposed_block.take() {
+                                        // Apply the finalized block we already hold, whoever proposed
+                                        // it. The hash-match guard above proved `blk` IS the
+                                        // FinalizeBlock action's block, and `justification` carries
+                                        // its 2/3 precommit certificate — so this is the canonical
+                                        // committed block. This previously broke out and waited for
+                                        // libp2p NewBlock/sync to re-deliver a peer's block; when
+                                        // gossip missed, the node sat in Finalize re-triggering sync
+                                        // while holding the block the whole time → chain crawl/stall.
+                                        // `validate_block` below still re-checks structure + the
+                                        // justification supermajority before we write.
                                         if blk.validator != wallet.address {
                                             tracing::info!(
                                                 target: "finalize_trace",
-                                                "BFT finalize peer-propose: h={} round={} block={:.16}… \
-                                                 proposer={} is not local validator {}; waiting for \
-                                                 libp2p NewBlock/sync instead of executing peer block \
-                                                 in the BFT loop",
+                                                "BFT finalize: applying peer-proposed finalized block \
+                                                 h={} round={} block={:.16}… proposer={} from local \
+                                                 stash (valid 2/3 justification)",
                                                 height,
                                                 round,
                                                 block_hash,
                                                 blk.validator,
-                                                wallet.address,
                                             );
-                                            lp2p_clone.trigger_sync().await;
-                                            break;
                                         }
 
                                         blk.round = round;
