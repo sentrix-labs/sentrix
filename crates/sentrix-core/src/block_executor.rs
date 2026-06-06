@@ -2703,6 +2703,14 @@ mod tests {
     fn test_c03_pass2_failure_rolls_back_state() {
         use sentrix_primitives::block::Block;
 
+        // Serialize against env-mutating tests: this test credits v1 to
+        // u64::MAX - reward and relies on the coinbase credit overflowing, so
+        // the reward value must be stable. `get_block_reward()` reads the
+        // reward-fork env vars that other tests set under this same lock; without
+        // it, a concurrent mutation changes `reward` mid-test → no overflow →
+        // spurious failure (the recurring CI flake, 2026-06-06).
+        let _env_guard = crate::test_util::env_test_lock();
+
         let mut bc = setup();
         let reward = bc.get_block_reward();
         // Credit the validator to the ceiling so the next reward credit
