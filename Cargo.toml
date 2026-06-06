@@ -7,7 +7,7 @@ members = [".", "crates/sentrix-primitives", "crates/sentrix-wallet", "crates/se
 # `version.workspace = true`. Same goes for edition/license/repository so
 # they can't drift across crates.
 [workspace.package]
-version = "2.2.34"
+version = "2.2.35"
 edition = "2024"
 license = "BUSL-1.1"
 repository = "https://github.com/sentrix-labs/sentrix"
