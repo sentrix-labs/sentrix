@@ -302,6 +302,53 @@ impl Blockchain {
             }
         }
 
+        // Treasury re-reconciliation (2026-06-06). PROTOCOL_TREASURY drifted
+        // across validators (val2/val3 over-credited ~1-2 SRX) during the
+        // multipath-distribute_reward era between STATE_ROOT_V2_HEIGHT (2689134)
+        // and REWARD_APPLY_PATH_HEIGHT (6239300); the credit is single-path and
+        // deterministic since 6239300 so the drift is frozen. Because treasury
+        // sits in the state_root trie (since 2689134), each node computes a
+        // divergent local state_root → an observer/fullnode #1e-rejects every
+        // block (validators tolerate via apply-from-stash). Confirmed treasury
+        // is the SOLE divergent account (all other accounts byte-identical
+        // across the fleet). Heal it by force-setting the operator-set canonical
+        // at a one-time height. This is a SEPARATE trigger from
+        // STATE_ROOT_V2_HEIGHT on purpose: reusing that var would also move the
+        // trie-INCLUSION cutoff (line ~422 `block.index >= STATE_ROOT_V2_HEIGHT`)
+        // and retroactively drop treasury from the trie for the historical
+        // range, forking the chain. Default u64::MAX = dormant (ships safe).
+        // All nodes set the same value at the same height → converge; runbook:
+        // pick canonical (supply-consistent majority or history-recompute),
+        // halt-all, set TREASURY_REBASE_HEIGHT=<tip+lead> + TREASURY_REBASE_BALANCE,
+        // simul-start, verify treasury agreement across the fleet at activation.
+        let treasury_rebase_height = std::env::var("TREASURY_REBASE_HEIGHT")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(u64::MAX);
+        if activation_block_index == Some(treasury_rebase_height) {
+            if let Some(canonical) = std::env::var("TREASURY_REBASE_BALANCE")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+            {
+                let prior = self.accounts.get_balance(PROTOCOL_TREASURY);
+                tracing::warn!(
+                    "TREASURY_REBASE at h={}: PROTOCOL_TREASURY {} → {} (delta {} sentri) \
+                     — operator-set canonical healing historical multipath drift",
+                    treasury_rebase_height,
+                    prior,
+                    canonical,
+                    canonical as i128 - prior as i128,
+                );
+                self.accounts.set_balance(PROTOCOL_TREASURY, canonical);
+            } else {
+                tracing::warn!(
+                    "TREASURY_REBASE_HEIGHT={} reached but TREASURY_REBASE_BALANCE unset \
+                     — skipping (fork risk if in-memory treasury differs across nodes)",
+                    treasury_rebase_height,
+                );
+            }
+        }
+
         if self.state_trie.is_none() {
             // Pre-STATE_ROOT_FORK_HEIGHT, missing trie is acceptable —
             // state_root isn't part of the block hash. Past the fork
