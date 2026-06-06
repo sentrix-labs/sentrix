@@ -191,6 +191,39 @@ impl ChainStorage {
         Ok(())
     }
 
+    /// Persist a contiguous run of blocks in ONE MDBX write transaction.
+    /// Same per-block layout as `save_block` (block JSON + hash→height
+    /// index + tip `height` key) but batched: one `commit()` = one fsync
+    /// for the whole range, and NO explicit `self.mdbx.sync()` (the durable
+    /// env already fsyncs on commit). This is the background block-persister
+    /// path — it runs off the BFT critical path on a timer. `save_block`'s
+    /// per-block `commit()` + full-env `sync()` was fine for the rare
+    /// admin/recovery caller but, driven per-block at chain speed, its
+    /// fsync volume contended with the apply path's trie write txns and
+    /// stalled consensus. Batching collapses N blocks to one txn/one fsync.
+    /// `blocks` must be ascending and contiguous; the tip key is set from
+    /// the last element. No-op for an empty slice.
+    pub fn save_blocks(&self, blocks: &[Block]) -> StorageResult<()> {
+        let Some(last) = blocks.last() else {
+            return Ok(());
+        };
+        let height_bytes = serde_json::to_vec(&last.index)?;
+        let batch = self.mdbx.begin_write()?;
+        for block in blocks {
+            let key = format!("block:{}", block.index);
+            let block_json = serde_json::to_vec(block)?;
+            batch.put(TABLE_META, key.as_bytes(), &block_json)?;
+            batch.put(
+                TABLE_BLOCK_HASHES,
+                block.hash.as_bytes(),
+                &height_key(block.index),
+            )?;
+        }
+        batch.put(TABLE_META, b"height", &height_bytes)?;
+        batch.commit()?;
+        Ok(())
+    }
+
     pub fn load_block(&self, index: u64) -> StorageResult<Option<Block>> {
         let key = format!("block:{}", index);
         self.get(&key)
@@ -307,6 +340,40 @@ mod tests {
         let loaded = storage.load_block(0).unwrap().unwrap();
         assert_eq!(loaded.index, 0);
         assert_eq!(loaded.hash, block.hash);
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn test_save_blocks_batched_range() {
+        let path = temp_path();
+        let storage = ChainStorage::open(&path).unwrap();
+
+        // A contiguous run with distinct indices + hashes.
+        let blocks: Vec<Block> = (0..3u64)
+            .map(|i| {
+                let mut b = Block::genesis();
+                b.index = i;
+                b.hash = format!("hash{i}");
+                b
+            })
+            .collect();
+        storage.save_blocks(&blocks).unwrap();
+
+        // Every block:{N} key landed (the gap this fixes was missing keys).
+        for i in 0..3u64 {
+            assert_eq!(storage.load_block(i).unwrap().unwrap().index, i);
+        }
+        // Tip height key advanced to the last block in the batch.
+        assert_eq!(storage.load_height().unwrap(), 2);
+        // Hash→height reverse index landed too.
+        assert_eq!(
+            storage.load_block_by_hash("hash2").unwrap().unwrap().index,
+            2
+        );
+        // Empty slice is a no-op (no panic, height untouched).
+        storage.save_blocks(&[]).unwrap();
+        assert_eq!(storage.load_height().unwrap(), 2);
 
         let _ = std::fs::remove_dir_all(&path);
     }
