@@ -166,6 +166,8 @@ impl Blockchain {
     }
 
     fn add_block_impl(&mut self, block: Block) -> SentrixResult<()> {
+        // Reset per-add: only the justification gate below sets this true.
+        self.current_add_justification_verified = false;
         let expected_index = self.height() + 1;
         let expected_prev = self.latest_block()?.hash.clone();
 
@@ -368,6 +370,11 @@ impl Blockchain {
                     j.signer_count(),
                 )));
             }
+            // Gate ran AND passed (no early-return above) → record that this
+            // block's 2/3 justification was actually verified, for Pass-2's
+            // #1e accept. A justification blob alone is insufficient — it could
+            // have bypassed this gate via replay / pre-voyager (CodeRabbit #801).
+            self.current_add_justification_verified = true;
         }
 
         // C-04: validate coinbase amount AND recipient. Amount must equal the
@@ -1727,14 +1734,16 @@ impl Blockchain {
                                 return Ok(());
                             }
 
-                            // #1e on a JUSTIFIED Peer block → ACCEPT (stamp the
-                            // proposer's canonical root). Consensus is on
-                            // block_hash, not state_root, and any Peer block that
-                            // reaches here already passed the 2/3 justification
-                            // gate in add_block_impl (the `Some(j)` block at
-                            // ~232: an absent/insufficient justification is
-                            // rejected there, before pass-2). So the block IS
-                            // network-canonical; the local-recompute mismatch is
+                            // #1e on a Peer block whose 2/3 justification was
+                            // VERIFIED in Pass-1 → ACCEPT (stamp the proposer's
+                            // canonical root). `current_add_justification_verified`
+                            // is set only when the gate in add_block_impl (~232)
+                            // actually ran AND passed — NOT merely when a
+                            // justification blob is present, which could have
+                            // bypassed the gate via replay / pre-voyager
+                            // (CodeRabbit #801). Consensus is on block_hash, not
+                            // state_root, so a gate-verified block IS network-
+                            // canonical; the local-recompute mismatch is
                             // the chain's known imperfect state-commitment
                             // (recurring/oscillating state_root) that the
                             // apply-from-stash path already tolerates. Strictly
@@ -1757,7 +1766,7 @@ impl Blockchain {
                             // it stays off; this accept inherits the chain's
                             // existing justification trust level, no weaker.)
                             if self.source_for_current_add == BlockSource::Peer
-                                && last.justification.is_some()
+                                && self.current_add_justification_verified
                             {
                                 tracing::debug!(
                                     "#1e accept at block {} (received {} vs computed {}) — \

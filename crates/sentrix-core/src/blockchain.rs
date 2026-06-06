@@ -138,6 +138,14 @@ pub struct Blockchain {
     /// Pass 2. Backlog #1e. Not persisted.
     #[serde(skip, default = "default_block_source")]
     pub(crate) source_for_current_add: crate::block_executor::BlockSource,
+    /// Per-add transient: true only when Pass-1's 2/3 justification gate
+    /// actually RAN and PASSED for the current block. Pass-2's #1e accept reads
+    /// this so it tolerates a state_root mismatch only on a block whose
+    /// justification was verified — never one that bypassed the gate (replay
+    /// `SENTRIX_REPLAY_BYPASS_AUTHZ`, or pre-voyager heights). Presence of a
+    /// `justification` blob alone is NOT sufficient (CodeRabbit #801).
+    #[serde(skip)]
+    pub(crate) current_add_justification_verified: bool,
 
     /// Rolling tracker for state_root divergences from peers.
     ///
@@ -243,6 +251,7 @@ impl Blockchain {
             epoch_manager: sentrix_staking::epoch::EpochManager::new(),
             slashing: sentrix_staking::slashing::SlashingEngine::new(),
             source_for_current_add: crate::block_executor::BlockSource::SelfProduced,
+            current_add_justification_verified: false,
             divergence_tracker: DivergenceTracker::default(),
             voyager_activated: false,
             evm_activated: false,
