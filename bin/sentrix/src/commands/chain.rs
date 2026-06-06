@@ -255,3 +255,43 @@ pub fn cmd_chain_verify_deep() -> anyhow::Result<()> {
         anyhow::bail!("trie ↔ AccountDB inconsistency detected");
     }
 }
+
+/// Reclaim trie storage by deleting nodes/values unreachable from the last
+/// `keep` committed roots — the RACE-FREE counterpart to the background prune.
+///
+/// MUST run with the node STOPPED. MDBX is single-writer, and concurrent block
+/// commits are exactly what make the background prune delete still-live nodes
+/// (the recurring "missing node" stalls — which is why the background prune is
+/// now off by default). With the node quiesced, the live-set walk reads a
+/// consistent chain.db and only genuine orphans are removed.
+///
+/// Operator runbook: halt the validator (verify `pgrep sentrix` is empty),
+/// run `sentrix chain prune`, restart. No fork risk — deleting unreachable
+/// trie nodes does not change the state_root, which only commits reachable
+/// nodes. Safe to run on a single peer (unlike reset-trie).
+pub fn cmd_chain_prune(keep: u64) -> anyhow::Result<()> {
+    use std::sync::Arc;
+
+    let storage = Storage::open(&get_db_path())?;
+    let mut bc = storage
+        .load_blockchain()?
+        .ok_or_else(|| anyhow::anyhow!("Chain not initialized."))?;
+    let mdbx = storage.mdbx_arc();
+    bc.init_trie(Arc::clone(&mdbx))?;
+
+    let height = bc.height();
+    let trie = bc
+        .state_trie
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("trie not initialised"))?;
+
+    println!("Offline trie prune at height {height}, keeping the last {keep} roots.");
+    println!("(Run ONLY with the node STOPPED — MDBX is single-writer.)");
+    let (roots, gc) = trie.prune_offline(keep)?;
+    if roots == 0 {
+        println!("Nothing to prune (fewer than {keep} retained roots, or already lean).");
+    } else {
+        println!("Pruned: retired {roots} old roots, GC'd {gc} nodes/values.");
+    }
+    Ok(())
+}
