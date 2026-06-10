@@ -4563,9 +4563,9 @@ checksum = "f9ee2d7152b488417bb6d8a39daaac4769833857b95d085231964dce1ccad4d1"
 
 [[package]]
 name = "reliakit-secret"
-version = "0.1.0"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71fc95b189ee53987da09d1e42fe985c458f0fce63b435fd7a907b9c4d921e19"
+checksum = "20cded65aaa14c71634cef086186afef3c247ad489a3262ad0111955e6dd9683"
 
 [[package]]
 name = "reliakit-validate"
