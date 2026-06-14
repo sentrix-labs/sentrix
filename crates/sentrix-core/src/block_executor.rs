@@ -165,6 +165,27 @@ impl Blockchain {
         result
     }
 
+    /// SIP-5 / Bug B: compute the `state_root` a candidate block would produce
+    /// without mutating this chain.
+    ///
+    /// The proposer calls this at propose time to stamp the resulting
+    /// `state_root` into the block before hashing and signing, so the hash the
+    /// quorum votes on already commits the post-execution state. Validators
+    /// call it to re-derive and verify a proposal's `state_root` before
+    /// prevoting (see SIP-5).
+    ///
+    /// Runs the real self-produced apply on a throwaway clone — the strict
+    /// justification gate is peer-only, so a propose-time block that has no
+    /// justification yet still applies — then reads the stamped root and
+    /// discards the clone. Cost is ~one extra block apply (see SIP-5 §Cost).
+    pub fn speculative_apply_for_state_root(&self, block: &Block) -> SentrixResult<[u8; 32]> {
+        let mut probe = self.clone();
+        probe.add_block(block.clone())?;
+        probe.latest_block()?.state_root.ok_or_else(|| {
+            SentrixError::Internal("speculative apply produced no state_root".to_string())
+        })
+    }
+
     fn add_block_impl(&mut self, block: Block) -> SentrixResult<()> {
         // Reset per-add: only the justification gate below sets this true.
         self.current_add_justification_verified = false;
@@ -1670,7 +1691,22 @@ impl Blockchain {
                                 last.index
                             )));
                         }
-                        // Self-produced: stamp and recompute hash (V7-C-01).
+                        // Self-produced.
+                        if Self::is_speculative_apply_height(last.index) {
+                            // Post-fork (SIP-5 / Bug B): the proposer stamps
+                            // state_root at propose time and the quorum signs a hash
+                            // that already commits it, so a self-produced block must
+                            // arrive with state_root = Some. A None here means the
+                            // propose-time stamp was skipped — reject rather than
+                            // recompute the hash, which would diverge from the hash the
+                            // quorum voted on (the Bug B inconsistency this fork closes).
+                            return Err(SentrixError::ChainValidationFailed(format!(
+                                "self-produced block {} has state_root=None past \
+                                 SPECULATIVE_APPLY_HEIGHT (SIP-5)",
+                                last.index
+                            )));
+                        }
+                        // Pre-fork: stamp and recompute hash (V7-C-01).
                         last.state_root = Some(computed_root);
                         last.hash = last.calculate_hash();
                     }

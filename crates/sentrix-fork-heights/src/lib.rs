@@ -200,6 +200,29 @@ const NATIVE_STATE_IN_TRIE_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// simul-start). See `audits/reward-distribution-flow-audit-2026-04-27.md`.
 const REWARD_APPLY_PATH_HEIGHT_DEFAULT: u64 = u64::MAX;
 
+/// Bug B fix — speculative apply at propose so the block hash commits the
+/// post-execution `state_root` (SIP-5, drafted 2026-05-31).
+///
+/// Pre-fork: a self-produced block is built with `state_root = None` and
+/// hashed as `H1`; the engine collects a quorum over `H1`; the apply path
+/// then stamps `state_root` and recomputes the hash to `H2`, while the
+/// embedded justification still references `H1`. Stored blocks are
+/// internally inconsistent (`block.hash != justification.block_hash`),
+/// which blocks safe activation of `STRICT_JUSTIFICATION_HEIGHT`. Surfaced
+/// on 2026-05-31 testnet h=5,817,132.
+///
+/// Post-fork: the proposer applies the block speculatively, stamps the
+/// resulting `state_root` into the block before hashing/signing, and
+/// validators re-derive the `state_root` and refuse to prevote on a
+/// proposal that diverges. The post-apply recompute is skipped — the hash
+/// the quorum signed already commits the state root. See
+/// [SIP-5](https://github.com/sentrix-labs/SIPs/blob/main/sips/sip-5.md).
+///
+/// Default `u64::MAX` on both nets — consensus-changing, activated via
+/// `SPECULATIVE_APPLY_HEIGHT=<height>` env after a halt-all + state-root
+/// alignment pre-flight + simul-start, testnet first.
+const SPECULATIVE_APPLY_HEIGHT_DEFAULT: u64 = u64::MAX;
+
 // ── Runtime readers (env → u64, default to compile-time default) ──────
 
 fn configured_chain_id() -> u64 {
@@ -272,6 +295,22 @@ pub fn get_tokenomics_v2_height() -> u64 {
             TOKENOMICS_V2_HEIGHT_TESTNET_DEFAULT,
         ),
     )
+}
+
+/// Bug B / SIP-5: read the speculative-apply fork height from env, default
+/// `u64::MAX` (disabled). Post-fork the block hash commits the
+/// post-execution `state_root` from proposal time.
+pub fn get_speculative_apply_height() -> u64 {
+    read_height(
+        "SPECULATIVE_APPLY_HEIGHT",
+        SPECULATIVE_APPLY_HEIGHT_DEFAULT,
+    )
+}
+
+/// Is the given height at or after the SIP-5 speculative-apply fork?
+pub fn is_speculative_apply_height(height: u64) -> bool {
+    let fork = get_speculative_apply_height();
+    fork != u64::MAX && height >= fork
 }
 
 /// BFT-gate-relax: read fork height from env, default `u64::MAX`

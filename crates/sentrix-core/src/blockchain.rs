@@ -378,6 +378,12 @@ impl Blockchain {
         crate::fork_heights::is_strict_justification_height(height)
     }
 
+    /// SIP-5 / Bug B: at or after the speculative-apply fork, the block hash
+    /// commits the post-execution `state_root` from proposal time.
+    pub fn is_speculative_apply_height(height: u64) -> bool {
+        crate::fork_heights::is_speculative_apply_height(height)
+    }
+
     pub fn is_state_in_trie_height(height: u64) -> bool {
         crate::fork_heights::is_state_in_trie_height(height)
     }
