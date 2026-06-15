@@ -48,7 +48,7 @@ npm install viem
 
 ```ts
 import { createPublicClient, http, formatEther } from "viem";
-import { sentrix, sentrixTestnet } from "viem/chains";
+import { sentrix } from "viem/chains";
 
 // Mainnet
 const client = createPublicClient({
@@ -59,7 +59,7 @@ const client = createPublicClient({
 // Testnet
 // const client = createPublicClient({ chain: sentrixTestnet, transport: http() });
 
-// Read a balance
+// Read a balanceh
 const address = "0xYourAddressHere" as `0x${string}`;
 const balance = await client.getBalance({ address });
 console.log("Balance:", formatEther(balance), "SRX");
