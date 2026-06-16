@@ -123,6 +123,25 @@ impl Blockchain {
                     let node_missing = root_hash != sentrix_trie::node::empty_hash(0)
                         && !trie.node_exists(&root_hash)?;
                     if node_missing {
+                        // Post-fork, a recorded root whose node is gone is real
+                        // corruption (the prune value-race), and an AccountDB
+                        // rebuild can't reproduce the canonical-shape trie — it
+                        // silently forks (val2/3/4, 2026-06). Refuse here, before
+                        // reset/backfill writes anything, so recovery is a clean
+                        // whole-trie rsync. The None first-time-init branch above
+                        // is unaffected, so legitimate first init still works.
+                        if height >= sentrix_primitives::block::STATE_ROOT_FORK_HEIGHT {
+                            return Err(SentrixError::Internal(format!(
+                                "trie: committed root {} for height {height} is \
+                                 recorded but its node is missing — chain.db trie is \
+                                 corrupt. Refusing to rebuild from AccountDB past the \
+                                 state-root fork (a balance/nonce-only backfill would \
+                                 silently fork). Recover via whole-trie rsync of \
+                                 chain.db from a healthy peer with all validators \
+                                 stopped, not `sentrix state import` + reset_trie.",
+                                hex::encode(root_hash)
+                            )));
+                        }
                         tracing::error!(
                             "trie: CRITICAL — root {} for height {} is recorded in trie_roots \
                              but the node is missing from trie_nodes.  This should not happen \
@@ -941,5 +960,63 @@ mod tests {
             std::env::remove_var("SENTRIX_CHAIN_ID");
             std::env::remove_var("SENTRIX_SKIP_TRIE_INTEGRITY");
         }
+    }
+
+    /// Past the state-root fork, a committed root whose node went missing
+    /// (the prune value-race) must NOT trigger a silent AccountDB rebuild —
+    /// that balance/nonce-only backfill forks the chain (val2/3/4, 2026-06).
+    /// init_trie must refuse BEFORE writing anything so recovery is a clean
+    /// whole-trie rsync.
+    #[test]
+    fn init_trie_refuses_backfill_past_state_root_fork() {
+        let _guard = env_test_lock();
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let mdbx =
+            std::sync::Arc::new(sentrix_storage::MdbxStorage::open(dir.path()).unwrap());
+
+        // Seed the corruption: a root recorded at a post-fork height whose
+        // node was never stored, so init_trie's node_exists() check fails and
+        // it falls into the backfill branch.
+        let height = sentrix_primitives::block::STATE_ROOT_FORK_HEIGHT + 5;
+        let phantom_root = [0xABu8; 32];
+        mdbx.put(
+            sentrix_storage::tables::TABLE_TRIE_ROOTS,
+            &height.to_be_bytes(),
+            &phantom_root[..],
+        )
+        .unwrap();
+
+        // height() reads the last block's index — one synthetic tip is enough.
+        let mut bc = Blockchain::new("admin".to_string());
+        let mut tip = sentrix_primitives::block::Block::genesis();
+        tip.index = height;
+        bc.chain.push(tip);
+
+        let err = bc
+            .init_trie(std::sync::Arc::clone(&mdbx))
+            .expect_err("post-fork missing-node must fail closed");
+        assert!(
+            format!("{err}").contains("Refusing to rebuild from AccountDB"),
+            "expected fail-closed refusal, got: {err}"
+        );
+
+        // Fail-closed: the guard returns before any insert/commit. The recorded
+        // root for this height is untouched — a backfill would have called
+        // store_root() and overwritten it with the rebuilt (different) root.
+        assert_eq!(
+            mdbx.get(sentrix_storage::tables::TABLE_TRIE_ROOTS, &height.to_be_bytes())
+                .unwrap()
+                .as_deref(),
+            Some(&phantom_root[..]),
+            "guard must not overwrite the recorded root (no backfill commit)"
+        );
+        // And no rebuilt trie node landed either.
+        assert!(
+            mdbx.get(sentrix_storage::tables::TABLE_TRIE_NODES, &phantom_root[..])
+                .unwrap()
+                .is_none(),
+            "guard must not persist a rebuilt trie node"
+        );
     }
 }
