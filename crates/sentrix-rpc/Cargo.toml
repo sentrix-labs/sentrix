@@ -14,7 +14,7 @@ sentrix-evm = { path = "../sentrix-evm" }
 sentrix-rpc-types = { path = "../sentrix-rpc-types" }
 sentrix-trie = { path = "../sentrix-trie" }
 sentrix-storage = { path = "../sentrix-storage" }
-reliakit-primitives = "0.2.5"
+reliakit-primitives = "1.0.0"
 reliakit-secret = "0.1"
 
 axum = { version = "0.8", features = ["ws"] }
