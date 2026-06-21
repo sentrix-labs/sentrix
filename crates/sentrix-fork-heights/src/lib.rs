@@ -969,4 +969,24 @@ mod tests {
             std::env::remove_var("NATIVE_STATE_IN_TRIE_HEIGHT");
         }
     }
+
+    /// Canonical-SMT-delete defaults disabled and activates exactly at the
+    /// pinned height (inclusive `>=` boundary).
+    #[test]
+    fn canonical_delete_default_off_and_activates_at_pinned_height() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::remove_var("CANONICAL_DELETE_HEIGHT");
+            assert_eq!(get_canonical_delete_height(), u64::MAX);
+            assert!(!is_canonical_delete_height(0));
+            assert!(!is_canonical_delete_height(u64::MAX - 1));
+
+            std::env::set_var("CANONICAL_DELETE_HEIGHT", "2000");
+            assert_eq!(get_canonical_delete_height(), 2000);
+            assert!(!is_canonical_delete_height(1999));
+            assert!(is_canonical_delete_height(2000));
+            assert!(is_canonical_delete_height(2001));
+            std::env::remove_var("CANONICAL_DELETE_HEIGHT");
+        }
+    }
 }
