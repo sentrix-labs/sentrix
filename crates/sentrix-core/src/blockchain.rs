@@ -2245,6 +2245,18 @@ mod tests {
         assert_eq!(Blockchain::min_active_for_bft(1_000_000, 4), 4);
     }
 
+    /// Canonical-SMT-delete gate: u64::MAX default = legacy (history-dependent)
+    /// delete shape, so the wrapper reports disabled at every height.
+    #[test]
+    fn test_canonical_delete_disabled_by_default() {
+        let _guard = env_test_lock();
+        unsafe {
+            std::env::remove_var("CANONICAL_DELETE_HEIGHT");
+        }
+        assert!(!Blockchain::is_canonical_delete_height(0));
+        assert!(!Blockchain::is_canonical_delete_height(u64::MAX - 1));
+    }
+
     /// EVM value-transfer gate: u64::MAX default = pre-fix v2.1.48 EVM
     /// behaviour (TxEnv.value forced to ZERO). Pins the regression that
     /// caused 3 mainnet halts on 2026-05-01 — flat-shipping the
