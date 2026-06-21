@@ -79,6 +79,39 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # macOS portability gate. The full lint/deny/secret-scan run on the Linux
+  # `test` job is platform-agnostic, so this job stays lean: just build + test
+  # on macOS to catch OS-specific breakage (paths, mmap/MDBX, time, endianness)
+  # before it reaches a contributor's Mac. protoc comes from Homebrew here
+  # (the Linux job uses apt). Validators only ever run on Linux/docker, so this
+  # is a contributor-portability signal, not a production target.
+  test-macos:
+    name: Test (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Install protoc (protobuf-compiler)
+        run: brew install protobuf
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/index
+            target/
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Test
+        run: cargo test --workspace
+
       - name: Upload binary
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/upload-artifact@v5
