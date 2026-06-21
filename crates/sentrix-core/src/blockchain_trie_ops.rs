@@ -619,6 +619,13 @@ impl Blockchain {
             Some(t) => t,
             None => return Ok(None),
         };
+        // Canonical-SMT-delete fork gate: past CANONICAL_DELETE_HEIGHT, `delete`
+        // pulls a lone sibling leaf back up so the root is history-independent.
+        // Set per block so pre-fork blocks reproduce the legacy (history-
+        // dependent) root bit-for-bit. The `>=` boundary matches the predicate.
+        trie.set_canonical_delete(crate::fork_heights::is_canonical_delete_height(
+            block_index,
+        ));
         if trace {
             eprintln!(
                 "[trie-trace] root pre-update: {}",

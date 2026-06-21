@@ -223,6 +223,19 @@ const REWARD_APPLY_PATH_HEIGHT_DEFAULT: u64 = u64::MAX;
 /// alignment pre-flight + simul-start, testnet first.
 const SPECULATIVE_APPLY_HEIGHT_DEFAULT: u64 = u64::MAX;
 
+/// Canonical-SMT-delete fix (2026-06-20). Pre-fork, `SentrixTrie::delete`
+/// only collapses (empty,empty) nodes and leaves a surviving sibling leaf at
+/// its pushed-down depth — so the state-trie root depends on insert/delete
+/// HISTORY, not the current key→value set, and validators that applied
+/// different block subsets (skip-local-write on #1e) diverge on state_root
+/// from byte-identical account values. Post-fork, `delete` pulls a lone
+/// sibling leaf back up to its canonical short-circuit depth, making the root
+/// a pure function of state. Default `u64::MAX` on both nets — consensus-
+/// changing (alters every root after a delete), activated via
+/// `CANONICAL_DELETE_HEIGHT=<height>` after halt-all + state-root-alignment
+/// pre-flight + simul-start, testnet first.
+const CANONICAL_DELETE_HEIGHT_DEFAULT: u64 = u64::MAX;
+
 // ── Runtime readers (env → u64, default to compile-time default) ──────
 
 fn configured_chain_id() -> u64 {
@@ -482,6 +495,13 @@ pub fn get_reward_apply_path_height() -> u64 {
     read_height("REWARD_APPLY_PATH_HEIGHT", REWARD_APPLY_PATH_HEIGHT_DEFAULT)
 }
 
+/// Canonical-SMT-delete fork height (env → u64, default `u64::MAX`). Post-fork
+/// `SentrixTrie::delete` restores the canonical short-circuit shape so the
+/// state-trie root is history-independent. See [`CANONICAL_DELETE_HEIGHT_DEFAULT`].
+pub fn get_canonical_delete_height() -> u64 {
+    read_height("CANONICAL_DELETE_HEIGHT", CANONICAL_DELETE_HEIGHT_DEFAULT)
+}
+
 // ── Height predicates ────────────────────────────────────
 //
 // Every fork-height predicate has the same shape:
@@ -631,6 +651,13 @@ pub fn is_native_state_in_trie_height(height: u64) -> bool {
 /// per-node-variable application count that drifted PROTOCOL_TREASURY.
 pub fn is_reward_apply_path_height(height: u64) -> bool {
     let fork = get_reward_apply_path_height();
+    fork != u64::MAX && height >= fork
+}
+
+/// Canonical-SMT-delete: is the given height at or after the fork?
+/// Post-fork `delete` pulls lone sibling leaves up to their canonical depth.
+pub fn is_canonical_delete_height(height: u64) -> bool {
+    let fork = get_canonical_delete_height();
     fork != u64::MAX && height >= fork
 }
 
