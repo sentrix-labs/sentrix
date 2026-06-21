@@ -41,7 +41,12 @@ pub fn cmd_init(admin: &str, genesis_path: Option<&str>) -> anyhow::Result<()> {
             g
         }
     };
-    let bc = Blockchain::new_with_genesis(admin.to_string(), &genesis);
+    let mut bc = Blockchain::new_with_genesis(admin.to_string(), &genesis);
+    // Seat the genesis validators into the authority set so a fresh chain has
+    // a set to produce from and to migrate into the stake registry at the
+    // Voyager fork. Done here (node init) rather than in the constructor so
+    // the bare Blockchain::new stays a clean slate.
+    bc.seat_genesis_validators(&genesis);
     storage.save_blockchain(&bc)?;
     let premine_srx = genesis.total_premine() / 100_000_000;
     println!("Chain initialized.");
