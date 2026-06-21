@@ -270,12 +270,13 @@ impl Blockchain {
         self.event_emitter = emitter;
     }
 
-    /// Credit premine balances and seat block 0 on the chain. Staking
-    /// registry is intentionally left empty — PoA Pioneer chains track
-    /// validators via `AuthorityManager`; the `[[genesis.validators]]`
-    /// section is informational until the Voyager DPoS fork activates.
-    /// Keeping this path unchanged preserves the state-root identity with
-    /// chains that were initialised by the pre-Genesis-TOML code path.
+    /// Credit premine balances and seat block 0 on the chain. The staking
+    /// registry and authority set are left untouched here: this is the bare
+    /// constructor path (also used by tests), so it stays a clean slate.
+    /// Node init seats the genesis validators separately via
+    /// [`Blockchain::seat_genesis_validators`]; the Voyager fork then migrates
+    /// them into the stake registry. Keeping this path validator-free
+    /// preserves the genesis state-root identity with pre-Genesis-TOML chains.
     fn initialize_genesis(&mut self, genesis: &crate::Genesis) {
         // Apply premine allocations in the order declared in the TOML.
         // HashMap iteration order inside AccountDB is not observable at
@@ -303,6 +304,29 @@ impl Blockchain {
         // Genesis block is produced from the same Genesis config so the
         // block hash is fully derived from declared state.
         self.chain.push(genesis.build_block());
+    }
+
+    /// Seat the `[[genesis.validators]]` in the `AuthorityManager`. Called by
+    /// node init (`sentrix init`) after construction so a fresh chain has an
+    /// authority set: Pioneer round-robin produces from it pre-fork, and
+    /// `activate_voyager` migrates it into the stake registry at the DPoS
+    /// fork. Without it a fresh genesis-only chain boots with an empty
+    /// active_set ("BFT activation blocked: active_set is empty") and never
+    /// produces a block.
+    ///
+    /// Kept out of the bare constructor on purpose: `Blockchain::new` /
+    /// `new_with_genesis` stay a clean slate for tests. `AuthorityManager` is
+    /// not committed to the trie/state_root, so seating here does not change
+    /// the genesis hash. `unchecked` because genesis carries no admin
+    /// signature to authorise the add.
+    pub fn seat_genesis_validators(&mut self, genesis: &crate::Genesis) {
+        for v in &genesis.genesis.validators {
+            self.authority.add_validator_unchecked(
+                v.address.clone(),
+                format!("genesis-{}", v.address),
+                v.pubkey.clone(),
+            );
+        }
     }
 
     // Storage I/O methods (init_storage_handle, persist_block_durable,
