@@ -17,7 +17,7 @@ jobs:
     outputs:
       bin_sha: ${{ steps.sha.outputs.sha }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Build via docker bullseye (matches mainnet glibc 2.31 baseline)
         run: |
@@ -32,7 +32,7 @@ jobs:
           echo "sha=${SHA}" >> $GITHUB_OUTPUT
           echo "Binary sha256: ${SHA}"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: sentrix-binary
           path: target-docker/release/sentrix
@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: build
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -56,7 +56,7 @@ jobs:
           cargo cyclonedx --format json --override-filename sentrix-sbom.cdx
           ls -la sentrix-sbom*
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: sentrix-sbom
           path: sentrix-sbom.cdx.json
@@ -67,12 +67,12 @@ jobs:
     runs-on: ubuntu-22.04
     needs: [build, sbom]
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: sentrix-binary
           path: ./bin
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: sentrix-sbom
           path: ./sbom
@@ -101,7 +101,7 @@ jobs:
         with:
           subject-path: ./bin/sentrix
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: signatures
           path: |
@@ -118,22 +118,22 @@ jobs:
     steps:
       # gh release uses local git to figure out which repo to target;
       # without a checkout the call errors with "not a git repository".
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       # Download artifacts into an isolated _artifacts/ tree to avoid
       # colliding with the repo's `bin/sentrix/` workspace member directory
       # — checkout puts the repo at the workspace root, and pointing
       # download-artifact at ./bin tries to write sentrix as a file
       # where bin/sentrix/ already exists as a directory.
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: sentrix-binary
           path: ./_artifacts/bin
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: sentrix-sbom
           path: ./_artifacts/sbom
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: signatures
           path: ./_artifacts/sigs

@@ -42,7 +42,7 @@ jobs:
     # is unstable on the runner.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
 
       - name: Install Rust stable + llvm-tools-preview
         run: |
@@ -55,7 +55,7 @@ jobs:
           tool: cargo-llvm-cov
 
       - name: Cache cargo registry + target
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -78,7 +78,7 @@ jobs:
 
       - name: Upload coverage report as artifact (NOT Codecov)
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: sentrix-core-coverage
           path: |
