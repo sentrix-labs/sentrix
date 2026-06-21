@@ -21,6 +21,14 @@ pub struct SentrixTrie {
     cache: TrieCache,
     root: NodeHash,
     version: u64,
+    /// When true, `delete` restores the canonical short-circuit shape by
+    /// pulling a lone sibling leaf back up to the shallowest depth where its
+    /// key is unique (matching what a direct insert produces). When false
+    /// (default, pre-fork), `delete` only collapses (empty,empty) nodes and
+    /// leaves a surviving sibling leaf at its pushed-down depth — which makes
+    /// the root depend on insert/delete history. Gated by the caller on
+    /// `CANONICAL_DELETE_HEIGHT` so historical roots stay reproducible.
+    canonical_delete: bool,
 }
 
 impl SentrixTrie {
@@ -34,6 +42,7 @@ impl SentrixTrie {
             cache,
             root,
             version,
+            canonical_delete: false,
         })
     }
 
@@ -45,6 +54,13 @@ impl SentrixTrie {
 
     pub fn version(&self) -> u64 {
         self.version
+    }
+
+    /// Enable/disable canonical-delete normalization (see field docs). The
+    /// caller sets this per block from the `CANONICAL_DELETE_HEIGHT` fork gate
+    /// before mutating the trie, so pre-fork blocks keep the legacy shape.
+    pub fn set_canonical_delete(&mut self, on: bool) {
+        self.canonical_delete = on;
     }
 
     // ── Core operations ──────────────────────────────────
@@ -293,40 +309,94 @@ impl SentrixTrie {
             }
         };
 
-        // Phase 2: walk up replacing the deleted leaf with empty, collapsing when both
-        //          children are empty.
-        let mut up_hash = empty_hash(found_depth);
-        let mut up_depth = found_depth; // depth of the node represented by up_hash
+        // Phase 2: walk up. Always collapse a fully-empty (empty,empty) node
+        // back to empty. Past CANONICAL_DELETE_HEIGHT (`canonical_delete`)
+        // ALSO pull a lone sibling leaf up to the shallowest depth where its
+        // key is unique — restoring the exact shape a direct insert produces,
+        // so the root is a pure function of the current key→value set. Pre-fork
+        // the surviving sibling leaf is left at its pushed-down depth (legacy,
+        // history-dependent root) so historical roots stay reproducible.
+        //
+        // `up` is what the rebuilt subtree below the current level is: an empty
+        // subtree, a single pulled-up leaf (its hash = value_hash, which is
+        // depth-independent so the leaf node never needs rewriting), or a
+        // multi-key internal subtree (stays rooted where its keys branch).
+        enum Up {
+            Empty,
+            Leaf(NodeHash),
+            Internal(NodeHash),
+        }
+        let mut up = Up::Empty;
+        let mut up_depth = found_depth; // depth of the node represented by `up`
 
         for (sibling, is_right) in path.iter().rev() {
             // Defensive guard against underflow on corrupt or malformed trees
             if up_depth == 0 {
                 break;
             }
-            // Moving one level toward root
             up_depth -= 1;
-            let (left, right) = if *is_right {
-                (*sibling, up_hash)
-            } else {
-                (up_hash, *sibling)
-            };
-            // Collapse: both children are empty subtrees → parent is empty too
             let child_empty = empty_hash(up_depth + 1);
-            if left == child_empty && right == child_empty {
-                up_hash = empty_hash(up_depth);
+            let sib_empty = *sibling == child_empty;
+
+            if self.canonical_delete {
+                let sib_is_leaf = if sib_empty {
+                    false
+                } else {
+                    matches!(self.cache.get_node(sibling)?, Some(TrieNode::Leaf { .. }))
+                };
+                match up {
+                    // Both sides empty → the parent is an empty subtree.
+                    Up::Empty if sib_empty => up = Up::Empty,
+                    // Empty side, lone sibling leaf → pull the leaf up one level.
+                    Up::Empty if sib_is_leaf => up = Up::Leaf(*sibling),
+                    // Carrying a pulled-up leaf with an empty sibling → keep
+                    // carrying it toward the root.
+                    Up::Leaf(h) if sib_empty => up = Up::Leaf(h),
+                    // Otherwise a real branch point (sibling internal, two
+                    // diverging leaves, or our own internal subtree).
+                    _ => {
+                        let our_hash = match up {
+                            Up::Empty => child_empty,
+                            Up::Leaf(h) | Up::Internal(h) => h,
+                        };
+                        let (left, right) = if *is_right {
+                            (*sibling, our_hash)
+                        } else {
+                            (our_hash, *sibling)
+                        };
+                        let h = hash_internal(&left, &right);
+                        self.cache
+                            .put_node(h, TrieNode::Internal { left, right, hash: h })?;
+                        up = Up::Internal(h);
+                    }
+                }
             } else {
-                up_hash = hash_internal(&left, &right);
-                self.cache.put_node(
-                    up_hash,
-                    TrieNode::Internal {
-                        left,
-                        right,
-                        hash: up_hash,
-                    },
-                )?;
+                // Legacy (pre-fork) — byte-identical to the original: collapse
+                // only on (empty,empty), otherwise keep an internal node.
+                let our_hash = match up {
+                    Up::Empty => child_empty,
+                    Up::Leaf(h) | Up::Internal(h) => h,
+                };
+                let (left, right) = if *is_right {
+                    (*sibling, our_hash)
+                } else {
+                    (our_hash, *sibling)
+                };
+                if left == child_empty && right == child_empty {
+                    up = Up::Empty;
+                } else {
+                    let h = hash_internal(&left, &right);
+                    self.cache
+                        .put_node(h, TrieNode::Internal { left, right, hash: h })?;
+                    up = Up::Internal(h);
+                }
             }
         }
 
+        let up_hash = match up {
+            Up::Empty => empty_hash(up_depth),
+            Up::Leaf(h) | Up::Internal(h) => h,
+        };
         self.root = up_hash;
 
         // ROOT CAUSE (2026-04-20): deleting the leaf and its value here was
@@ -879,6 +949,7 @@ impl Clone for SentrixTrie {
             cache: TrieCache::new(self.cache.storage.clone(), self.cache.capacity),
             root: self.root,
             version: self.version,
+            canonical_delete: self.canonical_delete,
         }
     }
 }
@@ -1139,6 +1210,7 @@ mod tests {
             cache,
             root,
             version: 0,
+            canonical_delete: false,
         };
 
         let k1 = address_to_key("0xaaaa");
@@ -1670,6 +1742,7 @@ mod tests {
             cache,
             root: empty_hash(0),
             version: 0,
+            canonical_delete: false,
         };
 
         let cloned = trie.clone();

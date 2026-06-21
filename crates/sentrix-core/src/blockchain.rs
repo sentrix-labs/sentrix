@@ -396,6 +396,12 @@ impl Blockchain {
         crate::fork_heights::is_reward_apply_path_height(height)
     }
 
+    /// Canonical-SMT-delete fork: post-fork `delete` pulls lone sibling leaves
+    /// up to their canonical depth so the state-trie root is history-independent.
+    pub fn is_canonical_delete_height(height: u64) -> bool {
+        crate::fork_heights::is_canonical_delete_height(height)
+    }
+
     pub fn is_bft_gate_relax_height(height: u64) -> bool {
         crate::fork_heights::is_bft_gate_relax_height(height)
     }
