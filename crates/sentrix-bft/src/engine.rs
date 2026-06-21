@@ -3504,4 +3504,16 @@ mod tests {
         let _ = engine.on_timeout();
         // Reached here without panic — that's the test.
     }
+
+    #[test]
+    fn phase_elapsed_small_after_construct_and_new_height() {
+        // phase_elapsed feeds the finalize-stall recovery in main.rs: it reports
+        // how long the engine has sat in the current phase. Construction and
+        // new_height both re-arm phase_start, so right after either it must be
+        // tiny. No sleep, so the test stays deterministic.
+        let mut engine = BftEngine::new(100, "0xval".into(), 1000);
+        assert!(engine.phase_elapsed() < std::time::Duration::from_secs(1));
+        engine.new_height(101, 1000);
+        assert!(engine.phase_elapsed() < std::time::Duration::from_secs(1));
+    }
 }
