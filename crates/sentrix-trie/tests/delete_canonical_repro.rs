@@ -61,3 +61,50 @@ fn legacy_delete_root_still_history_dependent() {
         "pre-fork (legacy) root is expected to depend on delete history"
     );
 }
+
+#[test]
+fn canonical_delete_to_empty_matches_fresh_empty() {
+    // Deleting the last key must return the canonical empty-tree root.
+    let a = [7u8; 32];
+    let (_d0, empty) = fresh_trie(true);
+    let empty_root = hex::encode(empty.root_hash());
+
+    let (_d1, mut t) = fresh_trie(true);
+    t.insert(&a, b"v").unwrap();
+    t.delete(&a).unwrap();
+    assert_eq!(hex::encode(t.root_hash()), empty_root);
+    assert_eq!(t.get(&a).unwrap(), None);
+}
+
+#[test]
+fn canonical_delete_keeps_multikey_sibling_subtree() {
+    // A,B share a 255-bit prefix (a deep two-key subtree); C diverges from both
+    // at bit 0. Deleting C — whose sibling is the A/B internal subtree, not a
+    // lone leaf — must leave exactly {A,B}, matching a direct {A,B} insert.
+    let a = [0u8; 32];
+    let mut b = [0u8; 32];
+    b[31] = 1;
+    let mut c = [0u8; 32];
+    c[0] = 0x80;
+
+    let (_d1, mut t_ab) = fresh_trie(true);
+    t_ab.insert(&a, b"va").unwrap();
+    t_ab.insert(&b, b"vb").unwrap();
+    let root_ab = hex::encode(t_ab.root_hash());
+
+    let (_d2, mut t_abc) = fresh_trie(true);
+    t_abc.insert(&a, b"va").unwrap();
+    t_abc.insert(&b, b"vb").unwrap();
+    t_abc.insert(&c, b"vc").unwrap();
+    t_abc.delete(&c).unwrap();
+    let root_abc_minus_c = hex::encode(t_abc.root_hash());
+
+    assert_eq!(
+        root_ab, root_abc_minus_c,
+        "deleting C must leave the A/B subtree exactly as a direct {{A,B}} insert"
+    );
+    // A and B still present and intact, C gone.
+    assert_eq!(t_abc.get(&a).unwrap().as_deref(), Some(&b"va"[..]));
+    assert_eq!(t_abc.get(&b).unwrap().as_deref(), Some(&b"vb"[..]));
+    assert_eq!(t_abc.get(&c).unwrap(), None);
+}
