@@ -5310,6 +5310,7 @@ dependencies = [
  "hex",
  "reliakit-primitives",
  "reliakit-ratelimit",
+ "reliakit-secret",
  "reliakit-validate",
  "reqwest",
  "secp256k1 0.31.1",

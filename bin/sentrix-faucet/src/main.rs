@@ -32,6 +32,7 @@ use clap::Parser;
 use dashmap::DashMap;
 use reliakit_primitives::{HexString, NonEmptyStr, PositiveInt};
 use reliakit_ratelimit::RateLimiter;
+use reliakit_secret::SecretString;
 use reliakit_validate::{Valid, Validate, ValidationError};
 use secp256k1::{PublicKey, SecretKey};
 use sentrix_primitives::transaction::{MIN_TX_FEE, Transaction};
@@ -52,10 +53,16 @@ struct Cli {
     #[arg(long, env = "SENTRIX_FAUCET_KEYSTORE")]
     keystore: String,
 
-    /// Keystore password — prefer the env var over the CLI flag (CLI flag
-    /// leaves password in shell history)
-    #[arg(long, env = "SENTRIX_FAUCET_PASSWORD", hide_env_values = true)]
-    password: String,
+    /// Keystore password. Prefer the env var over the CLI flag (the CLI
+    /// flag leaves the password in shell history). Held as a SecretString
+    /// so it never lands in the Debug-printed Cli struct or in logs.
+    #[arg(
+        long,
+        env = "SENTRIX_FAUCET_PASSWORD",
+        hide_env_values = true,
+        value_parser = wrap_secret
+    )]
+    password: SecretString,
 
     /// RPC base URL (POST /transactions, GET /accounts/{addr}/nonce)
     #[arg(
@@ -97,6 +104,13 @@ struct Cli {
     /// Tx fee paid by the faucet (sentri). MIN_TX_FEE by default.
     #[arg(long, env = "SENTRIX_FAUCET_TX_FEE", default_value_t = MIN_TX_FEE)]
     tx_fee: u64,
+}
+
+/// clap value parser for the keystore password. Wraps the raw arg in a
+/// SecretString at parse time so the plaintext is never stored in the
+/// Debug-derived Cli struct. Parsing cannot fail, hence Infallible.
+fn wrap_secret(raw: &str) -> Result<SecretString, std::convert::Infallible> {
+    Ok(SecretString::from_string(raw))
 }
 
 #[derive(Clone)]
@@ -409,7 +423,7 @@ async fn main() -> Result<()> {
     info!(keystore = %cli.keystore, "loading keystore");
     let keystore = Keystore::load(&cli.keystore).context("load keystore")?;
     let wallet: Wallet = keystore
-        .decrypt(&cli.password)
+        .decrypt(cli.password.expose_str())
         .context("decrypt keystore")?;
 
     let secret_key = wallet.get_secret_key().context("extract secret key")?;
@@ -520,5 +534,22 @@ mod tests {
         // At t=10s into a 60s cooldown, ~50s remain.
         let wait = b.retry_after(10_000, 1).expect("1 <= capacity");
         assert_eq!(wait, 50_000);
+    }
+
+    #[test]
+    fn cli_debug_does_not_leak_password() {
+        let cli = Cli::try_parse_from([
+            "sentrix-faucet",
+            "--keystore",
+            "k.json",
+            "--password",
+            "hunter2-super-secret",
+        ])
+        .expect("parse");
+        assert_eq!(cli.password.expose_str(), "hunter2-super-secret");
+        assert!(
+            !format!("{cli:?}").contains("hunter2-super-secret"),
+            "Debug-printing the Cli must not reveal the password"
+        );
     }
 }

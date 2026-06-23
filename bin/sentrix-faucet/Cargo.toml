@@ -15,6 +15,7 @@ sentrix-wallet     = { path = "../../crates/sentrix-wallet" }
 reliakit-primitives = "1.0"
 reliakit-validate   = "0.3"
 reliakit-ratelimit  = "0.1"
+reliakit-secret     = "1.0"
 
 axum         = "0.8"
 tokio        = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
