@@ -78,7 +78,7 @@ libp2p = { version = "0.56", features = ["tcp", "noise", "yamux", "gossipsub", "
 # API
 axum = "0.8"
 tower = { version = "0.5", features = ["limit"] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 
 # EVM
 revm = { version = "40", default-features = false, features = ["std", "serde", "optional_balance_check", "optional_no_base_fee"] }
