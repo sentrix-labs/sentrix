@@ -14,7 +14,7 @@ sentrix-primitives = { path = "../../crates/sentrix-primitives" }
 sentrix-wallet     = { path = "../../crates/sentrix-wallet" }
 reliakit-primitives = "1.0"
 reliakit-validate   = "1.0"
-reliakit-ratelimit  = "0.1"
+reliakit-ratelimit  = "1.0"
 reliakit-secret     = "1.0"
 
 axum         = "0.8"
