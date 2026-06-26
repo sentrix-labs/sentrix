@@ -4557,9 +4557,9 @@ checksum = "c7deb86a11993f58285a331ba85fdb132a8317270e9245ee4cdea05af3c0df03"
 
 [[package]]
 name = "reliakit-ratelimit"
-version = "0.1.3"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e836dcad847ab4a5c8286b90bc7a5adff82f3c21c80f390fb21d5d21994eed3"
+checksum = "1fe22a2c66307d0d2858f5cb506d127e2c595f1b3d22f68fc3c988f15260c4c7"
 
 [[package]]
 name = "reliakit-secret"
