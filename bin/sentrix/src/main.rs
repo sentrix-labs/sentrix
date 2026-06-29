@@ -1948,6 +1948,44 @@ async fn cmd_start(
                     None => true,
                     Some(bft) => bft.height() <= current_height,
                 };
+
+                // Finalize-stall liveness recovery.
+                //
+                // A FinalizeBlock guard below (split-brain / hash-mismatch /
+                // add_block error) can break out WITHOUT applying block N,
+                // parking the engine at height N phase=Finalize while the chain
+                // stays at N-1. need_new_round above can't reset it
+                // (bft.height N > current_height N-1), and Finalize has no
+                // timeout (engine `step` → Wait), so it spins on "phase timeout
+                // finalize" until a peer's block N arrives via gossip and
+                // advances the chain — minutes when the mesh is degraded. If the
+                // engine sits in Finalize one height ahead of the chain past
+                // FINALIZE_STALL_RESET, reset it to re-run consensus for N.
+                // Safe: the `bc.height() >= height` skip-guard in the
+                // FinalizeBlock arms no-ops a re-finalize if the block already
+                // landed via gossip (no double-apply), and a re-proposal still
+                // needs 2/3 precommits, so safety is preserved.
+                const FINALIZE_STALL_RESET: std::time::Duration =
+                    std::time::Duration::from_secs(5);
+                if !need_new_round
+                    && let Some(bft) = bft_engine.as_mut()
+                    && bft.height() > current_height
+                    && bft.phase() == BftPhase::Finalize
+                    && bft.phase_elapsed() >= FINALIZE_STALL_RESET
+                {
+                    tracing::warn!(
+                        target: "bft::engine",
+                        "BFT finalize-stall recovery: engine parked at height {} \
+                         round {} phase=Finalize for {:?} while chain at {} — \
+                         resetting to re-run consensus for the unapplied height",
+                        bft.height(),
+                        bft.round(),
+                        bft.phase_elapsed(),
+                        current_height,
+                    );
+                    bft.new_height(next_height, total_active_stake);
+                }
+
                 if need_new_round {
                     // P1: refuse to start a BFT round when the active set is
                     // too small for byzantine-fault tolerance. BFT requires

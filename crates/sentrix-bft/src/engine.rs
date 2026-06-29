@@ -1196,6 +1196,15 @@ impl BftEngine {
         self.state.phase
     }
 
+    /// Wall-clock time spent in the current phase. The driver uses this to
+    /// detect a Finalize stall: a FinalizeBlock guard can abort the local
+    /// apply and park the engine one height ahead of the chain, where `step`
+    /// returns a zero-duration Finalize timeout and it spins on
+    /// `BftAction::Wait`. See the finalize-stall recovery in main.rs.
+    pub fn phase_elapsed(&self) -> std::time::Duration {
+        self.phase_start.elapsed()
+    }
+
     /// Called by the driver after a `BroadcastPrevote` action has been
     /// successfully sent on the network. Marks our prevote as cast so the
     /// engine does not re-emit it on the next iteration.
@@ -3494,5 +3503,17 @@ mod tests {
         let _ = engine.on_proposal("h", &proposer, &reg);
         let _ = engine.on_timeout();
         // Reached here without panic — that's the test.
+    }
+
+    #[test]
+    fn phase_elapsed_small_after_construct_and_new_height() {
+        // phase_elapsed feeds the finalize-stall recovery in main.rs: it reports
+        // how long the engine has sat in the current phase. Construction and
+        // new_height both re-arm phase_start, so right after either it must be
+        // tiny. No sleep, so the test stays deterministic.
+        let mut engine = BftEngine::new(100, "0xval".into(), 1000);
+        assert!(engine.phase_elapsed() < std::time::Duration::from_secs(1));
+        engine.new_height(101, 1000);
+        assert!(engine.phase_elapsed() < std::time::Duration::from_secs(1));
     }
 }
