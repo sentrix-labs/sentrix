@@ -272,9 +272,9 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "cmov"
-version = "0.5.3"
+version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f88a43d011fc4a6876cb7344703e297c71dda42494fee094d5f7c76bf13f746"
+checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "colorchoice"
@@ -1220,6 +1220,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "reliakit-secret"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8277ac286fce65bcc3d20b92de99f76db61fc3f14812b65d076f60b3a0dff1e8"
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1392,7 +1398,7 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "sentrix-primitives"
-version = "2.2.12"
+version = "2.2.42"
 dependencies = [
  "hex",
  "secp256k1",
@@ -1406,13 +1412,14 @@ dependencies = [
 
 [[package]]
 name = "sentrix-wallet"
-version = "2.2.12"
+version = "2.2.42"
 dependencies = [
  "aes-gcm",
  "argon2",
  "hex",
  "pbkdf2",
  "rand",
+ "reliakit-secret",
  "secp256k1",
  "sentrix-primitives",
  "serde",
@@ -1491,12 +1498,13 @@ dependencies = [
 
 [[package]]
 name = "sha3"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be176f1a57ce4e3d31c1a166222d9768de5954f811601fb7ca06fc8203905ce1"
+checksum = "bc9bad02c26382724b2d2692c6f179285e4b54eeecd7968f52a50059c3c11759"
 dependencies = [
  "digest 0.11.2",
  "keccak",
+ "sponge-cursor",
 ]
 
 [[package]]
@@ -1526,6 +1534,12 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "sponge-cursor"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 
 [[package]]
 name = "stable_deref_trait"
